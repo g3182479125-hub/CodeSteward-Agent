@@ -1,0 +1,15 @@
+{
+  "environment": "develop",
+  "bind_host": "127.0.0.1",
+  "bind_port": 18800,
+  "data_dir": "./local-data",
+  "allowed_roots": ["./workspace-template"],
+  "restrict_to_workspace": true,
+  "sandbox_backend": "auto",
+  "required_sandbox": false,
+  "allow_network": false,
+  "allow_builtin_exec": false,
+  "max_concurrent_runs": 3,
+  "nanobot_gateway_url": "http://127.0.0.1:18790",
+  "nanobot_webui_url": "http://127.0.0.1:8765"
+}

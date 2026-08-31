@@ -1,0 +1,77 @@
+"""P1 application services shared by CLI, Tools and future FastAPI adapters."""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+from .artifacts import ArtifactService, ArtifactWrite
+from .inspector import InspectionResult, inspect_project
+from .paths import AllowedRoots
+from .report import render_project_overview
+from .storage import ProjectStore
+
+
+@dataclass(frozen=True)
+class AnalysisOutcome:
+    project_id: str
+    run_id: str
+    inspection: InspectionResult
+
+
+class ProjectAnalysisService:
+    def __init__(self, *, allowed_roots: AllowedRoots, store: ProjectStore) -> None:
+        self.allowed_roots = allowed_roots
+        self.store = store
+
+    def inspect(self, project_path: str | Path) -> AnalysisOutcome:
+        inspection = inspect_project(project_path, self.allowed_roots)
+        project_id = self.store.ensure_project(inspection.project_path)
+        run_id = self.store.start_run(project_id)
+        self.store.append_event(
+            run_id,
+            "tool.completed",
+            {"tool": "devpilot_inspect_project", "files_seen": inspection.files_seen},
+        )
+        return AnalysisOutcome(project_id=project_id, run_id=run_id, inspection=inspection)
+
+    def publish_overview(
+        self, *, project_id: str, run_id: str, content: str, artifacts_root: str | Path
+    ) -> ArtifactWrite:
+        self.store.validate_open_run(project_id=project_id, run_id=run_id)
+        artifact_service = ArtifactService(artifacts_root)
+        write = artifact_service.write_markdown(
+            project_id=project_id,
+            run_id=run_id,
+            name="project-overview.md",
+            content=content,
+        )
+        artifact_id = str(uuid.uuid4())
+        relative_path = write.path.relative_to(
+            Path(artifacts_root).expanduser().resolve()
+        ).as_posix()
+        self.store.record_artifact(
+            artifact_id=artifact_id,
+            project_id=project_id,
+            run_id=run_id,
+            relative_path=relative_path,
+            sha256=write.sha256,
+            size_bytes=write.size_bytes,
+        )
+        self.store.finish_run(
+            run_id,
+            "completed",
+            {"artifact_id": artifact_id, "sha256": write.sha256},
+        )
+        return write
+
+    def publish_deterministic_overview(
+        self, *, outcome: AnalysisOutcome, artifacts_root: str | Path
+    ) -> ArtifactWrite:
+        return self.publish_overview(
+            project_id=outcome.project_id,
+            run_id=outcome.run_id,
+            content=render_project_overview(outcome.inspection),
+            artifacts_root=artifacts_root,
+        )

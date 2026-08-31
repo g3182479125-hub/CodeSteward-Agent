@@ -1,0 +1,10 @@
+{
+  "name": "devpilot-node-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test",
+    "build": "node src/index.js"
+  }
+}

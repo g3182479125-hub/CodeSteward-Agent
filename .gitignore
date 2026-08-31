@@ -1,0 +1,38 @@
+# Local runtime data and secrets
+**/.env
+**/.env.*
+!**/.env.example
+**/local-data/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+
+# Python environments and caches
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/*.pyc
+**/*.pyo
+
+# JavaScript dependencies and generated output
+**/node_modules/
+**/dist/
+**/coverage/
+**/.vite/
+**/*.tsbuildinfo
+
+# Local tooling and editor files
+**/.git/
+**/.vscode/
+**/.idea/
+**/.codex/
+**/.agents/
+**/.worktrees/
+**/*.tmp
+**/*.swp
+**/*~
+

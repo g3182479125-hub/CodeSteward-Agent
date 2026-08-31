@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+htmlcov/
+.coverage
+
+# Local state and secrets
+.env
+local-data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+session*.json
+credentials*.json
+**/secrets/
+
+# Generated nanobot workspace and unreviewed Skills
+skills/quarantine/*
+local-data/nanobot-workspace/
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
