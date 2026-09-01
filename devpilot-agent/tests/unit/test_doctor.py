@@ -28,6 +28,19 @@ def test_windows_native_sandbox_is_explicitly_unavailable(monkeypatch) -> None:
     assert "OS Sandbox" in result["reason"]
 
 
+def test_fc_agent_reports_configuration_without_exposing_key(monkeypatch) -> None:
+    monkeypatch.setenv("E2B_API_KEY", "secret-value")
+    monkeypatch.setenv("E2B_API_URL", "https://api.cn-shanghai.e2b.fc.aliyuncs.com")
+    monkeypatch.setenv("E2B_DOMAIN", "cn-shanghai.e2b.fc.aliyuncs.com")
+
+    result = doctor.sandbox_capability(
+        doctor.DevPilotConfig(environment="develop", sandbox_backend="fc-agent")
+    )
+
+    assert result["status"] == "configured"
+    assert "secret" not in str(result).lower()
+
+
 def test_unwritable_data_dir_fails_diagnostic(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "workspace").mkdir()
     (tmp_path / "not-a-directory").write_text("fixture", encoding="utf-8")

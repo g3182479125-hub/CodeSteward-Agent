@@ -2,7 +2,8 @@
 
 # The package remains importable in DevPilot's own test environment.  When loaded
 # by nanobot, the real Tool base class and schema decorator are used.
-# pyright: reportMissingImports=false, reportUnknownVariableType=false, reportUnknownParameterType=false
+# pyright: reportMissingImports=false, reportMissingTypeStubs=false, reportAssignmentType=false
+# pyright: reportUnknownVariableType=false, reportUnknownParameterType=false
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 # pyright: reportUntypedClassDecorator=false, reportUntypedBaseClass=false, reportGeneralTypeIssues=false
 
@@ -44,6 +45,7 @@ except ImportError:  # pragma: no cover - exercised only outside nanobot
 if TYPE_CHECKING:
     from nanobot.agent.tools.context import ToolContext
 
+from .code_access import CodeAccessError, CodeAccessService
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
 from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
@@ -53,6 +55,15 @@ _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{12,}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
     re.compile(r"(?i)deepseek_api_key\s*[=:]\s*\S+"),
+)
+_PATH_DENIAL_CODES = frozenset(
+    {
+        "PATH_INVALID",
+        "PATH_NOT_RELATIVE",
+        "PATH_OUTSIDE_PROJECT",
+        "WINDOWS_PATH_ALIAS",
+        "TARGET_NOT_FILE",
+    }
 )
 
 
@@ -70,6 +81,18 @@ def _service(workspace: Path) -> ProjectAnalysisService:
     store = ProjectStore(_data_dir() / "devpilot.db")
     store.initialize()
     return ProjectAnalysisService(allowed_roots=_configured_roots(workspace), store=store)
+
+
+def _code_access_service(workspace: Path) -> CodeAccessService:
+    store = ProjectStore(_data_dir() / "devpilot.db")
+    store.initialize()
+    return CodeAccessService(allowed_roots=_configured_roots(workspace), store=store)
+
+
+def _public_code(exc: Exception) -> str:
+    if isinstance(exc, CodeAccessError):
+        return "PATH_DENIED" if exc.code in _PATH_DENIAL_CODES else exc.code
+    return type(exc).__name__
 
 
 def _project_path(value: str, workspace: Path) -> str:
@@ -237,6 +260,128 @@ class PublishArtifactTool(Tool):
             )
         except (KeyError, TypeError, ValueError, OSError) as exc:
             return ToolResult.error(f"P1 Artifact rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "query": {"type": "string", "minLength": 1, "maxLength": 256},
+            "glob": {"type": "string", "maxLength": 256},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "case_sensitive": {"type": "boolean"},
+        },
+        "required": ["project_id", "query"],
+        "additionalProperties": False,
+    }
+)
+class SearchCodeTool(Tool):
+    """Search registered project source using bounded literal matching."""
+
+    _scopes = {"core"}
+
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> SearchCodeTool:
+        return cls(Path(ctx.workspace).expanduser().resolve())
+
+    @property
+    def name(self) -> str:
+        return "devpilot_search_code"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Read-only literal search within a previously inspected project. "
+            "It skips secrets, generated directories, binary files, and symbolic links."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return getattr(type(self), "__tool_parameters__", {}) or {
+            "type": "object",
+            "required": ["project_id", "query"],
+        }
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _code_access_service(self.workspace).search(
+                str(kwargs["project_id"]),
+                str(kwargs["query"]),
+                glob=str(kwargs["glob"]) if kwargs.get("glob") is not None else None,
+                limit=int(kwargs.get("limit", 50)),
+                case_sensitive=bool(kwargs.get("case_sensitive", False)),
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
+        except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
+            return ToolResult.error(f"P2A code search rejected: {_public_code(exc)}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "path": {"type": "string", "minLength": 1, "maxLength": 512},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+        },
+        "required": ["project_id", "path"],
+        "additionalProperties": False,
+    }
+)
+class ReadCodeTool(Tool):
+    """Read a bounded line range from registered project source."""
+
+    _scopes = {"core"}
+
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> ReadCodeTool:
+        return cls(Path(ctx.workspace).expanduser().resolve())
+
+    @property
+    def name(self) -> str:
+        return "devpilot_read_code"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Read-only bounded UTF-8 source access for a previously inspected project. "
+            "Returns line metadata and the full-file SHA-256 precondition hash."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return getattr(type(self), "__tool_parameters__", {}) or {
+            "type": "object",
+            "required": ["project_id", "path"],
+        }
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _code_access_service(self.workspace).read(
+                str(kwargs["project_id"]),
+                str(kwargs["path"]),
+                start_line=int(kwargs.get("start_line", 1)),
+                end_line=(int(kwargs["end_line"]) if kwargs.get("end_line") is not None else None),
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
+        except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
+            return ToolResult.error(f"P2A code read rejected: {_public_code(exc)}")
 
 
 def _control_plane_url() -> str:

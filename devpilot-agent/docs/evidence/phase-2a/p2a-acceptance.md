@@ -1,4 +1,8 @@
-# P2A-01 acceptance evidence
+# Imported P2A patch-engine candidate evidence
+
+> Status: historical evidence imported from remote commit `036ce19`. It is not local P2A Gate
+> acceptance. The independent review found missing durable crash recovery and other blockers; see
+> [the import review](../../reviews/code-delivery-p2a-p2b-import-review.md).
 
 Date: 2026-08-31
 

@@ -20,7 +20,7 @@ class DevPilotConfig(BaseModel):
     data_dir: Path = Path("./local-data")
     allowed_roots: list[Path] = Field(default_factory=_empty_paths)
     restrict_to_workspace: bool = True
-    sandbox_backend: str = Field(default="auto", pattern=r"^(auto|none|bwrap|docker)$")
+    sandbox_backend: str = Field(default="auto", pattern=r"^(auto|none|bwrap|docker|fc-agent)$")
     required_sandbox: bool = False
     allow_network: bool = False
     allow_builtin_exec: bool = False

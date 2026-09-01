@@ -1,0 +1,31 @@
+{
+  "phase": "P2A",
+  "started_at": "2026-09-01T10:00:00+08:00",
+  "ended_at": "2026-09-01T10:47:54+08:00",
+  "git_commit": "1301964",
+  "config_summary": {
+    "allowed_roots": "test fixtures and caller-provided real roots",
+    "data_dir": "local-data (not committed)",
+    "sandbox": "not connected; no execution claim"
+  },
+  "migration_head": "0003_p2a04_recovery",
+  "dependency_lock": {
+    "path": "uv.lock",
+    "sha256": "428baa51a998a4ffecb01e0a4fdecb1994b44f645b2c882f4b1d56920e93af98"
+  },
+  "test_commands": [
+    {"command": "python -m pytest -q -ra", "exit_code": 0},
+    {"command": "python -m ruff check src scripts tests migrations", "exit_code": 0},
+    {"command": "python -m pyright", "exit_code": 0},
+    {"command": "python scripts/secret_scan.py", "exit_code": 0},
+    {"command": "python scripts/check_markdown.py", "exit_code": 0}
+  ],
+  "artifacts": [
+    {"path": "docs/evidence/phase-2a/p2a-05-acceptance.md", "sha256": "10d24133094fa95dd63d03746fb1feef795df0abae04ac5e5c1e73cd38163224"},
+    {"path": "docs/evidence/phase-2a/p2a-03-acceptance.md", "sha256": "0727bcd7020f5d539b62b56d9f1bb4718fcbaa61b37dbf4235d6fd8bd6b75d67"}
+  ],
+  "notes": [
+    "Timestamps define the local P2A evidence window for this delivery turn.",
+    "Three symlink tests require a privileged CI runner on Windows."
+  ]
+}

@@ -17,6 +17,44 @@ uv run python .\scripts\doctor.py --config .\config\inspect.example.json
 
 The expected Windows result is a clear Sandbox unavailable/degraded message. This is correct; workspace restriction is not OS-level process isolation.
 
+## FC Agent Sandbox (optional)
+
+The FC backend is an explicit remote execution port, not a nanobot Tool. Install the
+optional dependencies with the versions currently validated by Alibaba Cloud:
+
+```powershell
+uv sync --extra fc-sandbox
+```
+
+Configure the API key and region-specific E2B-compatible endpoint in the process
+environment. Never place the values in JSON, source code, logs, prompts, or the WebUI:
+
+```powershell
+$env:E2B_API_KEY = "<API key from the FC console>"
+$env:E2B_API_URL = "https://api.<region>.e2b.fc.aliyuncs.com"
+$env:E2B_DOMAIN = "<region>.e2b.fc.aliyuncs.com"
+$env:DEVPILOT_FC_TEMPLATE = "code-interpreter-v1"
+```
+
+Run the harmless connectivity/lifecycle check below. It creates a temporary Sandbox,
+writes one non-secret fixture file, runs a fixed `python3` print command, and destroys
+the Sandbox. It does not access any local project:
+
+```powershell
+uv run devpilot sandbox-check
+```
+
+The first verification call should use `FCSandboxBackend` with a tiny, explicit file bundle
+and a bounded command. The adapter creates one short-lived Sandbox, writes only those files,
+returns stdout/stderr/exit code, and always calls `kill()` in cleanup. It does not upload the
+whole local repository or write results back to the local project. The current P2B control
+plane does not invoke this backend automatically; a future verification Gate must add its own
+approval capability and evidence before it can affect Apply decisions.
+
+FC Agent Sandbox currently uses the E2B-compatible SDK path. Region, API URL, domain and
+resource region must match, and the official compatibility list marks Snapshots, Volume,
+Team management and Sandbox Logs as unavailable or limited for this integration.
+
 ## 3. Run the quality gates
 
 ```powershell

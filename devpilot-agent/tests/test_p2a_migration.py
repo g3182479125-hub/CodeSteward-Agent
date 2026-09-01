@@ -29,12 +29,13 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             "change_sets",
             "approvals",
             "file_changes",
+            "project_locks",
         }.issubset(tables)
         with engine.connect() as connection:
             version = connection.execute(
                 text("select version_num from alembic_version")
             ).scalar_one()
-        assert version == "0002_p2a01_domain"
+        assert version == "0004_p2b_approval_idempotency"
     finally:
         engine.dispose()
 
@@ -50,7 +51,17 @@ def test_p2a01_downgrade_removes_only_domain_tables(tmp_path: Path) -> None:
     try:
         tables = set(inspect(engine).get_table_names())
         assert "projects" in tables
-        assert not {"tasks", "change_plans", "change_sets", "approvals", "file_changes"} & tables
+        assert (
+            not {
+                "tasks",
+                "change_plans",
+                "change_sets",
+                "approvals",
+                "file_changes",
+                "project_locks",
+            }
+            & tables
+        )
         with engine.connect() as connection:
             version = connection.execute(
                 text("select version_num from alembic_version")

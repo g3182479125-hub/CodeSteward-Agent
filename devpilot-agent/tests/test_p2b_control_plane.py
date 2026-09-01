@@ -9,9 +9,11 @@ import pytest
 
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
+from devpilot.execution import FakeExecutionBackend
 from devpilot.nanobot_tools import ProposeChangeSetTool, ToolResult
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
+from devpilot.verification import VerificationProfile
 
 
 def make_manager(tmp_path: Path) -> tuple[ControlPlaneManager, Path]:
@@ -21,6 +23,39 @@ def make_manager(tmp_path: Path) -> tuple[ControlPlaneManager, Path]:
         ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path])),
         project,
     )
+
+
+def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    backend = FakeExecutionBackend(stdout="syntax ok")
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        execution_backend=backend,
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    verified = manager.verify(
+        change_set_id,
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_SYNTAX,
+    )
+
+    assert verified["status"] == "verified"
+    assert backend.requests[0].command.startswith("python3 -m py_compile")
+    assert backend.requests[0].files[0].content == b"print('ok')\n"
+
+    rollback_approval = manager.approve(change_set_id, "r1.rollback")
+    reverted = manager.rollback(change_set_id, str(rollback_approval["approval_token"]))
+    assert reverted["status"] == "reverted"
 
 
 def test_control_plane_manager_preview_approve_apply_and_rollback(tmp_path: Path) -> None:
@@ -40,7 +75,8 @@ def test_control_plane_manager_preview_approve_apply_and_rollback(tmp_path: Path
     assert applied["status"] == "applied"
     assert (project / "src" / "main.py").read_text(encoding="utf-8") == "print('ok')\n"
 
-    reverted = manager.rollback(change_set_id)
+    rollback_approval = manager.approve(change_set_id, "r1.rollback")
+    reverted = manager.rollback(change_set_id, str(rollback_approval["approval_token"]))
     assert reverted["status"] == "reverted"
     assert not (project / "src" / "main.py").exists()
 
@@ -54,12 +90,12 @@ def test_control_plane_requires_approval_and_consumes_token(tmp_path: Path) -> N
     )
     change_set_id = str(preview["change_set_id"])
 
-    with pytest.raises(PatchError, match="APPROVAL_REQUIRED"):
+    with pytest.raises(PatchError, match="APPROVAL_INVALID"):
         manager.apply(change_set_id, "missing")
 
     token = str(manager.approve(change_set_id)["approval_token"])
     manager.apply(change_set_id, token)
-    with pytest.raises(PatchError, match="APPROVAL_REQUIRED"):
+    with pytest.raises(PatchError, match="APPROVAL_INVALID"):
         manager.apply(change_set_id, token)
 
 

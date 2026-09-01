@@ -19,12 +19,21 @@ devpilot = "devpilot.cli:main"
 [project.entry-points."nanobot.tools"]
 devpilot_inspect_project = "devpilot.nanobot_tools:InspectProjectTool"
 devpilot_publish_artifact = "devpilot.nanobot_tools:PublishArtifactTool"
+devpilot_search_code = "devpilot.nanobot_tools:SearchCodeTool"
+devpilot_read_code = "devpilot.nanobot_tools:ReadCodeTool"
 devpilot_propose_changeset = "devpilot.nanobot_tools:ProposeChangeSetTool"
+
+[project.optional-dependencies]
+fc-sandbox = [
+    "e2b==2.31.0",
+    "e2b-code-interpreter==2.8.1",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3,<9.0",
     "pytest-cov>=6.0,<7.0",
+    "httpx2>=2.12,<3.0",
     "ruff>=0.9,<1.0",
     "pyright>=1.1.390,<2.0",
 ]

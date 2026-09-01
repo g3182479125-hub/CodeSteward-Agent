@@ -3,6 +3,11 @@
 Date: 2026-08-31  
 Status: approved for implementation
 
+> Historical note: this initial design has been superseded by the durable P2B
+> implementation. The current contract is documented in
+> `docs/evidence/phase-2b/` and requires the `0004_p2b_approval_idempotency`
+> Alembic head at startup.
+
 ## Goal
 
 Connect the P2A structured-patch service to the local nanobot runtime without
@@ -13,7 +18,8 @@ it through the local DevPilot control plane, apply it, and roll it back.
 ## Architecture
 
 The control plane is a localhost-only FastAPI application started with
-`devpilot serve`. It owns the in-process proposal registry and is the only
+`devpilot serve`. It owns the persisted proposal registry (with a process
+cache only as an optimization) and is the only
 component allowed to call `StructuredPatchService.apply` or `rollback`.
 
 The nanobot adapter is a proposal-only Tool. It sends a JSON request to the
@@ -29,10 +35,9 @@ user/control UI -> POST /v1/change-sets/{id}/apply -> apply + hash receipt
 user/control UI -> POST /v1/change-sets/{id}/rollback -> rollback receipt
 ```
 
-The first increment keeps the active plan registry in the control-plane
-process. P2B records lifecycle events through the existing store; durable
-reconstruction of patch bodies across a process restart is a later persistence
-increment and must not weaken the approval boundary.
+The current implementation persists ChangeSet bodies, lifecycle state,
+approval digests, and idempotency records. A process restart reconstructs
+previewable ChangeSets from storage without weakening the approval boundary.
 
 ## API and data contracts
 

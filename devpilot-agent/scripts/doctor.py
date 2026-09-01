@@ -61,6 +61,17 @@ def sandbox_capability(config: DevPilotConfig) -> dict[str, str]:
     system = platform.system()
     bwrap = shutil.which("bwrap")
     docker = shutil.which("docker")
+    if config.sandbox_backend == "fc-agent":
+        configured = all(
+            os.environ.get(name, "").strip()
+            for name in ("E2B_API_KEY", "E2B_API_URL", "E2B_DOMAIN")
+        )
+        return {
+            "requested": config.sandbox_backend,
+            "detected": "fc-agent-sandbox" if configured else "none",
+            "status": "configured" if configured else "unavailable",
+            "reason": "" if configured else "E2B_API_KEY/E2B_API_URL/E2B_DOMAIN are required",
+        }
     if system == "Windows":
         return {
             "requested": config.sandbox_backend,
@@ -156,7 +167,7 @@ def run(config_path: Path) -> int:
         results["nanobot_webui"].startswith("ok"),
     )
     sandbox_status = results["sandbox"]["status"]
-    sandbox_ok = not config.required_sandbox or sandbox_status == "available"
+    sandbox_ok = not config.required_sandbox or sandbox_status in {"available", "configured"}
     checks_ok = (
         data_status == "ok"
         and results["allowed_roots_exist"]

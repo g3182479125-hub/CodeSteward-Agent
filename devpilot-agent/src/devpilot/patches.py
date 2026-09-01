@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
 from .paths import AllowedRoots
+from .storage import ProjectStore
 
 MAX_CHANGESET_FILES = 12
 MAX_PATCH_BYTES = 80 * 1024
@@ -33,8 +34,15 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_PARTS = frozenset(
     {".git", ".hg", ".svn", "node_modules", "dist", "build", ".venv", "__pycache__"}
 )
+_WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul", "clock$"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
 _SECRET_NAME = re.compile(
-    r"(?i)^(?:\.env(?:\..*)?|.*(?:secret|credential|password|token|api[_-]?key).*)$"
+    r"(?i)^(?:\.env(?:\..*)?|"
+    r"(?:.*[._-])?(?:secret|credential|password|api[_-]?key|access[_-]?token|auth[_-]?token)"
+    r"(?:[._-].*)?)$"
 )
 _SECRET_SUFFIX = re.compile(r"(?i)\.(?:pem|key|crt|cer|p12|pfx|jks)$")
 
@@ -97,6 +105,7 @@ class PatchPlan:
     patch_hash: str
     diff: str
     records: tuple[PatchFileRecord, ...]
+    snapshots: tuple[_Snapshot, ...] = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,14 +140,21 @@ def _safe_relative_parts(raw_path: str) -> tuple[str, ...]:
     parts = tuple(part for part in posix.parts if part not in {"."})
     if not parts or ".." in parts:
         raise PatchError("PATH_OUTSIDE_PROJECT", "path traversal is not accepted")
-    if any(part in {"", "."} for part in parts):
-        raise PatchError("PATH_INVALID", "path contains an empty component")
+    for part in parts:
+        if part in {"", "."}:
+            raise PatchError("PATH_INVALID", "path contains an empty component")
+        if part != part.rstrip(" .") or ":" in part:
+            raise PatchError(
+                "WINDOWS_PATH_ALIAS", "trailing dots, spaces, and NTFS streams are not accepted"
+            )
+        if part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED:
+            raise PatchError("WINDOWS_PATH_ALIAS", "reserved Windows device names are not accepted")
     return parts
 
 
 def _forbidden_path(parts: tuple[str, ...]) -> bool:
     for part in parts:
-        if part in _FORBIDDEN_PARTS:
+        if part.casefold() in _FORBIDDEN_PARTS:
             return True
         if _SECRET_NAME.fullmatch(part) or _SECRET_SUFFIX.search(part):
             return True
@@ -177,13 +193,20 @@ class StructuredPatchService:
         self,
         *,
         allowed_roots: AllowedRoots,
+        store: ProjectStore | None = None,
         replace: Callable[[str | os.PathLike[str], str | os.PathLike[str]], None] = os.replace,
     ) -> None:
         self.allowed_roots = allowed_roots
+        self.store = store
         self._replace = replace
         self._consumed_grants: set[str] = set()
         self._locked_projects: set[Path] = set()
         self._mutex = threading.RLock()
+        if self.store is not None:
+            for project_id, change_set_id in self.store.list_applying_change_sets():
+                self.store.lock_project(
+                    project_id, f"uncertain recovery for ChangeSet {change_set_id}"
+                )
 
     def plan(
         self,
@@ -209,12 +232,26 @@ class StructuredPatchService:
         patch_lines = 0
 
         for patch in patch_list:
-            operation = FileOperation(patch.operation)
+            try:
+                operation = FileOperation(patch.operation)
+            except ValueError as exc:
+                raise PatchError(
+                    "PATCH_OPERATION_INVALID", "operation must be create, update, or delete"
+                ) from exc
             parts = _safe_relative_parts(patch.relative_path)
             relative_path = "/".join(parts)
-            if relative_path in seen:
+            identity = relative_path.casefold()
+            if identity in seen:
                 raise PatchError("PATCH_DUPLICATE_PATH", "a path may occur only once")
-            seen.add(relative_path)
+            if any(
+                identity.startswith(f"{existing}/") or existing.startswith(f"{identity}/")
+                for existing in seen
+            ):
+                raise PatchError(
+                    "PATCH_OVERLAPPING_PATH",
+                    "a ChangeSet cannot patch both a path and one of its descendants",
+                )
+            seen.add(identity)
             if _forbidden_path(parts):
                 raise PatchError("FORBIDDEN_FILE", "sensitive or generated paths are not writable")
 
@@ -222,7 +259,7 @@ class StructuredPatchService:
             exists = target.exists()
             if exists and target.is_dir():
                 raise PatchError("TARGET_NOT_FILE", "target path is a directory")
-            if exists and target.is_symlink():
+            if target.is_symlink():
                 raise PatchError("SYMLINK_FORBIDDEN", "symbolic-link targets are not writable")
 
             before = _read_text_bytes(target) if exists else None
@@ -314,7 +351,7 @@ class StructuredPatchService:
                 f"{item.relative_path}:{item.expected_sha256 or ''}" for item in records
             ),
         )
-        return PatchPlan(
+        plan = PatchPlan(
             project_id=project_id,
             project_path=project,
             patches=tuple(
@@ -331,11 +368,16 @@ class StructuredPatchService:
             patch_hash=patch_hash,
             diff="".join(diff_parts),
             records=tuple(records),
+            snapshots=tuple(snapshots),
         )
+        self._persist_plan(plan)
+        return plan
 
     def apply(self, plan: PatchPlan, grant: AuthorizationGrant | None) -> ApplyReceipt:
         with self._mutex:
             project = plan.project_path
+            if self.store is not None and self.store.is_project_locked(plan.project_id):
+                raise PatchError("PROJECT_LOCKED", "project is locked after an uncertain failure")
             if project in self._locked_projects:
                 raise PatchError("PROJECT_LOCKED", "project is locked after an uncertain failure")
             self._consume_grant(plan, grant)
@@ -350,10 +392,12 @@ class StructuredPatchService:
                 plan.change_set.transition_to(ChangeSetStatus.APPROVAL_PENDING)
             plan.change_set.transition_to(ChangeSetStatus.APPROVED)
             plan.change_set.transition_to(ChangeSetStatus.APPLYING)
+            self._persist_status(plan, ChangeSetStatus.APPLYING)
             try:
                 snapshots = self._recheck_preconditions(plan)
             except PatchError:
                 plan.change_set.transition_to(ChangeSetStatus.APPLY_FAILED)
+                self._persist_status(plan, ChangeSetStatus.APPLY_FAILED)
                 raise
             temp_root = Path(tempfile.mkdtemp(prefix=".devpilot-patch-", dir=project.parent))
             applied: list[_Snapshot] = []
@@ -373,6 +417,7 @@ class StructuredPatchService:
                         )
                     )
                 plan.change_set.transition_to(ChangeSetStatus.APPLIED)
+                self._persist_status(plan, ChangeSetStatus.APPLIED)
                 receipt = ApplyReceipt(
                     change_set_id=plan.change_set.id,
                     project_id=plan.project_id,
@@ -382,9 +427,10 @@ class StructuredPatchService:
                     snapshots=tuple(snapshots),
                 )
                 return receipt
-            except PatchError:
+            except PatchError as exc:
                 if plan.change_set.status is ChangeSetStatus.APPLYING:
                     plan.change_set.transition_to(ChangeSetStatus.APPLY_FAILED)
+                self._persist_status(plan, ChangeSetStatus.APPLY_FAILED, exc.code)
                 raise
             except (OSError, RuntimeError) as exc:
                 try:
@@ -393,8 +439,13 @@ class StructuredPatchService:
                     if plan.change_set.status is ChangeSetStatus.APPLYING:
                         plan.change_set.transition_to(ChangeSetStatus.APPLY_FAILED)
                     self._locked_projects.add(project)
+                    if self.store is not None:
+                        self.store.lock_project(
+                            plan.project_id, "rollback failed after apply error"
+                        )
                     raise rollback_error from exc
                 plan.change_set.transition_to(ChangeSetStatus.APPLY_FAILED)
+                self._persist_status(plan, ChangeSetStatus.APPLY_FAILED, "APPLY_FAILED")
                 raise PatchError(
                     "APPLY_FAILED", "patch application failed and was rolled back"
                 ) from exc
@@ -407,6 +458,71 @@ class StructuredPatchService:
                 raise PatchError("ROLLBACK_SCOPE_MISMATCH", "receipt does not match the ChangeSet")
             self._restore(receipt.project_path, receipt.snapshots, plan)
             plan.change_set.transition_to(ChangeSetStatus.REVERTED)
+            self._persist_status(plan, ChangeSetStatus.REVERTED)
+
+    def _persist_plan(self, plan: PatchPlan) -> None:
+        if self.store is None:
+            return
+        patches_json = json.dumps(
+            [
+                {
+                    "relative_path": patch.relative_path,
+                    "operation": patch.operation.value,
+                    "content": patch.content,
+                    "expected_sha256": patch.expected_sha256,
+                }
+                for patch in plan.patches
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        snapshots_json = json.dumps(
+            [
+                {
+                    "relative_path": item.relative_path,
+                    "existed": item.existed,
+                    "content": item.content.decode("utf-8") if item.content is not None else None,
+                    "sha256": item.sha256,
+                }
+                for item in plan.snapshots
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        self.store.persist_patch_plan(
+            change_set_id=plan.change_set.id,
+            task_id=plan.change_set.task_id,
+            plan_id=plan.change_set.plan_id,
+            project_id=plan.project_id,
+            project_path=str(plan.project_path),
+            patch_hash=plan.patch_hash,
+            scope_hash=plan.scope_hash,
+            status=plan.change_set.status.value,
+            before_manifest=json.dumps(plan.change_set.before_manifest),
+            after_manifest=json.dumps(plan.change_set.after_manifest),
+            rollback_manifest=json.dumps(plan.change_set.rollback_manifest),
+            patches_json=patches_json,
+            snapshots_json=snapshots_json,
+            file_changes=[
+                {
+                    "relative_path": item.relative_path,
+                    "operation": item.operation.value,
+                    "expected_sha256": item.expected_sha256,
+                    "content_hash": item.content_hash,
+                    "before_size": item.before_size,
+                    "after_sha256": item.after_sha256,
+                }
+                for item in plan.records
+            ],
+        )
+
+    def _persist_status(
+        self, plan: PatchPlan, status: ChangeSetStatus, failure_reason: str | None = None
+    ) -> None:
+        if self.store is not None:
+            self.store.update_change_set_status(
+                plan.change_set.id, status.value, failure_reason=failure_reason
+            )
 
     def _target(self, project: Path, parts: tuple[str, ...]) -> Path:
         current = project

@@ -21,6 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.environ.get("DEVPILOT_BIND_PORT", "18800")),
     )
+    subparsers.add_parser(
+        "sandbox-check", help="run a harmless connectivity and lifecycle check in FC Sandbox"
+    )
     return parser
 
 
@@ -41,6 +44,12 @@ def run_check() -> int:
 
 
 def run_serve(*, host: str, port: int) -> int:
+    if os.environ.get("DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE") != "1":
+        print(
+            "Experimental control plane is disabled until the P2B security Gate passes.",
+            file=sys.stderr,
+        )
+        return 2
     if host not in {"127.0.0.1", "localhost", "::1"}:
         print("DevPilot control plane only permits a localhost bind.", file=sys.stderr)
         return 2
@@ -55,12 +64,49 @@ def run_serve(*, host: str, port: int) -> int:
     return 0
 
 
+def run_sandbox_check() -> int:
+    """Verify FC Sandbox credentials and lifecycle without touching a project."""
+    from .execution import ExecutionError, ExecutionFile, ExecutionRequest
+    from .fc_sandbox import build_fc_backend_from_environment
+
+    request = ExecutionRequest(
+        run_id="sandbox-check",
+        project_id="sandbox-check",
+        files=(ExecutionFile("check.txt", b"devpilot sandbox check\n"),),
+        command="python3 -c \"print('devpilot-fc-sandbox-ok')\"",
+        timeout_seconds=60,
+        network_allowed=False,
+    )
+    try:
+        result = build_fc_backend_from_environment().run(request)
+    except ExecutionError as exc:
+        print(json.dumps({"status": "error", "code": exc.code, "message": exc.message}))
+        return 1
+    print(
+        json.dumps(
+            {
+                "status": "ok" if result.exit_code == 0 else "failed",
+                "backend": result.backend,
+                "sandbox_id": result.sandbox_id,
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "duration_ms": result.duration_ms,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0 if result.exit_code == 0 else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "check":
         return run_check()
     if args.command == "serve":
         return run_serve(host=args.host, port=args.port)
+    if args.command == "sandbox-check":
+        return run_sandbox_check()
     return 2
 
 

@@ -11,7 +11,11 @@
 
 ## 当前状态
 
-项目已完成 P0/P1：第一个只读仓库分析垂直闭环已可运行。后续从 P2A 开始进入受控代码交付能力建设；P1 不执行仓库代码、不安装依赖、不提供任意 Shell，也不修改 nanobot 上游源码。
+项目已完成 P0/P1、P2A 和 P2B：提供受限代码访问、结构化 ChangeSet、人工审批、
+Apply、Rollback 和持久化恢复。当前还没有把仓库代码交给本机任意 Shell 执行；
+FC Agent Sandbox 的可选执行端口已实现，但云端连通性必须由用户配置凭据后单独验证。
+项目不改写 nanobot 的 Runtime、权限和执行边界；nanobot WebUI 的本地适配层以独立集成补丁维护，
+用于把 Changeset 提案安全地链接到 DevPilot 审批页面。
 
 ## 本地目录约定
 
@@ -29,8 +33,10 @@ python .\scripts\doctor.py --config .\config\inspect.example.json
 
 ## P1 仓库分析闭环
 
-P1 通过 nanobot 的 Tool entry point 提供 `devpilot_inspect_project` 和
-`devpilot_publish_artifact`。运行 nanobot 前设置受控项目根和 DevPilot 数据目录：
+nanobot 的 Tool entry point 提供 `devpilot_inspect_project`、
+`devpilot_publish_artifact`、`devpilot_search_code`、`devpilot_read_code` 和
+`devpilot_propose_changeset`。运行 nanobot
+前设置受控项目根和 DevPilot 数据目录：
 
 ```powershell
 $env:DEVPILOT_ALLOWED_ROOTS = "D:\path\to\allowed-projects"
@@ -40,6 +46,8 @@ python -m nanobot gateway --config "D:\path\to\nanobot\local-state\config.json"
 
 然后在 nanobot 对话中要求“使用 repo-analysis Skill 分析项目”。项目路径必须位于
 `DEVPILOT_ALLOWED_ROOTS` 的真实路径内；报告只写入 DevPilot 管理的 Artifact 目录。
+首次 inspect 返回的 `project_id` 用于后续 search/read；这两个 Tool 只接受已登记项目，
+并限制文件数、文件大小、结果数和读取行数。
 
 Skill 发布只接受本地 catalog 中经过校验、人工审核并启用的版本：
 
@@ -51,8 +59,22 @@ uv run python scripts\publish_skill.py `
 
 ## 安全声明
 
-Windows 原生环境下的 workspace 限制和危险命令检查不等于 OS Sandbox。当前项目未接入或宣称任何具体 Sandbox；已有 `sandboxed-demo` 配置仅是 P0 诊断占位，不能作为执行授权。后续 ExecutionBackend 与未来 Sandbox 的能力门禁以新版冻结计划为准；能力不满足时，R2 及以上执行必须关闭。
+Windows 原生环境下的 workspace 限制和危险命令检查不等于 OS Sandbox。FC Agent Sandbox
+适配器只接受显式文件包和显式命令，运行结束后销毁远程 Sandbox，不直接写回本地项目；
+它不是本机隔离的替代品，也不能作为执行授权本身。已有 `sandboxed-demo` 配置仅是 P0
+诊断占位，能力不满足时，R2 及以上执行必须关闭。
+
+P2B 的 proposal Tool 只创建预览，不能批准、apply 或 rollback，也不会接收审批令牌。
+控制面仍默认关闭；只有开发者明确设置
+`DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE=1` 且数据库已执行 `alembic upgrade head`
+后才可用于本机测试。它不是 OS Sandbox，不得处理真实生产仓库。
+
+FC Sandbox 的可选依赖和真实连通性检查见
+[FC Sandbox runbook](docs/runbooks/local-development.md#fc-agent-sandbox-optional)。
+
+nanobot WebUI 的审批入口适配见
+[nanobot WebUI integration](integrations/nanobot-webui/README.md)。
 
 ## 阶段门禁
 
-开发必须遵守 [代码交付 Agent 冻结版实施计划](../plans/DEVPILOT_FROZEN_PLAN.md)。旧计划保留为 P0/P1 历史基线，后续阶段的接管关系见 [ADR-0001](docs/adr/ADR-0001-code-delivery-pivot-and-sandbox-port.md)。P1 验收证据见 [P1 acceptance](docs/evidence/phase-1/p1-acceptance.md)。本仓库不覆盖冻结计划；如需改变冻结决策，只能新增 ADR。
+开发必须遵守 [代码交付 Agent 冻结版实施计划](../../outputs/DevPilot-Code-Delivery-Agent-冻结版实施计划.md)。旧计划保留为 P0/P1 历史基线，后续阶段的接管关系见 [ADR-0001](docs/adr/ADR-0001-code-delivery-pivot-and-sandbox-port.md)。P1 验收证据见 [P1 acceptance](docs/evidence/phase-1/p1-acceptance.md)。本仓库不覆盖冻结计划；如需改变冻结决策，只能新增 ADR。

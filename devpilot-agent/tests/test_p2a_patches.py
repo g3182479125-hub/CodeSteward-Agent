@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 from devpilot.domain import ChangeSetStatus, FileOperation
 from devpilot.patches import (
     MAX_CHANGESET_FILES,
+    MAX_PATCH_BYTES,
+    MAX_PATCH_LINES,
     ApplyReceipt,
     FilePatch,
     PatchError,
@@ -68,6 +71,45 @@ def test_plan_contains_hashes_and_unified_diff(tmp_path: Path) -> None:
     assert "-return 1" in plan.diff
     assert "+return 2" in plan.diff
     assert plan.records[0].after_sha256 == digest("return 2\n")
+    with pytest.raises(FrozenInstanceError):
+        plan.patches[0].content = "mutated\n"  # type: ignore[misc]
+
+
+def test_plan_rejects_invalid_preconditions(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    target = project / "main.py"
+    target.write_bytes(b"old\n")
+    service = make_service(project)
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("main.py", FileOperation.UPDATE, "new\n", "0" * 64),),
+        )
+    assert error.value.code == "PRECONDITION_HASH_MISMATCH"
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch("created.py", FileOperation.CREATE, "new\n", expected_sha256="0" * 64),
+            ),
+        )
+    assert error.value.code == "HASH_INVALID"
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch(
+                    "main.py",
+                    FileOperation.DELETE,
+                    "not allowed",
+                    expected_sha256=digest("old\n"),
+                ),
+            ),
+        )
+    assert error.value.code == "PATCH_CONTENT_INVALID"
 
 
 def test_apply_and_rollback_create_update_delete(tmp_path: Path) -> None:
@@ -169,6 +211,10 @@ def test_stale_hash_is_zero_write_and_marks_apply_failed(tmp_path: Path) -> None
         ("../outside.txt", "PATH_OUTSIDE_PROJECT"),
         (".env", "FORBIDDEN_FILE"),
         (".git/config", "FORBIDDEN_FILE"),
+        (".GIT/config", "FORBIDDEN_FILE"),
+        ("CON.txt", "WINDOWS_PATH_ALIAS"),
+        ("src/main.py. ", "WINDOWS_PATH_ALIAS"),
+        ("src/main.py:secret", "WINDOWS_PATH_ALIAS"),
     ],
 )
 def test_forbidden_paths_are_rejected(tmp_path: Path, relative_path: str, code: str) -> None:
@@ -205,6 +251,26 @@ def test_binary_and_oversized_files_are_rejected(tmp_path: Path) -> None:
     assert error.value.code == "FILE_LIMIT_EXCEEDED"
 
 
+def test_changeset_byte_and_line_budgets_are_rejected(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    service = make_service(project)
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("large.txt", FileOperation.CREATE, "x" * (MAX_PATCH_BYTES + 1)),),
+        )
+    assert error.value.code == "PATCH_LIMIT_EXCEEDED"
+
+    too_many_lines = "x\n" * (MAX_PATCH_LINES + 1)
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("lines.txt", FileOperation.CREATE, too_many_lines),),
+        )
+    assert error.value.code == "PATCH_LIMIT_EXCEEDED"
+
+
 def test_duplicate_and_file_count_limits_are_rejected(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     service = make_service(project)
@@ -214,6 +280,26 @@ def test_duplicate_and_file_count_limits_are_rejected(tmp_path: Path) -> None:
             patches=(
                 FilePatch("a.txt", FileOperation.CREATE, "a"),
                 FilePatch("a.txt", FileOperation.CREATE, "a"),
+            ),
+        )
+    assert error.value.code == "PATCH_DUPLICATE_PATH"
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch("src", FileOperation.CREATE, "file"),
+                FilePatch("src/main.py", FileOperation.CREATE, "nested"),
+            ),
+        )
+    assert error.value.code == "PATCH_OVERLAPPING_PATH"
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch("Case.txt", FileOperation.CREATE, "a"),
+                FilePatch("case.txt", FileOperation.CREATE, "b"),
             ),
         )
     assert error.value.code == "PATCH_DUPLICATE_PATH"
@@ -244,6 +330,35 @@ def test_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> None:
             patches=(FilePatch("linked/file.txt", FileOperation.CREATE, "escape\n"),),
         )
     assert error.value.code == "SYMLINK_FORBIDDEN"
+
+
+def test_dangling_symlink_target_is_rejected_when_supported(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    link = project / "dangling.txt"
+    try:
+        link.symlink_to(tmp_path / "missing.txt")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    service = make_service(project)
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("dangling.txt", FileOperation.CREATE, "replacement\n"),),
+        )
+    assert error.value.code == "SYMLINK_FORBIDDEN"
+
+
+def test_invalid_operation_has_stable_error(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    service = make_service(project)
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("main.py", "rename", "unsafe\n"),),  # type: ignore[arg-type]
+        )
+    assert error.value.code == "PATCH_OPERATION_INVALID"
 
 
 def test_apply_failure_rolls_back_already_replaced_files(tmp_path: Path) -> None:

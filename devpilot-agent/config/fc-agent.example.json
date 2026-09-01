@@ -1,0 +1,13 @@
+{
+  "environment": "develop",
+  "bind_host": "127.0.0.1",
+  "bind_port": 18800,
+  "data_dir": "./local-data",
+  "allowed_roots": ["D:/path/to/allowed-project"],
+  "restrict_to_workspace": true,
+  "sandbox_backend": "fc-agent",
+  "required_sandbox": true,
+  "allow_network": false,
+  "allow_builtin_exec": false,
+  "max_concurrent_runs": 1
+}
