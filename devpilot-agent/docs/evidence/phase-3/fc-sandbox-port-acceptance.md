@@ -1,6 +1,6 @@
 # FC Agent Sandbox 接入端口验收
 
-日期：2026-09-01  
+日期：2026-09-02
 范围：ExecutionBackend、Fake 后端、FC E2B 兼容适配器、配置诊断和安全边界
 
 ## 已实现
@@ -16,6 +16,12 @@
 - API Key、API URL、Domain 只从环境变量读取，诊断和错误输出不打印密钥。
 - Control Plane 新增独立的 `r2.verify` 授权和 `/verify` 路由；只允许 Python/Node 语法
   Profile，验证结果写入 ChangeSet 状态与 Run 事件，Apply 和 Rollback 授权仍然独立。
+- P3 已完成完整项目快照：验证时收集项目目录内受限的 UTF-8 文本文件，并叠加 ChangeSet
+  内容；排除 `.git`、依赖/构建目录、虚拟环境、缓存和密钥文件，不把本机目录直接挂载到云端。
+- P3 已完成服务端命令白名单：只接受 `python3 -m py_compile`、单文件 `python3` 自测和
+  `node --check`，命令路径必须属于显式快照；Shell 操作符和模型自带命令会 fail closed。
+- P3 已完成资源与审计边界：最多 200 个文件、单文件 512 KiB、总快照 8 MiB、输出 16 KiB；
+  FC 默认执行上限 900 秒，并在结果中记录命令 Profile、快照大小、地域、模板、退出码和耗时。
 
 ## 本地证据
 
@@ -34,7 +40,8 @@ uv lock --check
 Resolved 59 packages
 ```
 
-沙箱专项契约测试覆盖 Fake 后端、输入 fail-closed、环境变量缺失、网络策略拒绝、
+沙箱专项契约测试覆盖 Fake 后端、输入 fail-closed、命令白名单、完整快照、输出/资源上限、
+环境变量缺失、网络策略拒绝、
 FC 创建/文件写入/命令执行/销毁生命周期模拟。Windows 的 3 个符号链接测试因当前
 用户权限跳过，未被伪称为通过。
 
@@ -50,6 +57,6 @@ uv run devpilot sandbox-check
 ```
 
 FC Agent Sandbox 的当前主路径是 E2B 兼容 SDK；Snapshots、Volume、Team 管理和 Sandbox
-Logs 不作为本阶段依赖。P2B Apply 不会自动调用该执行端口；当前验证 Gate 已使用独立
-`r2.verify` 授权和内置命令 Profile。下一阶段仍需完善完整项目快照、测试命令白名单、
-取消、结果审计和成本上限。
+Logs 不作为本阶段依赖。P2B Apply 不会自动调用该执行端口；当前验证 Gate 仍使用内部的
+`r2.verify` 授权和内置命令 Profile，但用户只需在 nanobot 对话中确认“执行”，不再打开独立
+审批页面。验证取消和更细粒度的外部存储/网络治理仍属于后续增强项。

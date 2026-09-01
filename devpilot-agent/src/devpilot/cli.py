@@ -72,8 +72,13 @@ def run_sandbox_check() -> int:
     request = ExecutionRequest(
         run_id="sandbox-check",
         project_id="sandbox-check",
-        files=(ExecutionFile("check.txt", b"devpilot sandbox check\n"),),
-        command="python3 -c \"print('devpilot-fc-sandbox-ok')\"",
+        files=(
+            ExecutionFile(
+                "sandbox_check.py",
+                b"print('devpilot-fc-sandbox-ok')\n",
+            ),
+        ),
+        command="python3 /workspace/devpilot/sandbox_check.py",
         timeout_seconds=60,
         network_allowed=False,
     )

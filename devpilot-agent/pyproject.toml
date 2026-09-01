@@ -22,6 +22,8 @@ devpilot_publish_artifact = "devpilot.nanobot_tools:PublishArtifactTool"
 devpilot_search_code = "devpilot.nanobot_tools:SearchCodeTool"
 devpilot_read_code = "devpilot.nanobot_tools:ReadCodeTool"
 devpilot_propose_changeset = "devpilot.nanobot_tools:ProposeChangeSetTool"
+devpilot_execute_changeset = "devpilot.nanobot_tools:ExecuteChangeSetTool"
+devpilot_rollback_changeset = "devpilot.nanobot_tools:RollbackChangeSetTool"
 
 [project.optional-dependencies]
 fc-sandbox = [
@@ -55,6 +57,8 @@ select = ["E", "F", "I", "B", "UP"]
 include = ["src", "scripts"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
 
 [build-system]
 requires = ["hatchling"]

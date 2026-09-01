@@ -15,10 +15,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from .execution import (
+    MAX_EXECUTION_OUTPUT_BYTES,
     ExecutionBackend,
     ExecutionError,
     ExecutionRequest,
     ExecutionResult,
+    execution_bundle_bytes,
     validate_request,
 )
 
@@ -34,6 +36,8 @@ class FCSandboxConfig:
     domain: str
     template: str = "code-interpreter-v1"
     allow_network: bool = False
+    max_timeout_seconds: int = 900
+    region: str = ""
 
     @classmethod
     def from_environment(cls) -> FCSandboxConfig:
@@ -43,13 +47,26 @@ class FCSandboxConfig:
                 raise ExecutionError("FC_CONFIG_MISSING", f"missing {name}")
             return value
 
+        try:
+            max_timeout_seconds = int(os.environ.get("DEVPILOT_FC_MAX_TIMEOUT_SECONDS", "900"))
+        except ValueError as exc:
+            raise ExecutionError(
+                "FC_CONFIG_INVALID", "DEVPILOT_FC_MAX_TIMEOUT_SECONDS must be an integer"
+            ) from exc
+        if not 1 <= max_timeout_seconds <= 900:
+            raise ExecutionError(
+                "FC_CONFIG_INVALID", "DEVPILOT_FC_MAX_TIMEOUT_SECONDS must be between 1 and 900"
+            )
+        domain = required("E2B_DOMAIN")
         return cls(
             api_key=required("E2B_API_KEY"),
             api_url=required("E2B_API_URL"),
-            domain=required("E2B_DOMAIN"),
+            domain=domain,
             template=os.environ.get("DEVPILOT_FC_TEMPLATE", "code-interpreter-v1").strip()
             or "code-interpreter-v1",
             allow_network=os.environ.get("DEVPILOT_FC_ALLOW_NETWORK", "0") == "1",
+            max_timeout_seconds=max_timeout_seconds,
+            region=os.environ.get("DEVPILOT_FC_REGION", domain.split(".", 1)[0]).strip(),
         )
 
 
@@ -78,6 +95,11 @@ class FCSandboxBackend:
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:
         validate_request(request)
+        if request.timeout_seconds > self.config.max_timeout_seconds:
+            raise ExecutionError(
+                "FC_COST_CAP_EXCEEDED",
+                f"sandbox timeout exceeds the {self.config.max_timeout_seconds}s cost cap",
+            )
         if request.network_allowed and not self.config.allow_network:
             raise ExecutionError(
                 "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
@@ -109,9 +131,13 @@ class FCSandboxBackend:
                 backend=self.name,
                 sandbox_id=_sandbox_id(sandbox_handle),
                 exit_code=int(getattr(result, "exit_code", 0)),
-                stdout=str(getattr(result, "stdout", "")),
-                stderr=str(getattr(result, "stderr", "")),
+                stdout=str(getattr(result, "stdout", ""))[-MAX_EXECUTION_OUTPUT_BYTES:],
+                stderr=str(getattr(result, "stderr", ""))[-MAX_EXECUTION_OUTPUT_BYTES:],
                 duration_ms=int((time.monotonic() - started) * 1000),
+                command_profile=request.command_profile,
+                bundle_bytes=execution_bundle_bytes(request),
+                region=self.config.region,
+                template=self.config.template,
             )
         except ExecutionError:
             raise

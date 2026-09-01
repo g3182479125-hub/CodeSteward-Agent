@@ -20,7 +20,7 @@ def valid_request(**overrides: object) -> ExecutionRequest:
         "run_id": "run-1",
         "project_id": "project-1",
         "files": (ExecutionFile("src/main.py", b"print('ok')"),),
-        "command": "python3 src/main.py",
+        "command": "python3 /workspace/devpilot/src/main.py",
     }
     values.update(overrides)
     return ExecutionRequest(**values)  # type: ignore[arg-type]
@@ -68,7 +68,7 @@ def test_mapping_parser_accepts_internal_bytes_only() -> None:
         {
             "run_id": "run-1",
             "project_id": "project-1",
-            "command": "python3 src/main.py",
+            "command": "python3 /workspace/devpilot/src/main.py",
             "files": [{"relative_path": "src/main.py", "content": b"print(1)"}],
         }
     )

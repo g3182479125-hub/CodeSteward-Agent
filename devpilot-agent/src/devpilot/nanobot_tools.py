@@ -1,4 +1,4 @@
-"""nanobot entry-point adapters for the P1 read-only analysis flow."""
+"""nanobot entry-point adapters for DevPilot analysis and chat-confirmed execution."""
 
 # The package remains importable in DevPilot's own test environment.  When loaded
 # by nanobot, the real Tool base class and schema decorator are used.
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -417,6 +418,81 @@ def _post_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _http_error_message(exc: HTTPError) -> str:
+    """Expose bounded local API diagnostics without leaking response headers or tokens."""
+    try:
+        body = exc.read(4 * 1024).decode("utf-8", errors="replace").strip()
+    except OSError:
+        body = ""
+    return f"HTTP {exc.code}: {body}" if body else f"HTTP {exc.code}"
+
+
+def _post_control_plane(
+    path: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    authorization_token: str | None = None,
+) -> dict[str, Any]:
+    """Call one local control-plane action and remove bearer-like secrets."""
+    body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
+    if authorization_token:
+        headers["Authorization"] = f"DevPilotGrant {authorization_token}"
+    request = Request(
+        f"{_control_plane_url()}{path}",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        response_body = response.read(256 * 1024 + 1)
+    if len(response_body) > 256 * 1024:
+        raise ValueError("control-plane response is too large")
+    result = json.loads(response_body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("control-plane response is invalid")
+    return result
+
+
+def _change_set_path(change_set_id: str, action: str) -> str:
+    """Build a safe local control-plane path from an exact ChangeSet ID."""
+    value = str(change_set_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+        raise ValueError("invalid ChangeSet ID")
+    if action not in {"approve", "apply", "verify", "rollback"}:
+        raise ValueError("unsupported ChangeSet action")
+    return f"/v1/change-sets/{value}/{action}"
+
+
+def _execute_changeset(
+    change_set_id: str,
+    verification_profile: str,
+) -> dict[str, Any]:
+    apply_approval = _post_control_plane(
+        _change_set_path(change_set_id, "approve"),
+        {"capability": "r1.apply"},
+    )
+    apply_result = _post_control_plane(
+        _change_set_path(change_set_id, "apply"),
+        authorization_token=str(apply_approval["approval_token"]),
+    )
+    verify_approval = _post_control_plane(
+        _change_set_path(change_set_id, "approve"),
+        {"capability": "r2.verify"},
+    )
+    verify_result = _post_control_plane(
+        _change_set_path(change_set_id, "verify"),
+        {"profile": verification_profile},
+        authorization_token=str(verify_approval["approval_token"]),
+    )
+    return {
+        "change_set_id": change_set_id,
+        "apply": apply_result,
+        "verification": verify_result,
+        "status": verify_result.get("status", "unknown"),
+    }
+
+
 @tool_parameters(
     {
         "type": "object",
@@ -505,6 +581,148 @@ class ProposeChangeSetTool(Tool):
             if kwargs.get("project_id") is not None:
                 payload["project_id"] = str(kwargs["project_id"])
             result = _post_preview(payload)
+            result["requires_user_confirmation"] = True
+            result["next_step"] = (
+                "在 nanobot 对话中展示这份 Diff，并询问用户是否执行；"
+                "只有用户明确回复‘执行’后，才能调用 devpilot_execute_changeset。"
+            )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
-        except (KeyError, TypeError, ValueError, OSError, HTTPError, URLError) as exc:
+        except HTTPError as exc:
+            return ToolResult.error(f"P2B proposal rejected: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P2B proposal rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "change_set_id": {
+                "type": "string",
+                "description": "The exact ChangeSet ID returned by devpilot_propose_changeset.",
+                "minLength": 1,
+            },
+            "verification_profile": {
+                "type": "string",
+                "enum": ["python-syntax", "python-run", "node-syntax"],
+                "description": (
+                    "Server-allowlisted verification profile; use python-run for self-tests."
+                ),
+            },
+            "user_confirmation": {
+                "type": "string",
+                "enum": ["执行", "确认执行", "confirmed"],
+                "description": (
+                    "Only supply this after the user explicitly confirmed this exact ChangeSet."
+                ),
+            },
+        },
+        "required": ["change_set_id", "verification_profile", "user_confirmation"],
+        "additionalProperties": False,
+    }
+)
+class ExecuteChangeSetTool(Tool):
+    """Apply one exact proposal and verify it in FC after explicit chat confirmation."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_execute_changeset"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Apply and verify an existing DevPilot ChangeSet after the user explicitly confirms "
+            "the exact proposal in chat. Never call this while proposing or asking for "
+            "confirmation. "
+            "This replaces the separate approval page."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    @property
+    def exclusive(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            confirmation = str(kwargs["user_confirmation"])
+            if confirmation not in {"执行", "确认执行", "confirmed"}:
+                return ToolResult.error(
+                    "P2B execution rejected: explicit user confirmation required"
+                )
+            result = _execute_changeset(
+                str(kwargs["change_set_id"]),
+                str(kwargs["verification_profile"]),
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P2B execution failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P2B execution failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "change_set_id": {"type": "string", "minLength": 1},
+            "user_confirmation": {
+                "type": "string",
+                "enum": ["撤销", "确认撤销", "confirmed"],
+                "description": "Only supply this after the user explicitly confirmed rollback.",
+            },
+        },
+        "required": ["change_set_id", "user_confirmation"],
+        "additionalProperties": False,
+    }
+)
+class RollbackChangeSetTool(Tool):
+    """Rollback an applied ChangeSet after a second explicit chat confirmation."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_rollback_changeset"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Rollback an applied DevPilot ChangeSet only after the user explicitly confirms "
+            "rollback "
+            "in chat. Never call this automatically after verification."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    @property
+    def exclusive(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            confirmation = str(kwargs["user_confirmation"])
+            if confirmation not in {"撤销", "确认撤销", "confirmed"}:
+                return ToolResult.error(
+                    "P2B rollback rejected: explicit user confirmation required"
+                )
+            change_set_id = str(kwargs["change_set_id"])
+            approval = _post_control_plane(
+                _change_set_path(change_set_id, "approve"),
+                {"capability": "r1.rollback"},
+            )
+            result = _post_control_plane(
+                _change_set_path(change_set_id, "rollback"),
+                authorization_token=str(approval["approval_token"]),
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P2B rollback failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P2B rollback failed: {type(exc).__name__}")

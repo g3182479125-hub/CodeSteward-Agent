@@ -44,12 +44,20 @@ the Sandbox. It does not access any local project:
 uv run devpilot sandbox-check
 ```
 
-The first verification call should use `FCSandboxBackend` with a tiny, explicit file bundle
-and a bounded command. The adapter creates one short-lived Sandbox, writes only those files,
-returns stdout/stderr/exit code, and always calls `kill()` in cleanup. It does not upload the
-whole local repository or write results back to the local project. The current P2B control
-plane does not invoke this backend automatically; a future verification Gate must add its own
-approval capability and evidence before it can affect Apply decisions.
+The verification flow now exposes three server-controlled profiles after a ChangeSet has been
+applied:
+
+- `python-syntax`: compile the changed Python files without running them.
+- `python-run`: run exactly one changed Python file, allowing that file to contain a small
+  self-test or test runner. This is the useful browser-level smoke test for the demo.
+- `node-syntax`: syntax-check changed JavaScript files.
+
+Each request uses a complete but bounded UTF-8 project snapshot and a server-controlled command.
+The adapter excludes dependency/build/cache directories and secret-like files, creates one
+short-lived Sandbox, returns bounded stdout/stderr/exit code, and always calls `kill()` in cleanup.
+Network access remains disabled. It does not mount the local project or write results back to the
+local project. In the nanobot UI, the user confirms “执行” in chat; DevPilot internally issues
+the verification grant and no separate approval page is needed.
 
 FC Agent Sandbox currently uses the E2B-compatible SDK path. Region, API URL, domain and
 resource region must match, and the official compatibility list marks Snapshots, Volume,
@@ -64,8 +72,6 @@ uv run pytest
 uv run python .\scripts\secret_scan.py
 uv run python .\scripts\check_markdown.py
 uv run alembic upgrade head
-pnpm --dir web install
-pnpm --dir web build
 ```
 
 ## 4. Publish the P1 Skill

@@ -25,9 +25,6 @@ skills/quarantine/*
 local-data/nanobot-workspace/
 
 # Frontend
-web/node_modules/
-web/dist/
-web/.vite/
 
 # OS/editor
 .DS_Store

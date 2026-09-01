@@ -8,9 +8,15 @@ backend returns a bounded execution receipt.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
+
+MAX_EXECUTION_FILES = 200
+MAX_EXECUTION_FILE_BYTES = 512 * 1024
+MAX_EXECUTION_BUNDLE_BYTES = 8 * 1024 * 1024
+MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
 
 
 class ExecutionError(RuntimeError):
@@ -40,6 +46,7 @@ class ExecutionRequest:
     command: str
     timeout_seconds: int = 300
     network_allowed: bool = False
+    command_profile: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +60,10 @@ class ExecutionResult:
     stderr: str
     duration_ms: int
     artifacts: tuple[str, ...] = ()
+    command_profile: str = ""
+    bundle_bytes: int = 0
+    region: str = ""
+    template: str = ""
 
 
 class ExecutionBackend(Protocol):
@@ -72,6 +83,11 @@ def validate_request(request: ExecutionRequest) -> None:
         raise ExecutionError("EXECUTION_SCOPE_INVALID", "run_id and project_id are required")
     if not request.files:
         raise ExecutionError("EXECUTION_INPUT_EMPTY", "at least one input file is required")
+    if len(request.files) > MAX_EXECUTION_FILES:
+        raise ExecutionError(
+            "EXECUTION_FILE_LIMIT_EXCEEDED",
+            f"at most {MAX_EXECUTION_FILES} input files are allowed",
+        )
     if not request.command.strip():
         raise ExecutionError("EXECUTION_COMMAND_EMPTY", "a verification command is required")
     if not 1 <= request.timeout_seconds <= 900:
@@ -79,14 +95,82 @@ def validate_request(request: ExecutionRequest) -> None:
             "EXECUTION_TIMEOUT_INVALID", "timeout must be between 1 and 900 seconds"
         )
     seen: set[str] = set()
+    bundle_bytes = 0
+    normalized_files: set[str] = set()
     for item in request.files:
         path = item.relative_path.replace("\\", "/")
         parts = tuple(part for part in path.split("/") if part)
-        if not parts or path.startswith("/") or ".." in parts or ":" in parts[0]:
+        if not parts or path.startswith("/") or ".." in parts or any(":" in part for part in parts):
             raise ExecutionError("EXECUTION_PATH_INVALID", "sandbox input paths must be relative")
         if path in seen:
             raise ExecutionError("EXECUTION_PATH_DUPLICATE", "sandbox input paths must be unique")
         seen.add(path)
+        normalized_files.add(f"/workspace/devpilot/{path}")
+        if len(item.content) > MAX_EXECUTION_FILE_BYTES:
+            raise ExecutionError(
+                "EXECUTION_FILE_LIMIT_EXCEEDED",
+                f"input file {path} exceeds the 512 KiB limit",
+            )
+        bundle_bytes += len(item.content)
+    if bundle_bytes > MAX_EXECUTION_BUNDLE_BYTES:
+        raise ExecutionError(
+            "EXECUTION_BUNDLE_LIMIT_EXCEEDED",
+            f"input bundle exceeds the {MAX_EXECUTION_BUNDLE_BYTES // (1024 * 1024)} MiB limit",
+        )
+    validate_command(request.command, normalized_files)
+
+
+def validate_command(command: str, input_paths: set[str]) -> None:
+    """Allow only verification commands over files in the explicit bundle."""
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise ExecutionError(
+            "EXECUTION_COMMAND_INVALID", "verification command is malformed"
+        ) from exc
+    if any(token in {";", "&&", "||", "|", ">", ">>", "<", "`"} for token in tokens):
+        raise ExecutionError("EXECUTION_COMMAND_FORBIDDEN", "shell operators are not allowed")
+
+    if len(tokens) >= 4 and tokens[:3] == ["python3", "-m", "py_compile"]:
+        paths = tokens[3:]
+        if not paths or any(
+            path not in input_paths or not path.casefold().endswith(".py") for path in paths
+        ):
+            raise ExecutionError(
+                "EXECUTION_COMMAND_FORBIDDEN",
+                "command is outside the Python syntax allowlist",
+            )
+        return
+    if len(tokens) == 2 and tokens[0] == "python3":
+        path = tokens[1]
+        if path in input_paths and path.casefold().endswith(".py"):
+            return
+        raise ExecutionError(
+            "EXECUTION_COMMAND_FORBIDDEN", "command is outside the Python run allowlist"
+        )
+    if len(tokens) >= 3 and tokens[:2] == ["node", "--check"]:
+        paths = tokens[2:]
+        if not paths or any(
+            path not in input_paths
+            or not path.casefold().endswith((".js", ".mjs", ".cjs"))
+            for path in paths
+        ):
+            raise ExecutionError(
+                "EXECUTION_COMMAND_FORBIDDEN",
+                "command is outside the Node syntax allowlist",
+            )
+        return
+    raise ExecutionError(
+        "EXECUTION_COMMAND_FORBIDDEN",
+        "only allowlisted verification commands are accepted",
+    )
+
+
+def execution_bundle_bytes(request: ExecutionRequest) -> int:
+    """Return the byte count after the request has passed structural validation."""
+
+    return sum(len(item.content) for item in request.files)
 
 
 class FakeExecutionBackend:
@@ -109,6 +193,8 @@ class FakeExecutionBackend:
             stdout=self.stdout,
             stderr="",
             duration_ms=0,
+            command_profile=request.command_profile,
+            bundle_bytes=execution_bundle_bytes(request),
         )
 
 
@@ -152,4 +238,5 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         command=command,
         timeout_seconds=timeout,
         network_allowed=network_allowed,
+        command_profile=str(payload.get("command_profile", "")),
     )

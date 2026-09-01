@@ -10,7 +10,7 @@ import pytest
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import FakeExecutionBackend
-from devpilot.nanobot_tools import ProposeChangeSetTool, ToolResult
+from devpilot.nanobot_tools import ExecuteChangeSetTool, ProposeChangeSetTool, ToolResult
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
 from devpilot.verification import VerificationProfile
@@ -56,6 +56,65 @@ def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -
     rollback_approval = manager.approve(change_set_id, "r1.rollback")
     reverted = manager.rollback(change_set_id, str(rollback_approval["approval_token"]))
     assert reverted["status"] == "reverted"
+
+
+def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    backend = FakeExecutionBackend(stdout="all self-tests passed")
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        execution_backend=backend,
+    )
+    content = "assert 2 + 2 == 4\nprint('all self-tests passed')\n"
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, content)],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    verified = manager.verify(
+        change_set_id,
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_RUN,
+    )
+
+    assert verified["status"] == "verified"
+    assert backend.requests[0].command == "python3 /workspace/devpilot/main.py"
+    assert backend.requests[0].network_allowed is False
+    assert backend.requests[0].files[0].content == content.encode("utf-8")
+
+
+def test_python_run_rejects_multiple_python_files(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        execution_backend=FakeExecutionBackend(),
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[
+            FilePatch("main.py", FileOperation.CREATE, "print('main')\n"),
+            FilePatch("helper.py", FileOperation.CREATE, "print('helper')\n"),
+        ],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    with pytest.raises(PatchError, match="VERIFICATION_PROFILE_UNSUPPORTED"):
+        manager.verify(
+            change_set_id,
+            str(verify_approval["approval_token"]),
+            profile=VerificationProfile.PYTHON_RUN,
+        )
 
 
 def test_control_plane_manager_preview_approve_apply_and_rollback(tmp_path: Path) -> None:
@@ -152,7 +211,10 @@ def test_proposal_tool_only_returns_preview(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert not isinstance(result, ToolResult) or not result.is_error
-    assert json.loads(str(result))["status"] == "planned"
+    payload = json.loads(str(result))
+    assert payload["status"] == "planned"
+    assert payload["requires_user_confirmation"] is True
+    assert "devpilot_execute_changeset" in payload["next_step"]
 
 
 def test_proposal_tool_rejects_non_local_control_plane(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,6 +223,97 @@ def test_proposal_tool_rejects_non_local_control_plane(monkeypatch: pytest.Monke
         ProposeChangeSetTool().execute(
             project_path="E:/project",
             patches=[{"relative_path": "main.py", "operation": "create", "content": "ok\n"}],
+        )
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.is_error is True
+    assert "ValueError" in str(result)
+
+
+def test_execute_changeset_requires_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devpilot import nanobot_tools
+
+    def unexpected_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("control plane must not be called without confirmation")
+
+    monkeypatch.setattr(nanobot_tools, "_execute_changeset", unexpected_call)
+    result = asyncio.run(
+        ExecuteChangeSetTool().execute(
+            change_set_id="cs-1",
+            verification_profile="python-run",
+            user_confirmation="不执行",
+        )
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.is_error is True
+    assert "confirmation required" in str(result)
+
+
+def test_execute_changeset_applies_then_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devpilot import nanobot_tools
+
+    responses = [
+        {"approval_token": "apply-token", "status": "approval_pending"},
+        {"change_set_id": "cs-1", "status": "applied"},
+        {"approval_token": "verify-token", "status": "approved"},
+        {"change_set_id": "cs-1", "status": "verified", "stdout": "tests passed"},
+    ]
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(responses.pop(0)).encode("utf-8")
+
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        req = request
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append((str(req.full_url), str(req.method), body))
+        assert timeout == 30
+        return FakeResponse()
+
+    monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
+    result = asyncio.run(
+        ExecuteChangeSetTool().execute(
+            change_set_id="cs-1",
+            verification_profile="python-run",
+            user_confirmation="执行",
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    payload = json.loads(str(result))
+    assert payload["status"] == "verified"
+    assert [call[1] for call in calls] == ["POST", "POST", "POST", "POST"]
+    assert calls[0][0].endswith("/cs-1/approve")
+    assert calls[0][2] == {"capability": "r1.apply"}
+    assert calls[1][0].endswith("/cs-1/apply")
+    assert calls[2][2] == {"capability": "r2.verify"}
+    assert calls[3][2] == {"profile": "python-run"}
+
+
+def test_execute_changeset_rejects_unsafe_id_before_control_plane_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    def unexpected_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("unsafe ChangeSet ID must not reach the control plane")
+
+    monkeypatch.setattr(nanobot_tools, "_post_control_plane", unexpected_call)
+    result = asyncio.run(
+        ExecuteChangeSetTool().execute(
+            change_set_id="../../etc/passwd",
+            verification_profile="python-run",
+            user_confirmation="执行",
         )
     )
 
