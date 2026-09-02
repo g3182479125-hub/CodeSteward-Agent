@@ -2,8 +2,8 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "ready_for_independent_review",
-  "commit": "63393ba74069ef658667e6c895207ddb702667c0",
-  "implementation_commit": "63393ba74069ef658667e6c895207ddb702667c0",
+  "commit": "b4bb6ac",
+  "implementation_commit": "b4bb6ac",
   "generated_at": "2026-09-02T00:00:00Z",
   "completed_at": "2026-09-02T00:00:00Z",
   "plan": {
@@ -29,13 +29,13 @@
   },
   "verification": {
     "pytest": {
-      "command": "uv run pytest --tb=no",
+      "command": "uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/manifest-basetemp -p no:cacheprovider",
       "exit_code": 0,
-      "result": "122 passed, 3 skipped",
+      "result": "123 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
-      "command": "uv run ruff check src scripts tests",
+      "command": "uv --no-cache run ruff check --no-cache src scripts tests",
       "exit_code": 0
     },
     "pyright": {
@@ -58,7 +58,7 @@
       "exit_code": 0
     },
     "lock_check": {
-      "command": "uv lock --check",
+      "command": "uv --no-cache lock --check",
       "exit_code": 0,
       "uv_lock_sha256": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"
     },
@@ -85,12 +85,12 @@
     "status": "ready_for_independent_review",
     "review_plan": "docs/reviews/p4-01-fix-rerun.md",
     "review_checkout": "current-clean-worktree",
-    "review_checkout_revision": "63393ba74069ef658667e6c895207ddb702667c0"
+    "review_checkout_revision": "b4bb6ac"
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "6B513AA3147E9D0A6FF8F97D29900BB040411244FCA264AF86D37FD5E0C30D6F"
+      "sha256": "C0FE1464B577849ED07F5600AB48E4C08DE16CE837E6E9C48966BA850AFE3F43"
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
@@ -98,13 +98,13 @@
     },
     {
       "path": "docs/reviews/p4-01-fix-rerun.md",
-      "sha256": "C7E901CCE2FEEB0A22D3F7D85DFA4C3CCC55EA0DA15233DD32812AA793301448"
+      "sha256": "4CFB7FEE471BC49355BA7304DC98A4EE9C8785882BD574C2CC3811C950C3AFF8"
     }
   ],
   "git": {
-    "implementation_commit": "63393ba74069ef658667e6c895207ddb702667c0",
-    "review_target": "63393ba74069ef658667e6c895207ddb702667c0",
-    "clean_checkout_revision": "63393ba74069ef658667e6c895207ddb702667c0",
+    "implementation_commit": "b4bb6ac",
+    "review_target": "b4bb6ac",
+    "clean_checkout_revision": "b4bb6ac",
     "clean_checkout_status": "clean",
     "live_worktree_clean": true,
     "live_worktree_explanation": "No user-owned external changes are present in this checkout."

@@ -1,7 +1,7 @@
 # P4-01 修复后复核记录
 
 Date: 2026-09-02
-Implementation commit: `63393ba74069ef658667e6c895207ddb702667c0`
+Implementation commit: `b4bb6ac`
 Decision: `ready-for-independent-review`
 
 ## Closed findings
@@ -14,13 +14,15 @@ Decision: `ready-for-independent-review`
 - M-02：manifest 改为绑定本次实现提交、冻结计划 v2.2.0、当前 uv.lock 和当前测试结果。
 - M-03：项目记录新增 `trust_state`、`repo_fingerprint`、`allowed_root_id`；项目默认
   `untrusted`，只有控制面显式 trust 后才允许 R1/R2，指纹或 root 绑定变化立即拒绝。
+- B-01：无 `ProjectStore` 的临时管理器现在只能生成 Preview；审批意图、批准、Apply、
+  Verify 和 Rollback 均以 `PERSISTENCE_REQUIRED` 失败关闭，并有回归测试覆盖。
 
 ## Verification
 
-- `uv run pytest --tb=no -r a -o addopts=''`：`122 passed, 3 skipped`
-- `uv run ruff check src scripts tests`：passed
+- `uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/review-basetemp -p no:cacheprovider`：`123 passed, 3 skipped`
+- `uv --no-cache run ruff check --no-cache src scripts tests`：passed
 - `uv run pyright`：0 errors, 0 warnings, 0 informations
-- `uv lock --check`：passed
+- `uv --no-cache lock --check`：passed
 - `uv run python scripts/secret_scan.py`：passed
 - `uv run python scripts/check_markdown.py`：passed
 - `uv run alembic upgrade head`：`0007_project_trust`

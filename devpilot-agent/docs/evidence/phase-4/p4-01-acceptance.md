@@ -3,7 +3,7 @@
 Date: 2026-09-02
 Node: P4-01
 Status: implementation complete; ready for independent Review rerun
-Implementation commit: `63393ba74069ef658667e6c895207ddb702667c0`
+Implementation commit: `b4bb6ac` (`fix: require durable trust for control-plane execution`)
 
 ## Delivered boundary
 
@@ -75,16 +75,16 @@ remote backend is blocked before the P6 Sandbox Gate.
 ## Verification commands
 
 ```text
-uv run pytest -q tests/test_p4_feature_delivery.py tests/test_p2a_migration.py tests/test_p2b_control_plane.py tests/test_p2b_durable_control_plane.py
-uv run ruff check src scripts tests
+uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/review-basetemp -p no:cacheprovider
+uv --no-cache run ruff check --no-cache src scripts tests
 uv run pyright
-uv lock --check
+uv --no-cache lock --check
 uv run python scripts/secret_scan.py
 uv run python scripts/check_markdown.py
 uv run alembic upgrade head
 git diff --check
 ```
 
-Recorded result: `122 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
+Recorded result: `123 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
 diff checks passed. The three skips are Windows symbolic-link privilege checks. P4-02 remains
 subject to the independent read-only Review rerun; this acceptance file does not self-authorize it.
