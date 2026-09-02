@@ -11,8 +11,6 @@ metadata:
       - devpilot_search_code
       - devpilot_read_code
       - devpilot_propose_changeset
-      - devpilot_get_run_state
-      - devpilot_get_diff
     risk_level: R1
     source: catalog
 ---
@@ -44,11 +42,11 @@ metadata:
 - `devpilot_search_code`：在已登记项目中进行有界文本检索，R0 只读。
 - `devpilot_read_code`：读取有界源码行并取得前置 SHA-256，R0 只读。
 - `devpilot_propose_changeset`：创建不可变 Preview/Diff；只能提案，不能批准或写文件。
-- `devpilot_get_run_state`：读取脱敏的运行状态，不触发副作用。
-- `devpilot_get_diff`：读取已保存的 Diff，不修改项目。
 
-Skill 只能建议上述 Tool。用户在对话中明确确认精确的 ChangeSet 后，运行时才可以把
-该确认交给受控的 Apply/Verification 入口；Skill 不得伪造确认、读取或传播审批令牌。
+Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回；
+当前 P4 不向 Skill 暴露独立的运行状态读取 Tool。用户在对话中明确确认精确的 ChangeSet
+后，运行时才可以把该确认交给受控的 Apply/Verification 入口；Skill 不得伪造确认、读取或
+传播审批令牌。
 
 ## 执行步骤
 

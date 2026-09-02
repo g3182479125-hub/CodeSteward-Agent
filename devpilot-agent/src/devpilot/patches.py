@@ -106,6 +106,7 @@ class PatchPlan:
     diff: str
     records: tuple[PatchFileRecord, ...]
     snapshots: tuple[_Snapshot, ...] = field(repr=False)
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +216,7 @@ class StructuredPatchService:
         project_id: str = "project-test",
         task_id: str = "task-test",
         plan_id: str = "plan-test",
+        run_id: str | None = None,
         patches: Iterable[FilePatch],
     ) -> PatchPlan:
         project = self.allowed_roots.require_project(project_path)
@@ -369,6 +371,7 @@ class StructuredPatchService:
             diff="".join(diff_parts),
             records=tuple(records),
             snapshots=tuple(snapshots),
+            run_id=run_id,
         )
         self._persist_plan(plan)
         return plan
@@ -514,6 +517,7 @@ class StructuredPatchService:
                 }
                 for item in plan.records
             ],
+            run_id=plan.run_id,
         )
 
     def _persist_status(

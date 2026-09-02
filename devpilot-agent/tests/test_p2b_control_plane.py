@@ -10,7 +10,12 @@ import pytest
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import FakeExecutionBackend
-from devpilot.nanobot_tools import ExecuteChangeSetTool, ProposeChangeSetTool, ToolResult
+from devpilot.nanobot_tools import (
+    ExecuteChangeSetTool,
+    ProposeChangeSetTool,
+    ToolResult,
+    VerifyChangeSetTool,
+)
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
 from devpilot.verification import VerificationProfile
@@ -237,11 +242,12 @@ def test_execute_changeset_requires_confirmation(monkeypatch: pytest.MonkeyPatch
     def unexpected_call(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("control plane must not be called without confirmation")
 
-    monkeypatch.setattr(nanobot_tools, "_execute_changeset", unexpected_call)
+    monkeypatch.setattr(nanobot_tools, "_apply_changeset", unexpected_call)
     result = asyncio.run(
         ExecuteChangeSetTool().execute(
             change_set_id="cs-1",
             verification_profile="python-run",
+            approval_token="apply-token",
             user_confirmation="不执行",
         )
     )
@@ -251,14 +257,13 @@ def test_execute_changeset_requires_confirmation(monkeypatch: pytest.MonkeyPatch
     assert "confirmation required" in str(result)
 
 
-def test_execute_changeset_applies_then_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_changeset_applies_with_external_token_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from devpilot import nanobot_tools
 
     responses = [
-        {"approval_token": "apply-token", "status": "approval_pending"},
         {"change_set_id": "cs-1", "status": "applied"},
-        {"approval_token": "verify-token", "status": "approved"},
-        {"change_set_id": "cs-1", "status": "verified", "stdout": "tests passed"},
     ]
 
     class FakeResponse:
@@ -285,19 +290,62 @@ def test_execute_changeset_applies_then_verifies(monkeypatch: pytest.MonkeyPatch
         ExecuteChangeSetTool().execute(
             change_set_id="cs-1",
             verification_profile="python-run",
+            approval_token="apply-token",
             user_confirmation="执行",
         )
     )
 
     assert not isinstance(result, ToolResult) or not result.is_error
     payload = json.loads(str(result))
-    assert payload["status"] == "verified"
-    assert [call[1] for call in calls] == ["POST", "POST", "POST", "POST"]
-    assert calls[0][0].endswith("/cs-1/approve")
-    assert calls[0][2] == {"capability": "r1.apply"}
-    assert calls[1][0].endswith("/cs-1/apply")
-    assert calls[2][2] == {"capability": "r2.verify"}
-    assert calls[3][2] == {"profile": "python-run"}
+    assert payload["status"] == "applied"
+    assert [call[1] for call in calls] == ["POST"]
+    assert calls[0][0].endswith("/cs-1/apply")
+
+
+def test_verify_changeset_uses_external_token_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devpilot import nanobot_tools
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(
+                {"change_set_id": "cs-1", "status": "verified", "exit_code": 0}
+            ).encode("utf-8")
+
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        req = request
+        calls.append(
+            (
+                str(req.full_url),
+                str(req.method),
+                json.loads(req.data.decode("utf-8")),
+            )
+        )
+        assert timeout == 30
+        return FakeResponse()
+
+    monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
+    result = asyncio.run(
+        VerifyChangeSetTool().execute(
+            change_set_id="cs-1",
+            verification_profile="python-run",
+            approval_token="verify-token",
+            user_confirmation="执行",
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert json.loads(str(result))["status"] == "verified"
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/cs-1/verify")
+    assert calls[0][2] == {"profile": "python-run"}
 
 
 def test_execute_changeset_rejects_unsafe_id_before_control_plane_call(
@@ -313,6 +361,7 @@ def test_execute_changeset_rejects_unsafe_id_before_control_plane_call(
         ExecuteChangeSetTool().execute(
             change_set_id="../../etc/passwd",
             verification_profile="python-run",
+            approval_token="apply-token",
             user_confirmation="执行",
         )
     )

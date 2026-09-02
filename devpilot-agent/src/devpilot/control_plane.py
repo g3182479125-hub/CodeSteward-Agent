@@ -33,6 +33,7 @@ from .patches import (
     _Snapshot,
 )
 from .paths import AllowedRoots, PathBoundaryError
+from .redaction import redact_sensitive_text
 from .storage import ProjectStore
 from .verification import VerificationProfile, build_verification_request
 
@@ -155,10 +156,14 @@ class ControlPlaneManager:
         store: ProjectStore | None = None,
         token_ttl: timedelta = DEFAULT_TOKEN_TTL,
         execution_backend: ExecutionBackend | None = None,
+        artifacts_root: str | Path | None = None,
     ) -> None:
         self.store = store
         self.token_ttl = token_ttl
         self.execution_backend = execution_backend
+        self.artifacts_root = (
+            Path(artifacts_root).expanduser().resolve() if artifacts_root is not None else None
+        )
         self.patch_service = StructuredPatchService(allowed_roots=allowed_roots, store=store)
         self._entries: dict[str, _PendingChangeSet] = {}
         self._mutex = threading.RLock()
@@ -186,6 +191,7 @@ class ControlPlaneManager:
             project_id=resolved_project_id,
             task_id=f"task-{uuid.uuid4()}",
             plan_id=f"plan-{uuid.uuid4()}",
+            run_id=run_id,
             patches=patches,
         )
         entry = _PendingChangeSet(plan, run_id)
@@ -300,6 +306,7 @@ class ControlPlaneManager:
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
                 self._persist_status(entry, failure_reason=exc.code)
                 self._event(entry, "changeset.verification_failed", {"code": exc.code})
+                self._finish_run(entry, "failed", {"code": exc.code})
                 raise PatchError("VERIFICATION_FAILED", "sandbox verification failed") from exc
             target = (
                 ChangeSetStatus.VERIFIED
@@ -321,10 +328,19 @@ class ControlPlaneManager:
                 "template": result.template,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
-                "stdout": result.stdout[-8000:],
-                "stderr": result.stderr[-8000:],
+                "stdout": redact_sensitive_text(result.stdout[-8000:]),
+                "stderr": redact_sensitive_text(result.stderr[-8000:]),
             }
             self._event(entry, "changeset.verification_completed", payload)
+            self._finish_run(
+                entry,
+                "completed" if result.exit_code == 0 else "failed",
+                {
+                    "change_set_id": change_set_id,
+                    "status": target.value,
+                    "exit_code": result.exit_code,
+                },
+            )
             response = {
                 "change_set_id": change_set_id,
                 "status": target.value,
@@ -337,8 +353,8 @@ class ControlPlaneManager:
                 "template": result.template,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
-                "stdout": result.stdout[-8000:],
-                "stderr": result.stderr[-8000:],
+                "stdout": redact_sensitive_text(result.stdout[-8000:]),
+                "stderr": redact_sensitive_text(result.stderr[-8000:]),
             }
             self._complete(idempotency_key, response)
             return response
@@ -372,7 +388,6 @@ class ControlPlaneManager:
                 raise
             entry.receipt = receipt
             self._event(entry, "changeset.applied", {"files": len(entry.plan.records)})
-            self._finish_run(entry, "completed", {"change_set_id": change_set_id})
             result = {
                 "change_set_id": change_set_id,
                 "status": entry.plan.change_set.status.value,
@@ -603,7 +618,7 @@ class ControlPlaneManager:
             records=records,
             snapshots=snapshots,
         )
-        return _PendingChangeSet(plan)
+        return _PendingChangeSet(plan, raw.get("run_id"))
 
     @staticmethod
     def _diff_from_patches(patches: tuple[FilePatch, ...], snapshots: tuple[_Snapshot, ...]) -> str:
@@ -657,10 +672,11 @@ def create_app(
     data_dir: str | Path | None = None,
 ) -> FastAPI:
     if manager is None:
-        store = ProjectStore(
-            (Path(data_dir) if data_dir is not None else _configured_data_dir()) / "devpilot.db"
-        )
-        store.require_schema_head("0004_p2b_approval_idempotency")
+        resolved_data_dir = (
+            Path(data_dir) if data_dir is not None else _configured_data_dir()
+        ).expanduser().resolve()
+        store = ProjectStore(resolved_data_dir / "devpilot.db")
+        store.require_schema_head("0005_p4_run_link")
         execution_backend: ExecutionBackend | None = None
         if os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") == "1":
             from .fc_sandbox import build_fc_backend_from_environment
@@ -670,6 +686,7 @@ def create_app(
             allowed_roots=allowed_roots or _configured_roots(),
             store=store,
             execution_backend=execution_backend,
+            artifacts_root=resolved_data_dir,
         )
     app = FastAPI(title="DevPilot Local Control Plane", version="0.2.0")
     app.add_middleware(

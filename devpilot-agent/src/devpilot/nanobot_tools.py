@@ -464,30 +464,34 @@ def _change_set_path(change_set_id: str, action: str) -> str:
     return f"/v1/change-sets/{value}/{action}"
 
 
-def _execute_changeset(
-    change_set_id: str,
-    verification_profile: str,
-) -> dict[str, Any]:
-    apply_approval = _post_control_plane(
-        _change_set_path(change_set_id, "approve"),
-        {"capability": "r1.apply"},
-    )
+def _apply_changeset(change_set_id: str, approval_token: str) -> dict[str, Any]:
     apply_result = _post_control_plane(
         _change_set_path(change_set_id, "apply"),
-        authorization_token=str(apply_approval["approval_token"]),
-    )
-    verify_approval = _post_control_plane(
-        _change_set_path(change_set_id, "approve"),
-        {"capability": "r2.verify"},
-    )
-    verify_result = _post_control_plane(
-        _change_set_path(change_set_id, "verify"),
-        {"profile": verification_profile},
-        authorization_token=str(verify_approval["approval_token"]),
+        authorization_token=approval_token,
     )
     return {
         "change_set_id": change_set_id,
         "apply": apply_result,
+        "status": apply_result.get("status", "unknown"),
+        "next_step": (
+            "Apply 已完成。请通过控制面为精确的 ChangeSet 签发 r2.verify 审批，"
+            "再调用 devpilot_verify_changeset；本工具不会自行签发审批。"
+        ),
+    }
+
+
+def _verify_changeset(
+    change_set_id: str,
+    verification_profile: str,
+    approval_token: str,
+) -> dict[str, Any]:
+    verify_result = _post_control_plane(
+        _change_set_path(change_set_id, "verify"),
+        {"profile": verification_profile},
+        authorization_token=approval_token,
+    )
+    return {
+        "change_set_id": change_set_id,
         "verification": verify_result,
         "status": verify_result.get("status", "unknown"),
     }
@@ -583,8 +587,10 @@ class ProposeChangeSetTool(Tool):
             result = _post_preview(payload)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
-                "在 nanobot 对话中展示这份 Diff，并询问用户是否执行；"
-                "只有用户明确回复‘执行’后，才能调用 devpilot_execute_changeset。"
+                "在 nanobot 对话中展示这份 Diff，并停止等待用户决定；"
+                "控制面用户批准后，再将外部签发的 r1.apply token 交给 "
+                "devpilot_execute_changeset。Apply 后须为 r2.verify 单独签发审批，"
+                "再调用 devpilot_verify_changeset。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -609,6 +615,12 @@ class ProposeChangeSetTool(Tool):
                     "Server-allowlisted verification profile; use python-run for self-tests."
                 ),
             },
+            "approval_token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Opaque r1.apply token issued by the control plane user approval.",
+            },
             "user_confirmation": {
                 "type": "string",
                 "enum": ["执行", "确认执行", "confirmed"],
@@ -617,12 +629,17 @@ class ProposeChangeSetTool(Tool):
                 ),
             },
         },
-        "required": ["change_set_id", "verification_profile", "user_confirmation"],
+        "required": [
+            "change_set_id",
+            "verification_profile",
+            "approval_token",
+            "user_confirmation",
+        ],
         "additionalProperties": False,
     }
 )
 class ExecuteChangeSetTool(Tool):
-    """Apply one exact proposal and verify it in FC after explicit chat confirmation."""
+    """Apply one exact proposal using an externally issued approval token."""
 
     _scopes = {"core"}
 
@@ -633,10 +650,9 @@ class ExecuteChangeSetTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Apply and verify an existing DevPilot ChangeSet after the user explicitly confirms "
-            "the exact proposal in chat. Never call this while proposing or asking for "
-            "confirmation. "
-            "This replaces the separate approval page."
+            "Apply an existing DevPilot ChangeSet after explicit user confirmation and an "
+            "externally issued r1.apply approval token. This tool never calls the approval "
+            "endpoint and never verifies automatically."
         )
 
     @property
@@ -654,9 +670,8 @@ class ExecuteChangeSetTool(Tool):
                 return ToolResult.error(
                     "P2B execution rejected: explicit user confirmation required"
                 )
-            result = _execute_changeset(
-                str(kwargs["change_set_id"]),
-                str(kwargs["verification_profile"]),
+            result = _apply_changeset(
+                str(kwargs["change_set_id"]), str(kwargs["approval_token"])
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -669,19 +684,102 @@ class ExecuteChangeSetTool(Tool):
     {
         "type": "object",
         "properties": {
+            "change_set_id": {
+                "type": "string",
+                "description": "The exact ChangeSet ID returned by devpilot_propose_changeset.",
+                "minLength": 1,
+            },
+            "verification_profile": {
+                "type": "string",
+                "enum": ["python-syntax", "python-run", "node-syntax"],
+            },
+            "approval_token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Opaque r2.verify token issued after Apply by the control plane.",
+            },
+            "user_confirmation": {
+                "type": "string",
+                "enum": ["执行", "确认执行", "confirmed"],
+                "description": "Only supply this after the user explicitly confirmed verification.",
+            },
+        },
+        "required": [
+            "change_set_id",
+            "verification_profile",
+            "approval_token",
+            "user_confirmation",
+        ],
+        "additionalProperties": False,
+    }
+)
+class VerifyChangeSetTool(Tool):
+    """Verify one applied ChangeSet using an externally issued capability."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_verify_changeset"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Verify an applied ChangeSet after explicit user confirmation and an externally "
+            "issued r2.verify token; never mint approval or accept an arbitrary command."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    @property
+    def exclusive(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            confirmation = str(kwargs["user_confirmation"])
+            if confirmation not in {"执行", "确认执行", "confirmed"}:
+                return ToolResult.error(
+                    "P2B verification rejected: explicit user confirmation required"
+                )
+            result = _verify_changeset(
+                str(kwargs["change_set_id"]),
+                str(kwargs["verification_profile"]),
+                str(kwargs["approval_token"]),
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P2B verification failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P2B verification failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
             "change_set_id": {"type": "string", "minLength": 1},
+            "approval_token": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "Opaque r1.rollback token issued by the control plane.",
+            },
             "user_confirmation": {
                 "type": "string",
                 "enum": ["撤销", "确认撤销", "confirmed"],
                 "description": "Only supply this after the user explicitly confirmed rollback.",
             },
         },
-        "required": ["change_set_id", "user_confirmation"],
+        "required": ["change_set_id", "approval_token", "user_confirmation"],
         "additionalProperties": False,
     }
 )
 class RollbackChangeSetTool(Tool):
-    """Rollback an applied ChangeSet after a second explicit chat confirmation."""
+    """Rollback an applied ChangeSet using an externally issued approval token."""
 
     _scopes = {"core"}
 
@@ -693,8 +791,8 @@ class RollbackChangeSetTool(Tool):
     def description(self) -> str:
         return (
             "Rollback an applied DevPilot ChangeSet only after the user explicitly confirms "
-            "rollback "
-            "in chat. Never call this automatically after verification."
+            "rollback in chat and supplies an externally issued r1.rollback token. "
+            "Never call the approval endpoint automatically."
         )
 
     @property
@@ -713,13 +811,9 @@ class RollbackChangeSetTool(Tool):
                     "P2B rollback rejected: explicit user confirmation required"
                 )
             change_set_id = str(kwargs["change_set_id"])
-            approval = _post_control_plane(
-                _change_set_path(change_set_id, "approve"),
-                {"capability": "r1.rollback"},
-            )
             result = _post_control_plane(
                 _change_set_path(change_set_id, "rollback"),
-                authorization_token=str(approval["approval_token"]),
+                authorization_token=str(kwargs["approval_token"]),
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:

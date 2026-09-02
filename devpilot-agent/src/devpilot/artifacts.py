@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .redaction import redact_sensitive_text
+
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
 _SUPPORTED_MARKDOWN = frozenset({"project-overview.md", "feature-delivery.md"})
 
@@ -36,7 +38,7 @@ class ArtifactService:
                 uuid.UUID(value)
             except (ValueError, AttributeError, TypeError) as exc:
                 raise ValueError(f"{label} must be a UUID") from exc
-        encoded = content.encode("utf-8")
+        encoded = redact_sensitive_text(content).encode("utf-8")
         if len(encoded) > MAX_ARTIFACT_BYTES:
             raise ValueError("Artifact exceeds the 1 MiB limit")
         destination = self.root / "artifacts" / project_id / run_id / name

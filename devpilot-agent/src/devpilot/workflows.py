@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from .artifacts import ArtifactService, ArtifactWrite
-from .control_plane import VERIFY_CAPABILITY, ControlPlaneManager
+from .control_plane import ControlPlaneManager
 from .execution import FakeExecutionBackend
-from .patches import FilePatch, PatchError
+from .patches import FilePatch
+from .paths import PathBoundaryError
 from .verification import VerificationProfile
 
 _CONFIRMATIONS = frozenset({"执行", "确认执行", "confirmed"})
@@ -93,12 +94,26 @@ class FeatureDeliveryWorkflow:
         self,
         manager: ControlPlaneManager,
         *,
-        artifacts_root: str | Path,
-        sandbox_gate_passed: bool = False,
+        artifacts_root: str | Path | None = None,
     ) -> None:
         self.manager = manager
-        self.artifacts_root = Path(artifacts_root).expanduser().resolve()
-        self.sandbox_gate_passed = sandbox_gate_passed
+        configured_root = manager.artifacts_root
+        if configured_root is None:
+            raise WorkflowError(
+                "WORKFLOW_ARTIFACT_UNAVAILABLE",
+                "feature delivery requires a server-configured Artifact root",
+            )
+        requested_root = (
+            Path(artifacts_root).expanduser().resolve()
+            if artifacts_root is not None
+            else configured_root
+        )
+        if requested_root != configured_root:
+            raise WorkflowError(
+                "ARTIFACT_ROOT_INVALID",
+                "workflow Artifact root must match the server-configured root",
+            )
+        self.artifacts_root = configured_root
 
     def propose(
         self,
@@ -114,6 +129,34 @@ class FeatureDeliveryWorkflow:
                 "WORKFLOW_EVIDENCE_REQUIRED",
                 "feature delivery requires at least one inspection/search/read evidence id",
             )
+        store = self.manager.store
+        if store is None:
+            raise WorkflowError(
+                "WORKFLOW_STORE_REQUIRED", "feature delivery requires a durable ProjectStore"
+            )
+        try:
+            project = self.manager.patch_service.allowed_roots.require_project(project_path)
+        except PathBoundaryError as exc:
+            raise WorkflowError("PATH_DENIED", "project is outside allowed roots") from exc
+        if (
+            project == self.artifacts_root
+            or self.artifacts_root in project.parents
+            or project in self.artifacts_root.parents
+        ):
+            raise WorkflowError(
+                "ARTIFACT_ROOT_INVALID",
+                "Artifact root must not overlap the target project",
+            )
+        project_id = store.ensure_project(str(project))
+        evidence_matches = all(
+            store.run_belongs_to_project(project_id=project_id, run_id=item)
+            for item in evidence
+        )
+        if not evidence_matches:
+            raise WorkflowError(
+                "WORKFLOW_EVIDENCE_INVALID",
+                "evidence ids must reference runs belonging to the target project",
+            )
         try:
             profile = VerificationProfile(verification_profile)
         except ValueError as exc:
@@ -121,7 +164,7 @@ class FeatureDeliveryWorkflow:
                 "VERIFICATION_PROFILE_UNSUPPORTED", "verification profile is not allowlisted"
             ) from exc
         preview = self.manager.preview(
-            project_path=project_path,
+            project_path=project,
             project_id=None,
             patches=list(patches),
         )
@@ -136,45 +179,64 @@ class FeatureDeliveryWorkflow:
             preview=preview,
         )
 
-    def execute(
+    def apply(
         self,
         proposal: FeatureDeliveryProposal,
         *,
         user_confirmation: str,
-    ) -> FeatureDeliveryResult:
+        approval_token: str,
+    ) -> dict[str, Any]:
         if user_confirmation not in _CONFIRMATIONS:
             raise WorkflowError(
                 "USER_CONFIRMATION_REQUIRED",
                 "the exact feature-delivery proposal requires explicit user confirmation",
             )
+        if not approval_token:
+            raise WorkflowError("APPROVAL_TOKEN_REQUIRED", "an external Apply approval is required")
+        return self.manager.apply(
+            proposal.change_set_id,
+            approval_token,
+            idempotency_key=f"feature-delivery-apply-{proposal.change_set_id}",
+        )
+
+    def verify(
+        self,
+        proposal: FeatureDeliveryProposal,
+        *,
+        approval_token: str,
+        apply_result: dict[str, Any] | None = None,
+    ) -> FeatureDeliveryResult:
         backend = self.manager.execution_backend
-        if backend is None:
-            raise PatchError("SANDBOX_UNAVAILABLE", "no execution backend is configured")
-        if not self.sandbox_gate_passed and not isinstance(backend, FakeExecutionBackend):
+        if not isinstance(backend, FakeExecutionBackend):
             raise WorkflowError(
                 "AUTONOMOUS_REPAIR_BLOCKED",
                 "real execution remains blocked until the P6 Sandbox Gate passes",
             )
-        if self.manager.store is None or proposal.run_id is None:
+        store = self.manager.store
+        if not approval_token:
+            raise WorkflowError(
+                "APPROVAL_TOKEN_REQUIRED", "an external Verification approval is required"
+            )
+        if store is None or proposal.run_id is None:
             raise WorkflowError(
                 "WORKFLOW_ARTIFACT_UNAVAILABLE",
                 "feature delivery requires durable store and run-backed Artifact output",
             )
-
-        apply_approval = self.manager.approve(proposal.change_set_id)
-        applied = self.manager.apply(
-            proposal.change_set_id,
-            str(apply_approval["approval_token"]),
-            idempotency_key=f"feature-delivery-apply-{proposal.change_set_id}",
-        )
-        verify_approval = self.manager.approve(proposal.change_set_id, VERIFY_CAPABILITY)
         verification = self.manager.verify(
             proposal.change_set_id,
-            str(verify_approval["approval_token"]),
+            approval_token,
             profile=proposal.verification_profile,
             idempotency_key=f"feature-delivery-verify-{proposal.change_set_id}",
         )
-        report = self._render_report(proposal, applied, verification)
+        applied = apply_result or {
+            "change_set_id": proposal.change_set_id,
+            "status": "applied",
+        }
+        report = self._render_report(
+            proposal,
+            applied,
+            verification,
+        )
         artifact = ArtifactService(self.artifacts_root).write_markdown(
             project_id=proposal.project_id,
             run_id=proposal.run_id,
@@ -183,7 +245,7 @@ class FeatureDeliveryWorkflow:
         )
         artifact_id = str(uuid.uuid4())
         relative_path = artifact.path.relative_to(self.artifacts_root).as_posix()
-        self.manager.store.record_artifact(
+        store.record_artifact(
             artifact_id=artifact_id,
             project_id=proposal.project_id,
             run_id=proposal.run_id,

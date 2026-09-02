@@ -108,6 +108,7 @@ class ChangeSetRecord(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
     plan_id: Mapped[str] = mapped_column(ForeignKey("change_plans.id"), nullable=False)
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     project_path: Mapped[str | None] = mapped_column(Text)
     scope_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -250,6 +251,18 @@ class ProjectStore:
             if run is None or run.project_id != project_id or run.status != "running":
                 raise ValueError("run does not belong to project or is not open")
 
+    def run_belongs_to_project(self, *, project_id: str, run_id: str) -> bool:
+        with self._session_factory() as session:
+            run = session.get(RunRecord, run_id)
+            return run is not None and run.project_id == project_id
+
+    def get_run_status(self, run_id: str) -> str:
+        with self._session_factory() as session:
+            run = session.get(RunRecord, run_id)
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            return run.status
+
     def finish_run(self, run_id: str, status: str, payload: dict[str, Any]) -> None:
         if status not in {"completed", "failed"}:
             raise ValueError("P1 runs can only finish as completed or failed")
@@ -313,6 +326,7 @@ class ProjectStore:
         patches_json: str,
         snapshots_json: str,
         file_changes: list[dict[str, Any]],
+        run_id: str | None = None,
     ) -> None:
         """Persist the immutable plan and its recovery material before any write."""
         with self._session_factory.begin() as session:
@@ -349,6 +363,7 @@ class ProjectStore:
                     task_id=task_id,
                     plan_id=plan_id,
                     project_id=project_id,
+                    run_id=run_id,
                     project_path=project_path,
                     scope_hash=scope_hash,
                     status=status,
@@ -400,6 +415,7 @@ class ProjectStore:
                 "task_id": record.task_id,
                 "plan_id": record.plan_id,
                 "project_id": record.project_id,
+                "run_id": record.run_id,
                 "project_path": record.project_path,
                 "status": record.status,
                 "patch_hash": record.patch_hash,

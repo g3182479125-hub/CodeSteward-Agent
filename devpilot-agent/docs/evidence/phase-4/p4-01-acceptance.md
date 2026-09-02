@@ -31,11 +31,13 @@ by the Skill lifecycle gate yet.
 `tests/test_p4_feature_delivery.py::test_feature_delivery_g01_completes_approved_fake_path_and_artifact`
 passes and proves:
 
-`Preview -> exact user confirmation -> Apply -> Fake Verification -> feature-delivery Artifact`
+`Preview -> external r1.apply approval + exact user confirmation -> Apply -> external r2.verify approval -> Fake Verification -> feature-delivery Artifact`
 
-The same test asserts that Preview does not write the project, the final file is present only
-after Apply, the verification receipt is `verified`, the Artifact is persisted, and the Fake
-output is not copied into the Artifact.
+The same test asserts that Preview does not write the project, the file is unchanged before
+Apply, the final file changes only after Apply, the verification receipt is `verified`, the
+Artifact is persisted, the Run reaches `completed`, and the Fake output is not copied into the
+Artifact. Separate tests cover restart recovery of the ChangeSet-to-Run link and a non-zero
+verification receipt that produces a `failed` Run plus a failure Artifact.
 
 Additional tests prove that an inexact confirmation does not write and that a real-looking
 remote backend is blocked before the P6 Sandbox Gate.
@@ -43,7 +45,7 @@ remote backend is blocked before the P6 Sandbox Gate.
 ## Verification commands
 
 ```text
-uv run pytest -q tests/test_p4_feature_delivery.py
+uv run pytest -q tests/test_p4_feature_delivery.py tests/test_p2a_migration.py tests/test_p2b_control_plane.py tests/test_p2b_durable_control_plane.py
 uv run ruff check src scripts tests
 uv run pyright
 ```
