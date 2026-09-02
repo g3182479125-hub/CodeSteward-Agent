@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import tomllib
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -20,6 +21,7 @@ from devpilot.nanobot_tools import (
     FeatureDeliveryProposeTool,
     GetChangeSetTool,
     GetRunStateTool,
+    RequestApprovalTool,
     ToolResult,
 )
 from devpilot.patches import FilePatch
@@ -72,6 +74,12 @@ def _evidence(project: Path, store: ProjectStore) -> str:
     (project / "app.py").write_text(_BASELINE, encoding="utf-8", newline="")
     roots = AllowedRoots.from_paths([project.parent])
     outcome = ProjectAnalysisService(allowed_roots=roots, store=store).inspect(project)
+    root_id, fingerprint = roots.binding_for(project)
+    store.trust_project(
+        outcome.project_id,
+        repo_fingerprint=fingerprint,
+        allowed_root_id=root_id,
+    )
     access = CodeAccessService(allowed_roots=roots, store=store)
     search = access.search(outcome.project_id, "FastAPI", evidence_run_id=outcome.run_id)
     read = access.read(outcome.project_id, "app.py", evidence_run_id=outcome.run_id)
@@ -702,11 +710,110 @@ def test_feature_delivery_blocks_real_backend_before_p6(tmp_path: Path) -> None:
     assert (project / "app.py").read_text(encoding="utf-8") == _UPDATED
 
 
-def test_feature_delivery_skill_waits_for_independent_review() -> None:
+def test_feature_delivery_skill_is_enabled_after_review() -> None:
     skill = Path(__file__).parent.parent / "skills" / "catalog" / "feature-delivery" / "SKILL.md"
     result = validate_skill(skill)
 
     assert result.name == "feature-delivery"
-    assert result.status == "draft"
-    assert result.reviewed is False
-    assert "metadata.devpilot.reviewed must be true before publication" in result.errors
+    assert result.status == "enabled"
+    assert result.reviewed is True
+    assert result.valid is True
+
+
+def test_feature_delivery_requires_explicit_project_trust_before_approval(tmp_path: Path) -> None:
+    project = tmp_path / "untrusted"
+    project.mkdir()
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        store=store,
+        execution_backend=FakeExecutionBackend(),
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+
+    with pytest.raises(Exception, match="PROJECT_TRUST_REQUIRED"):
+        manager.approve(str(preview["change_set_id"]))
+
+    project_id = str(preview["project_id"])
+    trusted = manager.trust_project(project_id, "trust")
+    assert trusted["trust_state"] == "trusted"
+    assert manager.approve(str(preview["change_set_id"]))["capability"] == "r1.apply"
+
+
+def test_approval_request_does_not_return_or_persist_capability_token(tmp_path: Path) -> None:
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend())
+    evidence_id = _evidence(project, store)
+    proposal = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data").propose(
+        project_path=project,
+        patches=[_patch(project)],
+        evidence_ids=[evidence_id],
+    )
+
+    result = manager.request_approval(proposal.change_set_id, "r1.apply", "执行")
+
+    assert result["status"] == "approval_pending"
+    assert "approval_token" not in result
+    state = store.get_run_state(proposal.run_id or "")
+    assert all(
+        "token" not in json.dumps(event, ensure_ascii=False).lower()
+        for event in state["events"]
+    )
+
+
+def test_feature_delivery_nanobot_contract_matches_registered_tools() -> None:
+    root = Path(__file__).parents[1]
+    with (root / "pyproject.toml").open("rb") as handle:
+        registered = set(tomllib.load(handle)["project"]["entry-points"]["nanobot.tools"])
+    skill = (root / "skills" / "catalog" / "feature-delivery" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    expected = {
+        line.strip()[2:]
+        for line in skill.splitlines()
+        if line.strip().startswith("- devpilot_")
+    }
+    actual = {name for name in registered if name.startswith("devpilot_")}
+    assert actual == expected
+    assert not {
+        "devpilot_execute_changeset",
+        "devpilot_verify_changeset",
+        "devpilot_rollback_changeset",
+    } & actual
+    assert RequestApprovalTool().name == "devpilot_request_approval"
+    assert RequestApprovalTool().read_only is False
+
+
+def test_feature_delivery_rejects_changed_project_binding(tmp_path: Path) -> None:
+    project = tmp_path / "changed-binding"
+    project.mkdir()
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    roots = AllowedRoots.from_paths([tmp_path])
+    project_id = store.ensure_project(
+        str(project.resolve()),
+        allowed_root_id=roots.binding_for(project)[0],
+        repo_fingerprint="0" * 64,
+    )
+    store.trust_project(
+        project_id,
+        allowed_root_id=roots.binding_for(project)[0],
+        repo_fingerprint="0" * 64,
+    )
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=FakeExecutionBackend(),
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=project_id,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+
+    with pytest.raises(Exception, match="PROJECT_TRUST_REQUIRED"):
+        manager.approve(str(preview["change_set_id"]))

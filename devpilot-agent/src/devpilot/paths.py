@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,3 +51,37 @@ class AllowedRoots:
         if not any(candidate == root or candidate.is_relative_to(root) for root in self.roots):
             raise PathBoundaryError(f"project is outside allowed roots: {candidate}")
         return candidate
+
+    def root_for(self, path: str | Path) -> Path:
+        """Return the configured root that owns an already validated project."""
+        candidate = self.require_project(path)
+        for root in self.roots:
+            if candidate == root or candidate.is_relative_to(root):
+                return root
+        raise PathBoundaryError(f"project is outside allowed roots: {candidate}")
+
+    def binding_for(self, path: str | Path) -> tuple[str, str]:
+        """Return stable allowed-root and repository identity bindings."""
+        project = self.require_project(path)
+        root = self.root_for(project)
+        return allowed_root_id(root), repository_fingerprint(project)
+
+
+def allowed_root_id(root: str | Path) -> str:
+    """Derive a non-secret stable identifier for a configured root."""
+    resolved = real_path(root)
+    return hashlib.sha256(f"devpilot-root-v1:{resolved}".encode()).hexdigest()
+
+
+def repository_fingerprint(project: str | Path) -> str:
+    """Identify the repository location without hashing mutable working-tree contents."""
+    resolved = real_path(project)
+    git_marker = resolved / ".git"
+    if git_marker.is_dir():
+        repository_marker = str(git_marker.resolve())
+    elif git_marker.is_file():
+        repository_marker = git_marker.read_text(encoding="utf-8", errors="replace").strip()
+    else:
+        repository_marker = "non-git"
+    value = f"devpilot-repository-v1:{resolved}:{repository_marker}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

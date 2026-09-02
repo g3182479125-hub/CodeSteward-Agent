@@ -38,6 +38,9 @@ class ProjectRecord(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     real_path: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    trust_state: Mapped[str] = mapped_column(String(16), nullable=False, default="untrusted")
+    repo_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    allowed_root_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -201,13 +204,33 @@ class ProjectStore:
         if actual != expected:
             raise RuntimeError(f"database schema head is {actual!r}; expected {expected!r}")
 
-    def ensure_project(self, real_path: str) -> str:
+    def ensure_project(
+        self,
+        real_path: str,
+        *,
+        allowed_root_id: str | None = None,
+        repo_fingerprint: str | None = None,
+    ) -> str:
         with self._session_factory.begin() as session:
             existing = session.query(ProjectRecord).filter_by(real_path=real_path).one_or_none()
             if existing:
+                if existing.trust_state != "trusted":
+                    if allowed_root_id is not None:
+                        existing.allowed_root_id = allowed_root_id
+                    if repo_fingerprint is not None:
+                        existing.repo_fingerprint = repo_fingerprint
                 return existing.id
             project_id = str(uuid.uuid4())
-            session.add(ProjectRecord(id=project_id, real_path=real_path, created_at=utc_now()))
+            session.add(
+                ProjectRecord(
+                    id=project_id,
+                    real_path=real_path,
+                    trust_state="untrusted",
+                    repo_fingerprint=repo_fingerprint,
+                    allowed_root_id=allowed_root_id,
+                    created_at=utc_now(),
+                )
+            )
             return project_id
 
     def get_project_path(self, project_id: str) -> str:
@@ -216,6 +239,63 @@ class ProjectStore:
             if project is None:
                 raise KeyError("unknown project")
             return project.real_path
+
+    def get_project_security(self, project_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            project = session.get(ProjectRecord, project_id)
+            if project is None:
+                raise KeyError("unknown project")
+            return {
+                "project_id": project.id,
+                "real_path": project.real_path,
+                "trust_state": project.trust_state,
+                "repo_fingerprint": project.repo_fingerprint,
+                "allowed_root_id": project.allowed_root_id,
+            }
+
+    def trust_project(
+        self,
+        project_id: str,
+        *,
+        repo_fingerprint: str,
+        allowed_root_id: str,
+    ) -> dict[str, Any]:
+        """Record an explicit operator trust decision for the current project binding."""
+        with self._session_factory.begin() as session:
+            project = session.get(ProjectRecord, project_id)
+            if project is None:
+                raise KeyError("unknown project")
+            if project.repo_fingerprint not in {None, repo_fingerprint}:
+                raise ValueError("repository fingerprint changed; re-register the project")
+            if project.allowed_root_id not in {None, allowed_root_id}:
+                raise ValueError("allowed root binding changed; re-register the project")
+            project.repo_fingerprint = repo_fingerprint
+            project.allowed_root_id = allowed_root_id
+            project.trust_state = "trusted"
+            return {
+                "project_id": project.id,
+                "trust_state": project.trust_state,
+                "repo_fingerprint": project.repo_fingerprint,
+                "allowed_root_id": project.allowed_root_id,
+            }
+
+    def require_trusted_project(
+        self,
+        project_id: str,
+        *,
+        repo_fingerprint: str,
+        allowed_root_id: str,
+    ) -> None:
+        with self._session_factory() as session:
+            project = session.get(ProjectRecord, project_id)
+            if project is None:
+                raise ValueError("project is not registered")
+            if project.trust_state != "trusted":
+                raise ValueError("project is not trusted")
+            if project.repo_fingerprint != repo_fingerprint:
+                raise ValueError("repository fingerprint does not match trusted project")
+            if project.allowed_root_id != allowed_root_id:
+                raise ValueError("allowed root binding does not match trusted project")
 
     def start_run(self, project_id: str, kind: str = "repo-analysis") -> str:
         run_id = str(uuid.uuid4())

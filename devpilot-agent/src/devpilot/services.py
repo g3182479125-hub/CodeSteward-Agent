@@ -27,7 +27,12 @@ class ProjectAnalysisService:
 
     def inspect(self, project_path: str | Path) -> AnalysisOutcome:
         inspection = inspect_project(project_path, self.allowed_roots)
-        project_id = self.store.ensure_project(inspection.project_path)
+        root_id, fingerprint = self.allowed_roots.binding_for(inspection.project_path)
+        project_id = self.store.ensure_project(
+            inspection.project_path,
+            allowed_root_id=root_id,
+            repo_fingerprint=fingerprint,
+        )
         run_id = self.store.start_run(project_id)
         self.store.append_event(
             run_id,

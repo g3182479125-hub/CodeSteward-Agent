@@ -21,8 +21,15 @@ def setup_manager(tmp_path: Path) -> tuple[ProjectStore, Path, str, ControlPlane
     project.mkdir()
     store = ProjectStore(tmp_path / "data" / "devpilot.db")
     store.initialize()
-    project_id = store.ensure_project(str(project.resolve()))
-    manager = ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path]), store=store)
+    roots = AllowedRoots.from_paths([tmp_path])
+    root_id, fingerprint = roots.binding_for(project)
+    project_id = store.ensure_project(
+        str(project.resolve()), allowed_root_id=root_id, repo_fingerprint=fingerprint
+    )
+    store.trust_project(
+        project_id, allowed_root_id=root_id, repo_fingerprint=fingerprint
+    )
+    manager = ControlPlaneManager(allowed_roots=roots, store=store)
     return store, project, project_id, manager
 
 

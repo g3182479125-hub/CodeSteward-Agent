@@ -246,7 +246,7 @@ def test_proposal_tool_only_returns_preview(monkeypatch: pytest.MonkeyPatch) -> 
     payload = json.loads(str(result))
     assert payload["status"] == "planned"
     assert payload["requires_user_confirmation"] is True
-    assert "devpilot_execute_changeset" in payload["next_step"]
+    assert "devpilot_request_approval" in payload["next_step"]
 
 
 def test_proposal_tool_rejects_non_local_control_plane(monkeypatch: pytest.MonkeyPatch) -> None:

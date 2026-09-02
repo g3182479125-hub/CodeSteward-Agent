@@ -69,6 +69,10 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "IDEMPOTENCY_REQUIRED",
         "PATH_DENIED",
         "PERSISTENCE_REQUIRED",
+        "PROJECT_NOT_FOUND",
+        "PROJECT_TRUST_CONFIRMATION_REQUIRED",
+        "PROJECT_TRUST_INVALID",
+        "PROJECT_TRUST_REQUIRED",
         "RUN_NOT_FOUND",
         "VERIFICATION_FAILED",
         "WORKFLOW_ARTIFACT_WRITE_FAILED",
@@ -494,6 +498,12 @@ def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _request_approval(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_control_plane(
+        _change_set_path(change_set_id, "approval-requests"), payload
+    )
+
+
 def _http_error_message(exc: HTTPError) -> str:
     """Expose stable local API diagnostics without leaking response bodies or tokens."""
     try:
@@ -561,7 +571,7 @@ def _change_set_path(change_set_id: str, action: str) -> str:
     value = str(change_set_id)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
         raise ValueError("invalid ChangeSet ID")
-    if action not in {"approve", "apply", "verify", "rollback"}:
+    if action not in {"approve", "apply", "verify", "rollback", "approval-requests"}:
         raise ValueError("unsupported ChangeSet action")
     return f"/v1/change-sets/{value}/{action}"
 
@@ -760,9 +770,8 @@ class ProposeChangeSetTool(Tool):
             result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "在 nanobot 对话中展示这份 Diff，并停止等待用户决定；"
-                "控制面用户批准后，再将外部签发的 r1.apply token 交给 "
-                "devpilot_execute_changeset。Apply 后须为 r2.verify 单独签发审批，"
-                "再调用 devpilot_verify_changeset。"
+                "用户确认后调用 devpilot_request_approval；token 只由控制面用户动作签发，"
+                "不会进入 nanobot Tool 参数。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -832,6 +841,69 @@ class FeatureDeliveryProposeTool(Tool):
             return ToolResult.error(f"P4 feature proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 feature proposal rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "change_set_id": {"type": "string", "minLength": 1},
+            "capability": {
+                "type": "string",
+                "enum": ["r1.apply", "r2.verify", "r1.rollback"],
+            },
+            "user_confirmation": {
+                "type": "string",
+                "enum": [
+                    "执行",
+                    "确认执行",
+                    "验证",
+                    "确认验证",
+                    "撤销",
+                    "确认撤销",
+                    "confirmed",
+                ],
+            },
+        },
+        "required": ["change_set_id", "capability", "user_confirmation"],
+        "additionalProperties": False,
+    }
+)
+class RequestApprovalTool(Tool):
+    """Request operator approval without exposing or minting a capability token."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_request_approval"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Record a user-confirmed approval request for an exact ChangeSet. "
+            "The control plane operator must approve separately; no token is returned."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _request_approval(
+                str(kwargs["change_set_id"]),
+                {
+                    "capability": str(kwargs["capability"]),
+                    "user_confirmation": str(kwargs["user_confirmation"]),
+                },
+            )
+            result.pop("approval_token", None)
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 approval request rejected: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 approval request rejected: {type(exc).__name__}")
 
 
 @tool_parameters(

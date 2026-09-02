@@ -35,7 +35,7 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             version = connection.execute(
                 text("select version_num from alembic_version")
             ).scalar_one()
-        assert version == "0006_p4_contract_binding"
+        assert version == "0007_project_trust"
     finally:
         engine.dispose()
 

@@ -74,10 +74,28 @@ class ApprovalRequest(BaseModel):
     )
 
 
+class ApprovalIntentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capability: str = Field(
+        default=APPLY_CAPABILITY,
+        pattern=r"^(?:r1\.(?:apply|rollback)|r2\.verify)$",
+    )
+    user_confirmation: str = Field(
+        pattern=r"^(?:执行|确认执行|验证|确认验证|撤销|确认撤销|confirmed)$"
+    )
+
+
 class VerificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
+
+
+class TrustProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation: str = Field(pattern=r"^(?:信任项目|trust)$")
 
 
 class FeatureDeliveryRequest(BaseModel):
@@ -194,7 +212,10 @@ class ControlPlaneManager:
         resolved_project_id = _project_id(project, project_id)
         run_id: str | None = None
         if self.store is not None:
-            resolved_project_id = self.store.ensure_project(str(project))
+            root_id, fingerprint = self.patch_service.allowed_roots.binding_for(project)
+            resolved_project_id = self.store.ensure_project(
+                str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
+            )
             run_id = self.store.start_run(resolved_project_id, kind="code-delivery")
         plan = self.patch_service.plan(
             project,
@@ -258,6 +279,7 @@ class ControlPlaneManager:
             raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
         with self._mutex:
             entry = self._require(change_set_id)
+            self._require_trusted_project(entry)
             if capability == APPLY_CAPABILITY and entry.plan.change_set.status in {
                 ChangeSetStatus.APPLIED,
                 ChangeSetStatus.REVERTED,
@@ -317,6 +339,7 @@ class ControlPlaneManager:
         """Run one allowlisted verification profile in the configured backend."""
         with self._mutex:
             entry = self._require(change_set_id)
+            self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key,
                 "verify",
@@ -449,6 +472,7 @@ class ControlPlaneManager:
     ) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
+            self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key, "apply", change_set_id, approval_token
             )
@@ -488,6 +512,7 @@ class ControlPlaneManager:
     ) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
+            self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key, "rollback", change_set_id, approval_token
             )
@@ -517,6 +542,74 @@ class ControlPlaneManager:
             entry.memory_approvals.clear()
             self._event(entry, "changeset.approvals_revoked", {"count": count})
             return {"change_set_id": change_set_id, "revoked": count}
+
+    def trust_project(self, project_id: str, confirmation: str) -> dict[str, Any]:
+        if confirmation not in {"信任项目", "trust"}:
+            raise PatchError(
+                "PROJECT_TRUST_CONFIRMATION_REQUIRED", "explicit project trust is required"
+            )
+        if self.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "project trust requires durable storage")
+        try:
+            project_path = self.store.get_project_path(project_id)
+            root_id, fingerprint = self.patch_service.allowed_roots.binding_for(project_path)
+            return self.store.trust_project(
+                project_id,
+                repo_fingerprint=fingerprint,
+                allowed_root_id=root_id,
+            )
+        except (KeyError, PathBoundaryError, ValueError) as exc:
+            raise PatchError("PROJECT_TRUST_INVALID", str(exc)) from exc
+
+    def request_approval(
+        self, change_set_id: str, capability: str, user_confirmation: str
+    ) -> dict[str, Any]:
+        """Record a confirmed approval intent without issuing a capability token."""
+        expected_confirmations = {
+            APPLY_CAPABILITY: {"执行", "确认执行", "confirmed"},
+            VERIFY_CAPABILITY: {"验证", "确认验证", "confirmed"},
+            ROLLBACK_CAPABILITY: {"撤销", "确认撤销", "confirmed"},
+        }
+        if capability not in expected_confirmations:
+            raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
+        if user_confirmation not in expected_confirmations[capability]:
+            raise PatchError("USER_CONFIRMATION_REQUIRED", "confirmation does not match capability")
+        with self._mutex:
+            entry = self._require(change_set_id)
+            self._require_trusted_project(entry)
+            if self.store is not None and self.store.has_active_approval(change_set_id, capability):
+                raise PatchError("APPROVAL_ALREADY_ISSUED", "ChangeSet already has active approval")
+            self._event(entry, "changeset.approval_requested", {"capability": capability})
+            return {
+                "change_set_id": change_set_id,
+                "capability": capability,
+                "status": "approval_pending",
+                "requires_control_plane_user_action": True,
+            }
+
+    def project_security(self, project_id: str) -> dict[str, Any]:
+        if self.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "project state requires durable storage")
+        try:
+            return self.store.get_project_security(project_id)
+        except KeyError as exc:
+            raise PatchError("PROJECT_NOT_FOUND", "project does not exist") from exc
+
+    def _require_trusted_project(self, entry: _PendingChangeSet) -> None:
+        if self.store is None:
+            return
+        try:
+            root_id, fingerprint = self.patch_service.allowed_roots.binding_for(
+                entry.plan.project_path
+            )
+            self.store.require_trusted_project(
+                entry.plan.project_id,
+                repo_fingerprint=fingerprint,
+                allowed_root_id=root_id,
+            )
+        except (KeyError, PathBoundaryError, ValueError) as exc:
+            self._event(entry, "project.trust_denied", {"code": "PROJECT_TRUST_REQUIRED"})
+            raise PatchError("PROJECT_TRUST_REQUIRED", str(exc)) from exc
 
     def _consume_approval(
         self, entry: _PendingChangeSet, token: str, capability: str
@@ -768,7 +861,7 @@ def create_app(
             Path(data_dir) if data_dir is not None else _configured_data_dir()
         ).expanduser().resolve()
         store = ProjectStore(resolved_data_dir / "devpilot.db")
-        store.require_schema_head("0006_p4_contract_binding")
+        store.require_schema_head("0007_project_trust")
         execution_backend: ExecutionBackend | None = None
         if os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") == "1":
             from .fc_sandbox import build_fc_backend_from_environment
@@ -852,9 +945,25 @@ def create_app(
         except KeyError as exc:
             raise PatchError("RUN_NOT_FOUND", "Run does not exist") from exc
 
+    @app.get("/v1/projects/{project_id}/security")
+    def project_security(project_id: str) -> dict[str, Any]:
+        return manager.project_security(project_id)
+
+    @app.post("/v1/projects/{project_id}/trust")
+    def trust_project(project_id: str, payload: TrustProjectRequest) -> dict[str, Any]:
+        return manager.trust_project(project_id, payload.confirmation)
+
     @app.post("/v1/change-sets/{change_set_id}/approve")
     def approve(change_set_id: str, payload: ApprovalRequest | None = None) -> dict[str, Any]:
         return manager.approve(change_set_id, payload.capability if payload else APPLY_CAPABILITY)
+
+    @app.post("/v1/change-sets/{change_set_id}/approval-requests")
+    def request_approval(
+        change_set_id: str, payload: ApprovalIntentRequest
+    ) -> dict[str, Any]:
+        return manager.request_approval(
+            change_set_id, payload.capability, payload.user_confirmation
+        )
 
     @app.post("/v1/change-sets/{change_set_id}/apply")
     def apply(

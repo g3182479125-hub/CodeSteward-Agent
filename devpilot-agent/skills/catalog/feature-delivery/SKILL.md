@@ -4,14 +4,16 @@ description: Turn an approved feature request into a bounded, reviewable ChangeS
 metadata:
   devpilot:
     version: 0.1.0
-    status: draft
-    reviewed: false
+    status: enabled
+    reviewed: true
     allowed_tools:
       - devpilot_inspect_project
       - devpilot_search_code
       - devpilot_read_code
       - devpilot_feature_delivery_propose
       - devpilot_propose_changeset
+      - devpilot_request_approval
+      - devpilot_publish_artifact
       - devpilot_get_changeset
       - devpilot_get_run_state
     risk_level: R1
@@ -47,13 +49,15 @@ metadata:
 - `devpilot_feature_delivery_propose`：使用已绑定的 inspect/search/read 证据创建 FeatureDelivery
   Proposal；只能提案，不能请求审批或写项目文件。
 - `devpilot_propose_changeset`：创建不可变 Preview/Diff；只能提案，不能批准或写文件。
+- `devpilot_request_approval`：登记用户对精确 ChangeSet 的审批请求；不签发、不接收或返回 token。
+- `devpilot_publish_artifact`：将已生成的安全项目摘要写入服务端 Artifact 根；不写项目目录。
 - `devpilot_get_changeset`：读取服务端保存的 ChangeSet、Diff、哈希和完整契约；只读。
 - `devpilot_get_run_state`：读取服务端 Run 状态和已脱敏事件；只读。
 
 Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回，
 之后可用 `devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet
-后，运行时才可以把该确认交给受控的 Apply/Verification 入口；Skill 不得伪造确认、读取或
-传播审批令牌。
+后，运行时可以调用 `devpilot_request_approval` 登记审批意图；真正的 Apply/Verification/Rollback
+由控制面用户动作携带 capability token 完成。Skill 不得伪造确认、读取或传播审批令牌。
 
 ## 执行步骤
 
