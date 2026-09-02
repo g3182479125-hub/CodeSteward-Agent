@@ -107,6 +107,7 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     assert result.verification["backend"] == "fake"
     assert result.verification["exit_code"] == 0
     assert 'return {"status": "ok"}' in (project / "app.py").read_text(encoding="utf-8")
+    assert '@app.get("/internal/status")' in (project / "app.py").read_text(encoding="utf-8")
     assert proposal.run_id is not None
     expected_artifact = (
         tmp_path

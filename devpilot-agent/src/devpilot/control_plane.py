@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
 from .execution import ExecutionBackend, ExecutionError, FakeExecutionBackend
-from .execution_gate import P6ExecutionGate
 from .patches import (
     ApplyReceipt,
     AuthorizationGrant,
@@ -167,12 +166,10 @@ class ControlPlaneManager:
         token_ttl: timedelta = DEFAULT_TOKEN_TTL,
         execution_backend: ExecutionBackend | None = None,
         artifacts_root: str | Path | None = None,
-        p6_gate: P6ExecutionGate | None = None,
     ) -> None:
         self.store = store
         self.token_ttl = token_ttl
         self.execution_backend = execution_backend
-        self.p6_gate = p6_gate
         self.artifacts_root = (
             Path(artifacts_root).expanduser().resolve() if artifacts_root is not None else None
         )
@@ -312,9 +309,7 @@ class ControlPlaneManager:
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
                 )
-            if not isinstance(self.execution_backend, FakeExecutionBackend) and (
-                self.p6_gate is None or not self.p6_gate.permits(self.execution_backend.name)
-            ):
+            if not isinstance(self.execution_backend, FakeExecutionBackend):
                 self._event(
                     entry,
                     "execution.capability_denied",
@@ -324,7 +319,7 @@ class ControlPlaneManager:
                     self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_UNAVAILABLE"})
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE",
-                    "real execution is unavailable until the server-owned P6 gate passes",
+                    "real execution is unavailable before the P6 implementation gate",
                 )
             if entry.plan.change_set.status is not ChangeSetStatus.APPLIED:
                 raise PatchError(

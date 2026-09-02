@@ -16,6 +16,15 @@
     "server-owned redacted feature-delivery Artifact",
     "P6 fail-closed execution boundary"
   ],
+  "configuration": {
+    "control_plane_bind": "loopback-only",
+    "allowed_roots": "server-configured project roots only",
+    "artifact_root": "server-owned data directory, separate from target project",
+    "pre_p6_execution_backend": "Fake only; FC environment variables never authorize verification",
+    "network_allowed": false,
+    "secrets_recorded": false,
+    "secret_values": "not present in this manifest or evidence"
+  },
   "verification": {
     "pytest": {
       "command": "uv run pytest",
