@@ -302,6 +302,7 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     evidence_output = os.environ.get("DEVPILOT_G01_EVIDENCE_PATH")
     if evidence_output:
         artifact_root = tmp_path / "data"
+        fallback_artifact = next(failure_artifact_dir.glob("feature-delivery-failure.md"))
         runtime_evidence = {
             "golden": "G-01",
             "change_set_id": proposal.change_set_id,
@@ -330,9 +331,8 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
                 ],
             },
             "artifact_db_failure": {
-                "fallback_path": next(failure_artifact_dir.glob("feature-delivery-failure.md"))
-                .relative_to(artifact_root)
-                .as_posix(),
+                "fallback_path": fallback_artifact.relative_to(artifact_root).as_posix(),
+                "fallback_sha256": hashlib.sha256(fallback_artifact.read_bytes()).hexdigest(),
                 "status": store.get_run_status(db_failure_proposal.run_id),
                 "change_set_status": db_failure_manager.get(db_failure_proposal.change_set_id)[
                     "status"
