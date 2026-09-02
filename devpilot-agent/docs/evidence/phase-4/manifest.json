@@ -2,7 +2,7 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "implementation_complete_review_pending",
-  "commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+  "commit": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6",
   "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
   "generated_at": "2026-09-02T08:11:31Z",
   "completed_at": "2026-09-02T08:11:31Z",
@@ -84,13 +84,13 @@
     "independent_subagent": true,
     "status": "pending_rerun",
     "review_plan": "docs/reviews/p4-01-review-rerun-20260902.md",
-    "review_checkout": "p4-review-20260902-r3",
-    "review_checkout_revision": "89f49e258a3def9adfe95cc6a658fb7186c269fe"
+    "review_checkout": "p4-review-20260902-r4",
+    "review_checkout_revision": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6"
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "D08B533C1E732CF7C985040502A6D9AF54090C96AB12599C09F3504FEBDA768C"
+      "sha256": "F6B7803548D436CA35ACA355ED9EA93794F65571AA4141A939E16BC7AAE7EEE4"
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
@@ -119,8 +119,8 @@
   ],
   "git": {
     "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
-    "review_target": "89f49e258a3def9adfe95cc6a658fb7186c269fe in clean checkout",
-    "clean_checkout_revision": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+    "review_target": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6 in clean checkout",
+    "clean_checkout_revision": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6",
     "clean_checkout_status": "clean",
     "live_worktree_clean": false,
     "live_worktree_explanation": "The live checkout preserves two user-owned Node fixture edits outside the implementation scope; the independent review uses the clean checkout recorded above."
