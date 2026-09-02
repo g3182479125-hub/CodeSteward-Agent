@@ -84,8 +84,8 @@
     "independent_subagent": true,
     "status": "pending_rerun",
     "review_plan": "docs/reviews/p4-01-review-rerun-20260902.md",
-    "review_checkout": "p4-review-20260902-r5",
-    "review_checkout_revision": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7"
+    "review_checkout": "p4-review-20260902-r6",
+    "review_checkout_revision": "6d9c11a131d0d984952acb0653252455fcc2b254"
   },
   "artifacts": [
     {
@@ -119,8 +119,8 @@
   ],
   "git": {
     "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
-    "review_target": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7 in clean checkout",
-    "clean_checkout_revision": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7",
+    "review_target": "6d9c11a131d0d984952acb0653252455fcc2b254 in clean checkout",
+    "clean_checkout_revision": "6d9c11a131d0d984952acb0653252455fcc2b254",
     "clean_checkout_status": "clean",
     "live_worktree_clean": false,
     "live_worktree_explanation": "The live checkout preserves two user-owned Node fixture edits outside the implementation scope; the independent review uses the clean checkout recorded above."
