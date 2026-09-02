@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .artifacts import ArtifactService, ArtifactWrite
 from .control_plane import ControlPlaneManager
 from .execution import FakeExecutionBackend
-from .patches import FilePatch
+from .patches import FilePatch, PatchError
 from .paths import PathBoundaryError
 from .verification import VerificationProfile
 
@@ -148,10 +150,14 @@ class FeatureDeliveryWorkflow:
                 "Artifact root must not overlap the target project",
             )
         project_id = store.ensure_project(str(project))
-        evidence_matches = all(
-            store.run_belongs_to_project(project_id=project_id, run_id=item)
-            for item in evidence
-        )
+        try:
+            evidence_matches = all(
+                store.run_belongs_to_project(project_id=project_id, run_id=item)
+                and store.get_run_kind(item) == "repo-analysis"
+                for item in evidence
+            )
+        except KeyError:
+            evidence_matches = False
         if not evidence_matches:
             raise WorkflowError(
                 "WORKFLOW_EVIDENCE_INVALID",
@@ -225,12 +231,21 @@ class FeatureDeliveryWorkflow:
                 "WORKFLOW_ARTIFACT_UNAVAILABLE",
                 "feature delivery requires durable store and run-backed Artifact output",
             )
-        verification = self.manager.verify(
-            proposal.change_set_id,
-            approval_token,
-            profile=proposal.verification_profile,
-            idempotency_key=f"feature-delivery-verify-{proposal.change_set_id}",
-        )
+        try:
+            verification = self.manager.verify(
+                proposal.change_set_id,
+                approval_token,
+                profile=proposal.verification_profile,
+                idempotency_key=f"feature-delivery-verify-{proposal.change_set_id}",
+                finalize_run=False,
+            )
+        except PatchError as exc:
+            self.manager.finalize_run(
+                proposal.change_set_id,
+                "failed",
+                {"code": exc.code},
+            )
+            raise
         applied = apply_result or {
             "change_set_id": proposal.change_set_id,
             "status": "applied",
@@ -257,11 +272,24 @@ class FeatureDeliveryWorkflow:
                 sha256=artifact.sha256,
                 size_bytes=artifact.size_bytes,
             )
-        except (OSError, ValueError) as exc:
-            self.manager.deny_execution(proposal.change_set_id, "ARTIFACT_WRITE_FAILED")
+        except (OSError, ValueError, SQLAlchemyError) as exc:
+            self.manager.finalize_run(
+                proposal.change_set_id,
+                "failed",
+                {"code": "ARTIFACT_WRITE_FAILED"},
+            )
             raise WorkflowError(
                 "WORKFLOW_ARTIFACT_WRITE_FAILED", "feature delivery Artifact could not be recorded"
             ) from exc
+        self.manager.finalize_run(
+            proposal.change_set_id,
+            "completed" if verification.get("exit_code") == 0 else "failed",
+            {
+                "change_set_id": proposal.change_set_id,
+                "status": verification.get("status", "unknown"),
+                "artifact_id": artifact_id,
+            },
+        )
         return FeatureDeliveryResult(
             change_set_id=proposal.change_set_id,
             status=str(verification.get("status", "unknown")),

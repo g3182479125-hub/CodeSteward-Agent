@@ -266,6 +266,13 @@ class ProjectStore:
                 raise KeyError(f"unknown run: {run_id}")
             return run.status
 
+    def get_run_kind(self, run_id: str) -> str:
+        with self._session_factory() as session:
+            run = session.get(RunRecord, run_id)
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            return run.kind
+
     def finish_run(self, run_id: str, status: str, payload: dict[str, Any]) -> None:
         if status not in {"completed", "failed"}:
             raise ValueError("P1 runs can only finish as completed or failed")
@@ -273,6 +280,8 @@ class ProjectStore:
             run = session.get(RunRecord, run_id)
             if run is None:
                 raise ValueError(f"unknown run: {run_id}")
+            if run.finished_at is not None:
+                raise ValueError(f"run already finished: {run_id}")
             run.status = status
             run.finished_at = utc_now()
             session.add(

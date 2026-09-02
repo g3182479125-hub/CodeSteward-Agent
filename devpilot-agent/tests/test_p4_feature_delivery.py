@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
+from devpilot.nanobot_tools import FeatureDeliveryProposeTool, ToolResult
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
 from devpilot.services import ProjectAnalysisService
@@ -214,6 +218,31 @@ def test_feature_delivery_http_handoff_and_explicit_rollback(tmp_path: Path) -> 
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
 
+def test_feature_delivery_nanobot_adapter_is_proposal_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    calls: list[dict[str, object]] = []
+
+    def fake_proposal(payload: dict[str, object]) -> dict[str, object]:
+        calls.append(payload)
+        return {"change_set_id": "cs-1", "status": "awaiting_user_approval"}
+
+    monkeypatch.setattr(nanobot_tools, "_post_feature_proposal", fake_proposal)
+    result = asyncio.run(
+        FeatureDeliveryProposeTool().execute(
+            project_path="E:/project",
+            patches=[{"relative_path": "app.py", "operation": "create", "content": "ok\n"}],
+            evidence_ids=["run-1"],
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert json.loads(str(result))["requires_user_confirmation"] is True
+    assert json.loads(str(result))["status"] == "awaiting_user_approval"
+    assert calls[0]["evidence_ids"] == ["run-1"]
+
 def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Path) -> None:
     store, project, manager = _manager(tmp_path, FakeExecutionBackend(exit_code=1))
     workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
@@ -240,6 +269,41 @@ def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Pat
     assert result.status == "verification_failed"
     assert result.verification["exit_code"] == 1
     assert result.artifact.path.exists()
+    assert proposal.run_id is not None
+    assert store.get_run_status(proposal.run_id) == "failed"
+
+
+def test_feature_delivery_artifact_database_failure_finishes_run_as_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend())
+    workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
+    evidence_id = _evidence(project, store)
+    proposal = workflow.propose(
+        project_path=project,
+        patches=[_patch(project)],
+        evidence_ids=[evidence_id],
+    )
+    apply_approval = manager.approve(proposal.change_set_id)
+    applied = workflow.apply(
+        proposal,
+        user_confirmation="执行",
+        approval_token=str(apply_approval["approval_token"]),
+    )
+    verify_approval = manager.approve(proposal.change_set_id, "r2.verify")
+
+    def fail_record(**_kwargs: object) -> None:
+        raise SQLAlchemyError("database unavailable")
+
+    monkeypatch.setattr(store, "record_artifact", fail_record)
+    with pytest.raises(WorkflowError, match="WORKFLOW_ARTIFACT_WRITE_FAILED"):
+        workflow.verify(
+            proposal,
+            approval_token=str(verify_approval["approval_token"]),
+            apply_result=applied,
+        )
+
     assert proposal.run_id is not None
     assert store.get_run_status(proposal.run_id) == "failed"
 

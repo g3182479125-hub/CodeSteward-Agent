@@ -228,6 +228,11 @@ class ControlPlaneManager:
             self._event(entry, "execution.capability_denied", {"code": code})
             self._finish_run(entry, "failed", {"code": code})
 
+    def finalize_run(self, change_set_id: str, result: str, payload: dict[str, Any]) -> None:
+        """Finish a workflow-owned Run after its Artifact is durably recorded."""
+        with self._mutex:
+            self._finish_run(self._require(change_set_id), result, payload)
+
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
             raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
@@ -285,6 +290,7 @@ class ControlPlaneManager:
         *,
         profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
         idempotency_key: str | None = None,
+        finalize_run: bool = True,
     ) -> dict[str, Any]:
         """Run one allowlisted verification profile in the configured backend."""
         with self._mutex:
@@ -301,7 +307,8 @@ class ControlPlaneManager:
             if self.execution_backend is None:
                 code = "EXECUTION_BACKEND_UNAVAILABLE"
                 self._event(entry, "execution.capability_denied", {"code": code})
-                self._finish_run(entry, "failed", {"code": code})
+                if finalize_run:
+                    self._finish_run(entry, "failed", {"code": code})
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
                 )
@@ -313,7 +320,8 @@ class ControlPlaneManager:
                     "execution.capability_denied",
                     {"code": "EXECUTION_BACKEND_UNAVAILABLE"},
                 )
-                self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_UNAVAILABLE"})
+                if finalize_run:
+                    self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_UNAVAILABLE"})
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE",
                     "real execution is unavailable until the server-owned P6 gate passes",
@@ -331,7 +339,8 @@ class ControlPlaneManager:
                     "changeset.verification_failed",
                     {"code": "VERIFICATION_PROFILE_UNSUPPORTED"},
                 )
-                self._finish_run(entry, "failed", {"code": "VERIFICATION_PROFILE_UNSUPPORTED"})
+                if finalize_run:
+                    self._finish_run(entry, "failed", {"code": "VERIFICATION_PROFILE_UNSUPPORTED"})
                 raise PatchError("VERIFICATION_PROFILE_UNSUPPORTED", str(exc)) from exc
             self._consume_approval(entry, approval_token, VERIFY_CAPABILITY)
             self._reserve_idempotency(
@@ -349,15 +358,19 @@ class ControlPlaneManager:
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
                 self._persist_status(entry, failure_reason=exc.code)
                 self._event(entry, "changeset.verification_failed", {"code": exc.code})
-                self._finish_run(entry, "failed", {"code": exc.code})
+                if finalize_run:
+                    self._finish_run(entry, "failed", {"code": exc.code})
                 raise PatchError("VERIFICATION_FAILED", "sandbox verification failed") from exc
             except Exception as exc:
+                entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
+                self._persist_status(entry, failure_reason="EXECUTION_BACKEND_FAILED")
                 self._event(
                     entry,
                     "changeset.verification_failed",
                     {"code": "EXECUTION_BACKEND_FAILED"},
                 )
-                self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_FAILED"})
+                if finalize_run:
+                    self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_FAILED"})
                 raise PatchError("VERIFICATION_FAILED", "execution backend failed") from exc
             target = (
                 ChangeSetStatus.VERIFIED
@@ -383,15 +396,16 @@ class ControlPlaneManager:
                 "stderr": redact_sensitive_text(result.stderr[-8000:]),
             }
             self._event(entry, "changeset.verification_completed", payload)
-            self._finish_run(
-                entry,
-                "completed" if result.exit_code == 0 else "failed",
-                {
-                    "change_set_id": change_set_id,
-                    "status": target.value,
-                    "exit_code": result.exit_code,
-                },
-            )
+            if finalize_run:
+                self._finish_run(
+                    entry,
+                    "completed" if result.exit_code == 0 else "failed",
+                    {
+                        "change_set_id": change_set_id,
+                        "status": target.value,
+                        "exit_code": result.exit_code,
+                    },
+                )
             response = {
                 "change_set_id": change_set_id,
                 "status": target.value,
@@ -738,7 +752,6 @@ def create_app(
             store=store,
             execution_backend=execution_backend,
             artifacts_root=resolved_data_dir,
-            p6_gate=P6ExecutionGate.load(resolved_data_dir / "p6-gate.json"),
         )
     app = FastAPI(title="DevPilot Local Control Plane", version="0.2.0")
     app.add_middleware(

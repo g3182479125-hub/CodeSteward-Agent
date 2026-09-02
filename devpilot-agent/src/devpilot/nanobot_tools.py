@@ -664,6 +664,7 @@ class FeatureDeliveryProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_feature_proposal(payload)
+            result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "展示精确 Diff 并停止等待用户；批准动作必须由控制面用户完成，"
                 "Skill 不得签发或传播 approval token。"

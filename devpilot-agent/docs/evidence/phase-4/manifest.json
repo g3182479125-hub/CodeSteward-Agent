@@ -2,7 +2,7 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "implementation_complete_review_pending",
-  "commit": "068ac07dc36dbae726bddce8dff810b57c0e78fc",
+  "commit": "722d724b1562af361e74596e9bbcbe8cc3a69f03",
   "generated_at": "2026-09-02T07:18:07+00:00",
   "completed_at": "2026-09-02T07:18:07+00:00",
   "plan": {
@@ -75,5 +75,10 @@
     "tests/fixtures/node-project/src/index.js",
     "tests/fixtures/node-project/test/index.test.js"
   ],
+  "git": {
+    "implementation_commit": "722d724b1562af361e74596e9bbcbe8cc3a69f03",
+    "clean_tree": false,
+    "clean_tree_explanation": "Only the two listed user-owned fixture edits are uncommitted; no implementation files are modified outside the evidence commit."
+  },
   "known_external_changes_note": "These two fixture edits were present before this P4 work and were intentionally not staged or modified. The implementation commit is reproducible; the worktree is not clean only because these user-owned fixture edits are preserved outside the implementation scope."
 }
