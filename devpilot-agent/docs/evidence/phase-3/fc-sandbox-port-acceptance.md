@@ -45,15 +45,43 @@ Resolved 59 packages
 FC 创建/文件写入/命令执行/销毁生命周期模拟。Windows 的 3 个符号链接测试因当前
 用户权限跳过，未被伪称为通过。
 
-## 未宣称
+## 真实账号复验
 
-本证据不宣称真实阿里云账号已经连通，也不宣称网络隔离、生产配额、成本或执行成功率。
-真实验证需要用户在目标地域创建 FC Agent Sandbox API Key，配置与资源地域匹配的
-`E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN`，再运行：
+2026-09-02 使用华北 2（北京）地域的脱敏 fixture 和当前用户级环境变量完成真实 FC
+复验，未记录或提交 API Key：
 
-```powershell
+```text
 uv sync --extra fc-sandbox
 uv run devpilot sandbox-check
+status=ok
+backend=fc-agent-sandbox
+exit_code=0
+stdout=devpilot-fc-sandbox-ok
+```
+
+随后通过本地 Control Plane 完成一条完整的小型交付链路：
+
+```text
+preview -> r1.apply approval -> Apply -> r2.verify approval
+-> FC python-run -> exit_code=0 -> r1.rollback approval -> Rollback
+```
+
+复验结果为 Apply `applied`、FC 验证 `verified`、验证后端为
+`fc-agent-sandbox`、退出码 `0`、输出为 `devpilot-live-fc-ok`，临时探针最终为
+Rollback `reverted`，本机项目未留下该探针文件。
+
+## 仍未宣称
+
+本证据证明当前账号和北京地域的最小端到端链路可用，但不宣称生产配额、长期成本、
+执行成功率或绝对网络隔离。沙箱仍不是执行授权本身，真实项目仍必须经过人工审批。
+后续增强包括验证取消、更细粒度的外部存储治理和可观测性治理。
+
+复验所需环境变量仍必须由运行者在本机提供，不得写入代码仓库：
+
+```powershell
+$env:E2B_API_KEY = "<FC Agent Sandbox API Key>"
+$env:E2B_API_URL = "https://api.<region>.e2b.fc.aliyuncs.com"
+$env:E2B_DOMAIN = "<region>.e2b.fc.aliyuncs.com"
 ```
 
 FC Agent Sandbox 的当前主路径是 E2B 兼容 SDK；Snapshots、Volume、Team 管理和 Sandbox
