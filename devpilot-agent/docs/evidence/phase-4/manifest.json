@@ -2,15 +2,17 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "implementation_complete_review_pending",
-  "commit": "5df563638f47a2deb0829335848cde58ee22de83",
-  "generated_at": "2026-09-02T07:18:07+00:00",
-  "completed_at": "2026-09-02T07:18:07+00:00",
+  "commit": "61179185473de93ac34af2b949de1eaa982f5caa",
+  "implementation_commit": "61179185473de93ac34af2b949de1eaa982f5caa",
+  "generated_at": "2026-09-02T08:11:31Z",
+  "completed_at": "2026-09-02T08:11:31Z",
   "plan": {
     "version": "2.1.0",
     "sha256": "4f06504ad3273781f7c4cff2d919aec432ea0385014c8c94c42455709efbdec9"
   },
   "scope": [
     "FeatureDeliveryWorkflow",
+    "single G-01 FastAPI evidence-to-rollback Golden chain",
     "external r1.apply and r2.verify capability boundary",
     "durable ChangeSet-to-Run link",
     "server-owned redacted feature-delivery Artifact",
@@ -27,9 +29,9 @@
   },
   "verification": {
     "pytest": {
-      "command": "uv run pytest",
+      "command": "uv run pytest --tb=no",
       "exit_code": 0,
-      "result": "113 passed, 3 skipped",
+      "result": "114 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -73,7 +75,7 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "BC39E469B5560438F210C9D57677AA559FAFCBB51E63A588989D35C9EBB2AC5F"
+      "sha256": "42a03dce29e672bc0046d963620ba14cc3c846e922b4e8594d61995b1eb5381e"
     },
     {
       "path": "docs/reviews/p4-01-product-review-rerun.md",
@@ -86,6 +88,10 @@
     {
       "path": "docs/reviews/p4-01-product-review-closure.md",
       "sha256": "9BDAF760761EB51C1084959908D2792F7F58E0FC09B20C3D2F32C63378DC2A4F"
+    },
+    {
+      "path": "docs/reviews/p4-01-final-decision.md",
+      "sha256": "c910e403f271bc6354e0e1b8f143293a5802d823b27eb28dab3579a564d708c3"
     }
   ],
   "known_external_changes": [
@@ -93,9 +99,10 @@
     "tests/fixtures/node-project/test/index.test.js"
   ],
   "git": {
-    "implementation_commit": "5df563638f47a2deb0829335848cde58ee22de83",
+    "implementation_commit": "61179185473de93ac34af2b949de1eaa982f5caa",
+    "review_target": "implementation commit; evidence-only review report may be added afterward",
     "clean_tree": false,
-    "clean_tree_explanation": "Only the two listed user-owned fixture edits are uncommitted; no implementation files are modified outside the evidence commit."
+    "clean_tree_explanation": "The implementation commit is reproducible. The live checkout preserves two user-owned fixture edits and the prior independent blocked-review report outside the implementation scope; the independent rerun must use a clean checkout of implementation_commit."
   },
   "known_external_changes_note": "These two fixture edits were present before this P4 work and were intentionally not staged or modified. The implementation commit is reproducible; the worktree is not clean only because these user-owned fixture edits are preserved outside the implementation scope."
 }
