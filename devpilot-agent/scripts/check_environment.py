@@ -10,10 +10,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_COMBINED_REPO_NANOBOT_ROOT = ROOT.parent / "nanobot"
+_LEGACY_NANOBOT_ROOT = ROOT.parent / "nanobot-inspect" / "nanobot-main"
 NANOBOT_ROOT = Path(
-    os.environ.get(
-        "DEVPILOT_NANOBOT_ROOT",
-        str(ROOT.parent / "nanobot-inspect" / "nanobot-main"),
+    os.environ.get("DEVPILOT_NANOBOT_ROOT", "")
+    or (
+        str(_COMBINED_REPO_NANOBOT_ROOT)
+        if _COMBINED_REPO_NANOBOT_ROOT.is_dir()
+        else str(_LEGACY_NANOBOT_ROOT)
     )
 )
 

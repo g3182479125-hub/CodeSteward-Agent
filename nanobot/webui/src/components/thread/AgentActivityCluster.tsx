@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 
 import { cliAppInitials, mcpPresetInitials } from "@/components/CliAppMentionText";
 import { ActivityStep } from "@/components/thread/activity/ActivityStep";
-import { DevPilotProposalCards } from "@/components/thread/DevPilotProposalCard";
 import { coalesceActivityMessages } from "@/components/thread/activity/activity-message-model";
 import {
   compactActivityPath,
@@ -361,7 +360,6 @@ export function AgentActivityCluster({
           />
         ) : null}
       </ThinkingReasoningShell>
-      <DevPilotProposalCards messages={activityMessages} />
     </div>
   );
 }
