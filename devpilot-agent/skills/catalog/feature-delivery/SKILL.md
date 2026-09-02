@@ -12,6 +12,8 @@ metadata:
       - devpilot_read_code
       - devpilot_feature_delivery_propose
       - devpilot_propose_changeset
+      - devpilot_get_changeset
+      - devpilot_get_run_state
     risk_level: R1
     source: catalog
 ---
@@ -45,9 +47,11 @@ metadata:
 - `devpilot_feature_delivery_propose`：使用已绑定的 inspect/search/read 证据创建 FeatureDelivery
   Proposal；只能提案，不能请求审批或写项目文件。
 - `devpilot_propose_changeset`：创建不可变 Preview/Diff；只能提案，不能批准或写文件。
+- `devpilot_get_changeset`：读取服务端保存的 ChangeSet、Diff、哈希和完整契约；只读。
+- `devpilot_get_run_state`：读取服务端 Run 状态和已脱敏事件；只读。
 
-Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回；
-当前 P4 不向 Skill 暴露独立的运行状态读取 Tool。用户在对话中明确确认精确的 ChangeSet
+Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回，
+之后可用 `devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet
 后，运行时才可以把该确认交给受控的 Apply/Verification 入口；Skill 不得伪造确认、读取或
 传播审批令牌。
 
@@ -76,9 +80,10 @@ Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_pro
 - 验证 profile、停止条件、回滚方式和关联 evidence id；
 - `requires_user_confirmation=true`，并明确当前未修改任何项目文件。
 
-交付阶段必须输出 Apply 与 Verification 的结构化状态，并生成服务端拥有的
-`feature-delivery.md` Artifact。Artifact 只保存元数据和安全摘要，不复制 stdout/stderr、
-凭据或完整环境；所有状态必须来自 Tool/控制面结果。
+交付阶段必须输出 Apply 与 Verification 的结构化状态；成功生成服务端拥有的
+`feature-delivery.md`，验证失败或 Artifact 持久化失败则生成
+`feature-delivery-failure.md`。Artifact 只保存元数据和安全摘要，不复制 stdout/stderr、
+凭据或完整环境；所有状态必须来自 Tool/控制面结果，失败状态不得伪装成成功。
 
 ## 失败处理
 

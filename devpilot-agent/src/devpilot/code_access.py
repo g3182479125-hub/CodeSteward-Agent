@@ -222,6 +222,7 @@ class CodeAccessService:
         *,
         start_line: int = 1,
         end_line: int | None = None,
+        evidence_run_id: str | None = None,
     ) -> ReadResult:
         if start_line < 1:
             raise CodeAccessError("LINE_RANGE_INVALID", "start_line must be at least 1")
@@ -232,6 +233,13 @@ class CodeAccessService:
                 "LINE_RANGE_INVALID", "line range is invalid or exceeds 2,000 lines"
             )
         project = self._project(project_id)
+        if evidence_run_id is not None:
+            try:
+                self.store.validate_open_run(project_id=project_id, run_id=evidence_run_id)
+            except (KeyError, ValueError) as exc:
+                raise CodeAccessError(
+                    "EVIDENCE_RUN_INVALID", "evidence_run_id must be an open run for this project"
+                ) from exc
         target, normalized = _target(project, relative_path)
         content = _read_source(target)
         lines = content.decode("utf-8").splitlines(keepends=True)
@@ -251,7 +259,7 @@ class CodeAccessService:
         selected = _redact(selected)
         actual_lines = selected.splitlines()
         actual_end = start_line + len(actual_lines) - 1 if actual_lines else start_line - 1
-        return ReadResult(
+        result = ReadResult(
             path=normalized,
             content=selected,
             sha256=hashlib.sha256(content).hexdigest(),
@@ -259,6 +267,20 @@ class CodeAccessService:
             end_line=actual_end,
             truncated=truncated,
         )
+        if evidence_run_id is not None:
+            self.store.append_event(
+                evidence_run_id,
+                "evidence.read.completed",
+                {
+                    "project_id": project_id,
+                    "path": result.path,
+                    "start_line": result.start_line,
+                    "end_line": result.end_line,
+                    "truncated": result.truncated,
+                    "sha256": result.sha256,
+                },
+            )
+        return result
 
     def search(
         self,
@@ -268,6 +290,7 @@ class CodeAccessService:
         glob: str | None = None,
         limit: int = 50,
         case_sensitive: bool = False,
+        evidence_run_id: str | None = None,
     ) -> SearchResult:
         if not query or len(query) > MAX_QUERY_CHARS or "\x00" in query:
             raise CodeAccessError("QUERY_INVALID", "query must contain 1–256 safe characters")
@@ -275,6 +298,13 @@ class CodeAccessService:
             raise CodeAccessError("LIMIT_INVALID", "limit must be between 1 and 200")
         pattern = _validate_glob(glob)
         project = self._project(project_id)
+        if evidence_run_id is not None:
+            try:
+                self.store.validate_open_run(project_id=project_id, run_id=evidence_run_id)
+            except (KeyError, ValueError) as exc:
+                raise CodeAccessError(
+                    "EVIDENCE_RUN_INVALID", "evidence_run_id must be an open run for this project"
+                ) from exc
         needle = query if case_sensitive else query.casefold()
         matches: list[SearchMatch] = []
         files_scanned = 0
@@ -322,4 +352,23 @@ class CodeAccessService:
                     break
             if truncated:
                 break
-        return SearchResult(tuple(matches), files_scanned, truncated)
+        result = SearchResult(tuple(matches), files_scanned, truncated)
+        if evidence_run_id is not None:
+            self.store.append_event(
+                evidence_run_id,
+                "evidence.search.completed",
+                {
+                    "project_id": project_id,
+                    "query": query,
+                    "glob": pattern,
+                    "limit": limit,
+                    "case_sensitive": case_sensitive,
+                    "match_count": len(result.matches),
+                    "files_scanned": result.files_scanned,
+                    "truncated": result.truncated,
+                    "matches": [
+                        {"path": item.path, "line": item.line} for item in result.matches
+                    ],
+                },
+            )
+        return result

@@ -139,6 +139,7 @@ def plan_payload(entry: _PendingChangeSet) -> dict[str, Any]:
     plan = entry.plan
     return {
         "change_set_id": plan.change_set.id,
+        "plan_id": plan.change_set.plan_id,
         "project_id": plan.project_id,
         "project_path": str(plan.project_path),
         "status": plan.change_set.status.value,
@@ -211,7 +212,20 @@ class ControlPlaneManager:
 
     def get(self, change_set_id: str) -> dict[str, Any]:
         with self._mutex:
-            return plan_payload(self._require(change_set_id))
+            entry = self._require(change_set_id)
+            payload = plan_payload(entry)
+            if self.store is not None:
+                contract = self.store.get_change_plan_contract(entry.plan.change_set.plan_id)
+                if contract["contract_hash"] is not None:
+                    payload.update(
+                        {
+                            "check_ids": contract["check_ids"],
+                            "stop_conditions": contract["stop_conditions"],
+                            "evidence_hash": contract["evidence_hash"],
+                            "contract_hash": contract["contract_hash"],
+                        }
+                    )
+            return payload
 
     def get_run_id(self, change_set_id: str) -> str | None:
         """Return the server-owned run link without changing the Preview contract."""
@@ -229,6 +243,15 @@ class ControlPlaneManager:
         """Finish a workflow-owned Run after its Artifact is durably recorded."""
         with self._mutex:
             self._finish_run(self._require(change_set_id), result, payload)
+
+    def mark_delivery_failed(self, change_set_id: str, reason: str) -> None:
+        """Keep ChangeSet state consistent when verification passed but reporting failed."""
+        with self._mutex:
+            entry = self._require(change_set_id)
+            if entry.plan.change_set.status is ChangeSetStatus.VERIFIED:
+                entry.plan.change_set.transition_to(ChangeSetStatus.DELIVERY_FAILED)
+                self._persist_status(entry, failure_reason=reason)
+            self._event(entry, "feature_delivery.failed", {"code": reason})
 
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
@@ -259,12 +282,14 @@ class ControlPlaneManager:
             expires_at = _now() + self.token_ttl
             approval_id = str(uuid.uuid4())
             if self.store is not None:
+                contract = self.store.get_change_plan_contract(entry.plan.change_set.plan_id)
                 self.store.create_approval(
                     approval_id=approval_id,
                     change_set_id=change_set_id,
                     plan_hash=entry.plan.patch_hash,
                     scope_hash=entry.plan.scope_hash,
                     patch_hash=entry.plan.patch_hash,
+                    contract_hash=contract["contract_hash"],
                     capability=capability,
                     token_digest=_digest(token),
                     expires_at=expires_at,
@@ -309,7 +334,7 @@ class ControlPlaneManager:
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
                 )
-            if not isinstance(self.execution_backend, FakeExecutionBackend):
+            if type(self.execution_backend) is not FakeExecutionBackend:
                 self._event(
                     entry,
                     "execution.capability_denied",
@@ -515,6 +540,13 @@ class ControlPlaneManager:
             ):
                 raise PatchError(
                     "APPROVAL_SCOPE_MISMATCH", "approval scope does not match ChangeSet"
+                )
+            expected_contract = self.store.get_change_plan_contract(entry.plan.change_set.plan_id)[
+                "contract_hash"
+            ]
+            if candidate.get("contract_hash") != expected_contract:
+                raise PatchError(
+                    "APPROVAL_SCOPE_MISMATCH", "approval contract does not match ChangeSet"
                 )
             approval = self.store.consume_approval(_digest(token), now=_now())
             if approval is None:
@@ -736,7 +768,7 @@ def create_app(
             Path(data_dir) if data_dir is not None else _configured_data_dir()
         ).expanduser().resolve()
         store = ProjectStore(resolved_data_dir / "devpilot.db")
-        store.require_schema_head("0005_p4_run_link")
+        store.require_schema_head("0006_p4_contract_binding")
         execution_backend: ExecutionBackend | None = None
         if os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") == "1":
             from .fc_sandbox import build_fc_backend_from_environment
@@ -810,6 +842,15 @@ def create_app(
     @app.get("/v1/change-sets/{change_set_id}")
     def get_change_set(change_set_id: str) -> dict[str, Any]:
         return manager.get(change_set_id)
+
+    @app.get("/v1/runs/{run_id}")
+    def get_run(run_id: str) -> dict[str, Any]:
+        if manager.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "run state requires durable storage")
+        try:
+            return manager.store.get_run_state(run_id)
+        except KeyError as exc:
+            raise PatchError("RUN_NOT_FOUND", "Run does not exist") from exc
 
     @app.post("/v1/change-sets/{change_set_id}/approve")
     def approve(change_set_id: str, payload: ApprovalRequest | None = None) -> dict[str, Any]:

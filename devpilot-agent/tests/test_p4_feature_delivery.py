@@ -15,7 +15,12 @@ from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
-from devpilot.nanobot_tools import FeatureDeliveryProposeTool, ToolResult
+from devpilot.nanobot_tools import (
+    FeatureDeliveryProposeTool,
+    GetChangeSetTool,
+    GetRunStateTool,
+    ToolResult,
+)
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
 from devpilot.services import ProjectAnalysisService
@@ -67,26 +72,10 @@ def _evidence(project: Path, store: ProjectStore) -> str:
     roots = AllowedRoots.from_paths([project.parent])
     outcome = ProjectAnalysisService(allowed_roots=roots, store=store).inspect(project)
     access = CodeAccessService(allowed_roots=roots, store=store)
-    search = access.search(outcome.project_id, "FastAPI")
-    read = access.read(outcome.project_id, "app.py")
+    search = access.search(outcome.project_id, "FastAPI", evidence_run_id=outcome.run_id)
+    read = access.read(outcome.project_id, "app.py", evidence_run_id=outcome.run_id)
     assert search.matches
     assert read.content
-    # The Golden carries concrete provenance, not placeholder evidence IDs:
-    # inspect created the Run, and search/read contributed their bounded facts.
-    store.append_event(
-        outcome.run_id,
-        "evidence.search.completed",
-        {
-            "query": "FastAPI",
-            "path": search.matches[0].path,
-            "match_line": search.matches[0].line,
-        },
-    )
-    store.append_event(
-        outcome.run_id,
-        "evidence.read.completed",
-        {"path": read.path, "sha256": read.sha256, "start_line": 1, "end_line": 7},
-    )
     return outcome.run_id
 
 
@@ -108,17 +97,31 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     assert proposal.preview["patch_hash"] == proposal.patch_hash
     assert proposal.preview["scope_hash"] == proposal.scope_hash
     assert proposal.preview["workflow"] == "feature-delivery"
-    assert proposal.preview["evidence_ids"] == [evidence_id]
+    assert proposal.preview["evidence_ids"] == (evidence_id,)
     assert proposal.preview["evidence_hash"] == proposal.evidence_hash
-    assert proposal.preview["check_ids"] == ["python-syntax"]
+    assert proposal.preview["check_ids"] == ("python-syntax",)
     assert "verification_failed" in proposal.preview["stop_conditions"]
+    assert len(str(proposal.preview["contract_hash"])) == 64
+    assert proposal.preview["contract_hash"] == store.get_change_plan_contract(
+        str(proposal.preview["plan_id"])
+    )["contract_hash"]
+    with pytest.raises(TypeError):
+        proposal.preview["status"] = "tampered"  # type: ignore[index]
     assert manager.get(proposal.change_set_id)["diff"] == proposal.preview["diff"]
+    change_set_state = client = TestClient(
+        create_app(manager=manager), client=("127.0.0.1", 50000)
+    )
+    assert change_set_state.get(f"/v1/change-sets/{proposal.change_set_id}").json()[
+        "contract_hash"
+    ] == proposal.preview["contract_hash"]
+    assert change_set_state.get(f"/v1/runs/{evidence_id}").json()["status"] == "running"
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
     evidence_events = store.list_run_events(evidence_id)
     assert [item["event_type"] for item in evidence_events] == [
         "run.started",
         "tool.completed",
+        "evidence.inspect.completed",
         "evidence.search.completed",
         "evidence.read.completed",
     ]
@@ -133,10 +136,11 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     assert proposal_event["patch_hash"] == proposal.patch_hash
     assert proposal_event["scope_hash"] == proposal.scope_hash
     assert proposal_event["evidence_hash"] == proposal.evidence_hash
+    assert proposal_event["contract_hash"] == proposal.preview["contract_hash"]
 
     # User approval is handed off through the external control-plane API; the
     # workflow only consumes the returned one-time capability.
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = change_set_state
     apply_approval = client.post(f"/v1/change-sets/{proposal.change_set_id}/approve")
     assert apply_approval.status_code == 200
     applied = workflow.apply(
@@ -176,6 +180,8 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     assert proposal.patch_hash in report
     assert "fake-ok" not in report
     assert store.count(ArtifactRecord) == 1
+    assert store.list_artifacts(proposal.run_id)[0]["kind"] == "delivery"
+    assert store.list_artifacts(proposal.run_id)[0]["sha256"] == result.artifact.sha256
     assert proposal.run_id is not None
     assert store.get_run_status(proposal.run_id) == "completed"
 
@@ -284,6 +290,8 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
         / db_failure_proposal.run_id
     )
     assert list(failure_artifact_dir.glob("feature-delivery-failure.md"))
+    assert not list(failure_artifact_dir.glob("feature-delivery.md"))
+    assert db_failure_manager.get(db_failure_proposal.change_set_id)["status"] == "delivery_failed"
     with pytest.raises(ValueError, match="run already finished"):
         db_failure_manager.finalize_run(
             db_failure_proposal.change_set_id, "completed", {"status": "verified"}
@@ -441,6 +449,37 @@ def test_feature_delivery_nanobot_adapter_maps_http_error_without_body_leak(
     assert "HTTP 409: WORKFLOW_EVIDENCE_INVALID" in str(result)
     assert secret not in str(result)
 
+
+def test_feature_delivery_nanobot_adapter_maps_unknown_http_code_to_stable_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    secret = "unknown-code-secret"
+    body = json.dumps({"error": {"code": secret, "message": secret}}).encode()
+
+    def rejected(_payload: dict[str, object]) -> dict[str, object]:
+        raise HTTPError(
+            "http://127.0.0.1:18800/v1/feature-delivery/proposals",
+            409,
+            "Conflict",
+            {},
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(nanobot_tools, "_post_feature_proposal", rejected)
+    result = asyncio.run(
+        FeatureDeliveryProposeTool().execute(
+            project_path="E:/project",
+            patches=[{"relative_path": "app.py", "operation": "create", "content": "ok\n"}],
+            evidence_ids=["run-1"],
+        )
+    )
+
+    assert isinstance(result, ToolResult)
+    assert "HTTP 409: CONTROL_PLANE_ERROR" in str(result)
+    assert secret not in str(result)
+
 def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Path) -> None:
     store, project, manager = _manager(tmp_path, FakeExecutionBackend(exit_code=1))
     workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
@@ -467,6 +506,9 @@ def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Pat
     assert result.status == "verification_failed"
     assert result.verification["exit_code"] == 1
     assert result.artifact.path.exists()
+    assert result.artifact.path.name == "feature-delivery-failure.md"
+    assert "verification_failed" in result.artifact.path.read_text(encoding="utf-8")
+    assert store.list_artifacts(proposal.run_id)[0]["kind"] == "delivery-failure"
     assert proposal.run_id is not None
     assert store.get_run_status(proposal.run_id) == "failed"
 
@@ -524,6 +566,56 @@ def test_feature_delivery_never_applies_without_exact_user_confirmation(tmp_path
         )
 
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
+
+
+def test_feature_delivery_rejects_incomplete_or_handwritten_evidence(tmp_path: Path) -> None:
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend())
+    FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
+    outcome = ProjectAnalysisService(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]), store=store
+    ).inspect(project)
+
+    with pytest.raises(WorkflowError, match="WORKFLOW_EVIDENCE_INVALID"):
+        FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data").propose(
+            project_path=project,
+            patches=[_patch(project)],
+            evidence_ids=[outcome.run_id],
+        )
+
+
+class _RogueFakeBackend(FakeExecutionBackend):
+    def run(self, request: ExecutionRequest) -> ExecutionResult:
+        raise AssertionError("rogue Fake subclass must not be accepted")
+
+
+def test_feature_delivery_rejects_fake_subclass_before_execution(tmp_path: Path) -> None:
+    store, project, manager = _manager(tmp_path, _RogueFakeBackend())
+    workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
+    evidence_id = _evidence(project, store)
+    proposal = workflow.propose(
+        project_path=project,
+        patches=[_patch(project)],
+        evidence_ids=[evidence_id],
+    )
+    apply_approval = manager.approve(proposal.change_set_id)
+    applied = workflow.apply(
+        proposal, user_confirmation="执行", approval_token=str(apply_approval["approval_token"])
+    )
+    verify_approval = manager.approve(proposal.change_set_id, "r2.verify")
+
+    with pytest.raises(WorkflowError, match="AUTONOMOUS_REPAIR_BLOCKED"):
+        workflow.verify(
+            proposal,
+            approval_token=str(verify_approval["approval_token"]),
+            apply_result=applied,
+        )
+
+
+def test_feature_delivery_read_only_query_tools_are_registered_contracts() -> None:
+    assert GetChangeSetTool().name == "devpilot_get_changeset"
+    assert GetRunStateTool().name == "devpilot_get_run_state"
+    assert GetChangeSetTool().read_only is True
+    assert GetRunStateTool().read_only is True
 
 
 class _UnapprovedRemoteBackend:

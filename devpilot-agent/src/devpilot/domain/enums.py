@@ -42,6 +42,7 @@ class ChangeSetStatus(StrEnum):
     VERIFYING = "verifying"
     VERIFIED = "verified"
     VERIFICATION_FAILED = "verification_failed"
+    DELIVERY_FAILED = "delivery_failed"
     ACCEPTED = "accepted"
     REVERTED = "reverted"
     REJECTED = "rejected"

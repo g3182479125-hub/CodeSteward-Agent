@@ -21,7 +21,7 @@ def test_analysis_persists_run_events_and_artifact(tmp_path: Path) -> None:
     assert len(write.sha256) == 64
     assert store.count(ProjectRecord) == 1
     assert store.count(RunRecord) == 1
-    assert store.count(RunEventRecord) == 3
+    assert store.count(RunEventRecord) == 4
     assert store.count(ArtifactRecord) == 1
 
 

@@ -34,6 +34,17 @@ class ProjectAnalysisService:
             "tool.completed",
             {"tool": "devpilot_inspect_project", "files_seen": inspection.files_seen},
         )
+        self.store.append_event(
+            run_id,
+            "evidence.inspect.completed",
+            {
+                "project_id": project_id,
+                "technology_stacks": inspection.technology_stacks,
+                "files_seen": inspection.files_seen,
+                "metadata_bytes": inspection.metadata_bytes,
+                "truncated": inspection.truncated,
+            },
+        )
         return AnalysisOutcome(project_id=project_id, run_id=run_id, inspection=inspection)
 
     def publish_overview(

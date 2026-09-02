@@ -100,6 +100,8 @@ class ChangePlanRecord(Base):
     risk_summary: Mapped[str] = mapped_column(Text, nullable=False)
     check_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
     stop_conditions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    contract_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -133,6 +135,7 @@ class ApprovalRecord(Base):
     plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     patch_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_hash: Mapped[str | None] = mapped_column(String(64))
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
     token_digest: Mapped[str | None] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -273,6 +276,34 @@ class ProjectStore:
                 raise KeyError(f"unknown run: {run_id}")
             return run.kind
 
+    def get_run_state(self, run_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            run = session.get(RunRecord, run_id)
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            events = (
+                session.query(RunEventRecord)
+                .filter(RunEventRecord.run_id == run_id)
+                .order_by(RunEventRecord.id)
+                .all()
+            )
+            return {
+                "run_id": run.id,
+                "project_id": run.project_id,
+                "kind": run.kind,
+                "status": run.status,
+                "started_at": run.started_at.isoformat(),
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "events": [
+                    {
+                        "event_type": event.event_type,
+                        "payload": json.loads(event.payload_json),
+                        "created_at": event.created_at.isoformat(),
+                    }
+                    for event in events
+                ],
+            }
+
     def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
         """Return the append-only, already-redacted evidence for one Run."""
         with self._session_factory() as session:
@@ -322,6 +353,7 @@ class ProjectStore:
         relative_path: str,
         sha256: str,
         size_bytes: int,
+        kind: str = "markdown",
     ) -> None:
         with self._session_factory.begin() as session:
             session.add(
@@ -329,7 +361,7 @@ class ProjectStore:
                     id=artifact_id,
                     project_id=project_id,
                     run_id=run_id,
-                    kind="markdown",
+                    kind=kind,
                     relative_path=relative_path,
                     sha256=sha256,
                     size_bytes=size_bytes,
@@ -340,6 +372,27 @@ class ProjectStore:
     def count(self, model: type[Base]) -> int:
         with self._session_factory() as session:
             return int(session.query(model).count())
+
+    def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        with self._session_factory() as session:
+            rows = (
+                session.query(ArtifactRecord)
+                .filter(ArtifactRecord.run_id == run_id)
+                .order_by(ArtifactRecord.created_at, ArtifactRecord.id)
+                .all()
+            )
+            return [
+                {
+                    "id": row.id,
+                    "project_id": row.project_id,
+                    "run_id": row.run_id,
+                    "kind": row.kind,
+                    "relative_path": row.relative_path,
+                    "sha256": row.sha256,
+                    "size_bytes": row.size_bytes,
+                }
+                for row in rows
+            ]
 
     def persist_patch_plan(
         self,
@@ -458,6 +511,7 @@ class ProjectStore:
                 "patches_json": record.patches_json,
                 "snapshots_json": record.snapshots_json,
                 "failure_reason": record.failure_reason,
+                "plan_contract": self.get_change_plan_contract(record.plan_id),
                 "file_changes": [
                     {
                         "relative_path": item.relative_path,
@@ -469,6 +523,47 @@ class ProjectStore:
                     }
                     for item in changes
                 ],
+            }
+
+    def update_change_plan_contract(
+        self,
+        plan_id: str,
+        *,
+        check_ids: list[str],
+        stop_conditions: list[str],
+        evidence_hash: str,
+        contract_hash: str,
+    ) -> None:
+        with self._session_factory.begin() as session:
+            plan = session.get(ChangePlanRecord, plan_id)
+            if plan is None:
+                raise KeyError("unknown change plan")
+            values = {
+                "check_ids_json": json.dumps(check_ids, ensure_ascii=False, sort_keys=True),
+                "stop_conditions_json": json.dumps(
+                    stop_conditions, ensure_ascii=False, sort_keys=True
+                ),
+                "evidence_hash": evidence_hash,
+                "contract_hash": contract_hash,
+            }
+            if plan.contract_hash is not None and any(
+                getattr(plan, key) != value for key, value in values.items()
+            ):
+                raise ValueError("change plan contract is immutable")
+            for key, value in values.items():
+                setattr(plan, key, value)
+
+    def get_change_plan_contract(self, plan_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            plan = session.get(ChangePlanRecord, plan_id)
+            if plan is None:
+                raise KeyError("unknown change plan")
+            return {
+                "plan_id": plan.id,
+                "check_ids": json.loads(plan.check_ids_json),
+                "stop_conditions": json.loads(plan.stop_conditions_json),
+                "evidence_hash": plan.evidence_hash,
+                "contract_hash": plan.contract_hash,
             }
 
     def list_change_set_ids(self) -> list[str]:
@@ -503,6 +598,7 @@ class ProjectStore:
         plan_hash: str,
         scope_hash: str,
         patch_hash: str,
+        contract_hash: str | None,
         capability: str,
         token_digest: str,
         expires_at: datetime,
@@ -516,6 +612,7 @@ class ProjectStore:
                     plan_hash=plan_hash,
                     scope_hash=scope_hash,
                     patch_hash=patch_hash,
+                    contract_hash=contract_hash,
                     capability=capability,
                     token_digest=token_digest,
                     expires_at=expires_at,
@@ -549,6 +646,7 @@ class ProjectStore:
                 "plan_hash": approval.plan_hash,
                 "scope_hash": approval.scope_hash,
                 "patch_hash": approval.patch_hash,
+                "contract_hash": approval.contract_hash,
                 "capability": approval.capability,
                 "expires_at": approval.expires_at,
             }
@@ -573,6 +671,7 @@ class ProjectStore:
                 "plan_hash": approval.plan_hash,
                 "scope_hash": approval.scope_hash,
                 "patch_hash": approval.patch_hash,
+                "contract_hash": approval.contract_hash,
                 "capability": approval.capability,
                 "expires_at": approval.expires_at,
             }

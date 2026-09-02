@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -27,6 +29,29 @@ _STOP_CONDITIONS = (
     "rollback_conflict",
     "verification_failed",
 )
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        mapping = cast(dict[Any, Any], value)
+        return MappingProxyType({str(key): _freeze(item) for key, item in mapping.items()})
+    if isinstance(value, list):
+        items = cast(list[Any], value)
+        return tuple(_freeze(item) for item in items)
+    if isinstance(value, tuple):
+        items = cast(tuple[Any, ...], value)
+        return tuple(_freeze(item) for item in items)
+    return value
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[Any, Any], value)
+        return {str(key): _jsonable(item) for key, item in mapping.items()}
+    if isinstance(value, tuple):
+        items = cast(tuple[Any, ...], value)
+        return [_jsonable(item) for item in items]
+    return value
 
 
 class WorkflowError(ValueError):
@@ -50,7 +75,7 @@ class FeatureDeliveryProposal:
     verification_profile: VerificationProfile
     evidence_ids: tuple[str, ...]
     evidence_hash: str
-    preview: dict[str, Any]
+    preview: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,7 +90,7 @@ class FeatureDeliveryProposal:
             "evidence_hash": self.evidence_hash,
             "status": "awaiting_user_approval",
             "requires_user_confirmation": True,
-            "preview": self.preview,
+            "preview": _jsonable(self.preview),
         }
 
 
@@ -174,6 +199,48 @@ class FeatureDeliveryWorkflow:
                 "WORKFLOW_EVIDENCE_INVALID",
                 "evidence ids must reference runs belonging to the target project",
             )
+        if len(set(evidence)) != len(evidence):
+            raise WorkflowError("WORKFLOW_EVIDENCE_INVALID", "evidence ids must be unique")
+        required_event_types = (
+            "evidence.inspect.completed",
+            "evidence.search.completed",
+            "evidence.read.completed",
+        )
+        evidence_facts: list[dict[str, Any]] = []
+        for evidence_id in evidence:
+            by_type = {
+                str(item["event_type"]): cast(dict[str, Any], item["payload"])
+                for item in store.list_run_events(evidence_id)
+                if str(item["event_type"]) in required_event_types
+            }
+            if any(event_type not in by_type for event_type in required_event_types):
+                raise WorkflowError(
+                    "WORKFLOW_EVIDENCE_INVALID",
+                    "evidence Run must contain server-generated inspect/search/read facts",
+                )
+            for payload in by_type.values():
+                if payload.get("project_id") != project_id:
+                    raise WorkflowError(
+                        "WORKFLOW_EVIDENCE_INVALID",
+                        "evidence facts must belong to the target project",
+                    )
+            read_fact = by_type["evidence.read.completed"]
+            if not isinstance(read_fact.get("path"), str) or not re.fullmatch(
+                r"[0-9a-f]{64}", str(read_fact.get("sha256", ""))
+            ):
+                raise WorkflowError(
+                    "WORKFLOW_EVIDENCE_INVALID",
+                    "read evidence must contain a valid source hash",
+                )
+            evidence_facts.append(
+                {
+                    "run_id": evidence_id,
+                    "events": [
+                        {"event_type": event_type, "payload": by_type[event_type]}
+                        for event_type in required_event_types
+                    ],
+                }
+            )
         try:
             profile = VerificationProfile(verification_profile)
         except ValueError as exc:
@@ -187,8 +254,39 @@ class FeatureDeliveryWorkflow:
         )
         run_id = self.manager.get_run_id(str(preview["change_set_id"]))
         evidence_hash = hashlib.sha256(
-            json.dumps(list(evidence), ensure_ascii=False, separators=(",", ":")).encode()
+            json.dumps(
+                evidence_facts,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()
+        check_ids = [profile.value]
+        stop_conditions: list[str] = list(_STOP_CONDITIONS)
+        contract_payload = {
+            "plan_version": 1,
+            "patch_hash": preview["patch_hash"],
+            "scope_hash": preview["scope_hash"],
+            "evidence_hash": evidence_hash,
+            "check_ids": check_ids,
+            "stop_conditions": stop_conditions,
+            "risk_summary": "bounded text patch; apply remains separately authorized",
+        }
+        contract_hash = hashlib.sha256(
+            json.dumps(
+                contract_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        store.update_change_plan_contract(
+            str(preview["plan_id"]),
+            check_ids=check_ids,
+            stop_conditions=stop_conditions,
+            evidence_hash=evidence_hash,
+            contract_hash=contract_hash,
+        )
         # Keep the workflow-specific plan binding in the immutable caller-visible preview.
         # The patch engine remains the authority for patch_hash/scope_hash.
         preview.update(
@@ -196,8 +294,9 @@ class FeatureDeliveryWorkflow:
                 "workflow": "feature-delivery",
                 "evidence_ids": list(evidence),
                 "evidence_hash": evidence_hash,
-                "check_ids": [profile.value],
-                "stop_conditions": list(_STOP_CONDITIONS),
+                "check_ids": check_ids,
+                "stop_conditions": stop_conditions,
+                "contract_hash": contract_hash,
             }
         )
         if run_id is not None:
@@ -211,8 +310,9 @@ class FeatureDeliveryWorkflow:
                     "scope_hash": preview["scope_hash"],
                     "evidence_ids": list(evidence),
                     "evidence_hash": evidence_hash,
-                    "check_ids": [profile.value],
-                    "stop_conditions": list(_STOP_CONDITIONS),
+                    "check_ids": check_ids,
+                    "stop_conditions": stop_conditions,
+                    "contract_hash": contract_hash,
                 },
             )
         return FeatureDeliveryProposal(
@@ -224,7 +324,7 @@ class FeatureDeliveryWorkflow:
             verification_profile=profile,
             evidence_ids=evidence,
             evidence_hash=evidence_hash,
-            preview=preview,
+            preview=cast(Mapping[str, Any], _freeze(preview)),
         )
 
     def apply(
@@ -255,7 +355,7 @@ class FeatureDeliveryWorkflow:
         apply_result: dict[str, Any] | None = None,
     ) -> FeatureDeliveryResult:
         backend = self.manager.execution_backend
-        if not isinstance(backend, FakeExecutionBackend):
+        if type(backend) is not FakeExecutionBackend:
             self.manager.deny_execution(
                 proposal.change_set_id, "EXECUTION_BACKEND_UNAVAILABLE"
             )
@@ -273,6 +373,7 @@ class FeatureDeliveryWorkflow:
                 "WORKFLOW_ARTIFACT_UNAVAILABLE",
                 "feature delivery requires durable store and run-backed Artifact output",
             )
+        artifact: ArtifactWrite | None = None
         try:
             verification = self.manager.verify(
                 proposal.change_set_id,
@@ -292,16 +393,17 @@ class FeatureDeliveryWorkflow:
             "change_set_id": proposal.change_set_id,
             "status": "applied",
         }
-        report = self._render_report(
-            proposal,
-            applied,
-            verification,
+        successful = verification.get("exit_code") == 0
+        report = self._render_report(proposal, applied, verification) if successful else (
+            self._render_failure_report(proposal, verification)
         )
+        artifact_name = "feature-delivery.md" if successful else "feature-delivery-failure.md"
+        artifact_kind = "delivery" if successful else "delivery-failure"
         try:
             artifact = ArtifactService(self.artifacts_root).write_markdown(
                 project_id=proposal.project_id,
                 run_id=proposal.run_id,
-                name="feature-delivery.md",
+                name=artifact_name,
                 content=report,
             )
             artifact_id = str(uuid.uuid4())
@@ -313,20 +415,36 @@ class FeatureDeliveryWorkflow:
                 relative_path=relative_path,
                 sha256=artifact.sha256,
                 size_bytes=artifact.size_bytes,
+                kind=artifact_kind,
             )
         except (OSError, ValueError, SQLAlchemyError) as exc:
-            # Keep a server-owned failure Artifact even when the primary Artifact
-            # database record cannot be committed. The Run is still failed below;
-            # this file is evidence, not a success Artifact.
+            # The successful file is never left behind when its DB index failed.
+            # A failure event and failure report are the only durable fallback.
+            if artifact is not None:
+                try:
+                    artifact.path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
-                ArtifactService(self.artifacts_root).write_markdown(
+                fallback = ArtifactService(self.artifacts_root).write_markdown(
                     project_id=proposal.project_id,
                     run_id=proposal.run_id,
                     name="feature-delivery-failure.md",
                     content=self._render_failure_report(proposal, verification),
                 )
+                store.append_event(
+                    proposal.run_id,
+                    "artifact.persistence_failed",
+                    {
+                        "code": "ARTIFACT_WRITE_FAILED",
+                        "path": fallback.path.relative_to(self.artifacts_root).as_posix(),
+                        "sha256": fallback.sha256,
+                        "success_artifact_removed": True,
+                    },
+                )
             except (OSError, ValueError):
                 pass
+            self.manager.mark_delivery_failed(proposal.change_set_id, "ARTIFACT_WRITE_FAILED")
             self.manager.finalize_run(
                 proposal.change_set_id,
                 "failed",
@@ -337,7 +455,7 @@ class FeatureDeliveryWorkflow:
             ) from exc
         self.manager.finalize_run(
             proposal.change_set_id,
-            "completed" if verification.get("exit_code") == 0 else "failed",
+            "completed" if successful else "failed",
             {
                 "change_set_id": proposal.change_set_id,
                 "status": verification.get("status", "unknown"),
@@ -361,8 +479,8 @@ class FeatureDeliveryWorkflow:
         files = cast(list[object], proposal.preview.get("files", []))
         file_lines: list[str] = []
         for raw_item in files:
-            if isinstance(raw_item, dict):
-                item = cast(dict[str, Any], raw_item)
+            if isinstance(raw_item, Mapping):
+                item = cast(Mapping[str, Any], raw_item)
                 path = str(item.get("relative_path", "<unknown>"))
                 operation = str(item.get("operation", "unknown"))
                 file_lines.append(f"- `{path}` ({operation})")

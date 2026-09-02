@@ -52,6 +52,43 @@ from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
 from .storage import ProjectStore
 
+_CONTROL_PLANE_ERROR_CODES = frozenset(
+    {
+        "APPROVAL_ALREADY_ISSUED",
+        "APPROVAL_INVALID",
+        "APPROVAL_SCOPE_MISMATCH",
+        "ARTIFACT_ROOT_INVALID",
+        "AUTONOMOUS_REPAIR_BLOCKED",
+        "CAPABILITY_INVALID",
+        "CHANGESET_NOT_APPLICABLE",
+        "CHANGESET_NOT_FOUND",
+        "CHANGESET_NOT_VERIFIABLE",
+        "EXECUTION_BACKEND_UNAVAILABLE",
+        "IDEMPOTENCY_CONFLICT",
+        "IDEMPOTENCY_IN_PROGRESS",
+        "IDEMPOTENCY_REQUIRED",
+        "PATH_DENIED",
+        "PERSISTENCE_REQUIRED",
+        "RUN_NOT_FOUND",
+        "VERIFICATION_FAILED",
+        "WORKFLOW_ARTIFACT_WRITE_FAILED",
+        "WORKFLOW_EVIDENCE_INVALID",
+        "WORKFLOW_EVIDENCE_REQUIRED",
+    }
+)
+
+_PATCH_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "relative_path": {"type": "string", "minLength": 1},
+        "operation": {"type": "string", "enum": ["create", "update", "delete"]},
+        "content": {"type": ["string", "null"]},
+        "expected_sha256": {"type": ["string", "null"]},
+    },
+    "required": ["relative_path", "operation"],
+    "additionalProperties": False,
+}
+
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{12,}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
@@ -272,6 +309,11 @@ class PublishArtifactTool(Tool):
             "glob": {"type": "string", "maxLength": 256},
             "limit": {"type": "integer", "minimum": 1, "maximum": 200},
             "case_sensitive": {"type": "boolean"},
+            "evidence_run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Open repo-analysis Run ID used to persist provenance.",
+            },
         },
         "required": ["project_id", "query"],
         "additionalProperties": False,
@@ -319,6 +361,11 @@ class SearchCodeTool(Tool):
                 glob=str(kwargs["glob"]) if kwargs.get("glob") is not None else None,
                 limit=int(kwargs.get("limit", 50)),
                 case_sensitive=bool(kwargs.get("case_sensitive", False)),
+                evidence_run_id=(
+                    str(kwargs["evidence_run_id"])
+                    if kwargs.get("evidence_run_id") is not None
+                    else None
+                ),
             )
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
         except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
@@ -333,6 +380,11 @@ class SearchCodeTool(Tool):
             "path": {"type": "string", "minLength": 1, "maxLength": 512},
             "start_line": {"type": "integer", "minimum": 1},
             "end_line": {"type": "integer", "minimum": 1},
+            "evidence_run_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Open repo-analysis Run ID used to persist provenance.",
+            },
         },
         "required": ["project_id", "path"],
         "additionalProperties": False,
@@ -379,6 +431,11 @@ class ReadCodeTool(Tool):
                 str(kwargs["path"]),
                 start_line=int(kwargs.get("start_line", 1)),
                 end_line=(int(kwargs["end_line"]) if kwargs.get("end_line") is not None else None),
+                evidence_run_id=(
+                    str(kwargs["evidence_run_id"])
+                    if kwargs.get("evidence_run_id") is not None
+                    else None
+                ),
             )
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
         except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
@@ -450,7 +507,10 @@ def _http_error_message(exc: HTTPError) -> str:
             # The API message is not trusted: it can contain user code, paths,
             # or a token-shaped value. The stable error code is sufficient for
             # the adapter contract and is safe to expose to nanobot.
-            return f"HTTP {exc.code}: {error['code']}"
+            code = str(error["code"])
+            if code in _CONTROL_PLANE_ERROR_CODES:
+                return f"HTTP {exc.code}: {code}"
+            return f"HTTP {exc.code}: CONTROL_PLANE_ERROR"
     except (TypeError, ValueError):
         pass
     return f"HTTP {exc.code}"
@@ -480,6 +540,19 @@ def _post_control_plane(
     result = json.loads(response_body.decode("utf-8"))
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
+    return result
+
+
+def _get_control_plane(path: str) -> dict[str, Any]:
+    request = Request(f"{_control_plane_url()}{path}", method="GET")
+    with urlopen(request, timeout=10) as response:
+        response_body = response.read(256 * 1024 + 1)
+    if len(response_body) > 256 * 1024:
+        raise ValueError("control-plane response is too large")
+    result = json.loads(response_body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("control-plane response is invalid")
+    result.pop("approval_token", None)
     return result
 
 
@@ -526,6 +599,86 @@ def _verify_changeset(
     }
 
 
+def _safe_resource_path(identifier: str, resource: str) -> str:
+    value = str(identifier)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+        raise ValueError("invalid resource ID")
+    return f"/v1/{resource}/{value}"
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {"change_set_id": {"type": "string", "minLength": 1}},
+        "required": ["change_set_id"],
+        "additionalProperties": False,
+    }
+)
+
+class GetChangeSetTool(Tool):
+    """Read one server-owned immutable ChangeSet preview and its persisted contract."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_get_changeset"
+
+    @property
+    def description(self) -> str:
+        return "Read-only ChangeSet state, Diff, hashes and persisted approval contract."
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _get_control_plane(
+                _safe_resource_path(str(kwargs["change_set_id"]), "change-sets")
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 ChangeSet read failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 ChangeSet read failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {"run_id": {"type": "string", "minLength": 1}},
+        "required": ["run_id"],
+        "additionalProperties": False,
+    }
+)
+class GetRunStateTool(Tool):
+    """Read one server-owned Run state and redacted event stream."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_get_run_state"
+
+    @property
+    def description(self) -> str:
+        return "Read-only Run lifecycle state and structured events; never changes execution."
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _get_control_plane(_safe_resource_path(str(kwargs["run_id"]), "runs"))
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 Run read failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 Run read failed: {type(exc).__name__}")
+
+
 @tool_parameters(
     {
         "type": "object",
@@ -542,17 +695,7 @@ def _verify_changeset(
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 12,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "relative_path": {"type": "string", "minLength": 1},
-                        "operation": {"type": "string", "enum": ["create", "update", "delete"]},
-                        "content": {"type": ["string", "null"]},
-                        "expected_sha256": {"type": ["string", "null"]},
-                    },
-                    "required": ["relative_path", "operation"],
-                    "additionalProperties": False,
-                },
+                "items": _PATCH_ITEM_SCHEMA,
             },
         },
         "required": ["project_path", "patches"],
@@ -593,7 +736,7 @@ class ProposeChangeSetTool(Tool):
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 12,
-                    "items": {"type": "object"},
+                    "items": _PATCH_ITEM_SCHEMA,
                 },
             },
             "required": ["project_path", "patches"],
@@ -633,7 +776,12 @@ class ProposeChangeSetTool(Tool):
         "type": "object",
         "properties": {
             "project_path": {"type": "string", "minLength": 1},
-            "patches": {"type": "array", "minItems": 1, "maxItems": 12},
+            "patches": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": _PATCH_ITEM_SCHEMA,
+            },
             "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
             "verification_profile": {
                 "type": "string",

@@ -69,7 +69,9 @@ CHANGE_SET_TRANSITIONS: dict[ChangeSetStatus, frozenset[ChangeSetStatus]] = {
     ChangeSetStatus.VERIFYING: frozenset(
         {ChangeSetStatus.VERIFIED, ChangeSetStatus.VERIFICATION_FAILED}
     ),
-    ChangeSetStatus.VERIFIED: frozenset({ChangeSetStatus.ACCEPTED, ChangeSetStatus.REVERTED}),
+    ChangeSetStatus.VERIFIED: frozenset(
+        {ChangeSetStatus.ACCEPTED, ChangeSetStatus.REVERTED, ChangeSetStatus.DELIVERY_FAILED}
+    ),
     ChangeSetStatus.VERIFICATION_FAILED: frozenset(
         {ChangeSetStatus.ACCEPTED, ChangeSetStatus.REVERTED}
     ),
@@ -78,6 +80,7 @@ CHANGE_SET_TRANSITIONS: dict[ChangeSetStatus, frozenset[ChangeSetStatus]] = {
     ChangeSetStatus.REJECTED: frozenset(),
     ChangeSetStatus.EXPIRED: frozenset(),
     ChangeSetStatus.APPLY_FAILED: frozenset(),
+    ChangeSetStatus.DELIVERY_FAILED: frozenset({ChangeSetStatus.REVERTED}),
 }
 
 
