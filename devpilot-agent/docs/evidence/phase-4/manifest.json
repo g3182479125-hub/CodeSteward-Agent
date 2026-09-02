@@ -20,7 +20,7 @@
     "pytest": {
       "command": "uv run pytest",
       "exit_code": 0,
-      "result": "111 passed, 3 skipped",
+      "result": "113 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
