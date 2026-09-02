@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
+_SUPPORTED_MARKDOWN = frozenset({"project-overview.md", "feature-delivery.md"})
 
 
 @dataclass(frozen=True)
@@ -26,8 +27,10 @@ class ArtifactService:
     def write_markdown(
         self, *, project_id: str, run_id: str, name: str, content: str
     ) -> ArtifactWrite:
-        if name != "project-overview.md":
-            raise ValueError("only project-overview.md is supported in P1")
+        if name not in _SUPPORTED_MARKDOWN:
+            raise ValueError(
+                "only project-overview.md and feature-delivery.md are supported"
+            )
         for value, label in ((project_id, "project_id"), (run_id, "run_id")):
             try:
                 uuid.UUID(value)

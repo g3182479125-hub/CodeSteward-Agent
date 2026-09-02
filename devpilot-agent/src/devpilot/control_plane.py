@@ -198,6 +198,11 @@ class ControlPlaneManager:
         with self._mutex:
             return plan_payload(self._require(change_set_id))
 
+    def get_run_id(self, change_set_id: str) -> str | None:
+        """Return the server-owned run link without changing the Preview contract."""
+        with self._mutex:
+            return self._require(change_set_id).run_id
+
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
             raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
