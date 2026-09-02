@@ -2,8 +2,8 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "implementation_complete_review_pending",
-  "commit": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6",
-  "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+  "commit": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7",
+  "implementation_commit": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7",
   "generated_at": "2026-09-02T08:11:31Z",
   "completed_at": "2026-09-02T08:11:31Z",
   "plan": {
@@ -84,8 +84,8 @@
     "independent_subagent": true,
     "status": "pending_rerun",
     "review_plan": "docs/reviews/p4-01-review-rerun-20260902.md",
-    "review_checkout": "p4-review-20260902-r4",
-    "review_checkout_revision": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6"
+    "review_checkout": "p4-review-20260902-r5",
+    "review_checkout_revision": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7"
   },
   "artifacts": [
     {
@@ -94,7 +94,7 @@
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
-      "sha256": "AD36783FD39E6F68F2318ED65F8E5A2B434EF4D7FA898948A13B75987EE6F009"
+      "sha256": "5F5159E189206BDF5F728786D7F5F412EBDBBE9E54AF6467E5200C662C53108C"
     },
     {
       "path": "docs/reviews/p4-01-product-review-rerun.md",
@@ -119,8 +119,8 @@
   ],
   "git": {
     "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
-    "review_target": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6 in clean checkout",
-    "clean_checkout_revision": "441c78ffd3de57a1ad7f6cd5c9582afc885957c6",
+    "review_target": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7 in clean checkout",
+    "clean_checkout_revision": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7",
     "clean_checkout_status": "clean",
     "live_worktree_clean": false,
     "live_worktree_explanation": "The live checkout preserves two user-owned Node fixture edits outside the implementation scope; the independent review uses the clean checkout recorded above."
