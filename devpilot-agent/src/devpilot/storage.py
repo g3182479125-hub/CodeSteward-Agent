@@ -273,6 +273,24 @@ class ProjectStore:
                 raise KeyError(f"unknown run: {run_id}")
             return run.kind
 
+    def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the append-only, already-redacted evidence for one Run."""
+        with self._session_factory() as session:
+            rows = (
+                session.query(RunEventRecord)
+                .filter(RunEventRecord.run_id == run_id)
+                .order_by(RunEventRecord.id)
+                .all()
+            )
+            return [
+                {
+                    "event_type": row.event_type,
+                    "payload": json.loads(row.payload_json),
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]
+
     def finish_run(self, run_id: str, status: str, payload: dict[str, Any]) -> None:
         if status not in {"completed", "failed"}:
             raise ValueError("P1 runs can only finish as completed or failed")

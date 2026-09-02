@@ -2,7 +2,7 @@
 
 Date: 2026-09-02
 Node: P4-01
-Status: implementation complete; independent Review pending
+Status: implementation complete; independent Review rerun required
 
 ## Delivered boundary
 
@@ -12,9 +12,9 @@ evidence, creates one immutable Preview, waits for an exact user confirmation, a
 same ChangeSet, runs one server-allowlisted Verification profile, and writes a bounded
 `feature-delivery.md` Artifact.
 
-The new catalog Skill is intentionally `draft` with `reviewed: false` until the independent
-Review subagent completes. It can therefore be inspected and tested, but cannot be published
-by the Skill lifecycle gate yet.
+The new catalog Skill remains `draft` with `reviewed: false` until the independent Review
+subagent approves this node. It can therefore be inspected and tested, but cannot be published
+by the Skill lifecycle gate yet. This metadata is deliberately not advanced by the developer.
 
 ## Safety boundary
 
@@ -29,15 +29,28 @@ by the Skill lifecycle gate yet.
 ## G-01 evidence
 
 `tests/test_p4_feature_delivery.py::test_feature_delivery_g01_completes_approved_fake_path_and_artifact`
-passes and proves:
+is the single machine-readable Golden chain and proves:
 
-`Preview -> external r1.apply approval + exact user confirmation -> Apply -> external r2.verify approval -> Fake Verification -> feature-delivery Artifact`
+`FastAPI restricted endpoint evidence (inspect/search/read) -> Preview -> external r1.apply approval + exact user confirmation -> Apply -> external r2.verify approval -> Fake Verification -> server-owned Artifact -> external r1.rollback approval -> Rollback`
 
-The same test asserts that Preview does not write the project, the file is unchanged before
-Apply, the final file changes only after Apply, the verification receipt is `verified`, the
-Artifact is persisted, the Run reaches `completed`, and the Fake output is not copied into the
-Artifact. Separate tests cover restart recovery of the ChangeSet-to-Run link and a non-zero
-verification receipt that produces a `failed` Run plus a failure Artifact.
+The same test asserts evidence event provenance and the read SHA-256, evidence/plan/check/stop
+condition binding, immutable Preview/Diff, no write before Apply, both external capability
+handoffs, the Fake receipt, server-owned Artifact persistence, explicit rollback to the exact
+baseline, non-zero verification with a failure Run/Artifact, and Artifact database failure with
+a failure Artifact and no false `run.completed` event. The test also proves a terminal Run cannot
+be rewritten as completed. Separate tests cover restart recovery, exact confirmation, and the
+pre-P6 non-Fake fail-closed boundary.
+
+The fixture is a bounded FastAPI source project: the allowed change updates `/health` and adds
+the `/internal/status` restricted endpoint. The project is never executed by P4; Fake
+verification only validates the controlled ExecutionBackend contract.
+
+## Adapter and lifecycle evidence
+
+The nanobot `devpilot_feature_delivery_propose` adapter has direct tests for proposal-only
+behavior, request mapping, and stable HTTP error-code mapping without returning an untrusted
+response body. The Skill remains unpublished until the independent Review gate passes; the
+registered Tool list and the Skill's P4 proposal-only contract are intentionally aligned.
 
 Additional tests prove that an inexact confirmation does not write and that a real-looking
 remote backend is blocked before the P6 Sandbox Gate.
@@ -50,5 +63,6 @@ uv run ruff check src scripts tests
 uv run pyright
 ```
 
-The full repository regression remains required before the P4-01 node can be submitted for
-independent Review.
+The full repository regression and the phase evidence manifest must be regenerated after the
+final implementation commit and before the P4-01 independent Review rerun. This document does
+not itself authorize P4-02.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -18,6 +20,13 @@ from .paths import PathBoundaryError
 from .verification import VerificationProfile
 
 _CONFIRMATIONS = frozenset({"执行", "确认执行", "confirmed"})
+_STOP_CONDITIONS = (
+    "stale_hash",
+    "path_denied",
+    "project_locked",
+    "rollback_conflict",
+    "verification_failed",
+)
 
 
 class WorkflowError(ValueError):
@@ -40,6 +49,7 @@ class FeatureDeliveryProposal:
     scope_hash: str
     verification_profile: VerificationProfile
     evidence_ids: tuple[str, ...]
+    evidence_hash: str
     preview: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -52,6 +62,7 @@ class FeatureDeliveryProposal:
             "scope_hash": self.scope_hash,
             "verification_profile": self.verification_profile.value,
             "evidence_ids": list(self.evidence_ids),
+            "evidence_hash": self.evidence_hash,
             "status": "awaiting_user_approval",
             "requires_user_confirmation": True,
             "preview": self.preview,
@@ -174,6 +185,36 @@ class FeatureDeliveryWorkflow:
             project_id=None,
             patches=list(patches),
         )
+        run_id = self.manager.get_run_id(str(preview["change_set_id"]))
+        evidence_hash = hashlib.sha256(
+            json.dumps(list(evidence), ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+        # Keep the workflow-specific plan binding in the immutable caller-visible preview.
+        # The patch engine remains the authority for patch_hash/scope_hash.
+        preview.update(
+            {
+                "workflow": "feature-delivery",
+                "evidence_ids": list(evidence),
+                "evidence_hash": evidence_hash,
+                "check_ids": [profile.value],
+                "stop_conditions": list(_STOP_CONDITIONS),
+            }
+        )
+        if run_id is not None:
+            store.append_event(
+                run_id,
+                "feature_delivery.proposed",
+                {
+                    "workflow": "feature-delivery",
+                    "change_set_id": preview["change_set_id"],
+                    "patch_hash": preview["patch_hash"],
+                    "scope_hash": preview["scope_hash"],
+                    "evidence_ids": list(evidence),
+                    "evidence_hash": evidence_hash,
+                    "check_ids": [profile.value],
+                    "stop_conditions": list(_STOP_CONDITIONS),
+                },
+            )
         return FeatureDeliveryProposal(
             change_set_id=str(preview["change_set_id"]),
             project_id=str(preview["project_id"]),
@@ -182,6 +223,7 @@ class FeatureDeliveryWorkflow:
             scope_hash=str(preview["scope_hash"]),
             verification_profile=profile,
             evidence_ids=evidence,
+            evidence_hash=evidence_hash,
             preview=preview,
         )
 
@@ -273,6 +315,18 @@ class FeatureDeliveryWorkflow:
                 size_bytes=artifact.size_bytes,
             )
         except (OSError, ValueError, SQLAlchemyError) as exc:
+            # Keep a server-owned failure Artifact even when the primary Artifact
+            # database record cannot be committed. The Run is still failed below;
+            # this file is evidence, not a success Artifact.
+            try:
+                ArtifactService(self.artifacts_root).write_markdown(
+                    project_id=proposal.project_id,
+                    run_id=proposal.run_id,
+                    name="feature-delivery-failure.md",
+                    content=self._render_failure_report(proposal, verification),
+                )
+            except (OSError, ValueError):
+                pass
             self.manager.finalize_run(
                 proposal.change_set_id,
                 "failed",
@@ -326,6 +380,8 @@ class FeatureDeliveryWorkflow:
                 f"- Project: `{proposal.project_id}`",
                 f"- Patch hash: `{proposal.patch_hash}`",
                 f"- Scope hash: `{proposal.scope_hash}`",
+                f"- Evidence hash: `{proposal.evidence_hash}`",
+                f"- Check IDs: `{', '.join([proposal.verification_profile.value])}`",
                 f"- Apply status: `{applied.get('status', 'unknown')}`",
                 f"- Verification status: `{verification.get('status', 'unknown')}`",
                 "",
@@ -348,3 +404,24 @@ class FeatureDeliveryWorkflow:
                 "- stdout/stderr are intentionally excluded from this Artifact.",
             ]
         ) + "\n"
+
+    @staticmethod
+    def _render_failure_report(
+        proposal: FeatureDeliveryProposal, verification: dict[str, Any]
+    ) -> str:
+        return "\n".join(
+            [
+                "# Feature delivery failure report",
+                "",
+                f"- ChangeSet: `{proposal.change_set_id}`",
+                f"- Run: `{proposal.run_id}`",
+                f"- Patch hash: `{proposal.patch_hash}`",
+                f"- Evidence hash: `{proposal.evidence_hash}`",
+                "- Delivery status: `failed`",
+                f"- Verification status: `{verification.get('status', 'unknown')}`",
+                "- Failure handling: Artifact persistence or verification failed; "
+                "no success is claimed.",
+                "- stdout/stderr omitted by policy.",
+                "",
+            ]
+        )

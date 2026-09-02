@@ -438,12 +438,22 @@ def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _http_error_message(exc: HTTPError) -> str:
-    """Expose bounded local API diagnostics without leaking response headers or tokens."""
+    """Expose stable local API diagnostics without leaking response bodies or tokens."""
     try:
         body = exc.read(4 * 1024).decode("utf-8", errors="replace").strip()
     except OSError:
         body = ""
-    return f"HTTP {exc.code}: {body}" if body else f"HTTP {exc.code}"
+    try:
+        payload = json.loads(body)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict) and isinstance(error.get("code"), str):
+            # The API message is not trusted: it can contain user code, paths,
+            # or a token-shaped value. The stable error code is sufficient for
+            # the adapter contract and is safe to expose to nanobot.
+            return f"HTTP {exc.code}: {error['code']}"
+    except (TypeError, ValueError):
+        pass
+    return f"HTTP {exc.code}"
 
 
 def _post_control_plane(

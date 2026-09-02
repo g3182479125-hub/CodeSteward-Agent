@@ -12,7 +12,9 @@ from pathlib import Path
 from .redaction import redact_sensitive_text
 
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
-_SUPPORTED_MARKDOWN = frozenset({"project-overview.md", "feature-delivery.md"})
+_SUPPORTED_MARKDOWN = frozenset(
+    {"project-overview.md", "feature-delivery.md", "feature-delivery-failure.md"}
+)
 
 
 @dataclass(frozen=True)
