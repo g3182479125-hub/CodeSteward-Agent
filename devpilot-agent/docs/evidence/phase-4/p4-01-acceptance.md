@@ -2,8 +2,8 @@
 
 Date: 2026-09-02
 Node: P4-01
-Status: implementation complete; independent Review rerun required
-Implementation commit: `89f49e258a3def9adfe95cc6a658fb7186c269fe`
+Status: implementation complete; ready for independent Review rerun
+Implementation commit: `63393ba74069ef658667e6c895207ddb702667c0`
 
 ## Delivered boundary
 
@@ -15,9 +15,14 @@ same ChangeSet, runs one server-allowlisted Verification profile, and writes a b
   conditions) is persisted on ChangePlan and bound into each Approval. The caller-facing preview
   is recursively immutable; server restart can recover the same contract.
 
-The new catalog Skill remains `draft` with `reviewed: false` until the independent Review
-subagent approves this node. It can therefore be inspected and tested, but cannot be published
-by the Skill lifecycle gate yet. This metadata is deliberately not advanced by the developer.
+The catalog Skill is now `enabled` with `reviewed: true`; its registered Tool set is contract-tested.
+R1/R2 token-bearing execution classes remain source-compatible for legacy unit tests but are not
+nanobot entry points. The only registered approval action records a user-confirmed intent and
+returns no capability token; the control-plane operator still performs the actual approval.
+
+Persistent projects start as `untrusted`. A separate control-plane trust action binds the current
+repository fingerprint and allowed-root id. Apply, Verify, Rollback and approval requests reject
+untrusted projects or any binding change.
 
 ## Safety boundary
 
@@ -59,10 +64,10 @@ verification only validates the controlled ExecutionBackend contract.
 
 The nanobot `devpilot_feature_delivery_propose` adapter has direct tests for proposal-only
 behavior, request mapping, strict nested patch schema, and stable allowlisted HTTP error-code
-mapping without returning an untrusted response body. The read-only `devpilot_get_changeset` and
-`devpilot_get_run_state` adapters expose the persisted state/Diff contract. The Skill remains
-unpublished until the independent Review gate passes; the registered Tool list and the Skill's
-P4 proposal-only contract are intentionally aligned.
+mapping without returning an untrusted response body. `devpilot_request_approval` records only a
+pending intent and never accepts or returns a capability token. The read-only
+`devpilot_get_changeset` and `devpilot_get_run_state` adapters expose the persisted state/Diff
+contract. The complete registered Tool set and Skill allowlist are checked for exact equality.
 
 Additional tests prove that an inexact confirmation does not write and that a real-looking
 remote backend is blocked before the P6 Sandbox Gate.
@@ -73,8 +78,13 @@ remote backend is blocked before the P6 Sandbox Gate.
 uv run pytest -q tests/test_p4_feature_delivery.py tests/test_p2a_migration.py tests/test_p2b_control_plane.py tests/test_p2b_durable_control_plane.py
 uv run ruff check src scripts tests
 uv run pyright
+uv lock --check
+uv run python scripts/secret_scan.py
+uv run python scripts/check_markdown.py
+uv run alembic upgrade head
+git diff --check
 ```
 
-The full repository regression and the phase evidence manifest must be regenerated after the
-final implementation commit and before the P4-01 independent Review rerun. This document does
-not itself authorize P4-02.
+Recorded result: `122 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
+diff checks passed. The three skips are Windows symbolic-link privilege checks. P4-02 remains
+subject to the independent read-only Review rerun; this acceptance file does not self-authorize it.

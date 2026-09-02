@@ -1,14 +1,14 @@
 {
   "phase": "P4",
   "node": "P4-01",
-  "status": "implementation_complete_review_pending",
-  "commit": "6d9c11a131d0d984952acb0653252455fcc2b254",
-  "implementation_commit": "79c56f3900a2205ca1a6b24aecee30d1739aa8d7",
-  "generated_at": "2026-09-02T08:11:31Z",
-  "completed_at": "2026-09-02T08:11:31Z",
+  "status": "ready_for_independent_review",
+  "commit": "63393ba74069ef658667e6c895207ddb702667c0",
+  "implementation_commit": "63393ba74069ef658667e6c895207ddb702667c0",
+  "generated_at": "2026-09-02T00:00:00Z",
+  "completed_at": "2026-09-02T00:00:00Z",
   "plan": {
-    "version": "2.1.0",
-    "sha256": "4f06504ad3273781f7c4cff2d919aec432ea0385014c8c94c42455709efbdec9"
+    "version": "2.2.0",
+    "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
   },
   "scope": [
     "FeatureDeliveryWorkflow",
@@ -31,7 +31,7 @@
     "pytest": {
       "command": "uv run pytest --tb=no",
       "exit_code": 0,
-      "result": "114 passed, 3 skipped",
+      "result": "122 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -46,7 +46,7 @@
     "migration": {
       "command": "uv run alembic upgrade head",
       "exit_code": 0,
-      "head": "0006_p4_contract_binding"
+      "head": "0007_project_trust"
     },
     "secret_scan": {
       "command": "uv run python scripts/secret_scan.py",
@@ -60,13 +60,13 @@
     "lock_check": {
       "command": "uv lock --check",
       "exit_code": 0,
-      "uv_lock_sha256": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D"
+      "uv_lock_sha256": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"
     },
     "license_check": {
       "command": "Get-FileHash LICENSE -Algorithm SHA256",
       "exit_code": 0,
       "license": "MIT",
-      "license_file_sha256": "04DC234BDCF09C8593F969A1ABD47F67291CA63592544B2CA1B3747019A4ABD3"
+      "license_file_sha256": "A395C61805163C4FE857E5821D13E44310A2FFD90D85FAA92BD4050116458398"
     },
     "windows_path_check": {
       "command": "Test-Path tests/fixtures/node-project and Resolve-Path",
@@ -82,48 +82,33 @@
   "review": {
     "required": true,
     "independent_subagent": true,
-    "status": "pending_rerun",
-    "review_plan": "docs/reviews/p4-01-review-rerun-20260902.md",
-    "review_checkout": "p4-review-20260902-r6",
-    "review_checkout_revision": "6d9c11a131d0d984952acb0653252455fcc2b254"
+    "status": "ready_for_independent_review",
+    "review_plan": "docs/reviews/p4-01-fix-rerun.md",
+    "review_checkout": "current-clean-worktree",
+    "review_checkout_revision": "63393ba74069ef658667e6c895207ddb702667c0"
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "F6B7803548D436CA35ACA355ED9EA93794F65571AA4141A939E16BC7AAE7EEE4"
+      "sha256": "6B513AA3147E9D0A6FF8F97D29900BB040411244FCA264AF86D37FD5E0C30D6F"
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
       "sha256": "5F5159E189206BDF5F728786D7F5F412EBDBBE9E54AF6467E5200C662C53108C"
     },
     {
-      "path": "docs/reviews/p4-01-product-review-rerun.md",
-      "sha256": "46B5C79B22A6D746B658817349214844960A35834C1913CE0A24468717F68870"
-    },
-    {
-      "path": "docs/reviews/p4-01-product-review-final.md",
-      "sha256": "70DBF7BAA48C4D84A8C3265407AD33F9598A7D83D3DBAB41015BF4239F51EB49"
-    },
-    {
-      "path": "docs/reviews/p4-01-product-review-closure.md",
-      "sha256": "9BDAF760761EB51C1084959908D2792F7F58E0FC09B20C3D2F32C63378DC2A4F"
-    },
-    {
-      "path": "docs/reviews/p4-01-final-decision.md",
-      "sha256": "c910e403f271bc6354e0e1b8f143293a5802d823b27eb28dab3579a564d708c3"
+      "path": "docs/reviews/p4-01-fix-rerun.md",
+      "sha256": "C7E901CCE2FEEB0A22D3F7D85DFA4C3CCC55EA0DA15233DD32812AA793301448"
     }
   ],
-  "known_external_changes": [
-    "tests/fixtures/node-project/src/index.js",
-    "tests/fixtures/node-project/test/index.test.js"
-  ],
   "git": {
-    "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
-    "review_target": "6d9c11a131d0d984952acb0653252455fcc2b254 in clean checkout",
-    "clean_checkout_revision": "6d9c11a131d0d984952acb0653252455fcc2b254",
+    "implementation_commit": "63393ba74069ef658667e6c895207ddb702667c0",
+    "review_target": "63393ba74069ef658667e6c895207ddb702667c0",
+    "clean_checkout_revision": "63393ba74069ef658667e6c895207ddb702667c0",
     "clean_checkout_status": "clean",
-    "live_worktree_clean": false,
-    "live_worktree_explanation": "The live checkout preserves two user-owned Node fixture edits outside the implementation scope; the independent review uses the clean checkout recorded above."
+    "live_worktree_clean": true,
+    "live_worktree_explanation": "No user-owned external changes are present in this checkout."
   },
-  "known_external_changes_note": "These two fixture edits were present before this P4 work and were intentionally not staged or modified. The implementation commit is reproducible; the worktree is not clean only because these user-owned fixture edits are preserved outside the implementation scope."
+  "known_external_changes": [],
+  "known_external_changes_note": "No external changes were detected in the reviewed checkout."
 }

@@ -35,8 +35,8 @@ python .\scripts\doctor.py --config .\config\inspect.example.json
 
 nanobot 的 Tool entry point 提供 `devpilot_inspect_project`、
 `devpilot_publish_artifact`、`devpilot_search_code`、`devpilot_read_code`、
-`devpilot_propose_changeset`、`devpilot_execute_changeset` 和
-`devpilot_rollback_changeset`。运行 nanobot
+`devpilot_propose_changeset`、`devpilot_feature_delivery_propose`、
+`devpilot_request_approval`、`devpilot_get_changeset` 和 `devpilot_get_run_state`。运行 nanobot
 前设置受控项目根和 DevPilot 数据目录：
 
 ```powershell
@@ -65,10 +65,10 @@ Windows 原生环境下的 workspace 限制和危险命令检查不等于 OS San
 它不是本机隔离的替代品，也不能作为执行授权本身。已有 `sandboxed-demo` 配置仅是 P0
 诊断占位，能力不满足时，R2 及以上执行必须关闭。
 
-P2B 的 proposal Tool 只创建预览，不能批准、apply 或 rollback，也不会接收审批令牌。
-提案完成后，nanobot 必须在对话中展示 Diff 并等待用户明确回复“执行”；随后
-`devpilot_execute_changeset` 才会完成 Apply 和 FC Sandbox 验证。回滚同样必须在对话中
-再次明确确认。原有控制面 API 保留作为内部执行接口，独立审批页面已移除，不再作为运行依赖。
+P2B/P4 的 proposal Tool 只创建预览，不能批准、Apply 或 Rollback，也不会接收审批令牌。
+提案完成后，nanobot 在对话中展示 Diff 并等待用户明确回复“执行”，然后调用
+`devpilot_request_approval` 登记审批意图；控制面用户动作才会签发一次性 token 并执行
+Apply/Verify/Rollback。独立审批页面已移除，不再作为运行依赖。
 控制面仍默认关闭；只有开发者明确设置
 `DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE=1` 且数据库已执行 `alembic upgrade head`
 后才可用于本机测试。它不是 OS Sandbox，不得处理真实生产仓库。
@@ -77,6 +77,8 @@ FC Sandbox 的可选依赖和真实连通性检查见
 [FC Sandbox runbook](docs/runbooks/local-development.md#fc-agent-sandbox-optional)。
 
 nanobot 不需要额外的 DevPilot 审批页面或前端补丁；只需安装 DevPilot 的 nanobot Tool entry points。
+首次使用项目时，控制面必须通过 `POST /v1/projects/{project_id}/trust` 并提交
+`{"confirmation":"trust"}` 显式登记项目；项目指纹或 allowed-root 变化后会自动拒绝 R1/R2。
 
 ## 阶段门禁
 
