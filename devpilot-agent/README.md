@@ -17,6 +17,10 @@ FC Agent Sandbox 的可选执行端口已实现，但云端连通性必须由用
 项目不改写 nanobot 的 Runtime、权限和执行边界；当前主流程通过 nanobot Tool 和对话确认完成
 Changeset 交付。独立审批 WebUI 已移除，主流程只通过 nanobot 对话完成确认和执行。
 
+新 AI/开发者接手本项目时，先阅读
+[P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
+再按其中的顺序读取冻结计划、当前 evidence 和模块代码。
+
 ## 本地目录约定
 
 nanobot 上游源码独立放在 `../nanobot-inspect/nanobot-main`，DeepSeek Harness 和 Codex Harness 仅作为只读参考资料。DevPilot 的运行数据放在 `local-data/`，该目录不会提交到 Git。
