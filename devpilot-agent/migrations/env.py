@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -13,14 +12,16 @@ from sqlalchemy import engine_from_config, pool
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from devpilot.migration_config import resolve_database_url  # noqa: E402
 from devpilot.storage import Base  # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
 config.set_main_option(
     "sqlalchemy.url",
-    os.environ.get("DEVPILOT_DATABASE_URL", config.get_main_option("sqlalchemy.url")),
+    resolve_database_url(config.get_main_option("sqlalchemy.url")),
 )
 target_metadata = Base.metadata
 

@@ -184,6 +184,12 @@ def test_ephemeral_manager_fails_closed_before_r1_or_r2_operation(tmp_path: Path
         manager.request_approval(change_set_id, "r1.apply", "执行")
     with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
         manager.approve(change_set_id)
+    with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
+        manager.apply(change_set_id, "unused", idempotency_key="apply-key")
+    with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
+        manager.verify(change_set_id, "unused", idempotency_key="verify-key")
+    with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
+        manager.rollback(change_set_id, "unused", idempotency_key="rollback-key")
     assert not (project / "main.py").exists()
 
 

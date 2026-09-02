@@ -1,10 +1,22 @@
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from devpilot.migration_config import resolve_database_url
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_explicit_migration_database_url_wins_over_process_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_DATABASE_URL", "sqlite:///wrong.db")
+
+    assert resolve_database_url("sqlite:///explicit.db") == "sqlite:///explicit.db"
+    assert resolve_database_url("sqlite:///local-data/devpilot.db") == "sqlite:///wrong.db"
 
 
 def migration_config(database_path: Path) -> Config:
