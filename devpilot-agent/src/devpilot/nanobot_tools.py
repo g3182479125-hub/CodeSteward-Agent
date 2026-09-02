@@ -946,7 +946,7 @@ class RequestApprovalTool(Tool):
     }
 )
 class ExecuteChangeSetTool(Tool):
-    """Apply one exact proposal using an externally issued approval token."""
+    """Legacy/test-only token adapter; not registered as a nanobot entry point."""
 
     _scopes = {"core"}
 
@@ -1022,7 +1022,7 @@ class ExecuteChangeSetTool(Tool):
     }
 )
 class VerifyChangeSetTool(Tool):
-    """Verify one applied ChangeSet using an externally issued capability."""
+    """Legacy/test-only token adapter; not registered as a nanobot entry point."""
 
     _scopes = {"core"}
 
@@ -1086,7 +1086,7 @@ class VerifyChangeSetTool(Tool):
     }
 )
 class RollbackChangeSetTool(Tool):
-    """Rollback an applied ChangeSet using an externally issued approval token."""
+    """Legacy/test-only token adapter; not registered as a nanobot entry point."""
 
     _scopes = {"core"}
 

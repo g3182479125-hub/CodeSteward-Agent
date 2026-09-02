@@ -18,26 +18,38 @@ from devpilot.nanobot_tools import (
 )
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
+from devpilot.storage import ProjectStore
 from devpilot.verification import VerificationProfile
 
 
-def make_manager(tmp_path: Path) -> tuple[ControlPlaneManager, Path]:
+def make_manager(
+    tmp_path: Path, execution_backend: object | None = None
+) -> tuple[ControlPlaneManager, Path]:
     project = tmp_path / "project"
     project.mkdir()
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    roots = AllowedRoots.from_paths([tmp_path])
+    root_id, fingerprint = roots.binding_for(project)
+    project_id = store.ensure_project(
+        str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
+    )
+    store.trust_project(
+        project_id, allowed_root_id=root_id, repo_fingerprint=fingerprint
+    )
     return (
-        ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path])),
+        ControlPlaneManager(
+            allowed_roots=roots,
+            store=store,
+            execution_backend=execution_backend,  # type: ignore[arg-type]
+        ),
         project,
     )
 
 
 def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
     backend = FakeExecutionBackend(stdout="syntax ok")
-    manager = ControlPlaneManager(
-        allowed_roots=AllowedRoots.from_paths([tmp_path]),
-        execution_backend=backend,
-    )
+    manager, project = make_manager(tmp_path, execution_backend=backend)
     preview = manager.preview(
         project_path=project,
         project_id=None,
@@ -64,13 +76,8 @@ def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -
 
 
 def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
     backend = FakeExecutionBackend(stdout="all self-tests passed")
-    manager = ControlPlaneManager(
-        allowed_roots=AllowedRoots.from_paths([tmp_path]),
-        execution_backend=backend,
-    )
+    manager, project = make_manager(tmp_path, execution_backend=backend)
     content = "assert 2 + 2 == 4\nprint('all self-tests passed')\n"
     preview = manager.preview(
         project_path=project,
@@ -101,12 +108,7 @@ def test_control_plane_fail_closed_for_non_fake_backend_without_p6_gate(tmp_path
         def run(self, _request: object) -> object:
             raise AssertionError("remote backend must not start before P6 gate")
 
-    project = tmp_path / "project"
-    project.mkdir()
-    manager = ControlPlaneManager(
-        allowed_roots=AllowedRoots.from_paths([tmp_path]),
-        execution_backend=RemoteBackend(),  # type: ignore[arg-type]
-    )
+    manager, project = make_manager(tmp_path, execution_backend=RemoteBackend())
     preview = manager.preview(
         project_path=project,
         project_id=None,
@@ -122,12 +124,7 @@ def test_control_plane_fail_closed_for_non_fake_backend_without_p6_gate(tmp_path
 
 
 def test_python_run_rejects_multiple_python_files(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    manager = ControlPlaneManager(
-        allowed_roots=AllowedRoots.from_paths([tmp_path]),
-        execution_backend=FakeExecutionBackend(),
-    )
+    manager, project = make_manager(tmp_path, execution_backend=FakeExecutionBackend())
     preview = manager.preview(
         project_path=project,
         project_id=None,
@@ -170,6 +167,24 @@ def test_control_plane_manager_preview_approve_apply_and_rollback(tmp_path: Path
     reverted = manager.rollback(change_set_id, str(rollback_approval["approval_token"]))
     assert reverted["status"] == "reverted"
     assert not (project / "src" / "main.py").exists()
+
+
+def test_ephemeral_manager_fails_closed_before_r1_or_r2_operation(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path]))
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+
+    with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
+        manager.request_approval(change_set_id, "r1.apply", "执行")
+    with pytest.raises(PatchError, match="PERSISTENCE_REQUIRED"):
+        manager.approve(change_set_id)
+    assert not (project / "main.py").exists()
 
 
 def test_control_plane_requires_approval_and_consumes_token(tmp_path: Path) -> None:

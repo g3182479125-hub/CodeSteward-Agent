@@ -597,7 +597,10 @@ class ControlPlaneManager:
 
     def _require_trusted_project(self, entry: _PendingChangeSet) -> None:
         if self.store is None:
-            return
+            raise PatchError(
+                "PERSISTENCE_REQUIRED",
+                "durable project trust is required for R1/R2 operations",
+            )
         try:
             root_id, fingerprint = self.patch_service.allowed_roots.binding_for(
                 entry.plan.project_path
