@@ -21,7 +21,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
-from .execution import ExecutionBackend, ExecutionError
+from .execution import ExecutionBackend, ExecutionError, FakeExecutionBackend
+from .execution_gate import P6ExecutionGate
 from .patches import (
     ApplyReceipt,
     AuthorizationGrant,
@@ -78,6 +79,15 @@ class VerificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
+
+
+class FeatureDeliveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_path: str = Field(min_length=1)
+    patches: list[PatchPayload] = Field(min_length=1, max_length=12)
+    evidence_ids: list[str] = Field(min_length=1, max_length=32)
+    verification_profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
 
 
 class _PendingChangeSet:
@@ -157,10 +167,12 @@ class ControlPlaneManager:
         token_ttl: timedelta = DEFAULT_TOKEN_TTL,
         execution_backend: ExecutionBackend | None = None,
         artifacts_root: str | Path | None = None,
+        p6_gate: P6ExecutionGate | None = None,
     ) -> None:
         self.store = store
         self.token_ttl = token_ttl
         self.execution_backend = execution_backend
+        self.p6_gate = p6_gate
         self.artifacts_root = (
             Path(artifacts_root).expanduser().resolve() if artifacts_root is not None else None
         )
@@ -208,6 +220,13 @@ class ControlPlaneManager:
         """Return the server-owned run link without changing the Preview contract."""
         with self._mutex:
             return self._require(change_set_id).run_id
+
+    def deny_execution(self, change_set_id: str, code: str) -> None:
+        """Persist a server-side execution denial without consuming approval."""
+        with self._mutex:
+            entry = self._require(change_set_id)
+            self._event(entry, "execution.capability_denied", {"code": code})
+            self._finish_run(entry, "failed", {"code": code})
 
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
@@ -280,7 +299,25 @@ class ControlPlaneManager:
             if replay is not None:
                 return replay
             if self.execution_backend is None:
-                raise PatchError("SANDBOX_UNAVAILABLE", "no execution backend is configured")
+                code = "EXECUTION_BACKEND_UNAVAILABLE"
+                self._event(entry, "execution.capability_denied", {"code": code})
+                self._finish_run(entry, "failed", {"code": code})
+                raise PatchError(
+                    "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
+                )
+            if not isinstance(self.execution_backend, FakeExecutionBackend) and (
+                self.p6_gate is None or not self.p6_gate.permits(self.execution_backend.name)
+            ):
+                self._event(
+                    entry,
+                    "execution.capability_denied",
+                    {"code": "EXECUTION_BACKEND_UNAVAILABLE"},
+                )
+                self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_UNAVAILABLE"})
+                raise PatchError(
+                    "EXECUTION_BACKEND_UNAVAILABLE",
+                    "real execution is unavailable until the server-owned P6 gate passes",
+                )
             if entry.plan.change_set.status is not ChangeSetStatus.APPLIED:
                 raise PatchError(
                     "CHANGESET_NOT_VERIFIABLE",
@@ -289,6 +326,12 @@ class ControlPlaneManager:
             try:
                 request = build_verification_request(entry.plan, profile)
             except ValueError as exc:
+                self._event(
+                    entry,
+                    "changeset.verification_failed",
+                    {"code": "VERIFICATION_PROFILE_UNSUPPORTED"},
+                )
+                self._finish_run(entry, "failed", {"code": "VERIFICATION_PROFILE_UNSUPPORTED"})
                 raise PatchError("VERIFICATION_PROFILE_UNSUPPORTED", str(exc)) from exc
             self._consume_approval(entry, approval_token, VERIFY_CAPABILITY)
             self._reserve_idempotency(
@@ -308,6 +351,14 @@ class ControlPlaneManager:
                 self._event(entry, "changeset.verification_failed", {"code": exc.code})
                 self._finish_run(entry, "failed", {"code": exc.code})
                 raise PatchError("VERIFICATION_FAILED", "sandbox verification failed") from exc
+            except Exception as exc:
+                self._event(
+                    entry,
+                    "changeset.verification_failed",
+                    {"code": "EXECUTION_BACKEND_FAILED"},
+                )
+                self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_FAILED"})
+                raise PatchError("VERIFICATION_FAILED", "execution backend failed") from exc
             target = (
                 ChangeSetStatus.VERIFIED
                 if result.exit_code == 0
@@ -687,6 +738,7 @@ def create_app(
             store=store,
             execution_backend=execution_backend,
             artifacts_root=resolved_data_dir,
+            p6_gate=P6ExecutionGate.load(resolved_data_dir / "p6-gate.json"),
         )
     app = FastAPI(title="DevPilot Local Control Plane", version="0.2.0")
     app.add_middleware(
@@ -731,6 +783,21 @@ def create_app(
             project_id=payload.project_id,
             patches=[item.to_file_patch() for item in payload.patches],
         )
+
+    @app.post("/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
+    def feature_delivery_proposal(payload: FeatureDeliveryRequest) -> dict[str, Any]:
+        from .workflows import FeatureDeliveryWorkflow, WorkflowError
+
+        try:
+            proposal = FeatureDeliveryWorkflow(manager).propose(
+                project_path=payload.project_path,
+                patches=[item.to_file_patch() for item in payload.patches],
+                evidence_ids=payload.evidence_ids,
+                verification_profile=payload.verification_profile,
+            )
+        except WorkflowError as exc:
+            raise PatchError(exc.code, exc.message) from exc
+        return proposal.to_dict()
 
     @app.get("/v1/change-sets/{change_set_id}")
     def get_change_set(change_set_id: str) -> dict[str, Any]:

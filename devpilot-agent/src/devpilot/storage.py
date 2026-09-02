@@ -22,6 +22,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
+from .redaction import redact_sensitive_payload
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -235,12 +237,13 @@ class ProjectStore:
         return run_id
 
     def append_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        safe_payload = redact_sensitive_payload(payload)
         with self._session_factory.begin() as session:
             session.add(
                 RunEventRecord(
                     run_id=run_id,
                     event_type=event_type,
-                    payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    payload_json=json.dumps(safe_payload, ensure_ascii=False, sort_keys=True),
                     created_at=utc_now(),
                 )
             )
@@ -276,7 +279,9 @@ class ProjectStore:
                 RunEventRecord(
                     run_id=run_id,
                     event_type=f"run.{status}",
-                    payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    payload_json=json.dumps(
+                        redact_sensitive_payload(payload), ensure_ascii=False, sort_keys=True
+                    ),
                     created_at=utc_now(),
                 )
             )

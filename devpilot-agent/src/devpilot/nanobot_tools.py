@@ -418,6 +418,25 @@ def _post_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        f"{_control_plane_url()}/v1/feature-delivery/proposals",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        response_body = response.read(256 * 1024 + 1)
+    if len(response_body) > 256 * 1024:
+        raise ValueError("control-plane response is too large")
+    result = json.loads(response_body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("control-plane response is invalid")
+    result["requires_user_confirmation"] = True
+    return result
+
+
 def _http_error_message(exc: HTTPError) -> str:
     """Expose bounded local API diagnostics without leaking response headers or tokens."""
     try:
@@ -597,6 +616,63 @@ class ProposeChangeSetTool(Tool):
             return ToolResult.error(f"P2B proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P2B proposal rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_path": {"type": "string", "minLength": 1},
+            "patches": {"type": "array", "minItems": 1, "maxItems": 12},
+            "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "verification_profile": {
+                "type": "string",
+                "enum": ["python-syntax", "python-run", "node-syntax"],
+            },
+        },
+        "required": ["project_path", "patches", "evidence_ids"],
+        "additionalProperties": False,
+    }
+)
+class FeatureDeliveryProposeTool(Tool):
+    """Create a FeatureDeliveryWorkflow proposal from bound read-only evidence."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_feature_delivery_propose"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a feature-delivery proposal using previously collected evidence. "
+            "This is proposal-only and never requests approval or writes project files."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            payload = {
+                "project_path": str(kwargs["project_path"]),
+                "patches": kwargs["patches"],
+                "evidence_ids": kwargs["evidence_ids"],
+            }
+            if kwargs.get("verification_profile") is not None:
+                payload["verification_profile"] = str(kwargs["verification_profile"])
+            result = _post_feature_proposal(payload)
+            result["next_step"] = (
+                "展示精确 Diff 并停止等待用户；批准动作必须由控制面用户完成，"
+                "Skill 不得签发或传播 approval token。"
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 feature proposal rejected: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 feature proposal rejected: {type(exc).__name__}")
 
 
 @tool_parameters(

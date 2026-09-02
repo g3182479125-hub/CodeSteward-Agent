@@ -94,6 +94,33 @@ def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> No
     assert backend.requests[0].files[0].content == content.encode("utf-8")
 
 
+def test_control_plane_fail_closed_for_non_fake_backend_without_p6_gate(tmp_path: Path) -> None:
+    class RemoteBackend:
+        name = "fc-agent-sandbox"
+
+        def run(self, _request: object) -> object:
+            raise AssertionError("remote backend must not start before P6 gate")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        execution_backend=RemoteBackend(),  # type: ignore[arg-type]
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    with pytest.raises(PatchError, match="EXECUTION_BACKEND_UNAVAILABLE"):
+        manager.verify(change_set_id, str(verify_approval["approval_token"]))
+
+
 def test_python_run_rejects_multiple_python_files(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

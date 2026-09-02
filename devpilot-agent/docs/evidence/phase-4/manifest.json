@@ -1,0 +1,79 @@
+{
+  "phase": "P4",
+  "node": "P4-01",
+  "status": "implementation_complete_review_pending",
+  "commit": "068ac07dc36dbae726bddce8dff810b57c0e78fc",
+  "generated_at": "2026-09-02T07:18:07+00:00",
+  "completed_at": "2026-09-02T07:18:07+00:00",
+  "plan": {
+    "version": "2.1.0",
+    "sha256": "4f06504ad3273781f7c4cff2d919aec432ea0385014c8c94c42455709efbdec9"
+  },
+  "scope": [
+    "FeatureDeliveryWorkflow",
+    "external r1.apply and r2.verify capability boundary",
+    "durable ChangeSet-to-Run link",
+    "server-owned redacted feature-delivery Artifact",
+    "P6 fail-closed execution boundary"
+  ],
+  "verification": {
+    "pytest": {
+      "command": "uv run pytest",
+      "exit_code": 0,
+      "result": "111 passed, 3 skipped",
+      "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
+    },
+    "ruff": {
+      "command": "uv run ruff check src scripts tests",
+      "exit_code": 0
+    },
+    "pyright": {
+      "command": "uv run pyright",
+      "exit_code": 0,
+      "result": "0 errors, 0 warnings, 0 informations"
+    },
+    "migration": {
+      "command": "uv run alembic upgrade head",
+      "exit_code": 0,
+      "head": "0005_p4_run_link"
+    },
+    "secret_scan": {
+      "command": "uv run python scripts/secret_scan.py",
+      "exit_code": 0,
+      "result": "no high-confidence secret pattern found"
+    },
+    "markdown_check": {
+      "command": "uv run python scripts/check_markdown.py",
+      "exit_code": 0
+    },
+    "lock_check": {
+      "command": "uv lock --check",
+      "exit_code": 0,
+      "uv_lock_sha256": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  },
+  "review": {
+    "required": true,
+    "independent_subagent": true,
+    "status": "pending_rerun"
+  },
+  "artifacts": [
+    {
+      "path": "docs/evidence/phase-4/p4-01-acceptance.md",
+      "sha256": "BC39E469B5560438F210C9D57677AA559FAFCBB51E63A588989D35C9EBB2AC5F"
+    },
+    {
+      "path": "docs/reviews/p4-01-product-review-rerun.md",
+      "sha256": "46B5C79B22A6D746B658817349214844960A35834C1913CE0A24468717F68870"
+    }
+  ],
+  "known_external_changes": [
+    "tests/fixtures/node-project/src/index.js",
+    "tests/fixtures/node-project/test/index.test.js"
+  ],
+  "known_external_changes_note": "These two fixture edits were present before this P4 work and were intentionally not staged or modified. The implementation commit is reproducible; the worktree is not clean only because these user-owned fixture edits are preserved outside the implementation scope."
+}

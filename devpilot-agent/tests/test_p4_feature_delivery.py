@@ -4,9 +4,10 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from devpilot.code_access import CodeAccessService
-from devpilot.control_plane import ControlPlaneManager
+from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
 from devpilot.patches import FilePatch
@@ -38,7 +39,12 @@ _BASELINE = (
     "def health() -> dict[str, str]:\n"
     '    return {"status": "old"}\n'
 )
-_UPDATED = _BASELINE.replace('"old"', '"ok"')
+_UPDATED = _BASELINE.replace(
+    '    return {"status": "old"}\n',
+    '    return {"status": "ok"}\n\n\n@app.get("/internal/status")\n'
+    "def internal_status() -> dict[str, str]:\n"
+    '    return {"status": "ready"}\n',
+)
 
 
 def _patch(project: Path) -> FilePatch:
@@ -74,6 +80,9 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     )
 
     assert proposal.to_dict()["requires_user_confirmation"] is True
+    assert proposal.preview["patch_hash"] == proposal.patch_hash
+    assert proposal.preview["scope_hash"] == proposal.scope_hash
+    assert manager.get(proposal.change_set_id)["diff"] == proposal.preview["diff"]
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
     apply_approval = manager.approve(proposal.change_set_id)
@@ -133,6 +142,76 @@ def test_feature_delivery_run_link_survives_manager_restart(tmp_path: Path) -> N
     assert recovered.get_run_id(proposal.change_set_id) == proposal.run_id
     assert proposal.run_id is not None
     assert store.get_run_status(proposal.run_id) == "running"
+
+
+def test_feature_delivery_http_handoff_and_explicit_rollback(tmp_path: Path) -> None:
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend(stdout="safe"))
+    evidence_id = _evidence(project, store)
+    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    response = client.post(
+        "/v1/feature-delivery/proposals",
+        json={
+            "project_path": str(project),
+            "patches": [
+                {
+                    "relative_path": "app.py",
+                    "operation": "update",
+                    "content": _UPDATED,
+                    "expected_sha256": hashlib.sha256(_BASELINE.encode()).hexdigest(),
+                }
+            ],
+            "evidence_ids": [evidence_id],
+            "verification_profile": "python-syntax",
+        },
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    change_set_id = payload["change_set_id"]
+    assert payload["requires_user_confirmation"] is True
+    assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
+
+    apply_approval = client.post(f"/v1/change-sets/{change_set_id}/approve")
+    apply_token = apply_approval.json()["approval_token"]
+    applied = client.post(
+        f"/v1/change-sets/{change_set_id}/apply",
+        headers={
+            "Authorization": f"DevPilotGrant {apply_token}",
+            "Idempotency-Key": "p4-http-apply",
+        },
+    )
+    assert applied.status_code == 200
+    assert (project / "app.py").read_text(encoding="utf-8") == _UPDATED
+
+    verify_approval = client.post(
+        f"/v1/change-sets/{change_set_id}/approve",
+        json={"capability": "r2.verify"},
+    )
+    verified = client.post(
+        f"/v1/change-sets/{change_set_id}/verify",
+        headers={
+            "Authorization": f"DevPilotGrant {verify_approval.json()['approval_token']}",
+            "Idempotency-Key": "p4-http-verify",
+        },
+        json={"profile": "python-syntax"},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "verified"
+    assert manager.get(change_set_id)["diff"] == payload["preview"]["diff"]
+
+    rollback_approval = client.post(
+        f"/v1/change-sets/{change_set_id}/approve",
+        json={"capability": "r1.rollback"},
+    )
+    reverted = client.post(
+        f"/v1/change-sets/{change_set_id}/rollback",
+        headers={
+            "Authorization": f"DevPilotGrant {rollback_approval.json()['approval_token']}",
+            "Idempotency-Key": "p4-http-rollback",
+        },
+    )
+    assert reverted.status_code == 200
+    assert reverted.json()["status"] == "reverted"
+    assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
 
 def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ metadata:
       - devpilot_inspect_project
       - devpilot_search_code
       - devpilot_read_code
+      - devpilot_feature_delivery_propose
       - devpilot_propose_changeset
     risk_level: R1
     source: catalog
@@ -41,6 +42,8 @@ metadata:
 - `devpilot_inspect_project`：确认技术栈、入口、测试和风险，R0 只读。
 - `devpilot_search_code`：在已登记项目中进行有界文本检索，R0 只读。
 - `devpilot_read_code`：读取有界源码行并取得前置 SHA-256，R0 只读。
+- `devpilot_feature_delivery_propose`：使用已绑定的 inspect/search/read 证据创建 FeatureDelivery
+  Proposal；只能提案，不能请求审批或写项目文件。
 - `devpilot_propose_changeset`：创建不可变 Preview/Diff；只能提案，不能批准或写文件。
 
 Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回；

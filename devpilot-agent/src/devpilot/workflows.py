@@ -208,6 +208,9 @@ class FeatureDeliveryWorkflow:
     ) -> FeatureDeliveryResult:
         backend = self.manager.execution_backend
         if not isinstance(backend, FakeExecutionBackend):
+            self.manager.deny_execution(
+                proposal.change_set_id, "EXECUTION_BACKEND_UNAVAILABLE"
+            )
             raise WorkflowError(
                 "AUTONOMOUS_REPAIR_BLOCKED",
                 "real execution remains blocked until the P6 Sandbox Gate passes",
@@ -237,22 +240,28 @@ class FeatureDeliveryWorkflow:
             applied,
             verification,
         )
-        artifact = ArtifactService(self.artifacts_root).write_markdown(
-            project_id=proposal.project_id,
-            run_id=proposal.run_id,
-            name="feature-delivery.md",
-            content=report,
-        )
-        artifact_id = str(uuid.uuid4())
-        relative_path = artifact.path.relative_to(self.artifacts_root).as_posix()
-        store.record_artifact(
-            artifact_id=artifact_id,
-            project_id=proposal.project_id,
-            run_id=proposal.run_id,
-            relative_path=relative_path,
-            sha256=artifact.sha256,
-            size_bytes=artifact.size_bytes,
-        )
+        try:
+            artifact = ArtifactService(self.artifacts_root).write_markdown(
+                project_id=proposal.project_id,
+                run_id=proposal.run_id,
+                name="feature-delivery.md",
+                content=report,
+            )
+            artifact_id = str(uuid.uuid4())
+            relative_path = artifact.path.relative_to(self.artifacts_root).as_posix()
+            store.record_artifact(
+                artifact_id=artifact_id,
+                project_id=proposal.project_id,
+                run_id=proposal.run_id,
+                relative_path=relative_path,
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+            )
+        except (OSError, ValueError) as exc:
+            self.manager.deny_execution(proposal.change_set_id, "ARTIFACT_WRITE_FAILED")
+            raise WorkflowError(
+                "WORKFLOW_ARTIFACT_WRITE_FAILED", "feature delivery Artifact could not be recorded"
+            ) from exc
         return FeatureDeliveryResult(
             change_set_id=proposal.change_set_id,
             status=str(verification.get("status", "unknown")),
