@@ -2,8 +2,8 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "ready_for_independent_review",
-  "commit": "b4bb6ac",
-  "implementation_commit": "b4bb6ac",
+  "commit": "2958ae3",
+  "implementation_commit": "2958ae3",
   "generated_at": "2026-09-02T00:00:00Z",
   "completed_at": "2026-09-02T00:00:00Z",
   "plan": {
@@ -31,7 +31,7 @@
     "pytest": {
       "command": "uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/manifest-basetemp -p no:cacheprovider",
       "exit_code": 0,
-      "result": "123 passed, 3 skipped",
+      "result": "124 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -84,13 +84,14 @@
     "independent_subagent": true,
     "status": "ready_for_independent_review",
     "review_plan": "docs/reviews/p4-01-fix-rerun.md",
-    "review_checkout": "current-clean-worktree",
-    "review_checkout_revision": "b4bb6ac"
+    "review_checkout": "implementation-commit:2958ae3",
+    "review_checkout_revision": "2958ae3",
+    "review_target_note": "The review target is the implementation commit; later evidence-only documentation commits are excluded."
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "C0FE1464B577849ED07F5600AB48E4C08DE16CE837E6E9C48966BA850AFE3F43"
+      "sha256": "DADA5FB638CE04A86F2F9F0F1B1A1217C10CBEA5165030CC799007754B7319F6"
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
@@ -98,14 +99,14 @@
     },
     {
       "path": "docs/reviews/p4-01-fix-rerun.md",
-      "sha256": "4CFB7FEE471BC49355BA7304DC98A4EE9C8785882BD574C2CC3811C950C3AFF8"
+      "sha256": "D533E4995C78E0065136D01C0B2D6AA23B70BEDC766FE4F2999DA5F111B00A3B"
     }
   ],
   "git": {
-    "implementation_commit": "b4bb6ac",
-    "review_target": "b4bb6ac",
-    "clean_checkout_revision": "b4bb6ac",
-    "clean_checkout_status": "clean",
+    "implementation_commit": "2958ae3",
+    "review_target": "2958ae3",
+    "clean_checkout_revision": "2958ae3",
+    "clean_checkout_status": "clean at implementation review target",
     "live_worktree_clean": true,
     "live_worktree_explanation": "No user-owned external changes are present in this checkout."
   },

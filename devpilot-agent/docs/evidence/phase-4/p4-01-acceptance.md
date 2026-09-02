@@ -3,7 +3,8 @@
 Date: 2026-09-02
 Node: P4-01
 Status: implementation complete; ready for independent Review rerun
-Implementation commit: `b4bb6ac` (`fix: require durable trust for control-plane execution`)
+Implementation commit: `2958ae3` (includes durable trust fail-closed and environment-independent migration gates)
+Review target: `2958ae3`; later documentation-only commits are excluded from the implementation review target.
 
 ## Delivered boundary
 
@@ -85,6 +86,6 @@ uv run alembic upgrade head
 git diff --check
 ```
 
-Recorded result: `123 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
+Recorded result: `124 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
 diff checks passed. The three skips are Windows symbolic-link privilege checks. P4-02 remains
 subject to the independent read-only Review rerun; this acceptance file does not self-authorize it.

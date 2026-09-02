@@ -1,7 +1,7 @@
 # P4-01 修复后复核记录
 
 Date: 2026-09-02
-Implementation commit: `b4bb6ac`
+Implementation commit: `2958ae3`
 Decision: `ready-for-independent-review`
 
 ## Closed findings
@@ -14,12 +14,14 @@ Decision: `ready-for-independent-review`
 - M-02：manifest 改为绑定本次实现提交、冻结计划 v2.2.0、当前 uv.lock 和当前测试结果。
 - M-03：项目记录新增 `trust_state`、`repo_fingerprint`、`allowed_root_id`；项目默认
   `untrusted`，只有控制面显式 trust 后才允许 R1/R2，指纹或 root 绑定变化立即拒绝。
-- B-01：无 `ProjectStore` 的临时管理器现在只能生成 Preview；审批意图、批准、Apply、
+- B-02：无 `ProjectStore` 的临时管理器现在只能生成 Preview；审批意图、批准、Apply、
   Verify 和 Rollback 均以 `PERSISTENCE_REQUIRED` 失败关闭，并有回归测试覆盖。
+- M-04：迁移配置只在使用 Alembic 默认占位地址时读取 `DEVPILOT_DATABASE_URL`；测试显式
+  指定的数据库地址优先，避免外部环境污染验收结果。
 
 ## Verification
 
-- `uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/review-basetemp -p no:cacheprovider`：`123 passed, 3 skipped`
+- `DEVPILOT_DATABASE_URL=sqlite:///E:/codex-local/pytest-temp/should-not-be-used.db uv --no-cache run pytest --tb=no -r a -o addopts='' --basetemp E:/codex-local/pytest-temp/review-basetemp -p no:cacheprovider`：`124 passed, 3 skipped`
 - `uv --no-cache run ruff check --no-cache src scripts tests`：passed
 - `uv run pyright`：0 errors, 0 warnings, 0 informations
 - `uv --no-cache lock --check`：passed
