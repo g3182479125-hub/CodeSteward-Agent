@@ -2,7 +2,7 @@
 
 Date: 2026-09-02
 Implementation commit: `2958ae3`
-Decision: `ready-for-independent-review`
+Decision: `approve` (independent final Review; P4-02 unlocked)
 
 ## Closed findings
 
@@ -30,4 +30,5 @@ Decision: `ready-for-independent-review`
 - `uv run alembic upgrade head`：`0007_project_trust`
 - `git diff --check`：passed
 
-P4-02 仅在新的独立只读 Review 对本记录、manifest 和 clean checkout 复核通过后开始。
+最终独立只读 Review 已通过；P4-02 已解锁。历史 Review 文档中的旧结论保留为历史记录，
+不代表当前实现状态。

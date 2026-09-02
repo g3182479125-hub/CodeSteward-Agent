@@ -1,7 +1,7 @@
 {
   "phase": "P4",
   "node": "P4-01",
-  "status": "ready_for_independent_review",
+  "status": "approved_for_p4_02",
   "commit": "2958ae3",
   "implementation_commit": "2958ae3",
   "generated_at": "2026-09-02T00:00:00Z",
@@ -82,16 +82,17 @@
   "review": {
     "required": true,
     "independent_subagent": true,
-    "status": "ready_for_independent_review",
+    "status": "approve",
     "review_plan": "docs/reviews/p4-01-fix-rerun.md",
     "review_checkout": "implementation-commit:2958ae3",
     "review_checkout_revision": "2958ae3",
-    "review_target_note": "The review target is the implementation commit; later evidence-only documentation commits are excluded."
+    "review_target_note": "The review target is the implementation commit; later evidence-only documentation commits are excluded.",
+    "final_review_report": "docs/reviews/p4-01-independent-review-final-20260902.md"
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "DADA5FB638CE04A86F2F9F0F1B1A1217C10CBEA5165030CC799007754B7319F6"
+      "sha256": "6C30D453D212B23C0BF9745792FADBA873A4C8E05AEF09DD3687647FE026A1F4"
     },
     {
       "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
@@ -99,7 +100,11 @@
     },
     {
       "path": "docs/reviews/p4-01-fix-rerun.md",
-      "sha256": "D533E4995C78E0065136D01C0B2D6AA23B70BEDC766FE4F2999DA5F111B00A3B"
+      "sha256": "F7401F5954C604FDF655C63A4A64A992265A2785D69A9816EF72A27C517F82C9"
+    },
+    {
+      "path": "docs/reviews/p4-01-independent-review-final-20260902.md",
+      "sha256": "58EAB907FBF3C0605E99E6F13F3B9F54042A49C964F888268E01AC5CB5A774E9"
     }
   ],
   "git": {

@@ -2,7 +2,7 @@
 
 Date: 2026-09-02
 Node: P4-01
-Status: implementation complete; ready for independent Review rerun
+Status: implementation complete; independently reviewed and approved for P4-02
 Implementation commit: `2958ae3` (includes durable trust fail-closed and environment-independent migration gates)
 Review target: `2958ae3`; later documentation-only commits are excluded from the implementation review target.
 
@@ -87,5 +87,5 @@ git diff --check
 ```
 
 Recorded result: `124 passed, 3 skipped`; Ruff, Pyright, lock, Secret, Markdown, migration and
-diff checks passed. The three skips are Windows symbolic-link privilege checks. P4-02 remains
-subject to the independent read-only Review rerun; this acceptance file does not self-authorize it.
+diff checks passed. The three skips are Windows symbolic-link privilege checks. The independent
+read-only Review approved P4-01; see `docs/reviews/p4-01-independent-review-final-20260902.md`.
