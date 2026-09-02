@@ -19,6 +19,8 @@ P3 沙箱接入的核心交付可以结束。当前北京地域账号已通过�
 - 临时探针回滚后不存在；原有 fixture 的用户修改被保留。
 - 真实结果未记录 API Key；FC 适配器仍通过环境变量取凭据，未把凭据放入 Tool、Prompt、
   Session、前端或 Git。
+- 本次修复后，FC 创建请求显式携带 `allow_internet_access=False`；对应契约测试通过，
+  真实 `sandbox-check` 和端到端验证再次通过。
 
 ## 边界检查
 

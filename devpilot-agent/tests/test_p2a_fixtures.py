@@ -42,33 +42,33 @@ def apply_with_test_grant(service: StructuredPatchService, project: Path, patch:
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "relative_path", "old", "new"),
+    ("fixture_name", "relative_path", "old_fragment", "new_fragment"),
     [
         (
             "python-project",
             "src/demo/main.py",
-            (
-                b'def main() -> int:\n    return 0\n\n\n'
-                b'if __name__ == "__main__":\n    raise SystemExit(main())\n'
-            ),
-            (
-                b'def main() -> int:\n    return 1\n\n\n'
-                b'if __name__ == "__main__":\n    raise SystemExit(main())\n'
-            ),
+            b"    return 0",
+            b"    return 1",
         ),
         (
             "node-project",
             "src/index.js",
-            b'export function main() {\n  return "ok";\n}\n',
-            b'export function main() {\n  return "updated";\n}\n',
+            b'  return "ok";',
+            b'  return "updated";',
         ),
     ],
 )
 def test_python_and_node_fixtures_support_diff_apply_and_rollback(
-    tmp_path: Path, fixture_name: str, relative_path: str, old: bytes, new: bytes
+    tmp_path: Path,
+    fixture_name: str,
+    relative_path: str,
+    old_fragment: bytes,
+    new_fragment: bytes,
 ) -> None:
     project = copy_fixture(tmp_path, fixture_name)
-    assert (project / relative_path).read_bytes() == old
+    old = (project / relative_path).read_bytes()
+    assert old_fragment in old
+    new = old.replace(old_fragment, new_fragment, 1)
     service = StructuredPatchService(allowed_roots=AllowedRoots.from_paths([tmp_path]))
 
     plan, receipt = apply_with_test_grant(

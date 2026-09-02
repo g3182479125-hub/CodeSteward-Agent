@@ -11,6 +11,8 @@
 - `FakeExecutionBackend` 在本地提供确定性契约测试，不执行任何命令。
 - `FCSandboxBackend` 懒加载 `e2b-code-interpreter`，创建短生命周期 Sandbox，写入显式文件，
   执行命令，返回 stdout/stderr/exit code，最后无论成功失败都调用 `kill()`。
+- 创建 Sandbox 时将请求级网络策略显式传递为 `allow_internet_access`；当前验证 Profile
+  默认传递 `False`，避免只在本地策略层检查而未约束云端实例。
 - FC 适配器不注册为 nanobot Tool，不接收模型上下文，不读取本机项目目录，不写回本地仓库。
 - `devpilot sandbox-check` 提供固定的无害连通性检查，只写入一个测试文件并执行固定 print 命令。
 - API Key、API URL、Domain 只从环境变量读取，诊断和错误输出不打印密钥。

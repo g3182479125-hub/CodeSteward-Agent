@@ -100,8 +100,11 @@ def test_fc_result_contains_audit_metadata_and_bounded_output(
             return None
 
     class Factory:
+        create_kwargs: dict[str, object] = {}
+
         @classmethod
         def create(cls, **kwargs: object) -> FakeSandbox:
+            cls.create_kwargs = kwargs
             return FakeSandbox()
 
     monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
@@ -127,3 +130,4 @@ def test_fc_result_contains_audit_metadata_and_bounded_output(
     assert result.bundle_bytes == len(b"print(1)")
     assert result.region == ""
     assert result.template == "code-interpreter-v1"
+    assert Factory.create_kwargs["allow_internet_access"] is False

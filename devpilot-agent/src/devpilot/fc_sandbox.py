@@ -114,6 +114,7 @@ class FCSandboxBackend:
                 api_url=self.config.api_url,
                 domain=self.config.domain,
                 timeout=request.timeout_seconds,
+                allow_internet_access=self.config.allow_network and request.network_allowed,
             )
             if sandbox_handle is None:
                 raise ExecutionError("FC_SANDBOX_CREATE_FAILED", "FC Sandbox returned no handle")
