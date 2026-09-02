@@ -2,8 +2,8 @@
   "phase": "P4",
   "node": "P4-01",
   "status": "implementation_complete_review_pending",
-  "commit": "61179185473de93ac34af2b949de1eaa982f5caa",
-  "implementation_commit": "61179185473de93ac34af2b949de1eaa982f5caa",
+  "commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+  "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
   "generated_at": "2026-09-02T08:11:31Z",
   "completed_at": "2026-09-02T08:11:31Z",
   "plan": {
@@ -46,7 +46,7 @@
     "migration": {
       "command": "uv run alembic upgrade head",
       "exit_code": 0,
-      "head": "0005_p4_run_link"
+      "head": "0006_p4_contract_binding"
     },
     "secret_scan": {
       "command": "uv run python scripts/secret_scan.py",
@@ -62,6 +62,18 @@
       "exit_code": 0,
       "uv_lock_sha256": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D"
     },
+    "license_check": {
+      "command": "Get-FileHash LICENSE -Algorithm SHA256",
+      "exit_code": 0,
+      "license": "MIT",
+      "license_file_sha256": "04DC234BDCF09C8593F969A1ABD47F67291CA63592544B2CA1B3747019A4ABD3"
+    },
+    "windows_path_check": {
+      "command": "Test-Path tests/fixtures/node-project and Resolve-Path",
+      "exit_code": 0,
+      "target_exists": true,
+      "target_relative_path": "tests/fixtures/node-project"
+    },
     "diff_check": {
       "command": "git diff --check",
       "exit_code": 0
@@ -70,12 +82,19 @@
   "review": {
     "required": true,
     "independent_subagent": true,
-    "status": "pending_rerun"
+    "status": "pending_rerun",
+    "review_plan": "docs/reviews/p4-01-review-rerun-20260902.md",
+    "review_checkout": "p4-review-20260902-r3",
+    "review_checkout_revision": "89f49e258a3def9adfe95cc6a658fb7186c269fe"
   },
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-01-acceptance.md",
-      "sha256": "42a03dce29e672bc0046d963620ba14cc3c846e922b4e8594d61995b1eb5381e"
+      "sha256": "D08B533C1E732CF7C985040502A6D9AF54090C96AB12599C09F3504FEBDA768C"
+    },
+    {
+      "path": "docs/evidence/phase-4/g01-runtime-evidence.json",
+      "sha256": "AD36783FD39E6F68F2318ED65F8E5A2B434EF4D7FA898948A13B75987EE6F009"
     },
     {
       "path": "docs/reviews/p4-01-product-review-rerun.md",
@@ -99,10 +118,12 @@
     "tests/fixtures/node-project/test/index.test.js"
   ],
   "git": {
-    "implementation_commit": "61179185473de93ac34af2b949de1eaa982f5caa",
-    "review_target": "implementation commit; evidence-only review report may be added afterward",
-    "clean_tree": false,
-    "clean_tree_explanation": "The implementation commit is reproducible. The live checkout preserves two user-owned fixture edits and the prior independent blocked-review report outside the implementation scope; the independent rerun must use a clean checkout of implementation_commit."
+    "implementation_commit": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+    "review_target": "89f49e258a3def9adfe95cc6a658fb7186c269fe in clean checkout",
+    "clean_checkout_revision": "89f49e258a3def9adfe95cc6a658fb7186c269fe",
+    "clean_checkout_status": "clean",
+    "live_worktree_clean": false,
+    "live_worktree_explanation": "The live checkout preserves two user-owned Node fixture edits outside the implementation scope; the independent review uses the clean checkout recorded above."
   },
   "known_external_changes_note": "These two fixture edits were present before this P4 work and were intentionally not staged or modified. The implementation commit is reproducible; the worktree is not clean only because these user-owned fixture edits are preserved outside the implementation scope."
 }
