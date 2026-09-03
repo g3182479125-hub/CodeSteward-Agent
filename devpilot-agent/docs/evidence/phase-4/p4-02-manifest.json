@@ -3,7 +3,8 @@
   "node": "P4-02",
   "status": "review_pending",
   "implementation_commit": "7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8",
-  "evidence_snapshot_commit": "56bc64536117567f5c7428b3a3369d99534247ed",
+  "evidence_snapshot_commit": "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
+  "evidence_transcript_commit": "a1d955a30060d4357f1dd41a75921ba4243687c6",
   "generated_at": "2026-09-03T11:06:19+08:00",
   "plan": {
     "version": "2.2.0",
