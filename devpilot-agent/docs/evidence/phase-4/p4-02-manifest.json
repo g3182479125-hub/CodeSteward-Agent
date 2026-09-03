@@ -1,0 +1,64 @@
+{
+  "phase": "P4",
+  "node": "P4-02",
+  "status": "review_pending",
+  "implementation_commit": "800dfb6",
+  "generated_at": "2026-09-03T00:00:00+08:00",
+  "plan": {
+    "version": "2.2.0",
+    "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
+  },
+  "scope": [
+    "BugFixWorkflow failure-evidence binding",
+    "G-02 React static Fake contract",
+    "proposal-only nanobot and localhost API adapters",
+    "separate Apply and Verify approval capabilities",
+    "server-owned success/failure Artifact and restart recovery"
+  ],
+  "configuration": {
+    "control_plane_bind": "loopback-only",
+    "allowed_roots": "server-configured project roots only",
+    "artifact_root": "server-owned data directory, separate from target project",
+    "pre_p6_execution_backend": "Fake only; react-static is not real React/npm execution",
+    "network_allowed": false,
+    "secrets_recorded": false
+  },
+  "verification": {
+    "pytest": {
+      "command": "uv run pytest",
+      "exit_code": 0,
+      "result": "137 passed, 3 skipped",
+      "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
+    },
+    "ruff": {
+      "command": "uv run ruff check src tests",
+      "exit_code": 0
+    },
+    "pyright": {
+      "command": "uv run pyright",
+      "exit_code": 0,
+      "result": "0 errors, 0 warnings, 0 informations"
+    }
+  },
+  "review": {
+    "required": true,
+    "independent_subagent": true,
+    "status": "pending",
+    "review_plan": "docs/reviews/p4-02-product-review-plan.md",
+    "prior_reviews": [
+      "docs/reviews/p4-02-p4-02-review-r1.md",
+      "docs/reviews/p4-02-p4-02-review-r2.md"
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "docs/evidence/phase-4/p4-02-acceptance.md",
+      "sha256": "to-be-filled-after-commit"
+    }
+  ],
+  "known_external_changes": [
+    "tests/fixtures/node-project/src/index.js",
+    "tests/fixtures/node-project/test/index.test.js"
+  ],
+  "known_external_changes_note": "User-owned uncommitted fixture edits were excluded from the implementation commit and preserved in the live worktree."
+}

@@ -173,6 +173,7 @@ def plan_payload(entry: _PendingChangeSet) -> dict[str, Any]:
         "change_set_id": plan.change_set.id,
         "plan_id": plan.change_set.plan_id,
         "project_id": plan.project_id,
+        "run_id": plan.run_id,
         "project_path": str(plan.project_path),
         "status": plan.change_set.status.value,
         "patch_hash": plan.patch_hash,
@@ -859,6 +860,7 @@ class ControlPlaneManager:
             diff=self._diff_from_patches(patches, snapshots),
             records=records,
             snapshots=snapshots,
+            run_id=raw.get("run_id"),
         )
         return _PendingChangeSet(plan, raw.get("run_id"))
 

@@ -931,6 +931,9 @@ class BugFixWorkflow:
                         "code": "EXECUTION_BACKEND_UNAVAILABLE",
                         "workflow": "bug-fix",
                         "artifact": failure_artifact,
+                        "verification_profile": proposal.verification_profile.value,
+                        "backend": "unavailable",
+                        **self._bound_hashes(proposal),
                     },
                 )
             except (OSError, ValueError, SQLAlchemyError):
@@ -951,7 +954,7 @@ class BugFixWorkflow:
             failure = {
                 "status": "verification_failed",
                 "profile": proposal.verification_profile.value,
-                "backend": "unavailable",
+                "backend": "not-run",
                 "exit_code": None,
                 "error_code": exc.code,
             }
@@ -960,7 +963,14 @@ class BugFixWorkflow:
                 store.append_event(
                     proposal.run_id,
                     "bug_fix.failed",
-                    {"code": exc.code, "workflow": "bug-fix", "artifact": failure_artifact},
+                    {
+                        "code": exc.code,
+                        "workflow": "bug-fix",
+                        "artifact": failure_artifact,
+                        "verification_profile": proposal.verification_profile.value,
+                        "backend": "not-run",
+                        **self._bound_hashes(proposal),
+                    },
                 )
             except (OSError, ValueError, SQLAlchemyError):
                 pass
@@ -1028,6 +1038,14 @@ class BugFixWorkflow:
             raise WorkflowError(
                 "WORKFLOW_ARTIFACT_WRITE_FAILED", "bug-fix Artifact could not be recorded"
             ) from exc
+        assert artifact is not None
+        artifact_info = {
+            "artifact_id": artifact_id,
+            "path": artifact.path.relative_to(self.artifacts_root).as_posix(),
+            "sha256": artifact.sha256,
+            "size_bytes": artifact.size_bytes,
+            "indexed": True,
+        }
         store.append_event(
             proposal.run_id,
             "bug_fix.completed" if successful else "bug_fix.failed",
@@ -1037,6 +1055,10 @@ class BugFixWorkflow:
                 "status": verification.get("status", "unknown"),
                 "exit_code": verification.get("exit_code"),
                 "artifact_id": artifact_id,
+                "artifact": artifact_info,
+                "verification_profile": proposal.verification_profile.value,
+                "backend": verification.get("backend", "unknown"),
+                **self._bound_hashes(proposal),
             },
         )
         self.manager.finalize_run(
@@ -1272,6 +1294,17 @@ class BugFixWorkflow:
         return facts, tuple(sorted(target_files)), before_hashes
 
     @staticmethod
+    def _bound_hashes(proposal: BugFixProposal) -> dict[str, Any]:
+        before_manifest = [str(item) for item in proposal.preview.get("before_manifest", [])]
+        after_manifest = [str(item) for item in proposal.preview.get("after_manifest", [])]
+        return {
+            "before_manifest": before_manifest,
+            "after_manifest": after_manifest,
+            "before_manifest_hash": BugFixWorkflow._hash(before_manifest),
+            "after_manifest_hash": BugFixWorkflow._hash(after_manifest),
+        }
+
+    @staticmethod
     def _render_report(
         proposal: BugFixProposal,
         applied: dict[str, Any],
@@ -1388,10 +1421,13 @@ class BugFixWorkflow:
                 fallback: dict[str, Any] = {
                     "code": "ARTIFACT_WRITE_FAILED",
                     "workflow": "bug-fix",
+                    "artifact_id": artifact_id,
+                    "indexed": False,
                 }
                 if artifact is not None:
                     fallback.update(
                         {
+                            "artifact_id": artifact_id,
                             "path": artifact.path.relative_to(self.artifacts_root).as_posix(),
                             "sha256": artifact.sha256,
                             "indexed": False,

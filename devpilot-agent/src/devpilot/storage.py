@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -320,6 +322,8 @@ class ProjectStore:
         return run_id
 
     def append_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "bug_check.failed":
+            raise ValueError("bug_check.failed must be produced by record_bug_check_failure")
         safe_payload = redact_sensitive_payload(payload)
         with self._session_factory.begin() as session:
             session.add(
@@ -349,6 +353,19 @@ class ProjectStore:
             raise ValueError("bug-check target files must be unique")
         if any(item not in before_hashes for item in target_files):
             raise ValueError("bug-check target files must have before hashes")
+        canonical_targets = [self._canonical_failure_path(item) for item in target_files]
+        canonical_hashes = {
+            self._canonical_failure_path(path): value for path, value in before_hashes.items()
+        }
+        if len(set(canonical_targets)) != len(canonical_targets):
+            raise ValueError("bug-check target files must be unique after canonicalization")
+        if any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(value))
+            for value in canonical_hashes.values()
+        ):
+            raise ValueError("bug-check before hashes must be SHA-256 values")
+        if any(item not in canonical_hashes for item in canonical_targets):
+            raise ValueError("bug-check target files must have canonical before hashes")
         with self._session_factory.begin() as session:
             run = session.get(RunRecord, run_id)
             if (
@@ -366,8 +383,8 @@ class ProjectStore:
                 "code": code,
                 "symptom": symptom.strip(),
                 "expected_behavior": expected_behavior.strip(),
-                "target_files": target_files,
-                "before_hashes": before_hashes,
+                "target_files": canonical_targets,
+                "before_hashes": canonical_hashes,
             }
             session.add(
                 RunEventRecord(
@@ -381,6 +398,20 @@ class ProjectStore:
                     created_at=utc_now(),
                 )
             )
+
+    @staticmethod
+    def _canonical_failure_path(value: str) -> str:
+        path = str(value).replace("\\", "/").strip()
+        parts = tuple(item for item in path.split("/") if item)
+        if (
+            not path
+            or path.startswith("/")
+            or any(item in {".", ".."} or ":" in item for item in parts)
+            or not parts
+        ):
+            raise ValueError("bug-check paths must be safe relative paths")
+        normalized = "/".join(parts)
+        return normalized.casefold() if os.name == "nt" else normalized
 
     def validate_open_run(self, *, project_id: str, run_id: str) -> None:
         with self._session_factory() as session:

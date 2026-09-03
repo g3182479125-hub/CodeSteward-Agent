@@ -292,6 +292,23 @@ def test_bug_fix_loads_persisted_contract_after_manager_restart(tmp_path: Path) 
     assert loaded.allowed_files == proposal.allowed_files
     assert loaded.symptom == proposal.symptom
     assert restarted.get(proposal.change_set_id)["bug_fix_contract"]["workflow"] == "bug-fix"
+    client = TestClient(create_app(manager=restarted), client=("127.0.0.1", 50000))
+    applied = BugFixWorkflow(restarted).apply(
+        loaded,
+        user_confirmation="执行",
+        approval_token=client.post(
+            f"/v1/change-sets/{loaded.change_set_id}/approve"
+        ).json()["approval_token"],
+    )
+    result = BugFixWorkflow(restarted).verify(
+        loaded,
+        approval_token=client.post(
+            f"/v1/change-sets/{loaded.change_set_id}/approve",
+            json={"capability": "r2.verify"},
+        ).json()["approval_token"],
+        apply_result=applied,
+    )
+    assert result.status == "verified"
 
 
 def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> None:

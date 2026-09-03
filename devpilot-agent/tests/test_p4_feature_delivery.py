@@ -604,6 +604,10 @@ def test_feature_delivery_artifact_database_failure_finishes_run_as_failed(
 
     assert proposal.run_id is not None
     assert store.get_run_status(proposal.run_id) == "failed"
+    assert any(
+        item["event_type"] == "feature_delivery.failed"
+        for item in store.list_run_events(proposal.run_id)
+    )
 
 
 def test_feature_delivery_never_applies_without_exact_user_confirmation(tmp_path: Path) -> None:
