@@ -19,6 +19,8 @@ Changeset 交付。独立审批 WebUI 已移除，主流程只通过 nanobot 对
 
 新 AI/开发者接手本项目时，先阅读
 [P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
+以及最新的
+[P5 → P6 交接文档](docs/handoffs/2026-09-04-p5-p6-handoff.md)，
 再按其中的顺序读取冻结计划、当前 evidence 和模块代码。
 
 ## 本地目录约定
