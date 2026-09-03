@@ -8,16 +8,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Header, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
@@ -140,6 +142,12 @@ class DeliveryDecisionRequest(BaseModel):
 
     decision: str
     user_confirmation: str
+
+
+class ProjectRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_path: str = Field(min_length=1)
 
 
 class _PendingChangeSet:
@@ -828,6 +836,21 @@ class ControlPlaneManager:
         except KeyError as exc:
             raise PatchError("PROJECT_NOT_FOUND", "project does not exist") from exc
 
+    def register_project(self, project_path: str) -> dict[str, Any]:
+        if self.store is None:
+            raise PatchError(
+                "PERSISTENCE_REQUIRED", "project registration requires durable storage"
+            )
+        try:
+            project = self.patch_service.allowed_roots.require_project(project_path)
+            root_id, fingerprint = self.patch_service.allowed_roots.binding_for(project)
+            project_id = self.store.ensure_project(
+                str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
+            )
+            return self.store.get_project_security(project_id)
+        except (KeyError, PathBoundaryError, ValueError) as exc:
+            raise PatchError("PATH_DENIED", "project is outside the allowed roots") from exc
+
     def _require_trusted_project(self, entry: _PendingChangeSet) -> None:
         if self.store is None:
             raise PatchError(
@@ -969,9 +992,10 @@ class ControlPlaneManager:
         if self.store is None:
             raise PatchError("CHANGESET_NOT_FOUND", "ChangeSet does not exist")
         raw = self.store.get_change_set(change_set_id)
+        if raw is None:
+            raise PatchError("CHANGESET_NOT_FOUND", "ChangeSet does not exist")
         if (
-            raw is None
-            or not raw["project_path"]
+            not raw["project_path"]
             or not raw["patches_json"]
             or not raw["project_id"]
         ):
@@ -1087,6 +1111,107 @@ def _header_token(authorization: str | None) -> str:
     return token
 
 
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
+
+def _request_id(request: Request) -> str:
+    candidate = request.headers.get("X-Request-ID")
+    if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return f"req_{uuid.uuid4().hex}"
+
+
+def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
+    return {
+        "error": {"code": code, "message": message},
+        "request_id": getattr(request.state, "request_id", _request_id(request)),
+    }
+
+
+async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
+    content_type = response.headers.get("content-type", "")
+    body = getattr(response, "body", None)
+    if body is None and "application/json" in content_type:
+        body = b"".join([chunk async for chunk in response.body_iterator])
+    if "application/json" not in content_type or not body:
+        response.headers["X-Request-ID"] = request_id
+        return response
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        response.headers["X-Request-ID"] = request_id
+        return response
+    if not isinstance(payload, dict):
+        response.headers["X-Request-ID"] = request_id
+        return response
+    payload = cast(dict[str, Any], payload)
+    payload.setdefault("request_id", request_id)
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() not in {"content-length", "content-type", "x-request-id"}
+    }
+    return JSONResponse(
+        status_code=response.status_code,
+        content=payload,
+        headers={**headers, "X-Request-ID": request_id},
+        background=getattr(response, "background", None),
+    )
+
+
+def _configured_skills_root() -> Path:
+    default_root = Path(__file__).resolve().parents[2] / "skills" / "catalog"
+    return Path(os.environ.get("DEVPILOT_SKILLS_ROOT", str(default_root))).expanduser().resolve()
+
+
+def _skill_catalog() -> list[dict[str, Any]]:
+    from .skill_manager import validate_skill
+
+    root = _configured_skills_root()
+    if not root.is_dir():
+        return []
+    catalog: list[dict[str, Any]] = []
+    for skill_file in sorted(root.glob("*/SKILL.md")):
+        result = validate_skill(skill_file)
+        catalog.append(
+            {
+                "id": result.name or skill_file.parent.name,
+                "version": result.version,
+                "status": result.status or "invalid",
+                "reviewed": result.reviewed,
+                "valid": result.valid,
+                "errors": list(result.errors),
+            }
+        )
+    return catalog
+
+
+def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
+    backend = manager.execution_backend
+    if backend is None:
+        return [
+            {
+                "name": "none",
+                "status": "unavailable",
+                "verified": False,
+                "capability": "verification-only",
+                "network_allowed": False,
+            }
+        ]
+    config = getattr(backend, "config", None)
+    return [
+        {
+            "name": backend.name,
+            "status": "configured",
+            "verified": False,
+            "capability": "verification-only",
+            "network_allowed": bool(getattr(config, "allow_network", False)),
+            "region": str(getattr(config, "region", "")),
+            "template": str(getattr(config, "template", "")),
+        }
+    ]
+
+
 def create_app(
     *,
     manager: ControlPlaneManager | None = None,
@@ -1121,31 +1246,94 @@ def create_app(
         ],
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
     )
     app.state.manager = manager
+    app.state.idempotency_request_ids = {}
 
     @app.middleware("http")
-    async def require_loopback(request: Request, call_next: Any) -> Any:
+    async def require_loopback_and_contract(request: Request, call_next: Any) -> Any:
+        request_id = _request_id(request)
+        request.state.request_id = request_id
         client = request.client.host if request.client is not None else None
         if client not in {"127.0.0.1", "::1", "localhost"}:
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=403,
-                content={"error": {"code": "PATH_DENIED", "message": "local control plane only"}},
+                content=_error_payload(request, "PATH_DENIED", "local control plane only"),
             )
-        return await call_next(request)
+        else:
+            response = await call_next(request)
+        response_request_id = request_id
+        key = request.headers.get("Idempotency-Key")
+        if key and response.status_code < 400:
+            request_ids = cast(dict[str, str], app.state.idempotency_request_ids)
+            response_request_id = request_ids.setdefault(key, request_id)
+            if len(request_ids) > 4096:
+                request_ids.pop(next(iter(request_ids)))
+        return await _json_response_with_request_id(response, response_request_id)
 
     @app.exception_handler(PatchError)
-    async def patch_error_handler(_: Request, exc: PatchError) -> JSONResponse:
+    async def patch_error_handler(request: Request, exc: PatchError) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", _request_id(request))
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
-            content={"error": {"code": exc.code, "message": exc.message}},
+            content={"error": {"code": exc.code, "message": exc.message}, "request_id": request_id},
+            headers={"X-Request-ID": request_id},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request, _: RequestValidationError
+    ) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", _request_id(request))
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "error": {"code": "REQUEST_INVALID", "message": "request payload is invalid"},
+                "request_id": request_id,
+            },
+            headers={"X-Request-ID": request_id},
+        )
+
+    @app.exception_handler(Exception)
+    async def unexpected_error_handler(request: Request, _: Exception) -> JSONResponse:
+        request_id = getattr(request.state, "request_id", _request_id(request))
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": {"code": "INTERNAL_ERROR", "message": "internal server error"},
+                "request_id": request_id,
+            },
+            headers={"X-Request-ID": request_id},
         )
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok", "service": "devpilot-control-plane"}
 
+    @app.get("/api/v1/projects")
+    def list_projects() -> dict[str, Any]:
+        if manager.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "project state requires durable storage")
+        return {"projects": manager.store.list_projects()}
+
+    @app.post("/api/v1/projects", status_code=status.HTTP_201_CREATED)
+    def register_project(payload: ProjectRegistrationRequest) -> dict[str, Any]:
+        return manager.register_project(payload.project_path)
+
+    @app.get("/api/v1/projects/{project_id}")
+    def get_project(project_id: str) -> dict[str, Any]:
+        return manager.project_security(project_id)
+
+    @app.get("/api/v1/security/backends")
+    def list_backends() -> dict[str, Any]:
+        return {"backends": _backend_catalog(manager)}
+
+    @app.get("/api/v1/skills")
+    def list_skills() -> dict[str, Any]:
+        return {"skills": _skill_catalog()}
+
+    @app.post("/api/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     def preview(payload: PreviewRequest) -> dict[str, Any]:
         return manager.preview(
@@ -1154,6 +1342,7 @@ def create_app(
             patches=[item.to_file_patch() for item in payload.patches],
         )
 
+    @app.post("/api/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
     def feature_delivery_proposal(payload: FeatureDeliveryRequest) -> dict[str, Any]:
         from .workflows import FeatureDeliveryWorkflow, WorkflowError
@@ -1169,6 +1358,7 @@ def create_app(
             raise PatchError(exc.code, exc.message) from exc
         return proposal.to_dict()
 
+    @app.post("/api/v1/bug-fix/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/bug-fix/proposals", status_code=status.HTTP_201_CREATED)
     def bug_fix_proposal(payload: BugFixRequest) -> dict[str, Any]:
         from .workflows import BugFixWorkflow, WorkflowError
@@ -1189,6 +1379,7 @@ def create_app(
             raise PatchError(exc.code, exc.message) from exc
         return proposal.to_dict()
 
+    @app.post("/api/v1/test-repair/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/test-repair/proposals", status_code=status.HTTP_201_CREATED)
     def test_repair_proposal(payload: TestRepairRequest) -> dict[str, Any]:
         from .test_repair import TestRepairWorkflow, WorkflowError
@@ -1209,12 +1400,14 @@ def create_app(
             raise PatchError(exc.code, exc.message) from exc
         return proposal.to_dict()
 
+    @app.get("/api/v1/change-sets/{change_set_id}/delivery-report")
     @app.get("/v1/change-sets/{change_set_id}/delivery-report")
     def delivery_report(change_set_id: str) -> dict[str, Any]:
         from .delivery_decisions import DeliveryDecisionWorkflow
 
         return DeliveryDecisionWorkflow(manager).report(change_set_id)
 
+    @app.post("/api/v1/change-sets/{change_set_id}/decision")
     @app.post("/v1/change-sets/{change_set_id}/decision")
     def delivery_decision(
         change_set_id: str,
@@ -1236,10 +1429,29 @@ def create_app(
             change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
         )
 
+    @app.get("/api/v1/change-sets/{change_set_id}")
     @app.get("/v1/change-sets/{change_set_id}")
     def get_change_set(change_set_id: str) -> dict[str, Any]:
         return manager.get(change_set_id)
 
+    @app.get("/api/v1/change-sets/{change_set_id}/preview")
+    @app.get("/v1/change-sets/{change_set_id}/preview")
+    def get_change_set_preview(change_set_id: str) -> dict[str, Any]:
+        return manager.get(change_set_id)
+
+    @app.get("/api/v1/change-sets/{change_set_id}/diff")
+    @app.get("/v1/change-sets/{change_set_id}/diff")
+    def get_change_set_diff(change_set_id: str) -> dict[str, Any]:
+        payload = manager.get(change_set_id)
+        return {
+            "change_set_id": change_set_id,
+            "patch_hash": payload["patch_hash"],
+            "scope_hash": payload["scope_hash"],
+            "files": payload["files"],
+            "diff": payload["diff"],
+        }
+
+    @app.get("/api/v1/runs/{run_id}")
     @app.get("/v1/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         if manager.store is None:
@@ -1249,18 +1461,109 @@ def create_app(
         except KeyError as exc:
             raise PatchError("RUN_NOT_FOUND", "Run does not exist") from exc
 
+    @app.get("/api/v1/runs/{run_id}/events", response_class=StreamingResponse)
+    @app.get("/v1/runs/{run_id}/events", response_class=StreamingResponse)
+    def get_run_events(
+        run_id: str,
+        request: Request,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> Any:
+        if manager.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "run events require durable storage")
+        try:
+            manager.store.get_run_status(run_id)
+        except KeyError as exc:
+            raise PatchError("RUN_NOT_FOUND", "Run does not exist") from exc
+        cursor = 0
+        if last_event_id is not None:
+            try:
+                cursor = int(last_event_id)
+            except ValueError:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content=_error_payload(
+                        request,
+                        "REQUEST_INVALID",
+                        "Last-Event-ID must be a non-negative integer",
+                    ),
+                )
+            if cursor < 0:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={
+                        "error": {
+                            "code": "REQUEST_INVALID",
+                            "message": "Last-Event-ID must be a non-negative integer",
+                        },
+                        "request_id": getattr(request.state, "request_id", _request_id(request)),
+                    },
+                )
+        events = [
+            item
+            for item in manager.store.list_run_events(run_id)
+            if int(item["event_id"]) > cursor
+        ]
+
+        def stream() -> Any:
+            for item in events:
+                event = {
+                    "event_id": item["event_id"],
+                    "run_id": item["run_id"],
+                    "correlation_id": item["correlation_id"],
+                    "sequence": item["sequence"],
+                    "type": item["event_type"],
+                    "created_at": item["created_at"],
+                    "redacted_payload": item["payload"],
+                }
+                yield (
+                    f"id: {item['event_id']}\n"
+                    f"event: {item['event_type']}\n"
+                    f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True)}\n\n"
+                )
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/v1/runs/{run_id}/artifacts")
+    @app.get("/v1/runs/{run_id}/artifacts")
+    def get_run_artifacts(run_id: str) -> dict[str, Any]:
+        if manager.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "artifact state requires durable storage")
+        try:
+            manager.store.get_run_status(run_id)
+        except KeyError as exc:
+            raise PatchError("RUN_NOT_FOUND", "Run does not exist") from exc
+        return {"run_id": run_id, "artifacts": manager.store.list_artifacts(run_id)}
+
+    @app.get("/api/v1/artifacts/{artifact_id}")
+    @app.get("/v1/artifacts/{artifact_id}")
+    def get_artifact(artifact_id: str) -> dict[str, Any]:
+        if manager.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "artifact state requires durable storage")
+        try:
+            return manager.store.get_artifact(artifact_id)
+        except KeyError as exc:
+            raise PatchError("ARTIFACT_NOT_FOUND", "Artifact does not exist") from exc
+
+    @app.get("/api/v1/projects/{project_id}/security")
     @app.get("/v1/projects/{project_id}/security")
     def project_security(project_id: str) -> dict[str, Any]:
         return manager.project_security(project_id)
 
+    @app.post("/api/v1/projects/{project_id}/trust")
     @app.post("/v1/projects/{project_id}/trust")
     def trust_project(project_id: str, payload: TrustProjectRequest) -> dict[str, Any]:
         return manager.trust_project(project_id, payload.confirmation)
 
+    @app.post("/api/v1/change-sets/{change_set_id}/approve")
     @app.post("/v1/change-sets/{change_set_id}/approve")
     def approve(change_set_id: str, payload: ApprovalRequest | None = None) -> dict[str, Any]:
         return manager.approve(change_set_id, payload.capability if payload else APPLY_CAPABILITY)
 
+    @app.post("/api/v1/change-sets/{change_set_id}/approval-requests")
     @app.post("/v1/change-sets/{change_set_id}/approval-requests")
     def request_approval(
         change_set_id: str, payload: ApprovalIntentRequest
@@ -1269,6 +1572,7 @@ def create_app(
             change_set_id, payload.capability, payload.user_confirmation
         )
 
+    @app.post("/api/v1/change-sets/{change_set_id}/apply")
     @app.post("/v1/change-sets/{change_set_id}/apply")
     def apply(
         change_set_id: str,
@@ -1281,6 +1585,7 @@ def create_app(
             change_set_id, _header_token(authorization), idempotency_key=idempotency_key
         )
 
+    @app.post("/api/v1/change-sets/{change_set_id}/verify")
     @app.post("/v1/change-sets/{change_set_id}/verify")
     def verify(
         change_set_id: str,
@@ -1297,6 +1602,7 @@ def create_app(
             idempotency_key=idempotency_key,
         )
 
+    @app.post("/api/v1/change-sets/{change_set_id}/rollback")
     @app.post("/v1/change-sets/{change_set_id}/rollback")
     def rollback(
         change_set_id: str,
@@ -1309,6 +1615,7 @@ def create_app(
             change_set_id, _header_token(authorization), idempotency_key=idempotency_key
         )
 
+    @app.post("/api/v1/change-sets/{change_set_id}/revoke")
     @app.post("/v1/change-sets/{change_set_id}/revoke")
     def revoke(change_set_id: str) -> dict[str, Any]:
         return manager.revoke(change_set_id)

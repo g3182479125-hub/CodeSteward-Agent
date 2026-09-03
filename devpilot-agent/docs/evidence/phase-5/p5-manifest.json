@@ -1,0 +1,24 @@
+{
+  "phase": "P5",
+  "status": "implemented",
+  "canonical_api_prefix": "/api/v1",
+  "compatibility_prefix": "/v1",
+  "sse": {
+    "endpoint": "/api/v1/runs/{run_id}/events",
+    "resume_header": "Last-Event-ID",
+    "source_of_truth": "append-only SQLite run_events"
+  },
+  "console": {
+    "directory": "web",
+    "dev_url": "http://127.0.0.1:18801",
+    "nanobot_webui_modified": false
+  },
+  "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
+  "verification": {
+    "python_full": "168 passed, 3 skipped",
+    "web_build": "passed",
+    "ruff": "passed",
+    "pyright": "passed",
+    "git_diff_check": "passed"
+  }
+}

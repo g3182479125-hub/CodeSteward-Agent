@@ -326,6 +326,26 @@ class ProjectStore:
                 raise KeyError("unknown project")
             return project.real_path
 
+    def list_projects(self) -> list[dict[str, Any]]:
+        """Return safe project summaries for the local console."""
+        with self._session_factory() as session:
+            rows = (
+                session.query(ProjectRecord)
+                .order_by(ProjectRecord.created_at, ProjectRecord.id)
+                .all()
+            )
+            return [
+                {
+                    "project_id": row.id,
+                    "real_path": row.real_path,
+                    "trust_state": row.trust_state,
+                    "repo_fingerprint": row.repo_fingerprint,
+                    "allowed_root_id": row.allowed_root_id,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]
+
     def get_project_security(self, project_id: str) -> dict[str, Any]:
         with self._session_factory() as session:
             project = session.get(ProjectRecord, project_id)
@@ -587,11 +607,15 @@ class ProjectStore:
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,
                 "events": [
                     {
+                        "event_id": event.id,
+                        "run_id": event.run_id,
+                        "sequence": sequence,
+                        "correlation_id": event.run_id,
                         "event_type": event.event_type,
                         "payload": json.loads(event.payload_json),
                         "created_at": event.created_at.isoformat(),
                     }
-                    for event in events
+                    for sequence, event in enumerate(events, start=1)
                 ],
             }
 
@@ -606,11 +630,15 @@ class ProjectStore:
             )
             return [
                 {
+                    "event_id": row.id,
+                    "run_id": row.run_id,
+                    "sequence": sequence,
+                    "correlation_id": row.run_id,
                     "event_type": row.event_type,
                     "payload": json.loads(row.payload_json),
                     "created_at": row.created_at.isoformat(),
                 }
-                for row in rows
+                for sequence, row in enumerate(rows, start=1)
             ]
 
     def finish_run(self, run_id: str, status: str, payload: dict[str, Any]) -> None:
@@ -684,6 +712,22 @@ class ProjectStore:
                 }
                 for row in rows
             ]
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+        with self._session_factory() as session:
+            row = session.get(ArtifactRecord, artifact_id)
+            if row is None:
+                raise KeyError("unknown artifact")
+            return {
+                "id": row.id,
+                "project_id": row.project_id,
+                "run_id": row.run_id,
+                "kind": row.kind,
+                "relative_path": row.relative_path,
+                "sha256": row.sha256,
+                "size_bytes": row.size_bytes,
+                "created_at": row.created_at.isoformat(),
+            }
 
     def persist_patch_plan(
         self,
