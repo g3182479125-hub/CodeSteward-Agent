@@ -185,6 +185,10 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
 
 def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> None:
     client, _manager, project = setup_app(tmp_path)
+    secret_content = (
+        'api_key="my secret value"\n'
+        'token="""triple " delimiter secret value"""\n'
+    )
     response = client.post(
         "/api/v1/change-sets/preview",
         json={
@@ -192,7 +196,7 @@ def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> Non
             "patches": [{
                 "relative_path": "config.txt",
                 "operation": "create",
-                "content": "api_key=\"my secret value\"\ntoken=\"\"\"triple secret value\"\"\"\n",
+                "content": secret_content,
             }],
         },
     )
@@ -200,7 +204,7 @@ def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> Non
     change_set_id = response.json()["change_set_id"]
     public_diff = client.get(f"/api/v1/change-sets/{change_set_id}/diff")
     assert "my secret value" not in public_diff.text
-    assert "triple secret value" not in public_diff.text
+    assert "triple \" delimiter secret value" not in public_diff.text
     assert "[REDACTED]" in public_diff.text
 
 

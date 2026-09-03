@@ -13,20 +13,11 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
 )
-_ASSIGNMENT_KEY = (
-    r"[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
-    r"[\"']?"
-)
-_ASSIGNMENT_VALUE = (
-    r'"""(?:\\.|[^"])*"""|'
-    + "'''(?:\\\\.|[^'])*'''|"
-    + r'"(?:\\.|[^"])*"|'
-    + r"'(?:\\.|[^'])*'|"
-    + r"[^\s,;]+"
-)
 _SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
-    rf"(?i)(?P<prefix>{_ASSIGNMENT_KEY}\s*[=:]\s*)"
-    rf"(?P<value>{_ASSIGNMENT_VALUE})"
+    r"(?i)(?<![A-Za-z0-9_-])"
+    r"(?P<prefix>[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
+    r"[\"']?\s*[=:]\s*)"
+    r"(?P<value>[^\r\n]*)"
 )
 
 

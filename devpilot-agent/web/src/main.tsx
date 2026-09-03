@@ -225,6 +225,23 @@ function App() {
     }
   }, [page]);
 
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const queryRunId = query.get("run_id");
+    if (page !== "runs" || query.get("sse") !== "1" || !queryRunId) return;
+    const source = new EventSource(`${API}/runs/${encodeURIComponent(queryRunId)}/events`);
+    const handleEvent = (message: MessageEvent<string>) => {
+      try {
+        const incoming = JSON.parse(message.data) as RunEvent;
+        setEvents((current) => current.some((item) => item.event_id === incoming.event_id) ? current : [...current, incoming]);
+      } catch {
+        setError("收到无法解析的事件");
+      }
+    };
+    source.addEventListener("run.completed", handleEvent as EventListener);
+    return () => source.close();
+  }, [page]);
+
   const registerProject = async (event: FormEvent) => {
     event.preventDefault();
     if (!projectPath.trim()) return;

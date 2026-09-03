@@ -20,6 +20,7 @@ const json = (response, payload, status = 200) => {
   response.end(JSON.stringify(payload));
 };
 
+const requestedPaths = new Set();
 const apiServer = createServer((request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -31,6 +32,7 @@ const apiServer = createServer((request, response) => {
     return;
   }
   const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  requestedPaths.add(path);
   if (path === "/healthz") return json(response, { status: "ok" });
   if (path === "/api/v1/projects") return json(response, { projects: [{ project_id: "fixture-project", project_name: "fixture-project", trust_state: "trusted" }] });
   if (path === "/api/v1/skills") return json(response, { skills: [{ name: "fixture-skill", capability: "fixture" }] });
@@ -41,7 +43,15 @@ const apiServer = createServer((request, response) => {
   if (path === "/api/v1/runs/fixture-run") return json(response, {
     run_id: "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
   });
-  if (path === "/api/v1/runs/fixture-run/events") return json(response, { events: [] });
+  if (path === "/api/v1/runs/fixture-run/events") {
+    response.writeHead(200, {
+      "access-control-allow-origin": "*",
+      "cache-control": "no-cache",
+      "content-type": "text/event-stream",
+    });
+    response.end('id: 1\nevent: run.completed\ndata: {"event_id":1,"sequence":1,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
+    return;
+  }
   if (path === "/api/v1/runs/fixture-run/artifacts") return json(response, { run_id: "fixture-run", artifacts: [{ id: "fixture-artifact", kind: "fixture", relative_path: "fixture.md", sha256: "fixture-hash" }] });
   if (path === "/api/v1/security/backends") return json(response, {
     backends: [{ name: "fixture-backend", status: "unavailable", verified: false, capability: "verification-only" }],
@@ -140,12 +150,19 @@ try {
   for (const [query, markers] of [
     ["page=projects", ["fixture-project", "登记项目"]],
     ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "最终交付决策"]],
-    ["page=runs&run_id=fixture-run", ["run.completed", "读取快照", "连接 SSE"]],
+    ["page=runs&run_id=fixture-run&sse=1", ["run.completed", "读取快照", "连接 SSE"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],
     ["page=security", ["Execution Backends", "fixture-backend", "unavailable"]],
   ]) {
     await runBrowser(`http://127.0.0.1:${webPort}/?${query}`, markers);
+  }
+  for (const path of [
+    "/api/v1/projects", "/api/v1/skills", "/api/v1/security/backends",
+    "/api/v1/change-sets/fixture-change-set", "/api/v1/runs/fixture-run",
+    "/api/v1/runs/fixture-run/artifacts", "/api/v1/runs/fixture-run/events",
+  ]) {
+    if (!requestedPaths.has(path)) throw new Error(`browser fixture did not receive request: ${path}`);
   }
   console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);
 } finally {

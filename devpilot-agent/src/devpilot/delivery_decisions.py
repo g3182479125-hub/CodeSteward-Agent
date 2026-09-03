@@ -112,7 +112,7 @@ class DeliveryDecisionWorkflow:
             },
             "available_decisions": available,
             "rollback": {
-                "endpoint": f"/v1/change-sets/{change_set_id}/rollback",
+                "endpoint": f"/api/v1/change-sets/{change_set_id}/rollback",
                 "capability": "r1.rollback",
                 "requires_user_confirmation": True,
                 "requires_approval_token": True,
