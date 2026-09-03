@@ -208,6 +208,21 @@ function App() {
     if (page === "projects") void loadProjects().catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取项目"));
     if (page === "skills") void api<{ skills: Json[] }>("/skills").then((result) => setSkills(result.skills)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Skills"));
     if (page === "security") void api<{ backends: Json[] }>("/security/backends").then((result) => setBackends(result.backends)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取后端"));
+    const query = new URLSearchParams(window.location.search);
+    const queryChangeSetId = query.get("change_set_id");
+    if (page === "changeset" && queryChangeSetId) {
+      setChangeSetId(queryChangeSetId);
+      void api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}`).then((result) => setChangeSet(result)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet"));
+    }
+    const queryRunId = query.get("run_id");
+    if (page === "runs" && queryRunId) {
+      setRunId(queryRunId);
+      void api<{ events?: RunEvent[] }>(`/runs/${encodeURIComponent(queryRunId)}`).then((result) => setEvents(result.events ?? [])).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Run"));
+    }
+    if (page === "artifacts" && queryRunId) {
+      setRunId(queryRunId);
+      void api<{ artifacts?: Json[] }>(`/runs/${encodeURIComponent(queryRunId)}/artifacts`).then((result) => setArtifacts(result.artifacts ?? [])).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Artifact"));
+    }
   }, [page]);
 
   const registerProject = async (event: FormEvent) => {
