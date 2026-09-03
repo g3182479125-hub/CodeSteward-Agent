@@ -600,14 +600,14 @@ def test_bug_fix_tool_maps_payload_and_redacts_http_errors(
     assert "BUG_FIX_SCOPE_INVALID" in str(rejected)
 
 
-def test_bug_fix_skill_remains_draft_until_review_approval() -> None:
+def test_bug_fix_skill_is_publishable_after_review_approval() -> None:
     result = validate_skill(
         Path(__file__).parents[1] / "skills" / "catalog" / "bug-fix" / "SKILL.md"
     )
     assert result.name == "bug-fix"
-    assert result.status == "draft"
-    assert result.reviewed is False
-    assert "reviewed" in result.errors[0] or result.valid is False
+    assert result.status == "active"
+    assert result.reviewed is True
+    assert result.valid is True
 
 
 def test_bug_fix_backend_unavailable_writes_failure_artifact(tmp_path: Path) -> None:

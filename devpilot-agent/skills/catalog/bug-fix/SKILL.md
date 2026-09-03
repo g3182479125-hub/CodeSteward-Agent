@@ -4,8 +4,8 @@ description: Turn saved failure evidence into a bounded, reviewable bug-fix Chan
 metadata:
   devpilot:
     version: 0.1.0
-    status: draft
-    reviewed: false
+    status: active
+    reviewed: true
     allowed_tools:
       - devpilot_inspect_project
       - devpilot_search_code
