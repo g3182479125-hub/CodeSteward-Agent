@@ -34,6 +34,15 @@ const apiServer = createServer((request, response) => {
   if (path === "/healthz") return json(response, { status: "ok" });
   if (path === "/api/v1/projects") return json(response, { projects: [] });
   if (path === "/api/v1/skills") return json(response, { skills: [] });
+  if (path === "/api/v1/change-sets/fixture-change-set") return json(response, {
+    change_set_id: "fixture-change-set", status: "verified", risk_summary: "fixture",
+    patch_hash: "fixture-patch", diff: "--- a/fixture.txt\n+++ b/fixture.txt\n+ok\n",
+  });
+  if (path === "/api/v1/runs/fixture-run") return json(response, {
+    run_id: "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
+  });
+  if (path === "/api/v1/runs/fixture-run/events") return json(response, { events: [] });
+  if (path === "/api/v1/runs/fixture-run/artifacts") return json(response, { run_id: "fixture-run", artifacts: [] });
   if (path === "/api/v1/security/backends") return json(response, {
     backends: [{ name: "fixture-backend", status: "unavailable", verified: false, capability: "verification-only" }],
   });
@@ -128,9 +137,15 @@ try {
       });
     });
   };
-  await runBrowser(dashboardUrl, ["DevPilot Console", "P5 LOCAL CONSOLE", "API 在线"]);
+  await runBrowser(dashboardUrl, ["把计划、变更、验证和证据放在同一个可审查界面。", "P5 LOCAL CONSOLE", "API 在线"]);
   await runBrowser(securityUrl, ["Execution Backends", "fixture-backend", "unavailable"]);
-  for (const [page, marker] of [["projects", "Projects"], ["changeset", "ChangeSet / Diff"], ["runs", "Run Timeline"], ["artifacts", "Artifacts"], ["skills", "Skills Catalog"]]) {
+  for (const [page, marker] of [
+    ["projects", "登记后由服务端校验允许根和仓库指纹"],
+    ["changeset", "输入已有 ChangeSet ID，查看范围、风险和可审查 Diff"],
+    ["runs", "SSE 是事件投影；连接失败时可刷新读取数据库快照"],
+    ["artifacts", "只展示服务端拥有的证据元数据，不直连项目目录"],
+    ["skills", "没有发现可展示的 Skill"],
+  ]) {
     await runBrowser(`http://127.0.0.1:${webPort}/?page=${page}`, [marker]);
   }
   console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);

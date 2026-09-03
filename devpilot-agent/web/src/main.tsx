@@ -155,11 +155,16 @@ function App() {
       }
     };
     for (const eventType of [
-      "run.started", "run.completed", "run.failed", "changeset.previewed", "changeset.approval_requested",
-      "run.updated", "plan.created", "plan.updated",
-      "changeset.approval_issued", "changeset.applied", "changeset.apply_failed", "changeset.reverted",
-      "changeset.verification_completed", "changeset.verification_failed", "execution.capability_denied",
-      "delivery.accepted", "delivery.stopped", "project.trust_denied",
+      "run.started", "run.completed", "run.failed", "run.updated",
+      "plan.created", "plan.updated", "changeset.previewed", "changeset.approval_requested",
+      "changeset.approval_issued", "changeset.approvals_revoked", "changeset.applied",
+      "changeset.apply_failed", "changeset.reverted", "changeset.verification_completed",
+      "changeset.verification_failed", "execution.capability_denied", "project.trust_denied",
+      "delivery.accepted", "delivery.stopped", "tool.completed", "evidence.read.completed",
+      "evidence.search.completed", "evidence.inspect.completed", "feature_delivery.proposed",
+      "feature_delivery.failed", "bug_fix.proposed", "bug_fix.failed", "bug_fix.completed",
+      "test_repair.proposed", "test_repair.failed", "test_repair.completed",
+      "artifact.persistence_failed", "bug_check.failed", "test_check.failed",
     ]) {
       source.addEventListener(eventType, handleEvent as EventListener);
     }
