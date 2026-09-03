@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.paths import AllowedRoots
+from devpilot.redaction import redact_sensitive_payload, redact_sensitive_text
 from devpilot.storage import ProjectStore
 
 
@@ -72,6 +73,36 @@ def test_request_id_is_bounded_and_unsafe_value_is_not_echoed(tmp_path: Path) ->
     assert response.json()["request_id"] == response.headers["X-Request-ID"]
 
 
+def test_loopback_contract_rejects_forwarded_requests(tmp_path: Path) -> None:
+    client, _manager, _project = setup_app(tmp_path)
+    response = client.get("/healthz", headers={"X-Forwarded-For": "10.0.0.8"})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "PATH_DENIED"
+
+
+def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
+    text = (
+        "api_key=sk-provider-secret authorization: Bearer abc123 "
+        "github_pat_abcdefghijklmnopqrstuvwxyz1234"
+    )
+    redacted = redact_sensitive_text(text)
+    assert "sk-provider-secret" not in redacted
+    assert "Bearer abc123" not in redacted
+    assert "github_pat_abcdefghijklmnopqrstuvwxyz1234" not in redacted
+    payload = redact_sensitive_payload(
+        {"AWS_ACCESS_KEY_ID": "AKIA1234567890ABCDEF", "token": "value"}
+    )
+    assert payload == {"AWS_ACCESS_KEY_ID": "[REDACTED]", "token": "[REDACTED]"}
+
+
+def test_failed_idempotency_reservation_can_be_released(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    assert store.reserve_idempotency("retry-me", "request-hash")[0] == "new"
+    store.abort_idempotency("retry-me")
+    assert store.get_idempotency("retry-me") is None
+
+
 def test_validation_and_domain_errors_use_stable_error_contract(tmp_path: Path) -> None:
     client, _manager, project = setup_app(tmp_path)
     invalid = client.post(
@@ -125,6 +156,7 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     projects = client.get("/api/v1/projects")
     assert projects.status_code == 200
     assert len(projects.json()["projects"]) == 1
+    assert "real_path" not in projects.json()["projects"][0]
 
     registered = client.post("/api/v1/projects", json={"project_path": str(project)})
     assert registered.status_code == 201
@@ -132,6 +164,8 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert client.get(f"/api/v1/projects/{project_id}").json()["trust_state"] == "trusted"
 
     preview = make_preview(client, project)
+    public_preview = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/preview")
+    assert "project_path" not in public_preview.json()
     diff = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/diff")
     assert diff.status_code == 200
     assert "main.py" in diff.text

@@ -45,6 +45,28 @@ DEFAULT_TOKEN_TTL = timedelta(minutes=5)
 APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
+SSE_EVENT_TYPES = frozenset(
+    {
+        "run.started",
+        "run.updated",
+        "run.completed",
+        "run.failed",
+        "plan.created",
+        "plan.updated",
+        "changeset.previewed",
+        "changeset.approval_requested",
+        "changeset.approval_issued",
+        "changeset.applied",
+        "changeset.apply_failed",
+        "changeset.reverted",
+        "changeset.verification_completed",
+        "changeset.verification_failed",
+        "execution.capability_denied",
+        "delivery.accepted",
+        "delivery.stopped",
+        "project.trust_denied",
+    }
+)
 
 
 class PatchPayload(BaseModel):
@@ -634,11 +656,14 @@ class ControlPlaneManager:
                 approval_token,
                 request_fingerprint=profile.value,
             )
+            reserved = idempotency_key is not None
             entry.plan.change_set.transition_to(ChangeSetStatus.VERIFYING)
             self._persist_status(entry)
             try:
                 result = self.execution_backend.run(request)
             except ExecutionError as exc:
+                if reserved:
+                    self._abort(idempotency_key)
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
                 self._persist_status(entry, failure_reason=exc.code)
                 self._event(entry, "changeset.verification_failed", {"code": exc.code})
@@ -646,6 +671,8 @@ class ControlPlaneManager:
                     self._finish_run(entry, "failed", {"code": exc.code})
                 raise PatchError("VERIFICATION_FAILED", "sandbox verification failed") from exc
             except Exception as exc:
+                if reserved:
+                    self._abort(idempotency_key)
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
                 self._persist_status(entry, failure_reason="EXECUTION_BACKEND_FAILED")
                 self._event(
@@ -721,6 +748,7 @@ class ControlPlaneManager:
                 return replay
             approval = self._consume_approval(entry, approval_token, APPLY_CAPABILITY)
             self._reserve_idempotency(idempotency_key, "apply", change_set_id, approval_token)
+            reserved = idempotency_key is not None
             grant = AuthorizationGrant(
                 change_set_id=entry.plan.change_set.id,
                 project_id=entry.plan.project_id,
@@ -733,6 +761,8 @@ class ControlPlaneManager:
             try:
                 receipt = self.patch_service.apply(entry.plan, grant)
             except PatchError as exc:
+                if reserved:
+                    self._abort(idempotency_key)
                 self._event(entry, "changeset.apply_failed", {"code": exc.code})
                 self._finish_run(entry, "failed", {"code": exc.code})
                 raise
@@ -761,6 +791,7 @@ class ControlPlaneManager:
                 return replay
             self._consume_approval(entry, approval_token, ROLLBACK_CAPABILITY)
             self._reserve_idempotency(idempotency_key, "rollback", change_set_id, approval_token)
+            reserved = idempotency_key is not None
             receipt = entry.receipt or ApplyReceipt(
                 change_set_id=entry.plan.change_set.id,
                 project_id=entry.plan.project_id,
@@ -769,7 +800,12 @@ class ControlPlaneManager:
                 after=entry.plan.records,
                 snapshots=entry.plan.snapshots,
             )
-            self.patch_service.rollback(receipt, entry.plan)
+            try:
+                self.patch_service.rollback(receipt, entry.plan)
+            except Exception:
+                if reserved:
+                    self._abort(idempotency_key)
+                raise
             entry.receipt = receipt
             self._event(entry, "changeset.reverted", {})
             result = {"change_set_id": change_set_id, "status": entry.plan.change_set.status.value}
@@ -978,6 +1014,10 @@ class ControlPlaneManager:
                 key, json.dumps(result, ensure_ascii=False, sort_keys=True)
             )
 
+    def _abort(self, key: str | None) -> None:
+        if self.store is not None and key is not None:
+            self.store.abort_idempotency(key)
+
     def _require(self, change_set_id: str) -> _PendingChangeSet:
         entry = self._entries.get(change_set_id)
         if entry is not None:
@@ -1128,6 +1168,18 @@ def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
     }
 
 
+def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remove local filesystem coordinates from control-plane responses."""
+    result = dict(payload)
+    result.pop("project_path", None)
+    result.pop("real_path", None)
+    return result
+
+
+def _sse_event_type(raw_event_type: str) -> str:
+    return raw_event_type if raw_event_type in SSE_EVENT_TYPES else "run.updated"
+
+
 async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
     content_type = response.headers.get("content-type", "")
     body = getattr(response, "body", None)
@@ -1256,10 +1308,15 @@ def create_app(
         request_id = _request_id(request)
         request.state.request_id = request_id
         client = request.client.host if request.client is not None else None
-        if client not in {"127.0.0.1", "::1", "localhost"}:
+        forwarded = request.headers.get("Forwarded") or request.headers.get("X-Forwarded-For")
+        if client not in {"127.0.0.1", "::1", "localhost"} or forwarded:
             response = JSONResponse(
                 status_code=403,
-                content=_error_payload(request, "PATH_DENIED", "local control plane only"),
+                content=_error_payload(
+                    request,
+                    "PATH_DENIED",
+                    "local control plane only; forwarded requests are not accepted",
+                ),
             )
         else:
             response = await call_next(request)
@@ -1312,28 +1369,34 @@ def create_app(
         return {"status": "ok", "service": "devpilot-control-plane"}
 
     @app.get("/api/v1/projects")
+    @app.get("/v1/projects")
     def list_projects() -> dict[str, Any]:
         if manager.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project state requires durable storage")
         return {"projects": manager.store.list_projects()}
 
     @app.post("/api/v1/projects", status_code=status.HTTP_201_CREATED)
+    @app.post("/v1/projects", status_code=status.HTTP_201_CREATED)
     def register_project(payload: ProjectRegistrationRequest) -> dict[str, Any]:
         return manager.register_project(payload.project_path)
 
     @app.get("/api/v1/projects/{project_id}")
+    @app.get("/v1/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:
         return manager.project_security(project_id)
 
     @app.get("/api/v1/security/backends")
+    @app.get("/v1/security/backends")
     def list_backends() -> dict[str, Any]:
         return {"backends": _backend_catalog(manager)}
 
     @app.get("/api/v1/skills")
+    @app.get("/v1/skills")
     def list_skills() -> dict[str, Any]:
         return {"skills": _skill_catalog()}
 
     @app.post("/api/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
+    @app.post("/api/v1/changesets/preview", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     def preview(payload: PreviewRequest) -> dict[str, Any]:
         return manager.preview(
@@ -1430,16 +1493,19 @@ def create_app(
         )
 
     @app.get("/api/v1/change-sets/{change_set_id}")
+    @app.get("/api/v1/changesets/{change_set_id}")
     @app.get("/v1/change-sets/{change_set_id}")
     def get_change_set(change_set_id: str) -> dict[str, Any]:
-        return manager.get(change_set_id)
+        return _public_payload(manager.get(change_set_id))
 
     @app.get("/api/v1/change-sets/{change_set_id}/preview")
+    @app.get("/api/v1/changesets/{change_set_id}/preview")
     @app.get("/v1/change-sets/{change_set_id}/preview")
     def get_change_set_preview(change_set_id: str) -> dict[str, Any]:
-        return manager.get(change_set_id)
+        return _public_payload(manager.get(change_set_id))
 
     @app.get("/api/v1/change-sets/{change_set_id}/diff")
+    @app.get("/api/v1/changesets/{change_set_id}/diff")
     @app.get("/v1/change-sets/{change_set_id}/diff")
     def get_change_set_diff(change_set_id: str) -> dict[str, Any]:
         payload = manager.get(change_set_id)
@@ -1506,18 +1572,20 @@ def create_app(
 
         def stream() -> Any:
             for item in events:
+                event_type = _sse_event_type(str(item["event_type"]))
                 event = {
                     "event_id": item["event_id"],
                     "run_id": item["run_id"],
                     "correlation_id": item["correlation_id"],
                     "sequence": item["sequence"],
-                    "type": item["event_type"],
+                    "type": event_type,
+                    "source_event_type": item["event_type"],
                     "created_at": item["created_at"],
                     "redacted_payload": item["payload"],
                 }
                 yield (
                     f"id: {item['event_id']}\n"
-                    f"event: {item['event_type']}\n"
+                    f"event: {event_type}\n"
                     f"data: {json.dumps(event, ensure_ascii=False, sort_keys=True)}\n\n"
                 )
 
@@ -1559,11 +1627,13 @@ def create_app(
         return manager.trust_project(project_id, payload.confirmation)
 
     @app.post("/api/v1/change-sets/{change_set_id}/approve")
+    @app.post("/api/v1/changesets/{change_set_id}/approve")
     @app.post("/v1/change-sets/{change_set_id}/approve")
     def approve(change_set_id: str, payload: ApprovalRequest | None = None) -> dict[str, Any]:
         return manager.approve(change_set_id, payload.capability if payload else APPLY_CAPABILITY)
 
     @app.post("/api/v1/change-sets/{change_set_id}/approval-requests")
+    @app.post("/api/v1/changesets/{change_set_id}/approval-requests")
     @app.post("/v1/change-sets/{change_set_id}/approval-requests")
     def request_approval(
         change_set_id: str, payload: ApprovalIntentRequest
@@ -1573,6 +1643,7 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/apply")
+    @app.post("/api/v1/changesets/{change_set_id}/apply")
     @app.post("/v1/change-sets/{change_set_id}/apply")
     def apply(
         change_set_id: str,
@@ -1586,6 +1657,7 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/verify")
+    @app.post("/api/v1/changesets/{change_set_id}/verify")
     @app.post("/v1/change-sets/{change_set_id}/verify")
     def verify(
         change_set_id: str,
@@ -1603,6 +1675,7 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/rollback")
+    @app.post("/api/v1/changesets/{change_set_id}/rollback")
     @app.post("/v1/change-sets/{change_set_id}/rollback")
     def rollback(
         change_set_id: str,
@@ -1616,6 +1689,7 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/revoke")
+    @app.post("/api/v1/changesets/{change_set_id}/revoke")
     @app.post("/v1/change-sets/{change_set_id}/revoke")
     def revoke(change_set_id: str) -> dict[str, Any]:
         return manager.revoke(change_set_id)

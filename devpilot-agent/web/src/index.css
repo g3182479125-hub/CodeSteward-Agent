@@ -57,6 +57,8 @@ h3 { margin-bottom: 5px; color: #f8fbff; }
 .primary:disabled { cursor: wait; opacity: .55; }
 .ghost { border: 1px solid #38506e; color: #b8cce0; background: transparent; }
 .ghost:hover { background: #172940; }
+.danger { border: 1px solid #c45d70; border-radius: 9px; padding: 10px 15px; color: #ffd6dc; background: rgba(126, 27, 48, .3); font-weight: 750; }
+.danger:hover { background: rgba(154, 52, 73, .45); }
 .inline-form { display: flex; align-items: flex-end; gap: 12px; margin: 22px 0; }
 label { flex: 1; color: #9bb0c5; font-size: 12px; }
 input { display: block; width: 100%; margin-top: 7px; border: 1px solid #344a66; border-radius: 9px; padding: 12px 13px; color: #eaf5ff; outline: none; background: #0c1728; }
@@ -77,6 +79,10 @@ code { color: #86e5d3; font-size: 11px; }
 .diff summary span { float: right; color: #667d96; }
 .diff pre { max-height: 480px; margin: 0; padding: 18px; overflow: auto; color: #bfe4d6; font-size: 12px; line-height: 1.6; border-top: 1px solid #24344b; }
 .notice { margin: 0 18px 18px; padding: 12px 14px; border-left: 3px solid #f5c56a; color: #c8b78c; background: rgba(117, 82, 23, .15); font-size: 12px; line-height: 1.5; }
+.decision-card { margin: 0 18px 18px; padding: 16px; border: 1px solid #38506e; border-radius: 12px; background: #101d31; }
+.decision-card strong { color: #e8f4ff; }
+.decision-card p { margin: 7px 0 12px; color: #89a1ba; font-size: 12px; line-height: 1.5; }
+.button-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .timeline { padding: 22px; }
 .timeline article { display: grid; grid-template-columns: 34px 1fr; gap: 13px; padding-bottom: 22px; }
 .timeline article:last-child { padding-bottom: 0; }

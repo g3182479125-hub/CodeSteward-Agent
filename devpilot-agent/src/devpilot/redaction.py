@@ -6,10 +6,15 @@ import re
 from typing import cast
 
 _SENSITIVE_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9]{12,}\b"),
-    re.compile(r"\be2b_[A-Za-z0-9]{16,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\be2b_[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
-    re.compile(r"(?i)\b(?:deepseek|e2b|api)[_-]?(?:api)?[_-]?key\s*[=:]\s*\S+"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\s*[=:]\s*[^\s,;]+"
+    ),
 )
 
 
@@ -31,7 +36,16 @@ def redact_sensitive_payload(value: object) -> object:
         for key, item in cast(dict[str, object], value).items():
             if any(
                 marker in key.casefold()
-                for marker in ("token", "secret", "password", "api_key")
+                for marker in (
+                    "token",
+                    "secret",
+                    "password",
+                    "passwd",
+                    "api_key",
+                    "apikey",
+                    "access_key",
+                    "authorization",
+                )
             ):
                 result[key] = "[REDACTED]"
             else:

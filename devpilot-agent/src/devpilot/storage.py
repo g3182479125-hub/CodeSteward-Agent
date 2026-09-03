@@ -337,7 +337,7 @@ class ProjectStore:
             return [
                 {
                     "project_id": row.id,
-                    "real_path": row.real_path,
+                    "project_name": Path(row.real_path).name,
                     "trust_state": row.trust_state,
                     "repo_fingerprint": row.repo_fingerprint,
                     "allowed_root_id": row.allowed_root_id,
@@ -353,7 +353,7 @@ class ProjectStore:
                 raise KeyError("unknown project")
             return {
                 "project_id": project.id,
-                "real_path": project.real_path,
+                "project_name": Path(project.real_path).name,
                 "trust_state": project.trust_state,
                 "repo_fingerprint": project.repo_fingerprint,
                 "allowed_root_id": project.allowed_root_id,
@@ -1051,6 +1051,13 @@ class ProjectStore:
             if record is None:
                 raise KeyError("unknown idempotency key")
             record.response_json = response_json
+
+    def abort_idempotency(self, key: str) -> None:
+        """Release a reservation whose operation failed before a response existed."""
+        with self._session_factory.begin() as session:
+            record = session.get(IdempotencyRecord, key)
+            if record is not None and record.response_json is None:
+                session.delete(record)
 
     def get_idempotency(self, key: str) -> tuple[str, str | None] | None:
         with self._session_factory() as session:
