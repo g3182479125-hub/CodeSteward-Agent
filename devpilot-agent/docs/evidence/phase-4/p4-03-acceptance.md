@@ -1,7 +1,7 @@
 # P4-03 Test-Repair Acceptance Evidence
 
-Implementation commit: `df4378a38ce27b69d907987febc882f2c431a6a9`  
-Plan: frozen DevPilot plan `2.2.0`  
+Implementation commit: `df4378a38ce27b69d907987febc882f2c431a6a9`
+Plan: frozen DevPilot plan `2.2.0`
 Date: 2026-09-03 (Asia/Shanghai)
 
 ## Delivered outcome

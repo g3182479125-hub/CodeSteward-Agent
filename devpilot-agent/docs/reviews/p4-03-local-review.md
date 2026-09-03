@@ -1,7 +1,7 @@
 # P4-03 Local Read-only Review
 
-Review target: implementation commit `df4378a38ce27b69d907987febc882f2c431a6a9`  
-Spec: `docs/superpowers/specs/2026-09-03-p4-03-test-repair-design.md`  
+Review target: implementation commit `df4378a38ce27b69d907987febc882f2c431a6a9`
+Spec: `docs/superpowers/specs/2026-09-03-p4-03-test-repair-design.md`
 Plan: `docs/superpowers/plans/2026-09-03-p4-03-test-repair-plan.md`
 
 ## Standards axis
