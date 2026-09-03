@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from .control_plane import ControlPlaneManager
 from .domain import ChangeSetStatus
@@ -152,8 +152,10 @@ class DeliveryDecisionWorkflow:
     ) -> str:
         for event in reversed(events):
             payload = event.get("payload")
-            if isinstance(payload, dict) and payload.get("workflow") in _WORKFLOWS:
-                return str(payload["workflow"])
+            if isinstance(payload, dict):
+                workflow_value = cast(dict[str, Any], payload).get("workflow")
+                if workflow_value in _WORKFLOWS:
+                    return str(workflow_value)
             for workflow in _WORKFLOWS:
                 if event["event_type"].startswith(workflow.replace("-", "_") + "."):
                     return workflow
