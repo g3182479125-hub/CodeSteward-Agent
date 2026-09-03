@@ -1,30 +1,32 @@
 # P5 Final Spec Review
 
+## Review scope
+
+- Fixed point: `5860598`
+- Reviewed diff: `git diff 5860598...HEAD`
+- Required reviewer: Spec subagent
+
 ## Status
 
-The Spec reviewer completed its inspection of `git diff 7ec7bd6...HEAD`, but
-the review service also reported an intermittent 404 during the run. The
-following findings remain open for a later P5 cleanup pass:
+Final parallel review rerun is pending. This file intentionally does not claim
+approval until the Spec subagent has returned a PASS report for the exact diff
+above.
 
-`unexpected status 404 Not Found: Unknown error, url: https://chatgpt.com/backend-api/codex/responses`
+## Contract and product resolution checklist
 
-Per `AGENTS.md`, the service error remains a process blocker for certification.
-Local contract, build, smoke, and evidence checks are recorded in
-`docs/evidence/phase-5/p5-acceptance.md`.
+- The committed browser smoke runs the built console against an asynchronous
+  fake API fixture, checks page-specific UI data and controls, and asserts that
+  all expected API/SSE paths were requested.
+- Project registration remains the existing frozen-plan route behavior and is
+  covered by the same public response safety adapter.
+- Configured-but-unverified execution backends are shown as unavailable.
+- Canonical and compatibility responses both remove local filesystem
+  coordinates and redact credential-shaped text.
+- ChangeSet detail keeps accept/stop/rollback decision controls in the console;
+  approval tokens remain outside browser state.
 
-## Spec report
-
-- Major: the committed smoke script is a shell/API check, not a browser smoke
-  test against a fake API fixture.
-- Minor: project registration adds a mutation beyond the P5-01 non-goal that
-  excludes new project resources.
-- Major: configured-but-unverified backends are labelled `configured`; the
-  console should label them unavailable/denied until verification succeeds.
-
-## Scope notes for the next review
+## Scope notes
 
 The optional console intentionally keeps token-gated Apply, Verify, and
 Rollback in nanobot's existing confirmation chain, while ChangeSet detail
 contains the final accept/stop decision controls and never stores tokens.
-Canonical `/api/v1` responses remove local filesystem coordinates; legacy
-`/v1` responses preserve their previous payload shape for compatibility.

@@ -1,33 +1,27 @@
 # P5 Final Standards Review
 
+## Review scope
+
+- Fixed point: `5860598`
+- Reviewed diff: `git diff 5860598...HEAD`
+- Required reviewer: Standards subagent
+
 ## Status
 
-The Standards reviewer completed its inspection of `git diff 7ec7bd6...HEAD`,
-but the review service also reported an intermittent 404 during the run. The
-report found no code-level hard documented-standard violation.
+Final parallel review rerun is pending. This file intentionally does not claim
+approval until the Standards subagent has returned a PASS report for the exact
+diff above.
 
-The review service error was:
+## Resolution checklist prepared for final review
 
-`unexpected status 404 Not Found: Unknown error, url: https://chatgpt.com/backend-api/codex/responses`
-
-Per `AGENTS.md`, the service error remains a process blocker for certification.
-Local quality gates are recorded in `docs/evidence/phase-5/p5-acceptance.md`.
-
-## Standards report
-
-- No hard documented-standard violation was found.
-- Judgement-call: `control_plane.py` has divergent change because it now
-  handles idempotency, project registration, HTTP contracts, SSE, catalogues,
-  and route registration.
-- Judgement-call: HTTP handlers reach directly into `manager.store`.
-- Judgement-call: `/api/v1` and `/v1` route decorators duplicate registration;
-  this is justified by the compatibility requirement.
-
-## Pre-fix findings addressed
-
-The earlier Standards review identified credential-redaction gaps, stale
-idempotency reservations, forwarded-request handling, absolute path exposure,
-missing frontend event listeners, and missing dependency reproducibility.
-The current code adds broader redaction, aborts failed reservations, rejects
-forwarded loopback requests, removes local paths from canonical responses,
-adds SSE fallback/listeners, and pins the web dependency graph with pnpm.
+- Credential-shaped content is redacted from canonical and compatibility HTTP
+  payloads, including quoted and triple-quoted assignments.
+- Unverified execution backends are reported as `unavailable`, never as healthy
+  merely because configuration exists.
+- Loopback-only browser API configuration rejects credentials, query strings,
+  fragments, forwarded requests, and non-loopback hosts.
+- `/api/v1` and `/v1` use the same safe public response adapter; local paths are
+  not exposed through either contract.
+- SSE listeners cover the server event vocabulary, and browser smoke uses an
+  asynchronous fake API plus request assertions.
+- Rollback delivery metadata uses the canonical `/api/v1` endpoint.

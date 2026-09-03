@@ -9,7 +9,7 @@ language entry point.
 ## Verified locally
 
 - P5 API/SSE contract tests: 12 passed.
-- Full Python suite: 171 passed, 3 skipped.
+- Full Python suite: 172 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
 - Web TypeScript check: passed with `npm test`.
@@ -39,8 +39,6 @@ treated as successful security coverage.
 
 ## Review gate status
 
-The required parallel Standards and Spec reviews were dispatched twice after
-the fixes. Both attempts failed in the subagent service with HTTP 404 from
-the Codex responses endpoint. This is recorded as a process blocker in
-`docs/reviews/p5-final-standards.md` and `docs/reviews/p5-final-spec.md`; it
-must not be represented as a clean reviewer approval.
+The final parallel Standards and Spec review rerun is pending against the
+fixed point `5860598`. P5 is not certified and P6 must not start until both
+reports return PASS for `git diff 5860598...HEAD`.
