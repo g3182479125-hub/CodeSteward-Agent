@@ -317,6 +317,7 @@ class ControlPlaneManager:
         *,
         workflow: str = "feature-delivery",
         artifact_id: str | None = None,
+        event_payload: dict[str, Any] | None = None,
     ) -> None:
         """Keep ChangeSet state consistent when verification passed but reporting failed."""
         with self._mutex:
@@ -327,6 +328,8 @@ class ControlPlaneManager:
             event = {"code": reason}
             if artifact_id is not None:
                 event["artifact_id"] = artifact_id
+            if event_payload:
+                event.update(event_payload)
             self._event(entry, f"{workflow.replace('-', '_')}.failed", event)
 
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:

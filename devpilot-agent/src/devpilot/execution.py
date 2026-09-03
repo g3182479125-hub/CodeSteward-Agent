@@ -196,12 +196,25 @@ class FakeExecutionBackend:
     def run(self, request: ExecutionRequest) -> ExecutionResult:
         validate_request(request)
         self.requests.append(request)
+        exit_code = self.exit_code
+        stderr = ""
+        if request.command_profile == "react-static":
+            # G-02 is deliberately deterministic: Fake verification checks
+            # the one required repair invariant instead of pretending that an
+            # arbitrary configured exit code exercised React.
+            if any(
+                item.relative_path.casefold().endswith(".jsx")
+                and b"event.preventDefault()" not in item.content
+                for item in request.files
+            ):
+                exit_code = 1
+                stderr = "react-static contract: event.preventDefault() is missing"
         return ExecutionResult(
             backend=self.name,
             sandbox_id="fake-sandbox",
-            exit_code=self.exit_code,
+            exit_code=exit_code,
             stdout=self.stdout,
-            stderr="",
+            stderr=stderr,
             duration_ms=0,
             command_profile=request.command_profile,
             bundle_bytes=execution_bundle_bytes(request),

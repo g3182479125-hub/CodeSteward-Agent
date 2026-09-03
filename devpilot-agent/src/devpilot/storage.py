@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -163,6 +164,19 @@ class FileChangeRecord(Base):
     before_size: Mapped[int] = mapped_column(Integer, nullable=False)
     after_sha256: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@dataclass(frozen=True)
+class BugCheckFailureFact:
+    """Server-computed failure fact accepted by the durable event store."""
+
+    run_id: str
+    project_id: str
+    symptom: str
+    expected_behavior: str
+    target_files: tuple[str, ...]
+    before_hashes: dict[str, str]
+    code: str
 
 
 class ProjectLockRecord(Base):
@@ -335,28 +349,19 @@ class ProjectStore:
                 )
             )
 
-    def record_bug_check_failure(
-        self,
-        run_id: str,
-        *,
-        project_id: str,
-        symptom: str,
-        expected_behavior: str,
-        target_files: list[str],
-        before_hashes: dict[str, str],
-        code: str,
-    ) -> None:
-        """Persist the server-generated failure fact consumed by BugFixWorkflow."""
-        if not symptom.strip() or not expected_behavior.strip() or not code.strip():
+    def record_bug_check_failure_fact(self, fact: BugCheckFailureFact) -> None:
+        """Persist a fact whose file hashes were computed by a server-side checker."""
+        if not fact.symptom.strip() or not fact.expected_behavior.strip() or not fact.code.strip():
             raise ValueError("bug-check failure fields must be non-empty")
-        if not target_files or len(set(target_files)) != len(target_files):
+        if not fact.target_files or len(set(fact.target_files)) != len(fact.target_files):
             raise ValueError("bug-check target files must be unique")
-        if any(item not in before_hashes for item in target_files):
-            raise ValueError("bug-check target files must have before hashes")
-        canonical_targets = [self._canonical_failure_path(item) for item in target_files]
-        canonical_hashes = {
-            self._canonical_failure_path(path): value for path, value in before_hashes.items()
-        }
+        canonical_targets = [self.canonical_failure_path(item) for item in fact.target_files]
+        canonical_hashes: dict[str, str] = {}
+        for path, value in fact.before_hashes.items():
+            canonical_path = self.canonical_failure_path(path)
+            if canonical_path in canonical_hashes and canonical_hashes[canonical_path] != value:
+                raise ValueError("bug-check before hashes conflict after canonicalization")
+            canonical_hashes[canonical_path] = str(value)
         if len(set(canonical_targets)) != len(canonical_targets):
             raise ValueError("bug-check target files must be unique after canonicalization")
         if any(
@@ -367,10 +372,10 @@ class ProjectStore:
         if any(item not in canonical_hashes for item in canonical_targets):
             raise ValueError("bug-check target files must have canonical before hashes")
         with self._session_factory.begin() as session:
-            run = session.get(RunRecord, run_id)
+            run = session.get(RunRecord, fact.run_id)
             if (
                 run is None
-                or run.project_id != project_id
+                or run.project_id != fact.project_id
                 or run.kind != "bug-check"
                 or run.status != "running"
             ):
@@ -378,17 +383,17 @@ class ProjectStore:
             payload = {
                 "producer": "devpilot.bug-check",
                 "schema_version": 1,
-                "project_id": project_id,
+                "project_id": fact.project_id,
                 "status": "failed",
-                "code": code,
-                "symptom": symptom.strip(),
-                "expected_behavior": expected_behavior.strip(),
+                "code": fact.code.strip(),
+                "symptom": fact.symptom.strip(),
+                "expected_behavior": fact.expected_behavior.strip(),
                 "target_files": canonical_targets,
                 "before_hashes": canonical_hashes,
             }
             session.add(
                 RunEventRecord(
-                    run_id=run_id,
+                    run_id=fact.run_id,
                     event_type="bug_check.failed",
                     payload_json=json.dumps(
                         redact_sensitive_payload(payload),
@@ -400,7 +405,7 @@ class ProjectStore:
             )
 
     @staticmethod
-    def _canonical_failure_path(value: str) -> str:
+    def canonical_failure_path(value: str) -> str:
         path = str(value).replace("\\", "/").strip()
         parts = tuple(item for item in path.split("/") if item)
         if (

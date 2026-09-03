@@ -30,6 +30,17 @@ _STOP_CONDITIONS = (
     "rollback_conflict",
     "verification_failed",
 )
+_NON_DELIVERY_VERIFY_CODES = frozenset(
+    {
+        "APPROVAL_INVALID",
+        "APPROVAL_ALREADY_ISSUED",
+        "CHANGESET_NOT_VERIFIABLE",
+        "VERIFICATION_PROFILE_UNSUPPORTED",
+        "IDEMPOTENCY_INVALID",
+        "IDEMPOTENCY_CONFLICT",
+        "IDEMPOTENCY_IN_PROGRESS",
+    }
+)
 
 
 def _freeze(value: Any) -> Any:
@@ -951,6 +962,11 @@ class BugFixWorkflow:
                 finalize_run=False,
             )
         except PatchError as exc:
+            if exc.code in _NON_DELIVERY_VERIFY_CODES:
+                # These are caller/state/configuration errors, not a failed
+                # verification run.  Do not create a misleading failure
+                # Artifact or close the workflow-owned Run.
+                raise
             failure = {
                 "status": "verification_failed",
                 "profile": proposal.verification_profile.value,
@@ -1031,6 +1047,14 @@ class BugFixWorkflow:
                 "ARTIFACT_WRITE_FAILED",
                 workflow="bug-fix",
                 artifact_id=str(failure_artifact["artifact_id"]),
+                event_payload={
+                    "workflow": "bug-fix",
+                    "artifact": failure_artifact,
+                    "verification_profile": proposal.verification_profile.value,
+                    "backend": verification.get("backend", "unknown"),
+                    "exit_code": verification.get("exit_code"),
+                    **self._bound_hashes(proposal),
+                },
             )
             self.manager.finalize_run(
                 proposal.change_set_id, "failed", {"code": "ARTIFACT_WRITE_FAILED"}
@@ -1384,7 +1408,22 @@ class BugFixWorkflow:
         """Best-effort failure Artifact plus a durable fallback event."""
         artifact_id = str(uuid.uuid4())
         artifact: ArtifactWrite | None = None
-        result: dict[str, Any] = {"artifact_id": artifact_id, "indexed": False}
+        result: dict[str, Any] = {
+            "artifact_id": artifact_id,
+            "path": None,
+            "sha256": None,
+            "size_bytes": None,
+            "indexed": False,
+            "verification_profile": verification.get("profile"),
+            "backend": verification.get("backend"),
+            "exit_code": verification.get("exit_code"),
+            "before_manifest_hash": self._hash(
+                [str(item) for item in proposal.preview.get("before_manifest", [])]
+            ),
+            "after_manifest_hash": self._hash(
+                [str(item) for item in proposal.preview.get("after_manifest", [])]
+            ),
+        }
         try:
             artifact = ArtifactService(self.artifacts_root).write_markdown(
                 project_id=proposal.project_id,
@@ -1422,6 +1461,9 @@ class BugFixWorkflow:
                     "code": "ARTIFACT_WRITE_FAILED",
                     "workflow": "bug-fix",
                     "artifact_id": artifact_id,
+                    "path": None,
+                    "sha256": None,
+                    "size_bytes": None,
                     "indexed": False,
                 }
                 if artifact is not None:
@@ -1430,9 +1472,25 @@ class BugFixWorkflow:
                             "artifact_id": artifact_id,
                             "path": artifact.path.relative_to(self.artifacts_root).as_posix(),
                             "sha256": artifact.sha256,
+                            "size_bytes": artifact.size_bytes,
                             "indexed": False,
                         }
                     )
+                    result.update(
+                        {
+                            "path": fallback["path"],
+                            "sha256": fallback["sha256"],
+                            "size_bytes": fallback["size_bytes"],
+                        }
+                    )
+                fallback.update(
+                    {
+                        "verification_profile": verification.get("profile"),
+                        "backend": verification.get("backend"),
+                        "exit_code": verification.get("exit_code"),
+                        **self._bound_hashes(proposal),
+                    }
+                )
                 store.append_event(
                     proposal.run_id,
                     "artifact.persistence_failed",

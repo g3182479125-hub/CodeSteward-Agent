@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
 import devpilot.nanobot_tools as nanobot_tools
+import devpilot.workflows as workflows
 from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
@@ -23,11 +24,11 @@ from devpilot.execution import (
     validate_request,
 )
 from devpilot.nanobot_tools import BugFixProposeTool
-from devpilot.patches import FilePatch
+from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
-from devpilot.services import ProjectAnalysisService
+from devpilot.services import BugCheckService, ProjectAnalysisService
 from devpilot.skill_manager import validate_skill
-from devpilot.storage import ProjectStore
+from devpilot.storage import BugCheckFailureFact, ProjectStore
 from devpilot.workflows import BugFixWorkflow, WorkflowError
 
 _FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "react-form-project"
@@ -61,17 +62,14 @@ def _setup(tmp_path: Path, *, exit_code: int = 0) -> tuple[
     access = CodeAccessService(allowed_roots=roots, store=store)
     access.search(analysis.project_id, "preventDefault", evidence_run_id=analysis.run_id)
     access.read(analysis.project_id, "src/App.jsx", evidence_run_id=analysis.run_id)
-    before_hash = hashlib.sha256((project / "src" / "App.jsx").read_bytes()).hexdigest()
-    failure_run = store.start_run(analysis.project_id, kind="bug-check")
-    store.record_bug_check_failure(
-        failure_run,
-        project_id=analysis.project_id,
+    failure = BugCheckService(allowed_roots=roots, store=store).record_failure(
+        project,
         symptom="submitting the form navigates away",
         expected_behavior="submitting keeps the page and shows Saved",
         target_files=["src/App.jsx"],
-        before_hashes={"src/App.jsx": before_hash},
         code="FORM_DEFAULT_NAVIGATION",
     )
+    failure_run = failure.run_id
     store.finish_run(failure_run, "failed", {"code": "FORM_DEFAULT_NAVIGATION"})
     manager = ControlPlaneManager(
         allowed_roots=roots,
@@ -186,6 +184,29 @@ def test_g02_bug_fix_failed_verification_is_not_success(tmp_path: Path) -> None:
     )[0]["id"]
 
 
+def test_react_static_fake_checks_the_repair_invariant() -> None:
+    backend = FakeExecutionBackend()
+    request = ExecutionRequest(
+        run_id="verify-run",
+        project_id="project",
+        files=(ExecutionFile("src/App.jsx", b"function App() {}"),),
+        command="react-static /workspace/devpilot/src/App.jsx",
+        command_profile="react-static",
+    )
+    result = backend.run(request)
+    assert result.exit_code == 1
+    assert "preventDefault" in result.stderr
+
+    fixed = ExecutionRequest(
+        run_id="verify-run-2",
+        project_id="project",
+        files=(ExecutionFile("src/App.jsx", b"event.preventDefault();"),),
+        command="react-static /workspace/devpilot/src/App.jsx",
+        command_profile="react-static",
+    )
+    assert backend.run(fixed).exit_code == 0
+
+
 def test_g02_bug_fix_rejects_out_of_scope_patch(tmp_path: Path) -> None:
     _, project, manager, analysis_id, failure_id = _setup(tmp_path)
     workflow = BugFixWorkflow(manager)
@@ -222,6 +243,24 @@ def test_g02_bug_fix_requires_user_confirmation_before_apply(tmp_path: Path) -> 
     assert (project / "src" / "App.jsx").read_text(encoding="utf-8") == _fixture_app()
 
 
+def test_bug_fix_verify_state_errors_do_not_create_failure_artifact(tmp_path: Path) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(tmp_path)
+    proposal = _propose(manager, project, analysis_id, failure_id)
+    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    BugFixWorkflow(manager).apply(
+        proposal,
+        user_confirmation="执行",
+        approval_token=client.post(f"/v1/change-sets/{proposal.change_set_id}/approve").json()[
+            "approval_token"
+        ],
+    )
+
+    with pytest.raises(PatchError, match="APPROVAL_INVALID"):
+        BugFixWorkflow(manager).verify(proposal, approval_token="invalid-token")
+    assert not list((tmp_path / "data" / "artifacts").rglob("bug-fix-failure.md"))
+    assert store.get_run_state(proposal.run_id or "")["status"] == "running"
+
+
 def test_g02_bug_fix_api_and_nanobot_contract(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     before_hash = hashlib.sha256((project / "src" / "App.jsx").read_bytes()).hexdigest()
@@ -254,6 +293,43 @@ def test_g02_bug_fix_api_and_nanobot_contract(tmp_path: Path) -> None:
     assert store.get_change_plan_contract(response.json()["preview"]["plan_id"])[
         "contract_hash"
     ]
+
+
+def test_bug_check_service_computes_hashes_and_storage_rejects_alias_collision(
+    tmp_path: Path,
+) -> None:
+    store, project, _, _, _ = _setup(tmp_path)
+    roots = AllowedRoots.from_paths([tmp_path])
+    outcome = BugCheckService(allowed_roots=roots, store=store).record_failure(
+        project,
+        symptom="symptom",
+        expected_behavior="expected",
+        target_files=["src/App.jsx"],
+        code="CHECK_FAILED",
+    )
+    event = [
+        item
+        for item in store.list_run_events(outcome.run_id)
+        if item["event_type"] == "bug_check.failed"
+    ][0]
+    canonical_target = store.canonical_failure_path("src/App.jsx")
+    assert event["payload"]["before_hashes"][canonical_target] == hashlib.sha256(
+        (project / "src" / "App.jsx").read_bytes()
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="conflict"):
+        store.record_bug_check_failure_fact(
+            BugCheckFailureFact(
+                run_id=outcome.run_id,
+                project_id=outcome.project_id,
+                symptom="symptom",
+                expected_behavior="expected",
+                target_files=("src/App.jsx",),
+                before_hashes={"src/App.jsx": "0" * 64, "src/app.jsx": "1" * 64},
+                code="CHECK_FAILED",
+            )
+        )
+    store.finish_run(outcome.run_id, "failed", {"code": "CHECK_FAILED"})
 
 
 def test_react_static_is_an_allowlisted_fake_only_command() -> None:
@@ -315,15 +391,15 @@ def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> No
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     project_id = store.get_run_state(failure_id)["project_id"]
     second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure(
-        second,
+    store.record_bug_check_failure_fact(BugCheckFailureFact(
+        run_id=second,
         project_id=project_id,
         symptom="submitting the form navigates away",
         expected_behavior="submitting keeps the page and shows Saved",
-        target_files=["src/App.jsx"],
+        target_files=("src/App.jsx",),
         before_hashes={"src/App.jsx": "0" * 64},
         code="FORM_DEFAULT_NAVIGATION",
-    )
+    ))
     store.finish_run(second, "failed", {"code": "FORM_DEFAULT_NAVIGATION"})
 
     with pytest.raises(WorkflowError, match="BUG_FIX_FAILURE_EVIDENCE_INVALID"):
@@ -343,15 +419,15 @@ def test_bug_fix_rejects_windows_casefold_hash_conflict(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     project_id = store.get_run_state(failure_id)["project_id"]
     second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure(
-        second,
+    store.record_bug_check_failure_fact(BugCheckFailureFact(
+        run_id=second,
         project_id=project_id,
         symptom="submitting the form navigates away",
         expected_behavior="submitting keeps the page and shows Saved",
-        target_files=["src/app.jsx"],
+        target_files=("src/app.jsx",),
         before_hashes={"src/app.jsx": "0" * 64},
         code="FORM_DEFAULT_NAVIGATION",
-    )
+    ))
     store.finish_run(second, "failed", {"code": "FORM_DEFAULT_NAVIGATION"})
 
     with pytest.raises(WorkflowError, match="BUG_FIX_FAILURE_EVIDENCE_INVALID"):
@@ -508,3 +584,50 @@ def test_bug_fix_artifact_db_failure_leaves_failure_artifact_and_event(
     assert failure_path.exists()
     events = store.list_run_events(proposal.run_id or "")
     assert any(item["event_type"] == "artifact.persistence_failed" for item in events)
+    failed_event = [
+        item for item in events if item["event_type"] == "bug_fix.failed"
+    ][-1]
+    failure_artifact = failed_event["payload"]["artifact"]
+    assert failure_artifact["indexed"] is False
+    assert failure_artifact["path"].endswith("bug-fix-failure.md")
+    assert len(failure_artifact["sha256"]) == 64
+    assert failed_event["payload"]["before_manifest_hash"]
+    assert failed_event["payload"]["after_manifest_hash"]
+
+
+def test_bug_fix_artifact_file_failure_is_explicit_and_non_successful(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(tmp_path)
+    proposal = _propose(manager, project, analysis_id, failure_id)
+    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    applied = BugFixWorkflow(manager).apply(
+        proposal,
+        user_confirmation="执行",
+        approval_token=client.post(f"/v1/change-sets/{proposal.change_set_id}/approve").json()[
+            "approval_token"
+        ],
+    )
+    verify_token = client.post(
+        f"/v1/change-sets/{proposal.change_set_id}/approve",
+        json={"capability": "r2.verify"},
+    ).json()["approval_token"]
+
+    def fail_write(*_: object, **__: object) -> object:
+        raise OSError("simulated artifact filesystem outage")
+
+    monkeypatch.setattr(workflows.ArtifactService, "write_markdown", fail_write)
+    with pytest.raises(WorkflowError, match="WORKFLOW_ARTIFACT_WRITE_FAILED"):
+        BugFixWorkflow(manager).verify(
+            proposal, approval_token=verify_token, apply_result=applied
+        )
+    events = store.list_run_events(proposal.run_id or "")
+    failed_event = [
+        item for item in events if item["event_type"] == "bug_fix.failed"
+    ][-1]
+    failure_artifact = failed_event["payload"]["artifact"]
+    assert failure_artifact["artifact_id"]
+    assert failure_artifact["path"] is None
+    assert failure_artifact["sha256"] is None
+    assert failure_artifact["indexed"] is False
+    assert store.get_run_state(proposal.run_id or "")["status"] == "failed"
