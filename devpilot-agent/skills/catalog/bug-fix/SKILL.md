@@ -64,7 +64,9 @@ Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用�
 
 proposal 必须包含 `workflow=bug-fix`、failure evidence ids、symptom、expected behavior、
 change_set_id、patch_hash、scope_hash、允许文件、回归 profile、停止条件、回滚方式和
-`requires_user_confirmation=true`。交付结果必须包含 before/after hash、验证状态和 Artifact。
+`requires_user_confirmation=true`。交付结果必须包含文件级 before/after hash、before/after
+manifest、验证 profile、backend、退出码和 Artifact ID。P4-02 的 `react-static` 只代表
+Fake 合同验证，不代表真实 React/npm 测试或 Sandbox 隔离已经执行。
 
 ## 失败处理
 

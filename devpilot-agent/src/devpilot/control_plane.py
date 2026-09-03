@@ -107,6 +107,20 @@ class FeatureDeliveryRequest(BaseModel):
     verification_profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
 
 
+class BugFixRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_path: str = Field(min_length=1)
+    patches: list[PatchPayload] = Field(min_length=1, max_length=12)
+    analysis_evidence_ids: list[str] = Field(min_length=1, max_length=32)
+    failure_evidence_ids: list[str] = Field(min_length=1, max_length=32)
+    symptom: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
+    non_goals: list[str] = Field(default_factory=list, max_length=32)
+    allowed_files: list[str] = Field(min_length=1, max_length=32)
+    verification_profile: VerificationProfile = VerificationProfile.REACT_STATIC
+
+
 class _PendingChangeSet:
     def __init__(self, plan: PatchPlan, run_id: str | None = None) -> None:
         self.plan = plan
@@ -170,6 +184,9 @@ def plan_payload(entry: _PendingChangeSet) -> dict[str, Any]:
         "verification": ["precondition_sha256", "post_apply_manifest", "rollback_conflict_check"],
         "stop_conditions": ["stale_hash", "path_denied", "project_locked", "rollback_conflict"],
         "files": _file_change_payload(plan),
+        "before_manifest": list(plan.change_set.before_manifest),
+        "after_manifest": list(plan.change_set.after_manifest),
+        "rollback_manifest": list(plan.change_set.rollback_manifest),
         "diff": plan.diff,
     }
 
@@ -246,6 +263,33 @@ class ControlPlaneManager:
                             "contract_hash": contract["contract_hash"],
                         }
                     )
+                if entry.run_id is not None:
+                    bug_fix_events = [
+                        item
+                        for item in self.store.list_run_events(entry.run_id)
+                        if item["event_type"] == "bug_fix.proposed"
+                    ]
+                    if bug_fix_events:
+                        event_payload = bug_fix_events[-1]["payload"]
+                        if isinstance(event_payload, dict):
+                            result_contract: dict[str, Any] = {
+                                key: event_payload[key]
+                                for key in (
+                                    "workflow",
+                                    "analysis_evidence_ids",
+                                    "failure_evidence_ids",
+                                    "analysis_evidence_hash",
+                                    "failure_evidence_hash",
+                                    "symptom",
+                                    "expected_behavior",
+                                    "non_goals",
+                                    "allowed_files",
+                                    "verification_profile",
+                                )
+                                if key in event_payload
+                            }
+                            result_contract["contract_hash"] = contract["contract_hash"]
+                            payload["bug_fix_contract"] = result_contract
             return payload
 
     def get_run_id(self, change_set_id: str) -> str | None:
@@ -265,14 +309,24 @@ class ControlPlaneManager:
         with self._mutex:
             self._finish_run(self._require(change_set_id), result, payload)
 
-    def mark_delivery_failed(self, change_set_id: str, reason: str) -> None:
+    def mark_delivery_failed(
+        self,
+        change_set_id: str,
+        reason: str,
+        *,
+        workflow: str = "feature-delivery",
+        artifact_id: str | None = None,
+    ) -> None:
         """Keep ChangeSet state consistent when verification passed but reporting failed."""
         with self._mutex:
             entry = self._require(change_set_id)
             if entry.plan.change_set.status is ChangeSetStatus.VERIFIED:
                 entry.plan.change_set.transition_to(ChangeSetStatus.DELIVERY_FAILED)
                 self._persist_status(entry, failure_reason=reason)
-            self._event(entry, "feature_delivery.failed", {"code": reason})
+            event = {"code": reason}
+            if artifact_id is not None:
+                event["artifact_id"] = artifact_id
+            self._event(entry, f"{workflow.replace('-', '_')}.failed", event)
 
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
@@ -929,6 +983,26 @@ def create_app(
                 project_path=payload.project_path,
                 patches=[item.to_file_patch() for item in payload.patches],
                 evidence_ids=payload.evidence_ids,
+                verification_profile=payload.verification_profile,
+            )
+        except WorkflowError as exc:
+            raise PatchError(exc.code, exc.message) from exc
+        return proposal.to_dict()
+
+    @app.post("/v1/bug-fix/proposals", status_code=status.HTTP_201_CREATED)
+    def bug_fix_proposal(payload: BugFixRequest) -> dict[str, Any]:
+        from .workflows import BugFixWorkflow, WorkflowError
+
+        try:
+            proposal = BugFixWorkflow(manager).propose(
+                project_path=payload.project_path,
+                patches=[item.to_file_patch() for item in payload.patches],
+                analysis_evidence_ids=payload.analysis_evidence_ids,
+                failure_evidence_ids=payload.failure_evidence_ids,
+                symptom=payload.symptom,
+                expected_behavior=payload.expected_behavior,
+                non_goals=payload.non_goals,
+                allowed_files=payload.allowed_files,
                 verification_profile=payload.verification_profile,
             )
         except WorkflowError as exc:

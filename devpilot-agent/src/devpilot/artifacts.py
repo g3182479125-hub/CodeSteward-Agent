@@ -13,7 +13,13 @@ from .redaction import redact_sensitive_text
 
 MAX_ARTIFACT_BYTES = 1 * 1024 * 1024
 _SUPPORTED_MARKDOWN = frozenset(
-    {"project-overview.md", "feature-delivery.md", "feature-delivery-failure.md"}
+    {
+        "project-overview.md",
+        "feature-delivery.md",
+        "feature-delivery-failure.md",
+        "bug-fix.md",
+        "bug-fix-failure.md",
+    }
 )
 
 
@@ -33,7 +39,8 @@ class ArtifactService:
     ) -> ArtifactWrite:
         if name not in _SUPPORTED_MARKDOWN:
             raise ValueError(
-                "only project-overview.md and feature-delivery.md are supported"
+                "only allowlisted DevPilot Markdown Artifact names are supported, "
+                "including project-overview.md and feature-delivery.md"
             )
         for value, label in ((project_id, "project_id"), (run_id, "run_id")):
             try:

@@ -769,8 +769,11 @@ def test_feature_delivery_nanobot_contract_matches_registered_tools() -> None:
     root = Path(__file__).parents[1]
     with (root / "pyproject.toml").open("rb") as handle:
         registered = set(tomllib.load(handle)["project"]["entry-points"]["nanobot.tools"])
-    skill = (root / "skills" / "catalog" / "feature-delivery" / "SKILL.md").read_text(
-        encoding="utf-8"
+    skill = "\n".join(
+        (
+            root / "skills" / "catalog" / name / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        for name in ("feature-delivery", "bug-fix")
     )
     expected = {
         line.strip()[2:]

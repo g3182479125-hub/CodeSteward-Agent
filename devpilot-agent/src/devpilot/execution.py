@@ -161,6 +161,16 @@ def validate_command(command: str, input_paths: set[str]) -> None:
                 "command is outside the Node syntax allowlist",
             )
         return
+    if len(tokens) >= 2 and tokens[0] == "react-static":
+        paths = tokens[1:]
+        if not paths or any(
+            path not in input_paths or not path.casefold().endswith(".jsx") for path in paths
+        ):
+            raise ExecutionError(
+                "EXECUTION_COMMAND_FORBIDDEN",
+                "command is outside the React static contract allowlist",
+            )
+        return
     raise ExecutionError(
         "EXECUTION_COMMAND_FORBIDDEN",
         "only allowlisted verification commands are accepted",

@@ -29,6 +29,7 @@ class VerificationProfile(StrEnum):
     PYTHON_SYNTAX = "python-syntax"
     PYTHON_RUN = "python-run"
     NODE_SYNTAX = "node-syntax"
+    REACT_STATIC = "react-static"
 
 
 def _is_secret_name(name: str) -> bool:
@@ -140,6 +141,10 @@ def build_verification_request(
         VerificationProfile.PYTHON_SYNTAX: {".py"},
         VerificationProfile.PYTHON_RUN: {".py"},
         VerificationProfile.NODE_SYNTAX: {".js", ".mjs", ".cjs"},
+        # G-02 is a static React fixture.  Its contract is intentionally
+        # represented as an allowlisted profile; before P6 only FakeExecutionBackend
+        # may consume it, so no local React/npm process is started here.
+        VerificationProfile.REACT_STATIC: {".jsx"},
     }[profile]
     changed_files = tuple(
         patch.relative_path.replace("\\", "/")
@@ -158,8 +163,10 @@ def build_verification_request(
         if len(paths) != 1:
             raise ValueError("python-run requires exactly one changed Python file")
         command = "python3 " + shlex.join(paths)
-    else:
+    elif profile is VerificationProfile.NODE_SYNTAX:
         command = "node --check " + shlex.join(paths)
+    else:
+        command = "react-static " + shlex.join(paths)
     return ExecutionRequest(
         run_id=f"verify-{plan.change_set.id}",
         project_id=plan.project_id,

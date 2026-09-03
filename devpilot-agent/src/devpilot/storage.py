@@ -331,6 +331,57 @@ class ProjectStore:
                 )
             )
 
+    def record_bug_check_failure(
+        self,
+        run_id: str,
+        *,
+        project_id: str,
+        symptom: str,
+        expected_behavior: str,
+        target_files: list[str],
+        before_hashes: dict[str, str],
+        code: str,
+    ) -> None:
+        """Persist the server-generated failure fact consumed by BugFixWorkflow."""
+        if not symptom.strip() or not expected_behavior.strip() or not code.strip():
+            raise ValueError("bug-check failure fields must be non-empty")
+        if not target_files or len(set(target_files)) != len(target_files):
+            raise ValueError("bug-check target files must be unique")
+        if any(item not in before_hashes for item in target_files):
+            raise ValueError("bug-check target files must have before hashes")
+        with self._session_factory.begin() as session:
+            run = session.get(RunRecord, run_id)
+            if (
+                run is None
+                or run.project_id != project_id
+                or run.kind != "bug-check"
+                or run.status != "running"
+            ):
+                raise ValueError("bug-check failure must belong to an open bug-check Run")
+            payload = {
+                "producer": "devpilot.bug-check",
+                "schema_version": 1,
+                "project_id": project_id,
+                "status": "failed",
+                "code": code,
+                "symptom": symptom.strip(),
+                "expected_behavior": expected_behavior.strip(),
+                "target_files": target_files,
+                "before_hashes": before_hashes,
+            }
+            session.add(
+                RunEventRecord(
+                    run_id=run_id,
+                    event_type="bug_check.failed",
+                    payload_json=json.dumps(
+                        redact_sensitive_payload(payload),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    created_at=utc_now(),
+                )
+            )
+
     def validate_open_run(self, *, project_id: str, run_id: str) -> None:
         with self._session_factory() as session:
             run = session.get(RunRecord, run_id)

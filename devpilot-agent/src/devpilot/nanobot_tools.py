@@ -78,6 +78,10 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "WORKFLOW_ARTIFACT_WRITE_FAILED",
         "WORKFLOW_EVIDENCE_INVALID",
         "WORKFLOW_EVIDENCE_REQUIRED",
+        "BUG_FIX_FAILURE_EVIDENCE_INVALID",
+        "BUG_FIX_INPUT_INVALID",
+        "BUG_FIX_SCOPE_INVALID",
+        "VERIFICATION_PROFILE_UNSUPPORTED",
     }
 )
 
@@ -498,6 +502,25 @@ def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        f"{_control_plane_url()}/v1/bug-fix/proposals",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        response_body = response.read(256 * 1024 + 1)
+    if len(response_body) > 256 * 1024:
+        raise ValueError("control-plane response is too large")
+    result = json.loads(response_body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("control-plane response is invalid")
+    result["requires_user_confirmation"] = True
+    return result
+
+
 def _request_approval(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _post_control_plane(
         _change_set_path(change_set_id, "approval-requests"), payload
@@ -841,6 +864,91 @@ class FeatureDeliveryProposeTool(Tool):
             return ToolResult.error(f"P4 feature proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 feature proposal rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_path": {"type": "string", "minLength": 1},
+            "patches": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": _PATCH_ITEM_SCHEMA,
+            },
+            "analysis_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "failure_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "symptom": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "expected_behavior": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "non_goals": {"type": "array", "maxItems": 32, "items": {"type": "string"}},
+            "allowed_files": {"type": "array", "minItems": 1, "maxItems": 32},
+            "verification_profile": {
+                "type": "string",
+                "enum": [
+                    "python-syntax",
+                    "python-run",
+                    "node-syntax",
+                    "react-static",
+                ],
+            },
+        },
+        "required": [
+            "project_path",
+            "patches",
+            "analysis_evidence_ids",
+            "failure_evidence_ids",
+            "symptom",
+            "expected_behavior",
+            "allowed_files",
+        ],
+        "additionalProperties": False,
+    }
+)
+class BugFixProposeTool(Tool):
+    """Create a bug-fix proposal bound to saved failure evidence."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_bug_fix_propose"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a bounded bug-fix proposal from saved failure evidence. "
+            "This is proposal-only and never approves, applies, executes, or rolls back changes."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            payload: dict[str, Any] = {
+                "project_path": str(kwargs["project_path"]),
+                "patches": kwargs["patches"],
+                "analysis_evidence_ids": kwargs["analysis_evidence_ids"],
+                "failure_evidence_ids": kwargs["failure_evidence_ids"],
+                "symptom": str(kwargs["symptom"]),
+                "expected_behavior": str(kwargs["expected_behavior"]),
+                "non_goals": kwargs.get("non_goals", []),
+                "allowed_files": kwargs["allowed_files"],
+            }
+            if kwargs.get("verification_profile") is not None:
+                payload["verification_profile"] = str(kwargs["verification_profile"])
+            result = _post_bug_fix_proposal(payload)
+            result["next_step"] = (
+                "展示失败证据、精确 Diff 和 stop conditions，并停止等待用户；"
+                "批准动作必须由控制面用户完成，Skill 不得签发或传播 approval token。"
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 bug-fix proposal rejected: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 bug-fix proposal rejected: {type(exc).__name__}")
 
 
 @tool_parameters(
