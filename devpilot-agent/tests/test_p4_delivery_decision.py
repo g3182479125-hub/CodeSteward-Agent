@@ -94,6 +94,17 @@ def test_failed_delivery_can_stop_without_claiming_success(tmp_path: Path) -> No
         decision.accept(proposal.change_set_id, "接受", idempotency_key="p4-04-accept-after-stop")
 
 
+def test_accepting_failed_verification_preserves_failure_reason(tmp_path: Path) -> None:
+    _store, _project, manager, proposal = _delivered(tmp_path, exit_code=1)
+    decision = DeliveryDecisionWorkflow(manager)
+
+    accepted = decision.accept(
+        proposal.change_set_id, "接受", idempotency_key="p4-04-accept-failed"
+    )
+    assert accepted["status"] == "accepted"
+    assert decision.report(proposal.change_set_id)["failure_reason"] == "NONZERO_EXIT"
+
+
 def test_decision_requires_exact_confirmation_and_never_mints_rollback(tmp_path: Path) -> None:
     _store, _project, manager, proposal = _delivered(tmp_path)
     decision = DeliveryDecisionWorkflow(manager)
@@ -124,6 +135,13 @@ def test_delivery_report_api_and_nanobot_adapter_are_read_only(
     )
     assert missing_key.status_code == 409
     assert missing_key.json()["error"]["code"] == "IDEMPOTENCY_REQUIRED"
+    invalid_decision = client.post(
+        f"/v1/change-sets/{proposal.change_set_id}/decision",
+        headers={"Idempotency-Key": "p4-04-invalid-decision"},
+        json={"decision": "rollback", "user_confirmation": "确认撤销"},
+    )
+    assert invalid_decision.status_code == 409
+    assert invalid_decision.json()["error"]["code"] == "DECISION_INVALID"
 
     seen: list[str] = []
 

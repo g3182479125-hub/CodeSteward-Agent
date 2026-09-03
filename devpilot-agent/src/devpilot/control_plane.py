@@ -138,10 +138,8 @@ class TestRepairRequest(BaseModel):
 class DeliveryDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: str = Field(pattern=r"^(?:accept|stop)$")
-    user_confirmation: str = Field(
-        pattern=r"^(?:接受|确认接受|停止|确认停止|confirmed)$"
-    )
+    decision: str
+    user_confirmation: str
 
 
 class _PendingChangeSet:
@@ -420,7 +418,11 @@ class ControlPlaneManager:
             )
             before = entry.plan.change_set.status.value
             entry.plan.change_set.transition_to(ChangeSetStatus.ACCEPTED)
-            self._persist_status(entry)
+            failure_reason = None
+            if self.store is not None and before == ChangeSetStatus.VERIFICATION_FAILED.value:
+                persisted = self.store.get_change_set(change_set_id) or {}
+                failure_reason = persisted.get("failure_reason")
+            self._persist_status(entry, failure_reason=failure_reason)
             result = {
                 "change_set_id": change_set_id,
                 "decision": "accept",
@@ -1228,6 +1230,8 @@ def create_app(
             return workflow.accept(
                 change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
             )
+        if payload.decision != "stop":
+            raise PatchError("DECISION_INVALID", "decision must be accept or stop")
         return workflow.stop(
             change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
         )
