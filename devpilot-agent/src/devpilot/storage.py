@@ -6,7 +6,7 @@ import json
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -177,6 +177,34 @@ class BugCheckFailureFact:
     target_files: tuple[str, ...]
     before_hashes: dict[str, str]
     code: str
+    _server_token: object = field(init=False, repr=False, compare=False)
+
+    @classmethod
+    def _from_server(
+        cls,
+        *,
+        run_id: str,
+        project_id: str,
+        symptom: str,
+        expected_behavior: str,
+        target_files: tuple[str, ...],
+        before_hashes: dict[str, str],
+        code: str,
+    ) -> BugCheckFailureFact:
+        fact = cls(
+            run_id=run_id,
+            project_id=project_id,
+            symptom=symptom,
+            expected_behavior=expected_behavior,
+            target_files=target_files,
+            before_hashes=before_hashes,
+            code=code,
+        )
+        object.__setattr__(fact, "_server_token", _BUG_CHECK_SERVER_TOKEN)
+        return fact
+
+
+_BUG_CHECK_SERVER_TOKEN = object()
 
 
 class ProjectLockRecord(Base):
@@ -351,6 +379,8 @@ class ProjectStore:
 
     def record_bug_check_failure_fact(self, fact: BugCheckFailureFact) -> None:
         """Persist a fact whose file hashes were computed by a server-side checker."""
+        if getattr(fact, "_server_token", None) is not _BUG_CHECK_SERVER_TOKEN:
+            raise ValueError("bug-check failure fact must be created by BugCheckService")
         if not fact.symptom.strip() or not fact.expected_behavior.strip() or not fact.code.strip():
             raise ValueError("bug-check failure fields must be non-empty")
         if not fact.target_files or len(set(fact.target_files)) != len(fact.target_files):

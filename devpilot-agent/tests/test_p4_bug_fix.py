@@ -261,6 +261,22 @@ def test_bug_fix_verify_state_errors_do_not_create_failure_artifact(tmp_path: Pa
     assert store.get_run_state(proposal.run_id or "")["status"] == "running"
 
 
+def test_bug_fix_scope_error_is_not_reported_as_verification_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(tmp_path)
+    proposal = _propose(manager, project, analysis_id, failure_id)
+
+    def reject_scope(*_: object, **__: object) -> dict[str, object]:
+        raise PatchError("APPROVAL_SCOPE_MISMATCH", "approval scope does not match")
+
+    monkeypatch.setattr(manager, "verify", reject_scope)
+    with pytest.raises(PatchError, match="APPROVAL_SCOPE_MISMATCH"):
+        BugFixWorkflow(manager).verify(proposal, approval_token="scope-token")
+    assert not list((tmp_path / "data" / "artifacts").rglob("bug-fix-failure.md"))
+    assert store.get_run_state(proposal.run_id or "")["status"] == "running"
+
+
 def test_g02_bug_fix_api_and_nanobot_contract(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     before_hash = hashlib.sha256((project / "src" / "App.jsx").read_bytes()).hexdigest()
@@ -319,13 +335,25 @@ def test_bug_check_service_computes_hashes_and_storage_rejects_alias_collision(
 
     with pytest.raises(ValueError, match="conflict"):
         store.record_bug_check_failure_fact(
-            BugCheckFailureFact(
+            BugCheckFailureFact._from_server(
                 run_id=outcome.run_id,
                 project_id=outcome.project_id,
                 symptom="symptom",
                 expected_behavior="expected",
                 target_files=("src/App.jsx",),
                 before_hashes={"src/App.jsx": "0" * 64, "src/app.jsx": "1" * 64},
+                code="CHECK_FAILED",
+            )
+        )
+    with pytest.raises(ValueError, match="BugCheckService"):
+        store.record_bug_check_failure_fact(
+            BugCheckFailureFact(
+                run_id=outcome.run_id,
+                project_id=outcome.project_id,
+                symptom="symptom",
+                expected_behavior="expected",
+                target_files=("src/App.jsx",),
+                before_hashes={"src/App.jsx": "0" * 64},
                 code="CHECK_FAILED",
             )
         )
@@ -391,7 +419,7 @@ def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> No
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     project_id = store.get_run_state(failure_id)["project_id"]
     second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure_fact(BugCheckFailureFact(
+    store.record_bug_check_failure_fact(BugCheckFailureFact._from_server(
         run_id=second,
         project_id=project_id,
         symptom="submitting the form navigates away",
@@ -419,7 +447,7 @@ def test_bug_fix_rejects_windows_casefold_hash_conflict(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     project_id = store.get_run_state(failure_id)["project_id"]
     second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure_fact(BugCheckFailureFact(
+    store.record_bug_check_failure_fact(BugCheckFailureFact._from_server(
         run_id=second,
         project_id=project_id,
         symptom="submitting the form navigates away",

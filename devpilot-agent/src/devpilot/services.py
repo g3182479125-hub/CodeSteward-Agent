@@ -145,7 +145,7 @@ class BugCheckService:
         )
         run_id = self.store.start_run(project_id, kind="bug-check")
         self.store.record_bug_check_failure_fact(
-            BugCheckFailureFact(
+            BugCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
                 run_id=run_id,
                 project_id=project_id,
                 symptom=symptom,
