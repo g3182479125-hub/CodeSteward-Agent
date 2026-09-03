@@ -17,7 +17,8 @@ The local API and Vite console were started on loopback ports `18800` and
    shell, API health, and Skills JSON boundary without storing credentials.
 6. Run `pnpm run browser-smoke`. This starts an ephemeral fake API and serves
    the production bundle so Edge/Chrome can load the actual React page against
-   fixture responses. Set `DEVPILOT_BROWSER` or
+   fixture responses. It checks page-body data for every console view plus
+   Diff, timeline, and decision controls. Set `DEVPILOT_BROWSER` or
    `DEVPILOT_BROWSER_PROFILE_ROOT` when the local browser paths differ.
 
 The automated browser smoke is dependency-free and does not require

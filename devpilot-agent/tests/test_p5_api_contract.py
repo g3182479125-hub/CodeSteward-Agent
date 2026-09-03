@@ -173,7 +173,7 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert "project_path" not in public_preview.json()
     legacy_preview = client.get(f"/v1/change-sets/{preview['change_set_id']}/preview")
     assert legacy_preview.status_code == 200
-    assert legacy_preview.json()["project_path"] == str(project)
+    assert "project_path" not in legacy_preview.json()
     diff = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/diff")
     assert diff.status_code == 200
     assert "main.py" in diff.text
@@ -192,7 +192,7 @@ def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> Non
             "patches": [{
                 "relative_path": "config.txt",
                 "operation": "create",
-                "content": "api_key=\"my secret value\"\n",
+                "content": "api_key=\"my secret value\"\ntoken=\"\"\"triple secret value\"\"\"\n",
             }],
         },
     )
@@ -200,6 +200,7 @@ def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> Non
     change_set_id = response.json()["change_set_id"]
     public_diff = client.get(f"/api/v1/change-sets/{change_set_id}/diff")
     assert "my secret value" not in public_diff.text
+    assert "triple secret value" not in public_diff.text
     assert "[REDACTED]" in public_diff.text
 
 

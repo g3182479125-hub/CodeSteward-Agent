@@ -74,9 +74,10 @@ validation and unexpected-error mapping. The route functions continue to call
 duplicated in the adapter.
 
 The canonical and compatibility route registrations share the same handler
-functions. This keeps the two prefixes behaviourally identical and allows the
-compatibility alias to be removed in a later planned migration without
-changing domain code.
+functions and the same safe response adapter. Both prefixes therefore remove
+local filesystem coordinates and redact credential-shaped text; the
+compatibility alias is not a path-exposure escape hatch. It can be removed in
+a later planned migration without changing domain code.
 
 ## Testing strategy
 

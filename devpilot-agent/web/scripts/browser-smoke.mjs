@@ -84,7 +84,6 @@ const webServer = createServer(async (request, response) => {
 try {
   const webPort = await listen(webServer);
   const dashboardUrl = `http://127.0.0.1:${webPort}/`;
-  const securityUrl = `http://127.0.0.1:${webPort}/?page=security`;
   const candidates = [
     process.env.DEVPILOT_BROWSER,
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -138,15 +137,15 @@ try {
     });
   };
   await runBrowser(dashboardUrl, ["把计划、变更、验证和证据放在同一个可审查界面。", "P5 LOCAL CONSOLE", "API 在线"]);
-  await runBrowser(securityUrl, ["Execution Backends", "fixture-backend", "unavailable"]);
-  for (const [page, marker] of [
-    ["projects", "fixture-project"],
-    ["changeset&change_set_id=fixture-change-set", "fixture.txt"],
-    ["runs&run_id=fixture-run", "run.completed"],
-    ["artifacts&run_id=fixture-run", "fixture.md"],
-    ["skills", "fixture-skill"],
+  for (const [query, markers] of [
+    ["page=projects", ["fixture-project", "登记项目"]],
+    ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "最终交付决策"]],
+    ["page=runs&run_id=fixture-run", ["run.completed", "读取快照", "连接 SSE"]],
+    ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
+    ["page=skills", ["fixture-skill", "Skills Catalog"]],
+    ["page=security", ["Execution Backends", "fixture-backend", "unavailable"]],
   ]) {
-    await runBrowser(`http://127.0.0.1:${webPort}/?page=${page}`, [marker]);
+    await runBrowser(`http://127.0.0.1:${webPort}/?${query}`, markers);
   }
   console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);
 } finally {

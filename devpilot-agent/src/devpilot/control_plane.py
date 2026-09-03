@@ -1173,7 +1173,8 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _contract_payload(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
-    return _public_payload(payload) if request.url.path.startswith("/api/v1/") else payload
+    """Return the same safe payload for canonical and compatibility prefixes."""
+    return _public_payload(payload)
 
 
 async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
