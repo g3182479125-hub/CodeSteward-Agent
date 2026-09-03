@@ -367,6 +367,28 @@ def test_bug_check_service_computes_hashes_and_storage_rejects_alias_collision(
                 code="CHECK_FAILED",
             )
         )
+    with pytest.raises(ValueError, match="does not match the project file"):
+        store.record_bug_check_failure_fact(
+            BugCheckFailureFact._from_server(
+                run_id=outcome.run_id,
+                project_id=outcome.project_id,
+                symptom="symptom",
+                expected_behavior="expected",
+                target_files=("src/App.jsx",),
+                before_hashes={"src/App.jsx": "0" * 64},
+                code="CHECK_FAILED",
+            )
+        )
+    with pytest.raises(ValueError, match="bug_check.failed"):
+        store.append_event(
+            outcome.run_id,
+            "bug_check.failed",
+            {
+                "producer": "attacker",
+                "schema_version": 99,
+                "before_hashes": {"src/App.jsx": "0" * 64},
+            },
+        )
     store.finish_run(outcome.run_id, "failed", {"code": "CHECK_FAILED"})
 
 
@@ -464,17 +486,16 @@ def test_bug_fix_non_fake_backend_is_fail_closed(tmp_path: Path) -> None:
 
 def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
-    project_id = store.get_run_state(failure_id)["project_id"]
-    second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure_fact(BugCheckFailureFact._from_server(
-        run_id=second,
-        project_id=project_id,
+    (project / "src" / "App.jsx").write_text(_fixture_app() + "\n// changed\n", encoding="utf-8")
+    second = BugCheckService(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]), store=store
+    ).record_failure(
+        project,
         symptom="submitting the form navigates away",
         expected_behavior="submitting keeps the page and shows Saved",
-        target_files=("src/App.jsx",),
-        before_hashes={"src/App.jsx": "0" * 64},
+        target_files=["src/App.jsx"],
         code="FORM_DEFAULT_NAVIGATION",
-    ))
+    ).run_id
     store.finish_run(second, "failed", {"code": "FORM_DEFAULT_NAVIGATION"})
 
     with pytest.raises(WorkflowError, match="BUG_FIX_FAILURE_EVIDENCE_INVALID"):
@@ -492,17 +513,16 @@ def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> No
 
 def test_bug_fix_rejects_windows_casefold_hash_conflict(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
-    project_id = store.get_run_state(failure_id)["project_id"]
-    second = store.start_run(project_id, kind="bug-check")
-    store.record_bug_check_failure_fact(BugCheckFailureFact._from_server(
-        run_id=second,
-        project_id=project_id,
+    (project / "src" / "App.jsx").write_text(_fixture_app() + "\n// changed\n", encoding="utf-8")
+    second = BugCheckService(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]), store=store
+    ).record_failure(
+        project,
         symptom="submitting the form navigates away",
         expected_behavior="submitting keeps the page and shows Saved",
-        target_files=("src/app.jsx",),
-        before_hashes={"src/app.jsx": "0" * 64},
+        target_files=["src/app.jsx"],
         code="FORM_DEFAULT_NAVIGATION",
-    ))
+    ).run_id
     store.finish_run(second, "failed", {"code": "FORM_DEFAULT_NAVIGATION"})
 
     with pytest.raises(WorkflowError, match="BUG_FIX_FAILURE_EVIDENCE_INVALID"):

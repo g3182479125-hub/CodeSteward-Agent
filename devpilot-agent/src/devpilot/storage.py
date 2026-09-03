@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -410,6 +411,23 @@ class ProjectStore:
                 or run.status != "running"
             ):
                 raise ValueError("bug-check failure must belong to an open bug-check Run")
+            project = session.get(ProjectRecord, fact.project_id)
+            if project is None:
+                raise ValueError("bug-check project does not exist")
+            project_path = Path(project.real_path).resolve(strict=True)
+            for relative_path in canonical_targets:
+                candidate = project_path / relative_path
+                if candidate.is_symlink():
+                    raise ValueError("bug-check targets must be regular project files")
+                target = candidate.resolve(strict=True)
+                if (
+                    not target.is_file()
+                    or not target.is_relative_to(project_path)
+                ):
+                    raise ValueError("bug-check targets must be regular project files")
+                actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+                if canonical_hashes[relative_path] != actual_hash:
+                    raise ValueError("bug-check before hash does not match the project file")
             payload = {
                 "producer": "devpilot.bug-check",
                 "schema_version": 1,
