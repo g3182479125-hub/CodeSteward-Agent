@@ -2,8 +2,8 @@
   "phase": "P4",
   "node": "P4-02",
   "status": "review_pending",
-  "implementation_commit": "dca2aa11667b4196e68aa6cb2c370fc9ef5da417",
-  "generated_at": "2026-09-03T00:00:00+08:00",
+  "implementation_commit": "b488c46b6cb115d921b979c9b9d3a69958a8d837",
+  "generated_at": "2026-09-03T10:57:29+08:00",
   "plan": {
     "version": "2.2.0",
     "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
@@ -27,7 +27,7 @@
     "pytest": {
       "command": "uv run pytest",
       "exit_code": 0,
-      "result": "137 passed, 3 skipped",
+      "result": "141 passed, 3 skipped",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -53,7 +53,7 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-02-acceptance.md",
-      "sha256": "99170CC901B1B351403BED864A8BA7DAE085A498709B111CC224BF56C0A1D2E3"
+      "sha256": "A6C36CFBC8BAEF668B94D02BA9E97ECB4B4ECD081C7A6C1D57015AD826A4D997"
     }
   ],
   "known_external_changes": [
