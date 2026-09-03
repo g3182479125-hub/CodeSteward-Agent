@@ -8,12 +8,14 @@ language entry point.
 
 ## Verified locally
 
-- P5 API/SSE contract tests: 8 passed.
-- Full Python suite: 168 passed, 3 skipped.
+- P5 API/SSE contract tests: 12 passed.
+- Full Python suite: 171 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
-- Web TypeScript check: passed.
+- Web TypeScript check: passed with `npm test`.
 - Web production build: passed with Vite.
+- Web dependency installation: `pnpm install --frozen-lockfile` passed.
+- Local console smoke: `npm run smoke` passed against ports 18800/18801.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
 
@@ -30,3 +32,11 @@ treated as successful security coverage.
 - event payloads are already redacted by the storage layer.
 - the UI does not store approval tokens or access SQLite/project files.
 - an unconfigured execution backend is displayed as unavailable, not healthy.
+
+## Review gate status
+
+The required parallel Standards and Spec reviews were dispatched twice after
+the fixes. Both attempts failed in the subagent service with HTTP 404 from
+the Codex responses endpoint. This is recorded as a process blocker in
+`docs/reviews/p5-final-standards.md` and `docs/reviews/p5-final-spec.md`; it
+must not be represented as a clean reviewer approval.

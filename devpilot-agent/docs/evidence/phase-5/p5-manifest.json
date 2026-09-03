@@ -1,6 +1,6 @@
 {
   "phase": "P5",
-  "status": "implemented",
+  "status": "implemented_review_blocked",
   "canonical_api_prefix": "/api/v1",
   "compatibility_prefix": "/v1",
   "sse": {
@@ -15,10 +15,15 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "168 passed, 3 skipped",
+    "python_full": "171 passed, 3 skipped",
+    "p5_api_tests": "12 passed",
+    "web_test": "passed",
     "web_build": "passed",
+    "web_smoke": "passed",
+    "pnpm_frozen_install": "passed",
     "ruff": "passed",
     "pyright": "passed",
-    "git_diff_check": "passed"
+    "git_diff_check": "passed",
+    "parallel_review": "blocked: subagent service returned HTTP 404 twice"
   }
 }

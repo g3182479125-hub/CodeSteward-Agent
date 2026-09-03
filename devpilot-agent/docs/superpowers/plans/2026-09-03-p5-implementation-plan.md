@@ -23,8 +23,8 @@ consumer.
 ### P5-03 — local React console
 
 - restore a small, optional DevPilot web workspace under `devpilot-agent/web`;
-- implement Dashboard, Projects, ChangeSet/Diff, Approvals, Run Timeline, and
-  Artifacts views against `/api/v1`;
+- implement Dashboard, Projects, ChangeSet/Diff, approval status/final
+  decision controls, Run Timeline, and Artifacts views against `/api/v1`;
 - keep approval and rollback actions inside the ChangeSet detail flow with
   explicit confirmation; do not add an approval-only page or touch nanobot's
   chat WebUI;

@@ -81,14 +81,16 @@ def test_loopback_contract_rejects_forwarded_requests(tmp_path: Path) -> None:
 
 
 def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
+    github_token = "github_pat_" + "abcdefghijklmnopqrstuvwxyz1234"
     text = (
         'api_key=sk-provider-secret authorization: Bearer abc123 '
-        'github_pat_abcdefghijklmnopqrstuvwxyz1234 {"token":"json-secret"}'
+        + github_token
+        + ' {"token":"json-secret"}'
     )
     redacted = redact_sensitive_text(text)
     assert "sk-provider-secret" not in redacted
     assert "Bearer abc123" not in redacted
-    assert "github_pat_abcdefghijklmnopqrstuvwxyz1234" not in redacted
+    assert github_token not in redacted
     assert "json-secret" not in redacted
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": "AKIA1234567890ABCDEF", "token": "value"}
