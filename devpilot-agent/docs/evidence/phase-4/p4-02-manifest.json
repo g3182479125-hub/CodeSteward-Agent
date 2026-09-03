@@ -3,7 +3,13 @@
   "node": "P4-02",
   "status": "review_pending",
   "implementation_commit": "6c2728e65641ed3ed412aab4d16cf85bdf2d592d",
-  "evidence_commit": "c6bb4de13d4f3ce2f361a4fe197068c8266cba9c",
+  "evidence_commit": "3c9d85201b7ba5ba0aa7a54635feb04612e99149",
+  "evidence_chain": [
+    "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
+    "a1d955a30060d4357f1dd41a75921ba4243687c6",
+    "c6bb4de13d4f3ce2f361a4fe197068c8266cba9c",
+    "3c9d85201b7ba5ba0aa7a54635feb04612e99149"
+  ],
   "evidence_snapshot_commit": "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
   "evidence_transcript_commit": "a1d955a30060d4357f1dd41a75921ba4243687c6",
   "generated_at": "2026-09-03T11:17:00+08:00",
