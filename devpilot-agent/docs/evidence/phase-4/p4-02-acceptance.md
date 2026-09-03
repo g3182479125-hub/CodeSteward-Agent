@@ -1,6 +1,6 @@
 # P4-02 Bug-Fix Acceptance Evidence
 
-Implementation commit: `7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8`
+Implementation commit: `6c2728e65641ed3ed412aab4d16cf85bdf2d592d`
 Plan: frozen DevPilot plan `2.2.0`
 
 ## Delivered outcome
@@ -28,11 +28,13 @@ Artifacts with file and manifest hash evidence.
 ## Verification evidence
 
 The following commands were run from the implementation commit above on
-2026-09-03 (Asia/Shanghai), from `11:05:58+08:00` through `11:06:19+08:00`.
+2026-09-03 (Asia/Shanghai), from `11:16:37+08:00` through `11:17:00+08:00`.
 
 - `uv run ruff check src tests` — `All checks passed!`;
 - `uv run pyright` — `0 errors, 0 warnings, 0 informations`;
-- `uv run pytest` — `142 passed, 3 skipped in 13.70s`;
+- `uv run python scripts/secret_scan.py` — passed;
+- `uv run python scripts/check_markdown.py` — passed;
+- `uv run pytest` — `147 passed, 3 skipped in 15.51s`;
 - `uv run alembic heads` — `0007_project_trust (head)`;
 - `uv.lock` SHA-256 —
   `982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D`.
@@ -52,7 +54,10 @@ bind profile, backend, exit code and before/after manifest hashes to the
 failure event.
 
 The command transcript is recorded in
-`docs/evidence/phase-4/p4-02-verification.log`.
+`docs/evidence/phase-4/p4-02-verification.log`. The focused regression suite
+also covers non-Fake fail-closed behavior, control-plane error classification,
+restart Apply → Verify → Artifact event continuity, Artifact failure metadata,
+and forged failure-fact rejection.
 
 ## Explicit boundary
 

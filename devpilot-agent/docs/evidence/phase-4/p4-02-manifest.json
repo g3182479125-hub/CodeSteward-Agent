@@ -2,10 +2,11 @@
   "phase": "P4",
   "node": "P4-02",
   "status": "review_pending",
-  "implementation_commit": "7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8",
+  "implementation_commit": "6c2728e65641ed3ed412aab4d16cf85bdf2d592d",
+  "evidence_commit": "c6bb4de13d4f3ce2f361a4fe197068c8266cba9c",
   "evidence_snapshot_commit": "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
   "evidence_transcript_commit": "a1d955a30060d4357f1dd41a75921ba4243687c6",
-  "generated_at": "2026-09-03T11:06:19+08:00",
+  "generated_at": "2026-09-03T11:17:00+08:00",
   "plan": {
     "version": "2.2.0",
     "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
@@ -29,19 +30,30 @@
     "pytest": {
       "command": "uv run pytest",
       "exit_code": 0,
-      "result": "142 passed, 3 skipped",
-      "started_at": "2026-09-03T11:05:58+08:00",
-      "finished_at": "2026-09-03T11:06:19+08:00",
+      "result": "147 passed, 3 skipped",
+      "started_at": "2026-09-03T11:16:37+08:00",
+      "finished_at": "2026-09-03T11:17:00+08:00",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
       "command": "uv run ruff check src tests",
-      "exit_code": 0
+      "exit_code": 0,
+      "result": "All checks passed!"
     },
     "pyright": {
       "command": "uv run pyright",
       "exit_code": 0,
       "result": "0 errors, 0 warnings, 0 informations"
+    },
+    "secret_scan": {
+      "command": "uv run python scripts/secret_scan.py",
+      "exit_code": 0,
+      "result": "Secret scan passed: no high-confidence secret pattern found."
+    },
+    "markdown_link_check": {
+      "command": "uv run python scripts/check_markdown.py",
+      "exit_code": 0,
+      "result": "Markdown link check passed."
     },
     "reviewed_tree": {
       "clean": false,
@@ -71,11 +83,11 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-02-acceptance.md",
-      "sha256": "B0B7E7E8FBBC8E5EC5C6659E457A8406ABEC0CFC8B0584F1A38DB871F1E252CA"
+      "sha256": "0639D119FD0B3872F382C87F382558CE2A17376364D8C04E28B4ECE14DCC01E5"
     },
     {
       "path": "docs/evidence/phase-4/p4-02-verification.log",
-      "sha256": "162057F7FE63B99D8A8D9D521815767F124046CCE0A755E13917662EBE09DADC"
+      "sha256": "6A5A0530AB90F0ED56D81221CF09891C6AD3E90DAE72AABD5B2D8FB7CEE7C6C0"
     }
   ],
   "known_external_changes": [
