@@ -1,0 +1,18 @@
+P4-02 verification transcript
+Date: 2026-09-03 Asia/Shanghai
+Start: 2026-09-03T11:05:58.7238227+08:00
+Implementation commit: 7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8
+Working tree at verification:
+ M docs/evidence/phase-4/p4-02-manifest.json
+ M tests/fixtures/node-project/src/index.js
+ M tests/fixtures/node-project/test/index.test.js
+uv.lock SHA256: 982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D
+uv run alembic heads
+0007_project_trust (head)
+uv run ruff check src tests
+All checks passed!
+uv run pyright
+0 errors, 0 warnings, 0 informations
+uv run pytest
+142 passed, 3 skipped in 13.70s
+End: 2026-09-03T11:06:19.1111275+08:00
