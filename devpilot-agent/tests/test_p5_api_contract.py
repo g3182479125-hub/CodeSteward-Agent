@@ -192,14 +192,14 @@ def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> Non
             "patches": [{
                 "relative_path": "config.txt",
                 "operation": "create",
-                "content": "api_key=sk-provider-secret-value\n",
+                "content": "api_key=\"my secret value\"\n",
             }],
         },
     )
     assert response.status_code == 201
     change_set_id = response.json()["change_set_id"]
     public_diff = client.get(f"/api/v1/change-sets/{change_set_id}/diff")
-    assert "sk-provider-secret-value" not in public_diff.text
+    assert "my secret value" not in public_diff.text
     assert "[REDACTED]" in public_diff.text
 
 

@@ -12,9 +12,10 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
-    re.compile(
-        r"(?i)[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)[\"']?\s*[=:]\s*[\"']?[^\s,;\"'}]+"
-    ),
+)
+_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?P<prefix>[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)[\"']?\s*[=:]\s*)"
+    r"(?P<value>\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^\s,;]+)"
 )
 
 
@@ -22,6 +23,9 @@ def redact_sensitive_text(value: str) -> str:
     """Replace high-confidence credentials while retaining bounded diagnostics."""
 
     result = value
+    result = _SENSITIVE_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}[REDACTED]", result
+    )
     for pattern in _SENSITIVE_PATTERNS:
         result = pattern.sub("[REDACTED]", result)
     return result
