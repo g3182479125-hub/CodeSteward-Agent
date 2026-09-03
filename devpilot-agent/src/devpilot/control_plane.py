@@ -1248,7 +1248,9 @@ def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
     return [
         {
             "name": backend.name,
-            "status": "configured",
+            # Configuration alone is not proof that the backend can execute.
+            # Keep this honest until the explicit sandbox check succeeds.
+            "status": "unavailable",
             "verified": False,
             "capability": "verification-only",
             "network_allowed": bool(getattr(config, "allow_network", False)),

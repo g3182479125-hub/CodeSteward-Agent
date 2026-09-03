@@ -26,7 +26,9 @@ behaviour consumable by a future console and nanobot adapter:
 
 - no React or nanobot WebUI changes;
 - no SQLite schema or domain-state changes;
-- no new project/task/SSE resources beyond the routes already implemented;
+- no new domain project/task/SSE resources beyond the frozen plan's existing
+  control-plane surface; the P5-03 console may consume the existing project
+  read/registration routes;
 - no public authentication or non-loopback binding;
 - no command strings, absolute project paths, free-form environment values, or
   secret values added to the HTTP contract.

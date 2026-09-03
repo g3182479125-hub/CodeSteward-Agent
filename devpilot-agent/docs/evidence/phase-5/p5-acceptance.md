@@ -16,6 +16,9 @@ language entry point.
 - Web production build: passed with Vite.
 - Web dependency installation: `pnpm install --frozen-lockfile` passed.
 - Local console smoke: `npm run smoke` passed against ports 18800/18801.
+- Browser smoke: `pnpm run browser-smoke` is committed and uses an ephemeral
+  fake API fixture; the in-app browser page-level check passed for Dashboard,
+  API online, and Security/Backends unavailable labeling.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
 
@@ -31,7 +34,8 @@ treated as successful security coverage.
 - SSE uses database event IDs and `Last-Event-ID` replay semantics.
 - event payloads are already redacted by the storage layer.
 - the UI does not store approval tokens or access SQLite/project files.
-- an unconfigured execution backend is displayed as unavailable, not healthy.
+- an unconfigured or unverified execution backend is displayed as unavailable,
+  not healthy.
 
 ## Review gate status
 

@@ -19,7 +19,7 @@
     "p5_api_tests": "12 passed",
     "web_test": "passed",
     "web_build": "passed",
-    "web_smoke": "passed",
+    "web_smoke": "passed: HTTP smoke and in-app browser fixture check",
     "pnpm_frozen_install": "passed",
     "ruff": "passed",
     "pyright": "passed",

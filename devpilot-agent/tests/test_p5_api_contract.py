@@ -175,7 +175,9 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     diff = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/diff")
     assert diff.status_code == 200
     assert "main.py" in diff.text
-    assert client.get("/api/v1/security/backends").json()["backends"][0]["verified"] is False
+    backend = client.get("/api/v1/security/backends").json()["backends"][0]
+    assert backend["verified"] is False
+    assert backend["status"] == "unavailable"
     assert "skills" in client.get("/api/v1/skills").json()
 
 

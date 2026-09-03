@@ -3,7 +3,15 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useRef, useState } from "react";
 import "./index.css";
 
-const API = import.meta.env.VITE_DEVPILOT_API_BASE ?? "http://127.0.0.1:18800/api/v1";
+declare global {
+  interface Window {
+    __DEVPILOT_API_BASE__?: string;
+    __DEVPILOT_HEALTH_URL__?: string;
+  }
+}
+
+const API = window.__DEVPILOT_API_BASE__ ?? import.meta.env.VITE_DEVPILOT_API_BASE ?? "http://127.0.0.1:18800/api/v1";
+const HEALTH_URL = window.__DEVPILOT_HEALTH_URL__ ?? API.replace(/\/api\/v1\/?$/, "") + "/healthz";
 
 type Page = "dashboard" | "projects" | "changeset" | "runs" | "artifacts" | "skills" | "security";
 type Json = Record<string, unknown>;
@@ -166,7 +174,7 @@ function App() {
   };
 
   useEffect(() => {
-    void fetch("http://127.0.0.1:18800/healthz")
+    void fetch(HEALTH_URL)
       .then((response) => setHealth(response.ok ? "online" : "offline"))
       .catch(() => setHealth("offline"));
   }, []);

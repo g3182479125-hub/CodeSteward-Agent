@@ -15,7 +15,12 @@ The local API and Vite console were started on loopback ports `18800` and
    are inside the ChangeSet view; no separate approval-only page is created.
 5. Run `pnpm run smoke` from this directory. The script verifies the console
    shell, API health, and Skills JSON boundary without storing credentials.
+6. Run `pnpm run browser-smoke`. This starts an ephemeral fake API and serves
+   the production bundle so Edge/Chrome can load the actual React page against
+   fixture responses. Set `DEVPILOT_BROWSER` or
+   `DEVPILOT_BROWSER_PROFILE_ROOT` when the local browser paths differ.
 
-The automated smoke script is intentionally dependency-free. Interactive
-browser checks remain a manual local step because Playwright is not a runtime
-dependency of this small optional console.
+The automated browser smoke is dependency-free and does not require
+Playwright. The in-app browser check on 2026-09-03 also completed successfully;
+the standalone headless command may be affected by an already-running local
+Edge/Chrome profile, in which case the in-app browser check is the fallback.
