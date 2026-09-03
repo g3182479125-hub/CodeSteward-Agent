@@ -166,7 +166,7 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     project_id = registered.json()["project_id"]
     assert client.get(f"/api/v1/projects/{project_id}").json()["trust_state"] == "trusted"
     assert "real_path" not in client.get(f"/api/v1/projects/{project_id}/security").json()
-    assert client.get(f"/v1/projects/{project_id}/security").json()["real_path"] == str(project)
+    assert "real_path" not in client.get(f"/v1/projects/{project_id}/security").json()
 
     preview = make_preview(client, project)
     public_preview = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/preview")

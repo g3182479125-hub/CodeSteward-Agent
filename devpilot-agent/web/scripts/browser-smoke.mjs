@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +21,15 @@ const json = (response, payload, status = 200) => {
 };
 
 const apiServer = createServer((request, response) => {
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, {
+      "access-control-allow-headers": "Content-Type",
+      "access-control-allow-methods": "GET, OPTIONS",
+      "access-control-allow-origin": "*",
+    });
+    response.end();
+    return;
+  }
   const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
   if (path === "/healthz") return json(response, { status: "ok" });
   if (path === "/api/v1/projects") return json(response, { projects: [] });
@@ -74,45 +84,56 @@ try {
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
   ].filter((candidate) => candidate && existsSync(candidate));
   if (candidates.length === 0) throw new Error("Edge or Chrome executable not found");
-  // Chrome on this workstation cannot create a usable headless profile under
-  // the locked-down Windows TEMP tree. Keep the profile ephemeral, but place
-  // it under the project drive; callers on another machine can override this.
-  const profileRoot = process.env.DEVPILOT_BROWSER_PROFILE_ROOT ??
-    (process.platform === "win32" ? "E:\\codex-local" : "/tmp");
-  const profile = await mkdtemp(join(profileRoot, "devpilot-browser-smoke-"));
-
-  try {
-    const browserArgs = [
-      "--headless",
-      "--disable-gpu",
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-component-update",
-      "--no-default-browser-check",
-      "--no-first-run",
-      `--user-data-dir=${profile}`,
-      "--virtual-time-budget=5000",
-      "--dump-dom",
-      dashboardUrl,
-    ];
-    const result = spawnSync(candidates[0], browserArgs, { encoding: "utf8", timeout: 30000, windowsHide: true });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`headless browser exited with ${result.status}: ${result.stderr}`);
-    for (const marker of ["DevPilot Console", "P5 LOCAL CONSOLE", "API 在线"]) {
-      if (!result.stdout.includes(marker)) throw new Error(`browser fixture is missing marker: ${marker}`);
-    }
-    const security = spawnSync(candidates[0], [...browserArgs.slice(0, -1), securityUrl], { encoding: "utf8", timeout: 30000, windowsHide: true });
-    if (security.error) throw security.error;
-    if (security.status !== 0) throw new Error(`security browser exited with ${security.status}: ${security.stderr}`);
-    for (const marker of ["Execution Backends", "fixture-backend", "unavailable"]) {
-      if (!security.stdout.includes(marker)) throw new Error(`security fixture is missing marker: ${marker}`);
-    }
-    console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);
-  } finally {
-    await rm(profile, { recursive: true, force: true });
+  const profileRoot = process.env.DEVPILOT_BROWSER_PROFILE_ROOT ?? tmpdir();
+  const runBrowser = async (url, markers) => {
+    const profile = await mkdtemp(join(profileRoot, "devpilot-browser-smoke-"));
+    return new Promise((resolvePromise, reject) => {
+      const child = spawn(candidates[0], [
+        "--headless",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--no-default-browser-check",
+        "--no-first-run",
+        `--user-data-dir=${profile}`,
+        "--virtual-time-budget=10000",
+        "--dump-dom",
+        url,
+      ], { encoding: "utf8", windowsHide: true });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const timeout = setTimeout(() => {
+        child.kill();
+        reject(new Error(`headless browser timed out for ${url}`));
+      }, 30000);
+      child.on("error", reject);
+      child.on("close", async (code) => {
+        clearTimeout(timeout);
+        await rm(profile, { recursive: true, force: true });
+        if (code !== 0) {
+          reject(new Error(`headless browser exited with ${code}: ${stderr}`));
+          return;
+        }
+        for (const marker of markers) {
+          if (!stdout.includes(marker)) {
+            reject(new Error(`browser fixture is missing marker: ${marker}; DOM tail: ${stdout.slice(-1000)}`));
+            return;
+          }
+        }
+        resolvePromise();
+      });
+    });
+  };
+  await runBrowser(dashboardUrl, ["DevPilot Console", "P5 LOCAL CONSOLE", "API 在线"]);
+  await runBrowser(securityUrl, ["Execution Backends", "fixture-backend", "unavailable"]);
+  for (const [page, marker] of [["projects", "Projects"], ["changeset", "ChangeSet / Diff"], ["runs", "Run Timeline"], ["artifacts", "Artifacts"], ["skills", "Skills Catalog"]]) {
+    await runBrowser(`http://127.0.0.1:${webPort}/?page=${page}`, [marker]);
   }
+  console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);
 } finally {
   webServer.close();
   apiServer.close();

@@ -327,7 +327,7 @@ class ProjectStore:
             return project.real_path
 
     def list_projects(self) -> list[dict[str, Any]]:
-        """Return project summaries; the canonical HTTP adapter strips paths."""
+        """Return project summaries without exposing local filesystem paths."""
         with self._session_factory() as session:
             rows = (
                 session.query(ProjectRecord)
@@ -338,7 +338,6 @@ class ProjectStore:
                 {
                     "project_id": row.id,
                     "project_name": Path(row.real_path).name,
-                    "real_path": row.real_path,
                     "trust_state": row.trust_state,
                     "repo_fingerprint": row.repo_fingerprint,
                     "allowed_root_id": row.allowed_root_id,
@@ -355,7 +354,6 @@ class ProjectStore:
             return {
                 "project_id": project.id,
                 "project_name": Path(project.real_path).name,
-                "real_path": project.real_path,
                 "trust_state": project.trust_state,
                 "repo_fingerprint": project.repo_fingerprint,
                 "allowed_root_id": project.allowed_root_id,

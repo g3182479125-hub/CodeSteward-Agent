@@ -16,7 +16,7 @@ function loopbackUrl(value: string | undefined, fallback: string): string {
   try {
     const parsed = new URL(value ?? fallback);
     const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]";
-    if (parsed.protocol !== "http:" || !loopback) return fallback;
+    if (parsed.protocol !== "http:" || !loopback || parsed.username || parsed.password || parsed.search || parsed.hash) return fallback;
     return parsed.toString().replace(/\/$/, "");
   } catch {
     return fallback;
