@@ -1,0 +1,92 @@
+{
+  "phase": "P4",
+  "node": "P4-03",
+  "status": "implementation_complete_local_review",
+  "implementation_commit": "df4378a38ce27b69d907987febc882f2c431a6a9",
+  "generated_at": "2026-09-03T13:52:57+08:00",
+  "plan": {
+    "version": "2.2.0",
+    "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
+  },
+  "scope": [
+    "server-owned test_check.failed facts",
+    "Python python-run and Node node-syntax test-repair proposals",
+    "parent/child ChangeSet attempts with max_attempts=3",
+    "separate Apply and Verify approval capabilities",
+    "Fake-only verification and redacted test-repair Artifacts",
+    "proposal-only nanobot Tool and loopback control-plane route"
+  ],
+  "configuration": {
+    "control_plane_bind": "loopback-only",
+    "allowed_roots": "server-configured project roots only",
+    "artifact_root": "server-owned data directory, separate from target project",
+    "pre_p6_execution_backend": "Fake only; FC environment variables never authorize verification",
+    "network_allowed": false,
+    "secrets_recorded": false,
+    "secret_values": "not present in this manifest or evidence"
+  },
+  "verification": {
+    "pytest": {
+      "command": "uv --no-cache run pytest --tb=short -o addopts='' --basetemp E:/codex-local/pytest-temp/p4-03-final -p no:cacheprovider",
+      "exit_code": 0,
+      "result": "155 passed, 3 skipped",
+      "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
+    },
+    "focused_p4_03": {
+      "command": "uv --no-cache run pytest tests/test_p4_test_repair.py --tb=short -o addopts='' --basetemp E:/codex-local/pytest-temp/p4-03-focused-5 -p no:cacheprovider",
+      "exit_code": 0,
+      "result": "8 passed"
+    },
+    "p4_02_regression": {
+      "command": "uv --no-cache run pytest tests/test_p4_bug_fix.py --tb=short -o addopts='' --basetemp E:/codex-local/pytest-temp/p4-regression -p no:cacheprovider",
+      "exit_code": 0,
+      "result": "23 passed"
+    },
+    "ruff": {
+      "command": "uv --no-cache run ruff check --no-cache src scripts tests migrations",
+      "exit_code": 0
+    },
+    "pyright": {
+      "command": "uv --no-cache run pyright",
+      "exit_code": 0,
+      "result": "0 errors, 0 warnings, 0 informations"
+    },
+    "secret_scan": {
+      "command": "uv --no-cache run python scripts/secret_scan.py",
+      "exit_code": 0,
+      "result": "no high-confidence secret pattern found"
+    },
+    "markdown_check": {
+      "command": "uv --no-cache run python scripts/check_markdown.py",
+      "exit_code": 0
+    },
+    "lock_check": {
+      "command": "uv --no-cache lock --check",
+      "exit_code": 0,
+      "uv_lock_sha256": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  },
+  "review": {
+    "required": true,
+    "independent_subagent": false,
+    "status": "local_review_no_blockers",
+    "report": "docs/reviews/p4-03-local-review.md"
+  },
+  "artifacts": [
+    {
+      "path": "docs/evidence/phase-4/p4-03-acceptance.md"
+    },
+    {
+      "path": "docs/evidence/phase-4/p4-03-verification.log"
+    },
+    {
+      "path": "docs/reviews/p4-03-local-review.md"
+    }
+  ],
+  "known_external_changes": [],
+  "known_external_changes_note": "No user-owned uncommitted project changes were present when the P4-03 implementation was committed."
+}
