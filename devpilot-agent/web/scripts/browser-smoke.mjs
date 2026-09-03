@@ -24,7 +24,9 @@ const apiServer = createServer((request, response) => {
   if (path === "/healthz") return json(response, { status: "ok" });
   if (path === "/api/v1/projects") return json(response, { projects: [] });
   if (path === "/api/v1/skills") return json(response, { skills: [] });
-  if (path === "/api/v1/security/backends") return json(response, { backends: [] });
+  if (path === "/api/v1/security/backends") return json(response, {
+    backends: [{ name: "fixture-backend", status: "unavailable", verified: false, capability: "verification-only" }],
+  });
   return json(response, { error: { code: "NOT_FOUND", message: "fixture route not found" } }, 404);
 });
 
@@ -62,7 +64,8 @@ const webServer = createServer(async (request, response) => {
 
 try {
   const webPort = await listen(webServer);
-  const url = `http://127.0.0.1:${webPort}/`;
+  const dashboardUrl = `http://127.0.0.1:${webPort}/`;
+  const securityUrl = `http://127.0.0.1:${webPort}/?page=security`;
   const candidates = [
     process.env.DEVPILOT_BROWSER,
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -79,7 +82,7 @@ try {
   const profile = await mkdtemp(join(profileRoot, "devpilot-browser-smoke-"));
 
   try {
-    const result = spawnSync(candidates[0], [
+    const browserArgs = [
       "--headless",
       "--disable-gpu",
       "--no-sandbox",
@@ -92,13 +95,19 @@ try {
       `--user-data-dir=${profile}`,
       "--virtual-time-budget=5000",
       "--dump-dom",
-      url,
-    ], { encoding: "utf8", timeout: 30000, windowsHide: true });
+      dashboardUrl,
+    ];
+    const result = spawnSync(candidates[0], browserArgs, { encoding: "utf8", timeout: 30000, windowsHide: true });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`headless browser exited with ${result.status}: ${result.stderr}`);
-    const dom = result.stdout;
     for (const marker of ["DevPilot Console", "P5 LOCAL CONSOLE", "API 在线"]) {
-      if (!dom.includes(marker)) throw new Error(`browser fixture is missing marker: ${marker}`);
+      if (!result.stdout.includes(marker)) throw new Error(`browser fixture is missing marker: ${marker}`);
+    }
+    const security = spawnSync(candidates[0], [...browserArgs.slice(0, -1), securityUrl], { encoding: "utf8", timeout: 30000, windowsHide: true });
+    if (security.error) throw security.error;
+    if (security.status !== 0) throw new Error(`security browser exited with ${security.status}: ${security.stderr}`);
+    for (const marker of ["Execution Backends", "fixture-backend", "unavailable"]) {
+      if (!security.stdout.includes(marker)) throw new Error(`security fixture is missing marker: ${marker}`);
     }
     console.log(`browser smoke ok: fixture-api=${apiBase} browser=${candidates[0]}`);
   } finally {

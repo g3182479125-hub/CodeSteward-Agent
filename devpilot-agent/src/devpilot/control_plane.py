@@ -1155,6 +1155,8 @@ def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Remove local filesystem coordinates from control-plane responses."""
     def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            return redact_sensitive_text(value)
         if isinstance(value, dict):
             mapping = cast(dict[str, Any], value)
             return {
@@ -1366,20 +1368,20 @@ def create_app(
 
     @app.get("/api/v1/projects")
     @app.get("/v1/projects")
-    def list_projects() -> dict[str, Any]:
+    def list_projects(request: Request) -> dict[str, Any]:
         if manager.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project state requires durable storage")
-        return {"projects": manager.store.list_projects()}
+        return _contract_payload(request, {"projects": manager.store.list_projects()})
 
     @app.post("/api/v1/projects", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/projects", status_code=status.HTTP_201_CREATED)
-    def register_project(payload: ProjectRegistrationRequest) -> dict[str, Any]:
-        return manager.register_project(payload.project_path)
+    def register_project(request: Request, payload: ProjectRegistrationRequest) -> dict[str, Any]:
+        return _contract_payload(request, manager.register_project(payload.project_path))
 
     @app.get("/api/v1/projects/{project_id}")
     @app.get("/v1/projects/{project_id}")
-    def get_project(project_id: str) -> dict[str, Any]:
-        return manager.project_security(project_id)
+    def get_project(request: Request, project_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.project_security(project_id))
 
     @app.get("/api/v1/security/backends")
     @app.get("/v1/security/backends")
@@ -1501,15 +1503,15 @@ def create_app(
 
     @app.get("/api/v1/change-sets/{change_set_id}/diff")
     @app.get("/v1/change-sets/{change_set_id}/diff")
-    def get_change_set_diff(change_set_id: str) -> dict[str, Any]:
+    def get_change_set_diff(request: Request, change_set_id: str) -> dict[str, Any]:
         payload = manager.get(change_set_id)
-        return {
+        return _contract_payload(request, {
             "change_set_id": change_set_id,
             "patch_hash": payload["patch_hash"],
             "scope_hash": payload["scope_hash"],
             "files": payload["files"],
             "diff": payload["diff"],
-        }
+        })
 
     @app.get("/api/v1/runs/{run_id}")
     @app.get("/v1/runs/{run_id}")
@@ -1611,8 +1613,8 @@ def create_app(
 
     @app.get("/api/v1/projects/{project_id}/security")
     @app.get("/v1/projects/{project_id}/security")
-    def project_security(project_id: str) -> dict[str, Any]:
-        return manager.project_security(project_id)
+    def project_security(request: Request, project_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.project_security(project_id))
 
     @app.post("/api/v1/projects/{project_id}/trust")
     @app.post("/v1/projects/{project_id}/trust")

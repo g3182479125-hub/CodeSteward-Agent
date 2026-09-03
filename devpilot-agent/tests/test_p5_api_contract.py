@@ -165,6 +165,8 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert registered.status_code == 201
     project_id = registered.json()["project_id"]
     assert client.get(f"/api/v1/projects/{project_id}").json()["trust_state"] == "trusted"
+    assert "real_path" not in client.get(f"/api/v1/projects/{project_id}/security").json()
+    assert client.get(f"/v1/projects/{project_id}/security").json()["real_path"] == str(project)
 
     preview = make_preview(client, project)
     public_preview = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/preview")
@@ -179,6 +181,26 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert backend["verified"] is False
     assert backend["status"] == "unavailable"
     assert "skills" in client.get("/api/v1/skills").json()
+
+
+def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> None:
+    client, _manager, project = setup_app(tmp_path)
+    response = client.post(
+        "/api/v1/change-sets/preview",
+        json={
+            "project_path": str(project),
+            "patches": [{
+                "relative_path": "config.txt",
+                "operation": "create",
+                "content": "api_key=sk-provider-secret-value\n",
+            }],
+        },
+    )
+    assert response.status_code == 201
+    change_set_id = response.json()["change_set_id"]
+    public_diff = client.get(f"/api/v1/change-sets/{change_set_id}/diff")
+    assert "sk-provider-secret-value" not in public_diff.text
+    assert "[REDACTED]" in public_diff.text
 
 
 def test_sse_events_are_ordered_and_resume_after_last_event_id(tmp_path: Path) -> None:

@@ -10,11 +10,31 @@ declare global {
   }
 }
 
-const API = window.__DEVPILOT_API_BASE__ ?? import.meta.env.VITE_DEVPILOT_API_BASE ?? "http://127.0.0.1:18800/api/v1";
-const HEALTH_URL = window.__DEVPILOT_HEALTH_URL__ ?? API.replace(/\/api\/v1\/?$/, "") + "/healthz";
+const DEFAULT_API = "http://127.0.0.1:18800/api/v1";
+
+function loopbackUrl(value: string | undefined, fallback: string): string {
+  try {
+    const parsed = new URL(value ?? fallback);
+    const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]";
+    if (parsed.protocol !== "http:" || !loopback) return fallback;
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return fallback;
+  }
+}
+
+const API = loopbackUrl(window.__DEVPILOT_API_BASE__ ?? import.meta.env.VITE_DEVPILOT_API_BASE, DEFAULT_API);
+const HEALTH_URL = loopbackUrl(window.__DEVPILOT_HEALTH_URL__, `${API.replace(/\/api\/v1\/?$/, "")}/healthz`);
 
 type Page = "dashboard" | "projects" | "changeset" | "runs" | "artifacts" | "skills" | "security";
 type Json = Record<string, unknown>;
+
+function initialPage(): Page {
+  const candidate = new URLSearchParams(window.location.search).get("page");
+  return ["dashboard", "projects", "changeset", "runs", "artifacts", "skills", "security"].includes(candidate ?? "")
+    ? candidate as Page
+    : "dashboard";
+}
 
 interface Project {
   project_id: string;
@@ -60,7 +80,7 @@ function Empty({ children }: { children: string }) {
 }
 
 function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>(initialPage);
   const [projects, setProjects] = useState<Project[]>([]);
   const [changeSetId, setChangeSetId] = useState("");
   const [changeSet, setChangeSet] = useState<Json | null>(null);
