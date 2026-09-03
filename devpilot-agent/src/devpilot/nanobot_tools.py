@@ -61,6 +61,10 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "AUTONOMOUS_REPAIR_BLOCKED",
         "CAPABILITY_INVALID",
         "CHANGESET_NOT_APPLICABLE",
+        "CHANGESET_DECISION_FINAL",
+        "CHANGESET_NOT_ACCEPTABLE",
+        "CHANGESET_NOT_ROLLBACKABLE",
+        "CHANGESET_NOT_STOPPABLE",
         "CHANGESET_NOT_FOUND",
         "CHANGESET_NOT_VERIFIABLE",
         "EXECUTION_BACKEND_UNAVAILABLE",
@@ -90,6 +94,7 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "TEST_REPAIR_REPEAT_FAILURE",
         "TEST_REPAIR_SCOPE_INVALID",
         "VERIFICATION_PROFILE_UNSUPPORTED",
+        "DELIVERY_REPORT_INVALID",
     }
 )
 
@@ -702,6 +707,47 @@ class GetChangeSetTool(Tool):
             return ToolResult.error(f"P4 ChangeSet read failed: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 ChangeSet read failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {"change_set_id": {"type": "string", "minLength": 1}},
+        "required": ["change_set_id"],
+        "additionalProperties": False,
+    }
+)
+class GetDeliveryReportTool(Tool):
+    """Read the compact, redacted P4-04 delivery report."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_get_delivery_report"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Read-only delivery outcome, verification metadata, artifacts and available "
+            "accept/stop/rollback decisions; never changes files or capabilities."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = _get_control_plane(
+                _safe_resource_path(str(kwargs["change_set_id"]), "change-sets")
+                + "/delivery-report"
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P4 delivery report failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 delivery report failed: {type(exc).__name__}")
 
 
 @tool_parameters(

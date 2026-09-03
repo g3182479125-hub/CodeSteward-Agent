@@ -135,12 +135,22 @@ class TestRepairRequest(BaseModel):
     verification_profile: VerificationProfile = VerificationProfile.PYTHON_RUN
 
 
+class DeliveryDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(pattern=r"^(?:accept|stop)$")
+    user_confirmation: str = Field(
+        pattern=r"^(?:接受|确认接受|停止|确认停止|confirmed)$"
+    )
+
+
 class _PendingChangeSet:
     def __init__(self, plan: PatchPlan, run_id: str | None = None) -> None:
         self.plan = plan
         self.run_id = run_id
         self.receipt: ApplyReceipt | None = None
         self.memory_approvals: dict[str, tuple[str, datetime]] = {}
+        self.memory_decisions: dict[str, dict[str, Any]] = {}
 
 
 def _now() -> datetime:
@@ -377,6 +387,123 @@ class ControlPlaneManager:
             if event_payload:
                 event.update(event_payload)
             self._event(entry, f"{workflow.replace('-', '_')}.failed", event)
+
+    def accept(
+        self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """Record the user's final acceptance without changing project files."""
+        if user_confirmation not in {"接受", "确认接受", "confirmed"}:
+            raise PatchError(
+                "USER_CONFIRMATION_REQUIRED", "explicit acceptance confirmation is required"
+            )
+        with self._mutex:
+            entry = self._require(change_set_id)
+            replay = self._check_idempotency(
+                idempotency_key, "accept", change_set_id, user_confirmation
+            )
+            if replay is not None:
+                return replay
+            if self._delivery_decision(entry) is not None:
+                raise PatchError(
+                    "CHANGESET_DECISION_FINAL", "a delivery decision is already recorded"
+                )
+            if entry.plan.change_set.status not in {
+                ChangeSetStatus.VERIFIED,
+                ChangeSetStatus.VERIFICATION_FAILED,
+            }:
+                raise PatchError(
+                    "CHANGESET_NOT_ACCEPTABLE",
+                    "ChangeSet must finish verification before acceptance",
+                )
+            self._reserve_idempotency(
+                idempotency_key, "accept", change_set_id, user_confirmation
+            )
+            before = entry.plan.change_set.status.value
+            entry.plan.change_set.transition_to(ChangeSetStatus.ACCEPTED)
+            self._persist_status(entry)
+            result = {
+                "change_set_id": change_set_id,
+                "decision": "accept",
+                "status": entry.plan.change_set.status.value,
+                "previous_status": before,
+                "files_changed": False,
+            }
+            self._event(
+                entry,
+                "delivery.accepted",
+                {"decision": "accept", "previous_status": before},
+            )
+            entry.memory_decisions["accept"] = result
+            self._complete(idempotency_key, result)
+            return result
+
+    def stop(
+        self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """Record a stop decision; it never claims success or rolls files back."""
+        if user_confirmation not in {"停止", "确认停止", "confirmed"}:
+            raise PatchError("USER_CONFIRMATION_REQUIRED", "explicit stop confirmation is required")
+        with self._mutex:
+            entry = self._require(change_set_id)
+            replay = self._check_idempotency(
+                idempotency_key, "stop", change_set_id, user_confirmation
+            )
+            if replay is not None:
+                return replay
+            if self._delivery_decision(entry) is not None:
+                raise PatchError(
+                    "CHANGESET_DECISION_FINAL", "a delivery decision is already recorded"
+                )
+            if entry.plan.change_set.status not in {
+                ChangeSetStatus.APPLIED,
+                ChangeSetStatus.VERIFIED,
+                ChangeSetStatus.VERIFICATION_FAILED,
+                ChangeSetStatus.DELIVERY_FAILED,
+            }:
+                raise PatchError(
+                    "CHANGESET_NOT_STOPPABLE",
+                    "ChangeSet is not at a delivery decision point",
+                )
+            self._reserve_idempotency(idempotency_key, "stop", change_set_id, user_confirmation)
+            current = entry.plan.change_set.status.value
+            result = {
+                "change_set_id": change_set_id,
+                "decision": "stop",
+                "status": current,
+                "previous_status": current,
+                "files_changed": False,
+                "success_claimed": False,
+            }
+            stop_reason = "user_requested_stop"
+            if self.store is not None:
+                persisted = self.store.get_change_set(change_set_id) or {}
+                stop_reason = str(persisted.get("failure_reason") or stop_reason)
+            result["stop_reason"] = stop_reason
+            self._event(
+                entry,
+                "delivery.stopped",
+                {"decision": "stop", "status": current, "reason": stop_reason},
+            )
+            if self.store is not None and entry.run_id is not None:
+                try:
+                    if self.store.get_run_status(entry.run_id) == "running":
+                        self._finish_run(entry, "failed", {"code": "DELIVERY_STOPPED"})
+                except (KeyError, ValueError):
+                    pass
+            entry.memory_decisions["stop"] = result
+            self._complete(idempotency_key, result)
+            return result
+
+    def _delivery_decision(self, entry: _PendingChangeSet) -> str | None:
+        if entry.memory_decisions:
+            return next(iter(entry.memory_decisions))
+        if self.store is not None and entry.run_id is not None:
+            for event in reversed(self.store.list_run_events(entry.run_id)):
+                if event["event_type"] == "delivery.accepted":
+                    return "accept"
+                if event["event_type"] == "delivery.stopped":
+                    return "stop"
+        return None
 
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
@@ -1079,6 +1206,31 @@ def create_app(
         except WorkflowError as exc:
             raise PatchError(exc.code, exc.message) from exc
         return proposal.to_dict()
+
+    @app.get("/v1/change-sets/{change_set_id}/delivery-report")
+    def delivery_report(change_set_id: str) -> dict[str, Any]:
+        from .delivery_decisions import DeliveryDecisionWorkflow
+
+        return DeliveryDecisionWorkflow(manager).report(change_set_id)
+
+    @app.post("/v1/change-sets/{change_set_id}/decision")
+    def delivery_decision(
+        change_set_id: str,
+        payload: DeliveryDecisionRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        if idempotency_key is None:
+            raise PatchError("IDEMPOTENCY_REQUIRED", "Idempotency-Key is required")
+        from .delivery_decisions import DeliveryDecisionWorkflow
+
+        workflow = DeliveryDecisionWorkflow(manager)
+        if payload.decision == "accept":
+            return workflow.accept(
+                change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
+            )
+        return workflow.stop(
+            change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
+        )
 
     @app.get("/v1/change-sets/{change_set_id}")
     def get_change_set(change_set_id: str) -> dict[str, Any]:

@@ -15,6 +15,7 @@ metadata:
       - devpilot_request_approval
       - devpilot_get_changeset
       - devpilot_get_run_state
+      - devpilot_get_delivery_report
     risk_level: R1
     source: catalog
 ---
@@ -47,7 +48,8 @@ metadata:
 - `devpilot_request_approval`：登记用户确认的审批意图，不接收或返回 capability token；
 - `devpilot_get_changeset`、`devpilot_get_run_state`：读取服务端事实。
 
-Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用户动作完成。
+Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用户动作完成。接受或停止
+必须在 nanobot 对话中取得用户明确确认；回滚只返回现有 R1 审批入口，不得由 Skill 自行取得 capability。
 
 ## 执行步骤
 

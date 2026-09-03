@@ -13,3 +13,9 @@ The repository root `AGENTS.md` is the required entry point. Every task must
 read this file and the relevant Skill before taking action. The vendored copy
 is intentionally tracked with this project so another computer can use the
 same workflow after cloning it.
+
+For every code review, the required `engineering/code-review/SKILL.md` flow is
+mandatory: run independent Standards and Spec reviews through parallel
+subagents, aggregate them under separate headings, and never replace them with
+only a main-agent self-review. If subagent tooling is unavailable, report the
+review as blocked instead of claiming completion.

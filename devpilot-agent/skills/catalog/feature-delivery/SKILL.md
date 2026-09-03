@@ -15,6 +15,7 @@ metadata:
       - devpilot_request_approval
       - devpilot_publish_artifact
       - devpilot_get_changeset
+      - devpilot_get_delivery_report
       - devpilot_get_run_state
     risk_level: R1
     source: catalog
@@ -52,12 +53,17 @@ metadata:
 - `devpilot_request_approval`：登记用户对精确 ChangeSet 的审批请求；不签发、不接收或返回 token。
 - `devpilot_publish_artifact`：将已生成的安全项目摘要写入服务端 Artifact 根；不写项目目录。
 - `devpilot_get_changeset`：读取服务端保存的 ChangeSet、Diff、哈希和完整契约；只读。
+- `devpilot_get_delivery_report`：读取脱敏交付结果、Artifact 元数据和可用决策；只读。
 - `devpilot_get_run_state`：读取服务端 Run 状态和已脱敏事件；只读。
 
 Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回，
 之后可用 `devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet
 后，运行时可以调用 `devpilot_request_approval` 登记审批意图；真正的 Apply/Verification/Rollback
 由控制面用户动作携带 capability token 完成。Skill 不得伪造确认、读取或传播审批令牌。
+
+交付完成后，优先使用 `devpilot_get_delivery_report` 汇总事实。接受或停止必须由用户在
+当前 nanobot 对话中明确确认；回滚只能转到现有的 R1 rollback 审批入口，不能由 Skill
+自行取得 capability 或执行回滚。
 
 ## 执行步骤
 

@@ -31,6 +31,21 @@ Every implementation must finish with relevant automated tests and a review
 of the resulting diff. Keep the workflow evidence in the repository's
 existing documentation locations.
 
+## Mandatory subagent review
+
+Any code review is incomplete unless it uses parallel subagents for both axes:
+
+1. A Standards subagent checks the diff against repository standards and the
+   documented Fowler-smell baseline.
+2. A Spec subagent checks the diff against the originating design/spec and
+   reports missing requirements, scope creep, and incorrect implementations.
+
+The main agent must pin a fixed point, capture `git diff <fixed-point>...HEAD`,
+send the two independent prompts in parallel, wait for both reports, and
+record them separately. A local self-review may supplement this process but
+must never be presented as a substitute. If subagent tooling is unavailable,
+the review is blocked and the final report must say so explicitly.
+
 ## Project skill source
 
 The vendored Skill source and its supporting files are under

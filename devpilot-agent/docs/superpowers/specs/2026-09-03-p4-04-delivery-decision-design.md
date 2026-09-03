@@ -1,7 +1,7 @@
 # P4-04 交付报告与决策设计
 
-日期：2026-09-03  
-前置节点：P4-03 `test-repair`  
+日期：2026-09-03
+前置节点：P4-03 `test-repair`
 目标节点：P4-04 交付报告、停止/接受/回滚决策与 P4 evidence
 
 ## 目标与边界
@@ -21,10 +21,10 @@ P4-04 不增加新的执行后端，也不改变 nanobot Runtime。它在现有�
 - `report(change_set_id)`：读取并汇总交付事实，返回真实状态、改变文件、验证结果、
   Artifact、停止原因和可用的下一步决策；不产生副作用。
 - `accept(change_set_id, confirmation)`：要求明确的“接受”确认，只允许
-  `verified` 或 `verification_failed` ChangeSet 收口为 `accepted`，追加审计事件并结束
-  关联 Run；不修改项目文件。
-- `stop(change_set_id, confirmation)`：要求明确的“停止”确认，记录停止原因并结束
-  Run；不把失败改写成成功，不自动回滚。
+  `verified` 或 `verification_failed` ChangeSet 收口为 `accepted`，追加审计事件；不修改
+  项目文件。
+- `stop(change_set_id, confirmation)`：要求明确的“停止”确认，记录停止原因；若关联 Run
+  仍在运行则将其结束为失败，不把失败改写成成功，不自动回滚。
 - `rollback(change_set_id)`：只返回现有控制面回滚入口和所需能力，实际回滚仍由
   `ControlPlaneManager.rollback` 校验一次性 capability token、哈希和幂等键。
 

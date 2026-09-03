@@ -15,6 +15,7 @@ metadata:
       - devpilot_request_approval
       - devpilot_get_changeset
       - devpilot_get_run_state
+      - devpilot_get_delivery_report
     risk_level: R1
     source: catalog
 ---
