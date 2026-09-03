@@ -2,8 +2,9 @@
   "phase": "P4",
   "node": "P4-02",
   "status": "review_pending",
-  "implementation_commit": "b488c46b6cb115d921b979c9b9d3a69958a8d837",
-  "generated_at": "2026-09-03T10:57:29+08:00",
+  "implementation_commit": "7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8",
+  "evidence_snapshot_commit": "56bc64536117567f5c7428b3a3369d99534247ed",
+  "generated_at": "2026-09-03T11:06:19+08:00",
   "plan": {
     "version": "2.2.0",
     "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
@@ -27,7 +28,9 @@
     "pytest": {
       "command": "uv run pytest",
       "exit_code": 0,
-      "result": "141 passed, 3 skipped",
+      "result": "142 passed, 3 skipped",
+      "started_at": "2026-09-03T11:05:58+08:00",
+      "finished_at": "2026-09-03T11:06:19+08:00",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -38,6 +41,20 @@
       "command": "uv run pyright",
       "exit_code": 0,
       "result": "0 errors, 0 warnings, 0 informations"
+    },
+    "reviewed_tree": {
+      "clean": false,
+      "external_only": true,
+      "uncommitted_paths": [
+        "tests/fixtures/node-project/src/index.js",
+        "tests/fixtures/node-project/test/index.test.js"
+      ]
+    },
+    "schema_head": "0007_project_trust",
+    "lock_sha256": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D",
+    "transcript": {
+      "path": "docs/evidence/phase-4/p4-02-verification.log",
+      "sha256": "162057F7FE63B99D8A8D9D521815767F124046CCE0A755E13917662EBE09DADC"
     }
   },
   "review": {
@@ -53,7 +70,11 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-02-acceptance.md",
-      "sha256": "A6C36CFBC8BAEF668B94D02BA9E97ECB4B4ECD081C7A6C1D57015AD826A4D997"
+      "sha256": "B0B7E7E8FBBC8E5EC5C6659E457A8406ABEC0CFC8B0584F1A38DB871F1E252CA"
+    },
+    {
+      "path": "docs/evidence/phase-4/p4-02-verification.log",
+      "sha256": "162057F7FE63B99D8A8D9D521815767F124046CCE0A755E13917662EBE09DADC"
     }
   ],
   "known_external_changes": [

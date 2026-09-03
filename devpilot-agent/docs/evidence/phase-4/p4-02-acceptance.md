@@ -1,6 +1,6 @@
 # P4-02 Bug-Fix Acceptance Evidence
 
-Implementation commit: `b488c46b6cb115d921b979c9b9d3a69958a8d837`
+Implementation commit: `7895e0d1c9bdd4d9a45eb6d4f23eb1f6f8f1fff8`
 Plan: frozen DevPilot plan `2.2.0`
 
 ## Delivered outcome
@@ -28,11 +28,11 @@ Artifacts with file and manifest hash evidence.
 ## Verification evidence
 
 The following commands were run from the implementation commit above on
-2026-09-03 (Asia/Shanghai):
+2026-09-03 (Asia/Shanghai), from `11:05:58+08:00` through `11:06:19+08:00`.
 
 - `uv run ruff check src tests` — `All checks passed!`;
 - `uv run pyright` — `0 errors, 0 warnings, 0 informations`;
-- `uv run pytest` — `141 passed, 3 skipped in 16.05s`;
+- `uv run pytest` — `142 passed, 3 skipped in 13.70s`;
 - `uv run alembic heads` — `0007_project_trust (head)`;
 - `uv.lock` SHA-256 —
   `982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D`.
@@ -44,11 +44,15 @@ included in the implementation commit.
 
 The server-side `BugCheckService` computes target-file SHA-256 values from the
 allowed project before persisting `bug_check.failed`; storage rejects direct
-event injection and canonical-path hash collisions. The `react-static` Fake
-profile checks the G-02 `event.preventDefault()` invariant. Artifact DB or
-filesystem failures return a stable artifact identity and explicit null
-path/hash when no file exists, and bind profile, backend, exit code and
-before/after manifest hashes to the failure event.
+event injection, untrusted failure-fact objects and canonical-path hash
+collisions. The `react-static` Fake profile checks the G-02
+`event.preventDefault()` invariant. Artifact DB or filesystem failures return a
+stable artifact identity and explicit null path/hash when no file exists, and
+bind profile, backend, exit code and before/after manifest hashes to the
+failure event.
+
+The command transcript is recorded in
+`docs/evidence/phase-4/p4-02-verification.log`.
 
 ## Explicit boundary
 
