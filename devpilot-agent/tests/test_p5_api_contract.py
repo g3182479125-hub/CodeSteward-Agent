@@ -82,13 +82,14 @@ def test_loopback_contract_rejects_forwarded_requests(tmp_path: Path) -> None:
 
 def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
     text = (
-        "api_key=sk-provider-secret authorization: Bearer abc123 "
-        "github_pat_abcdefghijklmnopqrstuvwxyz1234"
+        'api_key=sk-provider-secret authorization: Bearer abc123 '
+        'github_pat_abcdefghijklmnopqrstuvwxyz1234 {"token":"json-secret"}'
     )
     redacted = redact_sensitive_text(text)
     assert "sk-provider-secret" not in redacted
     assert "Bearer abc123" not in redacted
     assert "github_pat_abcdefghijklmnopqrstuvwxyz1234" not in redacted
+    assert "json-secret" not in redacted
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": "AKIA1234567890ABCDEF", "token": "value"}
     )
@@ -166,6 +167,9 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     preview = make_preview(client, project)
     public_preview = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/preview")
     assert "project_path" not in public_preview.json()
+    legacy_preview = client.get(f"/v1/change-sets/{preview['change_set_id']}/preview")
+    assert legacy_preview.status_code == 200
+    assert legacy_preview.json()["project_path"] == str(project)
     diff = client.get(f"/api/v1/change-sets/{preview['change_set_id']}/diff")
     assert diff.status_code == 200
     assert "main.py" in diff.text

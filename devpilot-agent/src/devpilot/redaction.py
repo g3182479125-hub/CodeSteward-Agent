@@ -13,7 +13,7 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
     re.compile(
-        r"(?i)\b(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)\s*[=:]\s*[^\s,;]+"
+        r"(?i)[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)[\"']?\s*[=:]\s*[\"']?[^\s,;\"'}]+"
     ),
 )
 

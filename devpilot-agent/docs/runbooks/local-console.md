@@ -25,8 +25,8 @@ In a second PowerShell window:
 
 ```powershell
 cd E:\codex-local\nanobot-devpilot-agent\devpilot-agent\web
-npm install
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 Open `http://127.0.0.1:18801`. The console reads only `/api/v1` and

@@ -45,28 +45,6 @@ DEFAULT_TOKEN_TTL = timedelta(minutes=5)
 APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
-SSE_EVENT_TYPES = frozenset(
-    {
-        "run.started",
-        "run.updated",
-        "run.completed",
-        "run.failed",
-        "plan.created",
-        "plan.updated",
-        "changeset.previewed",
-        "changeset.approval_requested",
-        "changeset.approval_issued",
-        "changeset.applied",
-        "changeset.apply_failed",
-        "changeset.reverted",
-        "changeset.verification_completed",
-        "changeset.verification_failed",
-        "execution.capability_denied",
-        "delivery.accepted",
-        "delivery.stopped",
-        "project.trust_denied",
-    }
-)
 
 
 class PatchPayload(BaseModel):
@@ -657,9 +635,9 @@ class ControlPlaneManager:
                 request_fingerprint=profile.value,
             )
             reserved = idempotency_key is not None
-            entry.plan.change_set.transition_to(ChangeSetStatus.VERIFYING)
-            self._persist_status(entry)
             try:
+                entry.plan.change_set.transition_to(ChangeSetStatus.VERIFYING)
+                self._persist_status(entry)
                 result = self.execution_backend.run(request)
             except ExecutionError as exc:
                 if reserved:
@@ -766,6 +744,12 @@ class ControlPlaneManager:
                 self._event(entry, "changeset.apply_failed", {"code": exc.code})
                 self._finish_run(entry, "failed", {"code": exc.code})
                 raise
+            except Exception as exc:
+                if reserved:
+                    self._abort(idempotency_key)
+                self._event(entry, "changeset.apply_failed", {"code": "APPLY_FAILED"})
+                self._finish_run(entry, "failed", {"code": "APPLY_FAILED"})
+                raise RuntimeError("apply operation failed") from exc
             entry.receipt = receipt
             self._event(entry, "changeset.applied", {"files": len(entry.plan.records)})
             result = {
@@ -1170,14 +1154,24 @@ def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
 
 def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Remove local filesystem coordinates from control-plane responses."""
-    result = dict(payload)
-    result.pop("project_path", None)
-    result.pop("real_path", None)
-    return result
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            mapping = cast(dict[str, Any], value)
+            return {
+                key: clean(item)
+                for key, item in mapping.items()
+                if key not in {"project_path", "real_path"}
+            }
+        if isinstance(value, list):
+            items = cast(list[Any], value)
+            return [clean(item) for item in items]
+        return value
+
+    return cast(dict[str, Any], clean(payload))
 
 
-def _sse_event_type(raw_event_type: str) -> str:
-    return raw_event_type if raw_event_type in SSE_EVENT_TYPES else "run.updated"
+def _contract_payload(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    return _public_payload(payload) if request.url.path.startswith("/api/v1/") else payload
 
 
 async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
@@ -1396,18 +1390,19 @@ def create_app(
         return {"skills": _skill_catalog()}
 
     @app.post("/api/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
-    @app.post("/api/v1/changesets/preview", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
-    def preview(payload: PreviewRequest) -> dict[str, Any]:
-        return manager.preview(
+    def preview(request: Request, payload: PreviewRequest) -> dict[str, Any]:
+        return _contract_payload(request, manager.preview(
             project_path=payload.project_path,
             project_id=payload.project_id,
             patches=[item.to_file_patch() for item in payload.patches],
-        )
+        ))
 
     @app.post("/api/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
-    def feature_delivery_proposal(payload: FeatureDeliveryRequest) -> dict[str, Any]:
+    def feature_delivery_proposal(
+        request: Request, payload: FeatureDeliveryRequest
+    ) -> dict[str, Any]:
         from .workflows import FeatureDeliveryWorkflow, WorkflowError
 
         try:
@@ -1419,11 +1414,11 @@ def create_app(
             )
         except WorkflowError as exc:
             raise PatchError(exc.code, exc.message) from exc
-        return proposal.to_dict()
+        return _contract_payload(request, proposal.to_dict())
 
     @app.post("/api/v1/bug-fix/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/bug-fix/proposals", status_code=status.HTTP_201_CREATED)
-    def bug_fix_proposal(payload: BugFixRequest) -> dict[str, Any]:
+    def bug_fix_proposal(request: Request, payload: BugFixRequest) -> dict[str, Any]:
         from .workflows import BugFixWorkflow, WorkflowError
 
         try:
@@ -1440,11 +1435,11 @@ def create_app(
             )
         except WorkflowError as exc:
             raise PatchError(exc.code, exc.message) from exc
-        return proposal.to_dict()
+        return _contract_payload(request, proposal.to_dict())
 
     @app.post("/api/v1/test-repair/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/test-repair/proposals", status_code=status.HTTP_201_CREATED)
-    def test_repair_proposal(payload: TestRepairRequest) -> dict[str, Any]:
+    def test_repair_proposal(request: Request, payload: TestRepairRequest) -> dict[str, Any]:
         from .test_repair import TestRepairWorkflow, WorkflowError
 
         try:
@@ -1461,7 +1456,7 @@ def create_app(
             )
         except WorkflowError as exc:
             raise PatchError(exc.code, exc.message) from exc
-        return proposal.to_dict()
+        return _contract_payload(request, proposal.to_dict())
 
     @app.get("/api/v1/change-sets/{change_set_id}/delivery-report")
     @app.get("/v1/change-sets/{change_set_id}/delivery-report")
@@ -1493,19 +1488,16 @@ def create_app(
         )
 
     @app.get("/api/v1/change-sets/{change_set_id}")
-    @app.get("/api/v1/changesets/{change_set_id}")
     @app.get("/v1/change-sets/{change_set_id}")
-    def get_change_set(change_set_id: str) -> dict[str, Any]:
-        return _public_payload(manager.get(change_set_id))
+    def get_change_set(request: Request, change_set_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.get(change_set_id))
 
     @app.get("/api/v1/change-sets/{change_set_id}/preview")
-    @app.get("/api/v1/changesets/{change_set_id}/preview")
     @app.get("/v1/change-sets/{change_set_id}/preview")
-    def get_change_set_preview(change_set_id: str) -> dict[str, Any]:
-        return _public_payload(manager.get(change_set_id))
+    def get_change_set_preview(request: Request, change_set_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.get(change_set_id))
 
     @app.get("/api/v1/change-sets/{change_set_id}/diff")
-    @app.get("/api/v1/changesets/{change_set_id}/diff")
     @app.get("/v1/change-sets/{change_set_id}/diff")
     def get_change_set_diff(change_set_id: str) -> dict[str, Any]:
         payload = manager.get(change_set_id)
@@ -1572,14 +1564,13 @@ def create_app(
 
         def stream() -> Any:
             for item in events:
-                event_type = _sse_event_type(str(item["event_type"]))
+                event_type = str(item["event_type"])
                 event = {
                     "event_id": item["event_id"],
                     "run_id": item["run_id"],
                     "correlation_id": item["correlation_id"],
                     "sequence": item["sequence"],
                     "type": event_type,
-                    "source_event_type": item["event_type"],
                     "created_at": item["created_at"],
                     "redacted_payload": item["payload"],
                 }
@@ -1627,13 +1618,11 @@ def create_app(
         return manager.trust_project(project_id, payload.confirmation)
 
     @app.post("/api/v1/change-sets/{change_set_id}/approve")
-    @app.post("/api/v1/changesets/{change_set_id}/approve")
     @app.post("/v1/change-sets/{change_set_id}/approve")
     def approve(change_set_id: str, payload: ApprovalRequest | None = None) -> dict[str, Any]:
         return manager.approve(change_set_id, payload.capability if payload else APPLY_CAPABILITY)
 
     @app.post("/api/v1/change-sets/{change_set_id}/approval-requests")
-    @app.post("/api/v1/changesets/{change_set_id}/approval-requests")
     @app.post("/v1/change-sets/{change_set_id}/approval-requests")
     def request_approval(
         change_set_id: str, payload: ApprovalIntentRequest
@@ -1643,7 +1632,6 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/apply")
-    @app.post("/api/v1/changesets/{change_set_id}/apply")
     @app.post("/v1/change-sets/{change_set_id}/apply")
     def apply(
         change_set_id: str,
@@ -1657,7 +1645,6 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/verify")
-    @app.post("/api/v1/changesets/{change_set_id}/verify")
     @app.post("/v1/change-sets/{change_set_id}/verify")
     def verify(
         change_set_id: str,
@@ -1675,7 +1662,6 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/rollback")
-    @app.post("/api/v1/changesets/{change_set_id}/rollback")
     @app.post("/v1/change-sets/{change_set_id}/rollback")
     def rollback(
         change_set_id: str,
@@ -1689,7 +1675,6 @@ def create_app(
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/revoke")
-    @app.post("/api/v1/changesets/{change_set_id}/revoke")
     @app.post("/v1/change-sets/{change_set_id}/revoke")
     def revoke(change_set_id: str) -> dict[str, Any]:
         return manager.revoke(change_set_id)
