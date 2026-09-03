@@ -261,17 +261,27 @@ def test_bug_fix_verify_state_errors_do_not_create_failure_artifact(tmp_path: Pa
     assert store.get_run_state(proposal.run_id or "")["status"] == "running"
 
 
-def test_bug_fix_scope_error_is_not_reported_as_verification_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "APPROVAL_SCOPE_MISMATCH",
+        "PROJECT_TRUST_REQUIRED",
+        "PERSISTENCE_CORRUPT",
+        "CHANGESET_NOT_VERIFIABLE",
+        "VERIFICATION_PROFILE_UNSUPPORTED",
+    ],
+)
+def test_bug_fix_control_plane_errors_are_not_verification_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_code: str
 ) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
 
     def reject_scope(*_: object, **__: object) -> dict[str, object]:
-        raise PatchError("APPROVAL_SCOPE_MISMATCH", "approval scope does not match")
+        raise PatchError(error_code, "control-plane error")
 
     monkeypatch.setattr(manager, "verify", reject_scope)
-    with pytest.raises(PatchError, match="APPROVAL_SCOPE_MISMATCH"):
+    with pytest.raises(PatchError, match=error_code):
         BugFixWorkflow(manager).verify(proposal, approval_token="scope-token")
     assert not list((tmp_path / "data" / "artifacts").rglob("bug-fix-failure.md"))
     assert store.get_run_state(proposal.run_id or "")["status"] == "running"
@@ -413,6 +423,43 @@ def test_bug_fix_loads_persisted_contract_after_manager_restart(tmp_path: Path) 
         apply_result=applied,
     )
     assert result.status == "verified"
+    event_types = [item["event_type"] for item in store.list_run_events(loaded.run_id or "")]
+    assert "changeset.applied" in event_types
+    assert "bug_fix.completed" in event_types
+    assert event_types[-1] == "run.completed"
+    assert store.list_artifacts(loaded.run_id or "")[0]["kind"] == "bug-fix"
+
+
+def test_bug_fix_non_fake_backend_is_fail_closed(tmp_path: Path) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(tmp_path)
+    proposal = _propose(manager, project, analysis_id, failure_id)
+    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    BugFixWorkflow(manager).apply(
+        proposal,
+        user_confirmation="执行",
+        approval_token=client.post(f"/v1/change-sets/{proposal.change_set_id}/approve").json()[
+            "approval_token"
+        ],
+    )
+
+    class RemoteBackend:
+        name = "remote-test-double"
+
+    manager.execution_backend = RemoteBackend()  # type: ignore[assignment]
+    verify_token = client.post(
+        f"/v1/change-sets/{proposal.change_set_id}/approve",
+        json={"capability": "r2.verify"},
+    ).json()["approval_token"]
+    with pytest.raises(WorkflowError, match="AUTONOMOUS_REPAIR_BLOCKED"):
+        BugFixWorkflow(manager).verify(proposal, approval_token=verify_token)
+    assert store.get_run_state(proposal.run_id or "")["status"] == "failed"
+    failed_event = [
+        item
+        for item in store.list_run_events(proposal.run_id or "")
+        if item["event_type"] == "bug_fix.failed"
+    ][-1]
+    assert failed_event["payload"]["code"] == "EXECUTION_BACKEND_UNAVAILABLE"
+    assert failed_event["payload"]["artifact"]["indexed"] is True
 
 
 def test_bug_fix_rejects_conflicting_failure_before_hashes(tmp_path: Path) -> None:
@@ -619,6 +666,9 @@ def test_bug_fix_artifact_db_failure_leaves_failure_artifact_and_event(
     assert failure_artifact["indexed"] is False
     assert failure_artifact["path"].endswith("bug-fix-failure.md")
     assert len(failure_artifact["sha256"]) == 64
+    assert failed_event["payload"]["verification_profile"] == "react-static"
+    assert failed_event["payload"]["backend"] == "fake"
+    assert failed_event["payload"]["exit_code"] == 0
     assert failed_event["payload"]["before_manifest_hash"]
     assert failed_event["payload"]["after_manifest_hash"]
 
