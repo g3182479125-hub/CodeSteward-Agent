@@ -2,7 +2,7 @@
   "phase": "P4",
   "node": "P4-02",
   "status": "review_pending",
-  "implementation_commit": "800dfb6",
+  "implementation_commit": "dca2aa11667b4196e68aa6cb2c370fc9ef5da417",
   "generated_at": "2026-09-03T00:00:00+08:00",
   "plan": {
     "version": "2.2.0",
@@ -53,7 +53,7 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-02-acceptance.md",
-      "sha256": "to-be-filled-after-commit"
+      "sha256": "99170CC901B1B351403BED864A8BA7DAE085A498709B111CC224BF56C0A1D2E3"
     }
   ],
   "known_external_changes": [
