@@ -1,0 +1,57 @@
+{
+  "phase": "P4",
+  "node": "P4-04",
+  "status": "implementation_complete_subagent_reviewed",
+  "implementation_commit": "01c8e4804ceeccc2461f3e14c0aad9fa123448b7",
+  "review_target": "01c8e4804ceeccc2461f3e14c0aad9fa123448b7",
+  "generated_at": "2026-09-03T14:59:32+08:00",
+  "verification_window": {
+    "started_at": "2026-09-03T14:42:00+08:00",
+    "finished_at": "2026-09-03T14:59:32+08:00"
+  },
+  "plan": {
+    "version": "2.0.0",
+    "frozen_plan_sha256": "3826E0147941C82D4D7DCF351FB8FB71F8989176D97FBDF67C75E198D25B72D8"
+  },
+  "migration_head": "0007_project_trust",
+  "scope": [
+    "compact server-owned delivery report",
+    "explicit accept and stop decisions with idempotency",
+    "rollback instruction without capability minting",
+    "read-only nanobot delivery-report Tool",
+    "P4-01/P4-02/P4-03 regression coverage",
+    "mandatory subagent review rule in AGENTS.md and vendored skills README"
+  ],
+  "configuration": {
+    "control_plane_bind": "loopback-only",
+    "allowed_roots": "server-configured project roots only",
+    "artifact_root": "server-owned data directory, separate from target project",
+    "pre_p6_execution_backend": "Fake only",
+    "network_allowed": false,
+    "secrets_recorded": false
+  },
+  "verification": {
+    "pytest": {"exit_code": 0, "result": "160 passed, 3 skipped"},
+    "p4_04_focused": {"exit_code": 0, "result": "5 passed"},
+    "ruff": {"exit_code": 0},
+    "pyright": {"exit_code": 0, "result": "0 errors, 0 warnings, 0 informations"},
+    "secret_scan": {"exit_code": 0},
+    "markdown_check": {"exit_code": 0},
+    "lock_check": {"exit_code": 0, "uv_lock_sha256": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"},
+    "diff_check": {"exit_code": 0}
+  },
+  "review": {
+    "required": true,
+    "parallel_subagents": true,
+    "fixed_point": "2f5b6e1",
+    "standards_report": "docs/reviews/p4-04-subagent-review.md",
+    "spec_report": "docs/reviews/p4-04-subagent-review.md"
+  },
+  "artifacts": [
+    {"path": "docs/evidence/phase-4/p4-04-acceptance.md", "sha256": "6F6EC2718B1D03E7A651DE79767292F65BDCE87D5D822E9F2FC0712EC123DD75"},
+    {"path": "docs/evidence/phase-4/p4-04-verification.log", "sha256": "8A5B84B90E287A03B28E718A053D790BB3A7B99F75C16F2462A9BD9788DD67BC"},
+    {"path": "docs/reviews/p4-04-subagent-review.md"}
+  ],
+  "known_external_changes": [],
+  "known_external_changes_note": "No user-owned uncommitted changes are present in the C-drive working copy."
+}
