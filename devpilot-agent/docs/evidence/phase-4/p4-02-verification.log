@@ -1,7 +1,7 @@
 P4-02 verification transcript
 Date: 2026-09-03 Asia/Shanghai
-Start: 2026-09-03T11:16:37.4122169+08:00
-Implementation commit: 6c2728e65641ed3ed412aab4d16cf85bdf2d592d
+Start: 2026-09-03T11:28:45.4453049+08:00
+Implementation commit: 7b2869d6f402960a2f48bc3fe145ce6e468d7c21
 Working tree at verification:
  M docs/evidence/phase-4/p4-02-manifest.json
  M tests/fixtures/node-project/src/index.js
@@ -18,5 +18,5 @@ All checks passed!
 uv run pyright
 0 errors, 0 warnings, 0 informations
 uv run pytest
-147 passed, 3 skipped in 15.51s
-End: 2026-09-03T11:17:00.0530893+08:00
+147 passed, 3 skipped in 16.04s
+End: 2026-09-03T11:29:09.6763855+08:00

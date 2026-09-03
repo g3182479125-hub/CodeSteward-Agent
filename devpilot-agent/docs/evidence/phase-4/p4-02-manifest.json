@@ -2,7 +2,7 @@
   "phase": "P4",
   "node": "P4-02",
   "status": "review_pending",
-  "implementation_commit": "6c2728e65641ed3ed412aab4d16cf85bdf2d592d",
+  "implementation_commit": "7b2869d6f402960a2f48bc3fe145ce6e468d7c21",
   "evidence_commit": "3c9d85201b7ba5ba0aa7a54635feb04612e99149",
   "evidence_chain": [
     "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
@@ -12,7 +12,7 @@
   ],
   "evidence_snapshot_commit": "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
   "evidence_transcript_commit": "a1d955a30060d4357f1dd41a75921ba4243687c6",
-  "generated_at": "2026-09-03T11:17:00+08:00",
+  "generated_at": "2026-09-03T11:29:09+08:00",
   "plan": {
     "version": "2.2.0",
     "sha256": "A36B88E8AE287DFE63A39B5EEF6DD6E5CA2954A20C8DAD48B3472CC604378459"
@@ -37,8 +37,8 @@
       "command": "uv run pytest",
       "exit_code": 0,
       "result": "147 passed, 3 skipped",
-      "started_at": "2026-09-03T11:16:37+08:00",
-      "finished_at": "2026-09-03T11:17:00+08:00",
+      "started_at": "2026-09-03T11:28:45+08:00",
+      "finished_at": "2026-09-03T11:29:09+08:00",
       "skips": "Windows symbolic-link tests require SeCreateSymbolicLinkPrivilege"
     },
     "ruff": {
@@ -89,11 +89,11 @@
   "artifacts": [
     {
       "path": "docs/evidence/phase-4/p4-02-acceptance.md",
-      "sha256": "0639D119FD0B3872F382C87F382558CE2A17376364D8C04E28B4ECE14DCC01E5"
+      "sha256": "7165C227208D4E041B2D8D5AE21750ADB5804AC3A696048FBA477E17C8CD65F0"
     },
     {
       "path": "docs/evidence/phase-4/p4-02-verification.log",
-      "sha256": "6A5A0530AB90F0ED56D81221CF09891C6AD3E90DAE72AABD5B2D8FB7CEE7C6C0"
+      "sha256": "4BBCDC6B193F3EC09AD982EB3F21E6BAAFBE5248F627DCD70E90361E88119644"
     }
   ],
   "known_external_changes": [

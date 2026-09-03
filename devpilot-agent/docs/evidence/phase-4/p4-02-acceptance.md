@@ -1,6 +1,6 @@
 # P4-02 Bug-Fix Acceptance Evidence
 
-Implementation commit: `6c2728e65641ed3ed412aab4d16cf85bdf2d592d`
+Implementation commit: `7b2869d6f402960a2f48bc3fe145ce6e468d7c21`
 Plan: frozen DevPilot plan `2.2.0`
 
 ## Delivered outcome
@@ -28,13 +28,13 @@ Artifacts with file and manifest hash evidence.
 ## Verification evidence
 
 The following commands were run from the implementation commit above on
-2026-09-03 (Asia/Shanghai), from `11:16:37+08:00` through `11:17:00+08:00`.
+2026-09-03 (Asia/Shanghai), from `11:28:45+08:00` through `11:29:09+08:00`.
 
 - `uv run ruff check src tests` — `All checks passed!`;
 - `uv run pyright` — `0 errors, 0 warnings, 0 informations`;
 - `uv run python scripts/secret_scan.py` — passed;
 - `uv run python scripts/check_markdown.py` — passed;
-- `uv run pytest` — `147 passed, 3 skipped in 15.51s`;
+- `uv run pytest` — `147 passed, 3 skipped in 16.04s`;
 - `uv run alembic heads` — `0007_project_trust (head)`;
 - `uv.lock` SHA-256 —
   `982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D`.
