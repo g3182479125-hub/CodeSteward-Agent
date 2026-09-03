@@ -3,15 +3,17 @@
   "node": "P4-02",
   "status": "review_pending",
   "implementation_commit": "7b2869d6f402960a2f48bc3fe145ce6e468d7c21",
-  "evidence_commit": "3c9d85201b7ba5ba0aa7a54635feb04612e99149",
+  "evidence_commit": "b7cc34ba2d718858ced5ad5ebe566170ac7c7609",
   "evidence_chain": [
     "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
     "a1d955a30060d4357f1dd41a75921ba4243687c6",
     "c6bb4de13d4f3ce2f361a4fe197068c8266cba9c",
-    "3c9d85201b7ba5ba0aa7a54635feb04612e99149"
+    "3c9d85201b7ba5ba0aa7a54635feb04612e99149",
+    "0eaa6a3ea3df6f9dbe7ed3e8255da50b2e844f50",
+    "b7cc34ba2d718858ced5ad5ebe566170ac7c7609"
   ],
-  "evidence_snapshot_commit": "2c669ae8ec397f94ee22ca21081e320bbbd2c1d5",
-  "evidence_transcript_commit": "a1d955a30060d4357f1dd41a75921ba4243687c6",
+  "evidence_snapshot_commit": "b7cc34ba2d718858ced5ad5ebe566170ac7c7609",
+  "evidence_transcript_commit": "b7cc34ba2d718858ced5ad5ebe566170ac7c7609",
   "generated_at": "2026-09-03T11:29:09+08:00",
   "plan": {
     "version": "2.2.0",
@@ -73,7 +75,7 @@
     "lock_sha256": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D",
     "transcript": {
       "path": "docs/evidence/phase-4/p4-02-verification.log",
-      "sha256": "162057F7FE63B99D8A8D9D521815767F124046CCE0A755E13917662EBE09DADC"
+      "sha256": "4BBCDC6B193F3EC09AD982EB3F21E6BAAFBE5248F627DCD70E90361E88119644"
     }
   },
   "review": {
