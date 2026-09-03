@@ -2,14 +2,26 @@
 
 ## Status
 
-Blocked by the required review subagent service. The Standards reviewer was
-dispatched in parallel with the Spec reviewer twice after the final fixes.
-Both attempts failed before returning a report with:
+The Standards reviewer completed its inspection of `git diff 7ec7bd6...HEAD`,
+but the review service also reported an intermittent 404 during the run. The
+report found no code-level hard documented-standard violation.
+
+The review service error was:
 
 `unexpected status 404 Not Found: Unknown error, url: https://chatgpt.com/backend-api/codex/responses`
 
-Per `AGENTS.md`, this cannot be counted as a Standards approval. Local
-quality gates are recorded in `docs/evidence/phase-5/p5-acceptance.md`.
+Per `AGENTS.md`, the service error remains a process blocker for certification.
+Local quality gates are recorded in `docs/evidence/phase-5/p5-acceptance.md`.
+
+## Standards report
+
+- No hard documented-standard violation was found.
+- Judgement-call: `control_plane.py` has divergent change because it now
+  handles idempotency, project registration, HTTP contracts, SSE, catalogues,
+  and route registration.
+- Judgement-call: HTTP handlers reach directly into `manager.store`.
+- Judgement-call: `/api/v1` and `/v1` route decorators duplicate registration;
+  this is justified by the compatibility requirement.
 
 ## Pre-fix findings addressed
 
