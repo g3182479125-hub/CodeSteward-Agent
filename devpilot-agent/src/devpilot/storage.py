@@ -208,6 +208,47 @@ class BugCheckFailureFact:
 _BUG_CHECK_SERVER_TOKEN = object()
 
 
+@dataclass(frozen=True)
+class TestCheckFailureFact:
+    """Server-computed failure fact for a saved Python or Node check."""
+
+    run_id: str
+    project_id: str
+    symptom: str
+    expected_behavior: str
+    target_files: tuple[str, ...]
+    before_hashes: dict[str, str]
+    code: str
+    _server_token: object = field(init=False, repr=False, compare=False)
+
+    @classmethod
+    def _from_server(
+        cls,
+        *,
+        run_id: str,
+        project_id: str,
+        symptom: str,
+        expected_behavior: str,
+        target_files: tuple[str, ...],
+        before_hashes: dict[str, str],
+        code: str,
+    ) -> TestCheckFailureFact:
+        fact = cls(
+            run_id=run_id,
+            project_id=project_id,
+            symptom=symptom,
+            expected_behavior=expected_behavior,
+            target_files=target_files,
+            before_hashes=before_hashes,
+            code=code,
+        )
+        object.__setattr__(fact, "_server_token", _TEST_CHECK_SERVER_TOKEN)
+        return fact
+
+
+_TEST_CHECK_SERVER_TOKEN = object()
+
+
 class ProjectLockRecord(Base):
     __tablename__ = "project_locks"
 
@@ -367,6 +408,8 @@ class ProjectStore:
     def append_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> None:
         if event_type == "bug_check.failed":
             raise ValueError("bug_check.failed must be produced by record_bug_check_failure")
+        if event_type == "test_check.failed":
+            raise ValueError("test_check.failed must be produced by record_test_check_failure")
         safe_payload = redact_sensitive_payload(payload)
         with self._session_factory.begin() as session:
             session.add(
@@ -380,56 +423,89 @@ class ProjectStore:
 
     def record_bug_check_failure_fact(self, fact: BugCheckFailureFact) -> None:
         """Persist a fact whose file hashes were computed by a server-side checker."""
-        if getattr(fact, "_server_token", None) is not _BUG_CHECK_SERVER_TOKEN:
-            raise ValueError("bug-check failure fact must be created by BugCheckService")
+        self._record_check_failure_fact(
+            fact,
+            server_token=_BUG_CHECK_SERVER_TOKEN,
+            run_kind="bug-check",
+            event_type="bug_check.failed",
+            producer="devpilot.bug-check",
+            label="bug-check",
+            creator="BugCheckService",
+        )
+
+    def record_test_check_failure_fact(self, fact: TestCheckFailureFact) -> None:
+        """Persist a test-check fact whose hashes came from the server checker."""
+        self._record_check_failure_fact(
+            fact,
+            server_token=_TEST_CHECK_SERVER_TOKEN,
+            run_kind="test-check",
+            event_type="test_check.failed",
+            producer="devpilot.test-check",
+            label="test-check",
+            creator="TestCheckService",
+        )
+
+    def _record_check_failure_fact(
+        self,
+        fact: Any,
+        *,
+        server_token: object,
+        run_kind: str,
+        event_type: str,
+        producer: str,
+        label: str,
+        creator: str,
+    ) -> None:
+        if getattr(fact, "_server_token", None) is not server_token:
+            raise ValueError(f"{label} failure fact must be created by {creator}")
         if not fact.symptom.strip() or not fact.expected_behavior.strip() or not fact.code.strip():
-            raise ValueError("bug-check failure fields must be non-empty")
+            raise ValueError(f"{label} failure fields must be non-empty")
         if not fact.target_files or len(set(fact.target_files)) != len(fact.target_files):
-            raise ValueError("bug-check target files must be unique")
+            raise ValueError(f"{label} target files must be unique")
         canonical_targets = [self.canonical_failure_path(item) for item in fact.target_files]
         canonical_hashes: dict[str, str] = {}
         for path, value in fact.before_hashes.items():
             canonical_path = self.canonical_failure_path(path)
             if canonical_path in canonical_hashes and canonical_hashes[canonical_path] != value:
-                raise ValueError("bug-check before hashes conflict after canonicalization")
+                raise ValueError(f"{label} before hashes conflict after canonicalization")
             canonical_hashes[canonical_path] = str(value)
         if len(set(canonical_targets)) != len(canonical_targets):
-            raise ValueError("bug-check target files must be unique after canonicalization")
+            raise ValueError(f"{label} target files must be unique after canonicalization")
         if any(
             not re.fullmatch(r"[0-9a-f]{64}", str(value))
             for value in canonical_hashes.values()
         ):
-            raise ValueError("bug-check before hashes must be SHA-256 values")
+            raise ValueError(f"{label} before hashes must be SHA-256 values")
         if any(item not in canonical_hashes for item in canonical_targets):
-            raise ValueError("bug-check target files must have canonical before hashes")
+            raise ValueError(f"{label} target files must have canonical before hashes")
         with self._session_factory.begin() as session:
             run = session.get(RunRecord, fact.run_id)
             if (
                 run is None
                 or run.project_id != fact.project_id
-                or run.kind != "bug-check"
+                or run.kind != run_kind
                 or run.status != "running"
             ):
-                raise ValueError("bug-check failure must belong to an open bug-check Run")
+                raise ValueError(f"{label} failure must belong to an open {label} Run")
             project = session.get(ProjectRecord, fact.project_id)
             if project is None:
-                raise ValueError("bug-check project does not exist")
+                raise ValueError(f"{label} project does not exist")
             project_path = Path(project.real_path).resolve(strict=True)
             for relative_path in canonical_targets:
                 candidate = project_path / relative_path
                 if candidate.is_symlink():
-                    raise ValueError("bug-check targets must be regular project files")
+                    raise ValueError(f"{label} targets must be regular project files")
                 target = candidate.resolve(strict=True)
                 if (
                     not target.is_file()
                     or not target.is_relative_to(project_path)
                 ):
-                    raise ValueError("bug-check targets must be regular project files")
+                    raise ValueError(f"{label} targets must be regular project files")
                 actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
                 if canonical_hashes[relative_path] != actual_hash:
-                    raise ValueError("bug-check before hash does not match the project file")
+                    raise ValueError(f"{label} before hash does not match the project file")
             payload = {
-                "producer": "devpilot.bug-check",
+                "producer": producer,
                 "schema_version": 1,
                 "project_id": fact.project_id,
                 "status": "failed",
@@ -442,7 +518,7 @@ class ProjectStore:
             session.add(
                 RunEventRecord(
                     run_id=fact.run_id,
-                    event_type="bug_check.failed",
+                    event_type=event_type,
                     payload_json=json.dumps(
                         redact_sensitive_payload(payload),
                         ensure_ascii=False,

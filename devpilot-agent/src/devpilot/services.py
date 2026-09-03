@@ -11,7 +11,7 @@ from .artifacts import ArtifactService, ArtifactWrite
 from .inspector import InspectionResult, inspect_project
 from .paths import AllowedRoots
 from .report import render_project_overview
-from .storage import BugCheckFailureFact, ProjectStore
+from .storage import BugCheckFailureFact, ProjectStore, TestCheckFailureFact
 
 
 @dataclass(frozen=True)
@@ -146,6 +146,56 @@ class BugCheckService:
         run_id = self.store.start_run(project_id, kind="bug-check")
         self.store.record_bug_check_failure_fact(
             BugCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
+                run_id=run_id,
+                project_id=project_id,
+                symptom=symptom,
+                expected_behavior=expected_behavior,
+                target_files=tuple(canonical_targets),
+                before_hashes=before_hashes,
+                code=code,
+            )
+        )
+        return BugCheckOutcome(
+            project_id=project_id, run_id=run_id, before_hashes=dict(before_hashes)
+        )
+
+
+class TestCheckService(BugCheckService):
+    """Create saved failure evidence for a bounded Python or Node test check."""
+
+    def record_failure(
+        self,
+        project_path: str | Path,
+        *,
+        symptom: str,
+        expected_behavior: str,
+        target_files: list[str] | tuple[str, ...],
+        code: str,
+    ) -> BugCheckOutcome:
+        project = self.allowed_roots.require_project(project_path)
+        if not target_files:
+            raise ValueError("test-check target files must not be empty")
+        canonical_targets = [self.store.canonical_failure_path(item) for item in target_files]
+        if len(set(canonical_targets)) != len(canonical_targets):
+            raise ValueError("test-check target files must be unique")
+        before_hashes: dict[str, str] = {}
+        for relative_path in canonical_targets:
+            target = (project / relative_path).resolve(strict=True)
+            try:
+                target.relative_to(project)
+            except ValueError as exc:
+                raise ValueError("test-check target path escapes the project") from exc
+            if target.is_symlink() or not target.is_file():
+                raise ValueError("test-check targets must be regular files")
+            before_hashes[relative_path] = hashlib.sha256(target.read_bytes()).hexdigest()
+
+        root_id, fingerprint = self.allowed_roots.binding_for(project)
+        project_id = self.store.ensure_project(
+            str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
+        )
+        run_id = self.store.start_run(project_id, kind="test-check")
+        self.store.record_test_check_failure_fact(
+            TestCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
                 run_id=run_id,
                 project_id=project_id,
                 symptom=symptom,

@@ -7,6 +7,12 @@
 
 AG-UI 不属于本项目。API key、运行时配置、数据库、虚拟环境和依赖目录均不会提交。
 
+## Agent 开发规范
+
+项目根目录的 `AGENTS.md` 是所有编码任务的必读入口。工程开发 Skill 的本地固定副本位于
+`agent-skills/mattpocock-skills/skills/`，每次任务需要先阅读其总说明和与任务匹配的
+`SKILL.md`。
+
 ## Windows 本地启动
 
 在仓库根目录执行：
@@ -39,4 +45,3 @@ DevPilot 的本地控制平面可以单独启动，具体命令和 P2A/P2B 流�
 - `devpilot-agent/docs/evidence/phase-2a/p2a-acceptance.md`
 
 nanobot 启动后会通过已安装的 `devpilot-agent` entry points 加载 `devpilot_inspect_project`、`devpilot_propose_changeset` 和 `devpilot_publish_artifact` 工具。
-

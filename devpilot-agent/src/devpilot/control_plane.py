@@ -121,6 +121,20 @@ class BugFixRequest(BaseModel):
     verification_profile: VerificationProfile = VerificationProfile.REACT_STATIC
 
 
+class TestRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_path: str = Field(min_length=1)
+    patches: list[PatchPayload] = Field(min_length=1, max_length=12)
+    analysis_evidence_ids: list[str] = Field(min_length=1, max_length=32)
+    failure_evidence_ids: list[str] = Field(min_length=1, max_length=32)
+    symptom: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
+    non_goals: list[str] = Field(default_factory=list, max_length=32)
+    allowed_files: list[str] = Field(min_length=1, max_length=32)
+    verification_profile: VerificationProfile = VerificationProfile.PYTHON_RUN
+
+
 class _PendingChangeSet:
     def __init__(self, plan: PatchPlan, run_id: str | None = None) -> None:
         self.plan = plan
@@ -291,6 +305,38 @@ class ControlPlaneManager:
                             }
                             result_contract["contract_hash"] = contract["contract_hash"]
                             payload["bug_fix_contract"] = result_contract
+                    test_repair_events = [
+                        item
+                        for item in self.store.list_run_events(entry.run_id)
+                        if item["event_type"] == "test_repair.proposed"
+                    ]
+                    if test_repair_events:
+                        event_payload = test_repair_events[-1]["payload"]
+                        if isinstance(event_payload, dict):
+                            result_contract = {
+                                key: event_payload[key]
+                                for key in (
+                                    "workflow",
+                                    "parent_change_set_id",
+                                    "root_change_set_id",
+                                    "attempt",
+                                    "max_attempts",
+                                    "analysis_evidence_ids",
+                                    "failure_evidence_ids",
+                                    "analysis_evidence_hash",
+                                    "failure_evidence_hash",
+                                    "evidence_hash",
+                                    "failure_fingerprints",
+                                    "symptom",
+                                    "expected_behavior",
+                                    "non_goals",
+                                    "allowed_files",
+                                    "verification_profile",
+                                )
+                                if key in event_payload
+                            }
+                            result_contract["contract_hash"] = contract["contract_hash"]
+                            payload["test_repair_contract"] = result_contract
             return payload
 
     def get_run_id(self, change_set_id: str) -> str | None:
@@ -1000,6 +1046,26 @@ def create_app(
 
         try:
             proposal = BugFixWorkflow(manager).propose(
+                project_path=payload.project_path,
+                patches=[item.to_file_patch() for item in payload.patches],
+                analysis_evidence_ids=payload.analysis_evidence_ids,
+                failure_evidence_ids=payload.failure_evidence_ids,
+                symptom=payload.symptom,
+                expected_behavior=payload.expected_behavior,
+                non_goals=payload.non_goals,
+                allowed_files=payload.allowed_files,
+                verification_profile=payload.verification_profile,
+            )
+        except WorkflowError as exc:
+            raise PatchError(exc.code, exc.message) from exc
+        return proposal.to_dict()
+
+    @app.post("/v1/test-repair/proposals", status_code=status.HTTP_201_CREATED)
+    def test_repair_proposal(payload: TestRepairRequest) -> dict[str, Any]:
+        from .test_repair import TestRepairWorkflow, WorkflowError
+
+        try:
+            proposal = TestRepairWorkflow(manager).propose(
                 project_path=payload.project_path,
                 patches=[item.to_file_patch() for item in payload.patches],
                 analysis_evidence_ids=payload.analysis_evidence_ids,

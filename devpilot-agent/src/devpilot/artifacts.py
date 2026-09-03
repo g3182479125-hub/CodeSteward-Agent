@@ -19,6 +19,8 @@ _SUPPORTED_MARKDOWN = frozenset(
         "feature-delivery-failure.md",
         "bug-fix.md",
         "bug-fix-failure.md",
+        "test-repair.md",
+        "test-repair-failure.md",
     }
 )
 

@@ -81,6 +81,14 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "BUG_FIX_FAILURE_EVIDENCE_INVALID",
         "BUG_FIX_INPUT_INVALID",
         "BUG_FIX_SCOPE_INVALID",
+        "TEST_REPAIR_BUDGET_EXCEEDED",
+        "TEST_REPAIR_FAILURE_EVIDENCE_INVALID",
+        "TEST_REPAIR_FAILURE_FINGERPRINT_INVALID",
+        "TEST_REPAIR_INPUT_INVALID",
+        "TEST_REPAIR_NOT_FOUND",
+        "TEST_REPAIR_PERSISTENCE_INVALID",
+        "TEST_REPAIR_REPEAT_FAILURE",
+        "TEST_REPAIR_SCOPE_INVALID",
         "VERIFICATION_PROFILE_UNSUPPORTED",
     }
 )
@@ -506,6 +514,25 @@ def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = Request(
         f"{_control_plane_url()}/v1/bug-fix/proposals",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        response_body = response.read(256 * 1024 + 1)
+    if len(response_body) > 256 * 1024:
+        raise ValueError("control-plane response is too large")
+    result = json.loads(response_body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("control-plane response is invalid")
+    result["requires_user_confirmation"] = True
+    return result
+
+
+def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        f"{_control_plane_url()}/v1/test-repair/proposals",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -949,6 +976,88 @@ class BugFixProposeTool(Tool):
             return ToolResult.error(f"P4 bug-fix proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 bug-fix proposal rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_path": {"type": "string", "minLength": 1},
+            "patches": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": _PATCH_ITEM_SCHEMA,
+            },
+            "analysis_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "failure_evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "symptom": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "expected_behavior": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "non_goals": {"type": "array", "maxItems": 32, "items": {"type": "string"}},
+            "allowed_files": {"type": "array", "minItems": 1, "maxItems": 32},
+            "verification_profile": {
+                "type": "string",
+                "enum": ["python-run", "node-syntax"],
+            },
+        },
+        "required": [
+            "project_path",
+            "patches",
+            "analysis_evidence_ids",
+            "failure_evidence_ids",
+            "symptom",
+            "expected_behavior",
+            "allowed_files",
+        ],
+        "additionalProperties": False,
+    }
+)
+class TestRepairProposeTool(Tool):
+    """Create a bounded test-repair proposal from saved test failure evidence."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_test_repair_propose"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a bounded Python or Node test-repair proposal from saved failure evidence. "
+            "This is proposal-only and never approves, applies, executes, or rolls back changes."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            payload: dict[str, Any] = {
+                "project_path": str(kwargs["project_path"]),
+                "patches": kwargs["patches"],
+                "analysis_evidence_ids": kwargs["analysis_evidence_ids"],
+                "failure_evidence_ids": kwargs["failure_evidence_ids"],
+                "symptom": str(kwargs["symptom"]),
+                "expected_behavior": str(kwargs["expected_behavior"]),
+                "non_goals": kwargs.get("non_goals", []),
+                "allowed_files": kwargs["allowed_files"],
+            }
+            if kwargs.get("verification_profile") is not None:
+                payload["verification_profile"] = str(kwargs["verification_profile"])
+            result = _post_test_repair_proposal(payload)
+            result["next_step"] = (
+                "展示精确 Diff、当前轮次和剩余预算，并停止等待用户；"
+                "每轮 Apply 和 Verify 都必须由控制面用户分别批准。"
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(
+                f"P4 test-repair proposal rejected: {_http_error_message(exc)}"
+            )
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P4 test-repair proposal rejected: {type(exc).__name__}")
 
 
 @tool_parameters(

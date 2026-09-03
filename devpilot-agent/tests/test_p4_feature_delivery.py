@@ -537,7 +537,6 @@ def test_feature_delivery_nanobot_adapter_maps_unknown_http_code_to_stable_code(
     assert isinstance(result, ToolResult)
     assert "HTTP 409: CONTROL_PLANE_ERROR" in str(result)
     assert secret not in str(result)
-
 def test_feature_delivery_records_failed_verification_and_artifact(tmp_path: Path) -> None:
     store, project, manager = _manager(tmp_path, FakeExecutionBackend(exit_code=1))
     workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
@@ -777,7 +776,7 @@ def test_feature_delivery_nanobot_contract_matches_registered_tools() -> None:
         (
             root / "skills" / "catalog" / name / "SKILL.md"
         ).read_text(encoding="utf-8")
-        for name in ("feature-delivery", "bug-fix")
+        for name in ("feature-delivery", "bug-fix", "test-repair")
     )
     expected = {
         line.strip()[2:]
