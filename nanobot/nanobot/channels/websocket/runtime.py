@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import re
 import secrets
 import ssl
@@ -16,7 +17,9 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Self, TypeGuard, cast
-from urllib.parse import urlsplit, urlunsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from websockets.asyncio.server import ServerConnection, serve, unix_serve
@@ -434,13 +437,52 @@ class WebSocketChannel(BaseChannel):
         return {
             "devpilot_confirmation": {
                 "action": action,
-                "context": {"session_id": session_id, "thread_id": turn_id or chat_id,
+            "context": {"session_id": session_id, "thread_id": turn_id or chat_id,
                     "user_message_seq": sequence, "confirmation_id": confirmation_id,
                     "issued_at": issued_at, "expires_at": expires_at,
-                    "user_event_nonce": nonce, "signature": self._devpilot_signer.sign(canonical.encode())},
-                "signer": self._devpilot_signer,
+                    "user_event_nonce": nonce, "signature": self._devpilot_signer._sign(canonical.encode())},
+                "verifier": self._devpilot_signer.verify,
             }
         }
+
+    @staticmethod
+    def _resolve_devpilot_tuple(confirmation: object) -> dict[str, str] | None:
+        """Resolve a client reference against the current loopback ChangeSet."""
+        if not isinstance(confirmation, dict):
+            return None
+        required = {"change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id"}
+        if set(confirmation) != required or any(
+            not isinstance(confirmation.get(key), str) or not confirmation[key]
+            for key in required
+        ):
+            return None
+        values = {key: str(confirmation[key]) for key in required}
+        base = os.environ.get("DEVPILOT_CONTROL_PLANE_URL", "http://127.0.0.1:18800").rstrip("/")
+        parsed = urlsplit(base)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+        ):
+            return None
+        try:
+            request = Request(
+                f"{base}/v1/change-sets/{quote(values['change_set_id'], safe='')}",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(request, timeout=2) as response:
+                body = response.read(256 * 1024 + 1)
+            if len(body) > 256 * 1024:
+                return None
+            current = json.loads(body.decode("utf-8"))
+        except (HTTPError, URLError, OSError, TypeError, ValueError):
+            return None
+        if not isinstance(current, dict):
+            return None
+        return values if all(current.get(key) == value for key, value in values.items()) else None
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -1067,10 +1109,25 @@ class WebSocketChannel(BaseChannel):
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
             trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
-            attributes = self._devpilot_confirmation_attributes(
-                connection, cid, content, turn_id if isinstance(turn_id, str) else None,
-                envelope.get("devpilot_confirmation")
-            ) if trusted_webui else {}
+            resolved_confirmation = (
+                await asyncio.to_thread(
+                    self._resolve_devpilot_tuple,
+                    envelope.get("devpilot_confirmation"),
+                )
+                if trusted_webui
+                else None
+            )
+            attributes = (
+                self._devpilot_confirmation_attributes(
+                    connection,
+                    cid,
+                    content,
+                    turn_id if isinstance(turn_id, str) else None,
+                    resolved_confirmation,
+                )
+                if trusted_webui
+                else {}
+            )
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps
@@ -1674,8 +1731,8 @@ class WebSocketChannel(BaseChannel):
         def __init__(self, key: bytes) -> None:
             self._key = key
 
-        def sign(self, payload: bytes) -> str:
+        def _sign(self, payload: bytes) -> str:
             return hmac.new(self._key, payload, hashlib.sha256).hexdigest()
 
         def verify(self, payload: str, signature: str) -> bool:
-            return hmac.compare_digest(self.sign(payload.encode()), signature)
+            return hmac.compare_digest(self._sign(payload.encode()), signature)

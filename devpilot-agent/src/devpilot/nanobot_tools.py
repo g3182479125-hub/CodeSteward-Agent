@@ -14,7 +14,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -134,14 +134,6 @@ _PATH_DENIAL_CODES = frozenset(
     }
 )
 
-_action_broker: ActionBroker | None = None
-
-
-def configure_action_broker(broker: ActionBroker | None) -> None:
-    """Install the trusted in-process broker supplied by the nanobot Gateway."""
-    global _action_broker
-    _action_broker = broker
-
 
 def _trusted_confirmation_attributes() -> dict[str, Any] | None:
     """Read the WebUI-only confirmation envelope; it is never model input."""
@@ -166,16 +158,38 @@ def _data_dir() -> Path:
 
 
 def _durable_store() -> ProjectStore:
-    """Open the store without letting create_all bypass an Alembic database."""
+    """Open only an Alembic-initialized store; never create production tables implicitly."""
     store = ProjectStore(_data_dir() / "devpilot.db")
     with store.engine.connect() as connection:
         has_version = connection.exec_driver_sql(
             "select name from sqlite_master where type='table' and name='alembic_version'"
         ).scalar_one_or_none()
+    if not has_version:
+        raise RuntimeError("database schema is not initialized by Alembic")
+    store.require_schema_head("0009_p5_broker_tuple_replay")
+    return store
+
+
+def _read_only_code_access_store() -> ProjectStore:
+    """Open a readable legacy store without creating or mutating its schema.
+
+    Older local nanobot installations predate Alembic but still contain the
+    project registry needed by the read-only code tools.  Action execution
+    never uses this compatibility path; it remains gated by ``_durable_store``.
+    """
+    store = ProjectStore(_data_dir() / "devpilot.db")
+    with store.engine.connect() as connection:
+        tables = {
+            str(row[0])
+            for row in connection.exec_driver_sql(
+                "select name from sqlite_master where type='table'"
+            ).all()
+        }
+        has_version = "alembic_version" in tables
     if has_version:
-        store.require_schema_head("0008_p5_broker_actions")
-    else:
-        store.initialize()
+        store.require_schema_head("0009_p5_broker_tuple_replay")
+    elif "projects" not in tables:
+        raise RuntimeError("database schema is not initialized")
     return store
 
 
@@ -185,7 +199,7 @@ def _service(workspace: Path) -> ProjectAnalysisService:
 
 
 def _code_access_service(workspace: Path) -> CodeAccessService:
-    store = _durable_store()
+    store = _read_only_code_access_store()
     return CodeAccessService(allowed_roots=_configured_roots(workspace), store=store)
 
 
@@ -1055,42 +1069,66 @@ class ConfirmedActionTool(Tool):
         if attributes is None or attributes.get("action") != kwargs.get("action"):
             return ToolResult.error("P5 action rejected: APPROVAL_BROKER_UNAVAILABLE")
         try:
-            signer = cast(Any, attributes.get("signer"))
-            if not callable(getattr(signer, "sign", None)):
-                raise ValueError("missing trusted signer")
+            verifier = cast(Callable[[str, str], bool], attributes.get("verifier"))
+            if not callable(verifier):
+                raise ValueError("missing trusted verifier")
             context = ConfirmationContext.from_mapping(attributes["context"])
             store = _durable_store()
 
-            def consume(request: BrokerActionRequest) -> bool:
-                return store.reserve_broker_action(
+            def consume(
+                request: BrokerActionRequest, idempotency_key: str
+            ) -> bool | Mapping[str, Any]:
+                tuple_payload: dict[str, Any] = {
+                    "session_id": request.context.session_id,
+                    "thread_id": request.context.thread_id,
+                    "confirmation_id": request.context.confirmation_id,
+                    "user_event_nonce": request.context.user_event_nonce,
+                    "user_message_seq": request.context.user_message_seq,
+                    "action": request.action,
+                    "change_set_id": request.change_set_id,
+                    "plan_hash": request.plan_hash,
+                    "patch_hash": request.patch_hash,
+                    "scope_hash": request.scope_hash,
+                    "project_id": request.project_id,
+                }
+                reserved = store.reserve_broker_action(
                     {
-                        "session_id": request.context.session_id,
-                        "thread_id": request.context.thread_id,
-                        "confirmation_id": request.context.confirmation_id,
-                        "user_event_nonce": request.context.user_event_nonce,
-                        "user_message_seq": request.context.user_message_seq,
-                        "action": request.action,
-                        "change_set_id": request.change_set_id,
-                        "plan_hash": request.plan_hash,
-                        "patch_hash": request.patch_hash,
-                        "scope_hash": request.scope_hash,
-                        "project_id": request.project_id,
+                        **tuple_payload,
                         "signature_digest": hashlib.sha256(
                             request.context.signature.encode()
                         ).hexdigest(),
-                        "idempotency_digest": None,
+                        "idempotency_digest": hashlib.sha256(idempotency_key.encode()).hexdigest(),
                         "status": "authorized",
                         "expires_at": request.context.validate_time(datetime.now(UTC))[1],
                     }
                 )
+                if reserved:
+                    return True
+                return store.get_broker_action_result(tuple_payload) or False
 
             def snapshot(change_set_id: str) -> dict[str, Any]:
                 result = _get_control_plane(_safe_resource_path(change_set_id, "change-sets"))
                 security = _get_control_plane(f"/v1/projects/{kwargs['project_id']}/security")
                 return {**result, "trust_state": security.get("trust_state")}
 
-            def finish(request: BrokerActionRequest, status: str) -> None:
-                store.finish_broker_action(request.context.confirmation_id, status)
+            def finish(
+                request: BrokerActionRequest, status: str, result: Mapping[str, Any]
+            ) -> None:
+                store.finish_broker_action(
+                    request.context.confirmation_id,
+                    status,
+                    dict(result),
+                    expected={
+                        "session_id": request.context.session_id,
+                        "thread_id": request.context.thread_id,
+                        "action": request.action,
+                        "change_set_id": request.change_set_id,
+                        "plan_hash": request.plan_hash,
+                        "patch_hash": request.patch_hash,
+                        "scope_hash": request.scope_hash,
+                        "project_id": request.project_id,
+                    },
+                )
 
             def issue(action_name: str, change_set_id: str) -> str:
                 raw = _post_control_plane(
@@ -1126,7 +1164,7 @@ class ConfirmedActionTool(Tool):
                 }
 
             broker = ActionBroker(
-                signature_verifier=signer.verify,
+                signature_verifier=verifier,
                 snapshot_reader=snapshot,
                 capability_issuer=issue,
                 capability_executor=execute,

@@ -1636,6 +1636,41 @@ describe("NanobotClient", () => {
     });
   });
 
+  it("serializes the exact DevPilot confirmation tuple on outbound WebUI messages", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+    client.sendMessage("chat-x", "执行", undefined, {
+      turnId: "turn-1",
+      devpilotConfirmation: {
+        changeSetId: "change-set-1",
+        planHash: "1".repeat(64),
+        patchHash: "2".repeat(64),
+        scopeHash: "3".repeat(64),
+        projectId: "project-1",
+      },
+    });
+
+    expect(JSON.parse(lastSocket().sent.at(-1) as string)).toEqual({
+      type: "message",
+      chat_id: "chat-x",
+      content: "执行",
+      turn_id: "turn-1",
+      devpilot_confirmation: {
+        change_set_id: "change-set-1",
+        plan_hash: "1".repeat(64),
+        patch_hash: "2".repeat(64),
+        scope_hash: "3".repeat(64),
+        project_id: "project-1",
+      },
+      webui: true,
+    });
+  });
+
   it("handles the silent system-command lifecycle without hiding concurrent events", async () => {
     const client = new NanobotClient({
       url: "ws://test",

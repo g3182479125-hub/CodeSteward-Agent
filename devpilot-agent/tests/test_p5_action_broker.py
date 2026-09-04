@@ -51,6 +51,7 @@ def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest
 
 def _broker(calls: list[tuple[str, ...]]) -> ActionBroker:
     consumed: set[tuple[str, str, str, str]] = set()
+
     def snapshot(change_set_id: str) -> dict[str, str]:
         assert change_set_id == "change-set-1"
         return {
@@ -60,7 +61,7 @@ def _broker(calls: list[tuple[str, ...]]) -> ActionBroker:
             **HASHES,
         }
 
-    def consume(request: BrokerActionRequest) -> bool:
+    def consume(request: BrokerActionRequest, _idempotency_key: str) -> bool:
         key = (
             request.context.session_id,
             request.context.thread_id,
@@ -112,6 +113,95 @@ def test_broker_verifies_exact_context_and_keeps_token_inside_trusted_callbacks(
     assert "opaque-token" not in str(result.to_dict())
 
 
+def test_broker_finisher_receives_terminal_result_and_bound_idempotency_key() -> None:
+    finished: list[tuple[str, str, dict[str, object]]] = []
+    keys: list[str] = []
+
+    def consume(_request: BrokerActionRequest, key: str) -> bool:
+        keys.append(key)
+        return True
+
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: "token",
+        capability_executor=lambda *_args: {"status": "completed", "run_id": "run-1"},
+        confirmation_consumer=consume,
+        confirmation_finisher=lambda request, status, result: finished.append(
+            (request.context.confirmation_id, status, dict(result))
+        ),
+        clock=lambda: NOW,
+    )
+
+    assert broker.execute(_request()).status == "completed"
+    assert len(keys) == 1 and keys[0].startswith("broker-")
+    assert finished == [
+        (
+            "confirmation-1",
+            "completed",
+            {
+                "status": "completed",
+                "change_set_id": "change-set-1",
+                "action": "apply",
+                "run_id": "run-1",
+            },
+        )
+    ]
+
+
+def test_broker_does_not_claim_success_when_terminal_persistence_fails() -> None:
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: "token",
+        capability_executor=lambda *_args: {"status": "completed", "run_id": "run-1"},
+        confirmation_consumer=lambda _request, _key: True,
+        confirmation_finisher=lambda *_args: (_ for _ in ()).throw(OSError("db unavailable")),
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(_request())
+    assert result.status == "indeterminate"
+    assert result.error_code == "APPROVAL_BROKER_UNAVAILABLE"
+
+
+def test_broker_can_return_a_persisted_terminal_replay() -> None:
+    replay = {"status": "completed", "run_id": "run-previous", "result_ref": "artifact-1"}
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: (_ for _ in ()).throw(AssertionError("must not issue")),
+        capability_executor=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not execute")
+        ),
+        confirmation_consumer=lambda _request, _key: replay,
+        clock=lambda: NOW,
+    )
+
+    assert broker.execute(_request()).to_dict() == {
+        "status": "completed",
+        "change_set_id": "change-set-1",
+        "action": "apply",
+        "run_id": "run-previous",
+        "result_ref": "artifact-1",
+    }
+
+
 def test_broker_rejects_tampering_scope_and_replay_before_execution() -> None:
     calls: list[tuple[str, ...]] = []
     broker = _broker(calls)
@@ -143,7 +233,7 @@ def test_broker_rejects_expired_confirmation_and_bad_snapshot() -> None:
         snapshot_reader=lambda _change_set_id: {"project_id": "other"},
         capability_issuer=lambda *_args: "token",
         capability_executor=lambda *_args: {"status": "completed"},
-        confirmation_consumer=lambda _request: True,
+        confirmation_consumer=lambda _request, _key: True,
         clock=lambda: NOW,
     )
     assert mismatch.execute(_request()).error_code == "APPROVAL_SCOPE_MISMATCH"
@@ -164,7 +254,7 @@ def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
             "status": "completed",
             "run_id": "e2b_1234567890abcdef_token",
         },
-        confirmation_consumer=lambda _request: True,
+        confirmation_consumer=lambda _request, _key: True,
         clock=lambda: NOW,
     ).execute(_request())
     assert token_result.error_code == "APPROVAL_BROKER_UNAVAILABLE"
@@ -179,7 +269,7 @@ def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
         },
         capability_issuer=lambda *_args: "token",
         capability_executor=lambda *_args: {"status": "completed"},
-        confirmation_consumer=lambda _request: True,
+        confirmation_consumer=lambda _request, _key: True,
         clock=lambda: NOW,
     ).execute(_request())
     assert false_success.error_code == "APPROVAL_BROKER_UNAVAILABLE"
@@ -214,3 +304,69 @@ def test_broker_confirmation_reservation_survives_store_reopen(tmp_path) -> None
     reopened.initialize()
     store = reopened
     assert reserve(request) is False
+
+
+def test_store_rejects_same_action_tuple_with_fresh_confirmation_fields(tmp_path) -> None:
+    store = ProjectStore(tmp_path / "devpilot.db")
+    store.initialize()
+    request = _request()
+
+    def payload(
+        candidate: BrokerActionRequest, *, nonce: str, confirmation: str, seq: int
+    ) -> dict[str, object]:
+        return {
+            "session_id": candidate.context.session_id,
+            "thread_id": candidate.context.thread_id,
+            "confirmation_id": confirmation,
+            "user_event_nonce": nonce,
+            "user_message_seq": seq,
+            "action": candidate.action,
+            "change_set_id": candidate.change_set_id,
+            "plan_hash": candidate.plan_hash,
+            "patch_hash": candidate.patch_hash,
+            "scope_hash": candidate.scope_hash,
+            "project_id": candidate.project_id,
+            "signature_digest": "a" * 64,
+            "idempotency_digest": "b" * 64,
+            "status": "authorized",
+        }
+
+    assert (
+        store.reserve_broker_action(
+            payload(request, nonce="nonce-1", confirmation="confirmation-1", seq=1)
+        )
+        is True
+    )
+    assert (
+        store.reserve_broker_action(
+            payload(request, nonce="nonce-2", confirmation="confirmation-2", seq=2)
+        )
+        is False
+    )
+
+
+def test_store_requires_strictly_increasing_message_sequence(tmp_path) -> None:
+    store = ProjectStore(tmp_path / "devpilot.db")
+    store.initialize()
+    request = _request()
+
+    def payload(seq: int) -> dict[str, object]:
+        return {
+            "session_id": request.context.session_id,
+            "thread_id": request.context.thread_id,
+            "confirmation_id": f"confirmation-{seq}",
+            "user_event_nonce": f"nonce-{seq}",
+            "user_message_seq": seq,
+            "action": request.action,
+            "change_set_id": request.change_set_id,
+            "plan_hash": request.plan_hash,
+            "patch_hash": request.patch_hash,
+            "scope_hash": request.scope_hash,
+            "project_id": request.project_id,
+            "signature_digest": "a" * 64,
+            "idempotency_digest": "b" * 64,
+            "status": "authorized",
+        }
+
+    assert store.reserve_broker_action(payload(2)) is True
+    assert store.reserve_broker_action(payload(1)) is False

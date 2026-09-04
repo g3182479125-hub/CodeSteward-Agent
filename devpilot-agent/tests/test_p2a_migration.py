@@ -47,7 +47,7 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             version = connection.execute(
                 text("select version_num from alembic_version")
             ).scalar_one()
-        assert version == "0008_p5_broker_actions"
+        assert version == "0009_p5_broker_tuple_replay"
     finally:
         engine.dispose()
 

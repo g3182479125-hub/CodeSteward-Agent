@@ -229,8 +229,8 @@ def sign_confirmation_context(
 SnapshotReader = Callable[[str], Mapping[str, Any]]
 CapabilityIssuer = Callable[[str, str], str]
 CapabilityExecutor = Callable[[str, str, str, str, str | None], Mapping[str, Any]]
-ConfirmationConsumer = Callable[[BrokerActionRequest], bool]
-ConfirmationFinisher = Callable[[BrokerActionRequest, str], None]
+ConfirmationConsumer = Callable[[BrokerActionRequest, str], bool | Mapping[str, Any]]
+ConfirmationFinisher = Callable[[BrokerActionRequest, str, Mapping[str, Any]], None]
 ConfirmationVerifier = Callable[[str, str], bool]
 Clock = Callable[[], datetime]
 
@@ -275,9 +275,12 @@ class ActionBroker:
             request.context.validate_time(now)
             capability = _CAPABILITIES[request.action]
             canonical = canonical_confirmation_string(
-                request.context, change_set_id=request.change_set_id,
-                plan_hash=request.plan_hash, patch_hash=request.patch_hash,
-                scope_hash=request.scope_hash, project_id=request.project_id,
+                request.context,
+                change_set_id=request.change_set_id,
+                plan_hash=request.plan_hash,
+                patch_hash=request.patch_hash,
+                scope_hash=request.scope_hash,
+                project_id=request.project_id,
                 capability=capability,
             )
             valid = (
@@ -293,12 +296,14 @@ class ActionBroker:
             if not valid:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
             self._check_snapshot(request)
-            self._consume_confirmation(request)
+            idempotency_key = f"broker-{uuid.uuid4().hex}"
+            replayed = self._consume_confirmation(request, idempotency_key)
+            if replayed is not None:
+                return self._result_from_replay(request, replayed)
             reserved = True
             token = self._capability_issuer(request.action, request.change_set_id)
             if not token or len(token) > 512:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
-            idempotency_key = f"broker-{uuid.uuid4().hex}"
             try:
                 raw = self._capability_executor(
                     request.action,
@@ -311,20 +316,32 @@ class ActionBroker:
                 token = ""
             result = self._result_from_executor(request, raw)
             if self._confirmation_finisher is not None:
-                self._confirmation_finisher(request, result.status)
+                if not self._finish_confirmation(request, result.status, result.to_dict()):
+                    return BrokerActionResult(
+                        status="indeterminate",
+                        change_set_id=request.change_set_id,
+                        action=request.action,
+                        error_code="APPROVAL_BROKER_UNAVAILABLE",
+                    )
             return result
         except BrokerError as exc:
             if reserved and self._confirmation_finisher is not None:
-                self._confirmation_finisher(request, "failed")
+                self._finish_confirmation(
+                    request, "rejected", self._rejection_payload(request, exc.code)
+                )
             return BrokerActionResult(
                 status="rejected",
                 change_set_id=request.change_set_id,
                 action=request.action,
                 error_code=exc.code,
             )
-        except (KeyError, TypeError, ValueError, OSError, RuntimeError):
+        except Exception:
             if reserved and self._confirmation_finisher is not None:
-                self._confirmation_finisher(request, "failed")
+                self._finish_confirmation(
+                    request,
+                    "rejected",
+                    self._rejection_payload(request, "APPROVAL_BROKER_UNAVAILABLE"),
+                )
             return BrokerActionResult(
                 status="rejected",
                 change_set_id=request.change_set_id,
@@ -332,11 +349,37 @@ class ActionBroker:
                 error_code="APPROVAL_BROKER_UNAVAILABLE",
             )
 
-    def _consume_confirmation(self, request: BrokerActionRequest) -> None:
+    def _consume_confirmation(
+        self, request: BrokerActionRequest, idempotency_key: str
+    ) -> Mapping[str, Any] | None:
         if self._confirmation_consumer is None:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
-        if not self._confirmation_consumer(request):
+        outcome = self._confirmation_consumer(request, idempotency_key)
+        if isinstance(outcome, Mapping):
+            return outcome
+        if not outcome:
             raise BrokerError("APPROVAL_CONFIRMATION_REPLAYED")
+        return None
+
+    def _finish_confirmation(
+        self, request: BrokerActionRequest, status: str, result: Mapping[str, Any]
+    ) -> bool:
+        if self._confirmation_finisher is None:
+            return True
+        try:
+            self._confirmation_finisher(request, status, result)
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _rejection_payload(request: BrokerActionRequest, error_code: str) -> dict[str, Any]:
+        return {
+            "status": "rejected",
+            "change_set_id": request.change_set_id,
+            "action": request.action,
+            "error_code": error_code,
+        }
 
     def _check_snapshot(self, request: BrokerActionRequest) -> None:
         snapshot = self._snapshot_reader(request.change_set_id)
@@ -351,6 +394,12 @@ class ActionBroker:
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
         if snapshot.get("trust_state") != "trusted":
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
+
+    @staticmethod
+    def _result_from_replay(
+        request: BrokerActionRequest, raw: Mapping[str, Any]
+    ) -> BrokerActionResult:
+        return ActionBroker._result_from_executor(request, raw)
 
     @staticmethod
     def _result_from_executor(

@@ -24,11 +24,12 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
     confirmation = attrs["devpilot_confirmation"]
     assert confirmation["action"] == "apply"
     assert "gateway_key" not in confirmation
+    assert "signer" not in confirmation
     assert set(confirmation["context"]) == {
         "session_id", "thread_id", "user_message_seq", "confirmation_id",
         "issued_at", "expires_at", "user_event_nonce", "signature",
     }
-    assert isinstance(confirmation["signer"], WebSocketChannel._DevPilotSigner)
+    assert callable(confirmation["verifier"])
 
 
 def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
@@ -38,3 +39,34 @@ def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
     assert channel._devpilot_confirmation_attributes(
         "attacker", "chat", "执行", None, {}
     ) == {}
+
+
+def test_gateway_resolves_confirmation_against_current_control_plane(monkeypatch) -> None:
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            import json
+
+            return json.dumps(tuple_value).encode()
+
+    monkeypatch.setattr(
+        "nanobot.channels.websocket.runtime.urlopen",
+        lambda _request, timeout: _Response(),
+    )
+    assert WebSocketChannel._resolve_devpilot_tuple(tuple_value) == tuple_value
+
+    mismatch = {**tuple_value, "patch_hash": "d" * 64}
+    assert WebSocketChannel._resolve_devpilot_tuple(mismatch) is None

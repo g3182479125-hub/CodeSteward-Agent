@@ -12,7 +12,7 @@ The model never receives a key, token, metadata copy, transcript copy, or idempo
 The Broker validates the signature, current trusted-project snapshot, and expiry, then
 atomically reserves the confirmation in SQLite before issuing a Control Plane capability.
 The record stores only hashes and redacted audit fields; terminal status is written back.
-Alembic head is `0008_p5_broker_actions`. An existing Alembic database at an older head is
+Alembic head is `0009_p5_broker_tuple_replay`. An existing Alembic database at an older head is
 refused rather than silently altered by `create_all()`.
 
 ## Validation
@@ -22,10 +22,13 @@ refused rather than silently altered by `create_all()`.
 - nanobot confirmation/BaseChannel tests: `14 passed`.
 - nanobot gateway runtime tests: `23 passed, 1 skipped` with TEMP/TMP redirected to E:.
 - `git diff --check` passes.
+- Native WebUI client test covers serialization of the exact confirmation tuple. The local
+  npm registry/cache was unavailable during this run, so Vite compilation is not a P5 gate
+  under ADR-0003 and remains an environment-only follow-up.
 
 ## Known limitation
 
-The existing nanobot WebUI caller must pass `devpilotConfirmation` when sending a
-confirmation. The client transport type and serializer now support this; a caller that
-sends only the word `执行` fails closed because it has not supplied the displayed tuple.
+The nanobot WebUI caller automatically carries the latest displayed ChangeSet tuple when
+the user sends the exact words `执行`, `验证`, or `撤销`; callers may also pass the tuple
+explicitly. A caller that sends only the word without a displayed tuple fails closed.
 Provider-backed live chat remains an environment test, not a reason to claim a fake success.

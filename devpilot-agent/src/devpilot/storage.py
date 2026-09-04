@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     insert,
     select,
     update,
@@ -282,6 +284,17 @@ class BrokerActionRecord(Base):
         ),
         UniqueConstraint(
             "session_id", "thread_id", "user_message_seq", name="uq_broker_action_sequence"
+        ),
+        UniqueConstraint(
+            "session_id",
+            "thread_id",
+            "action",
+            "change_set_id",
+            "plan_hash",
+            "patch_hash",
+            "scope_hash",
+            "project_id",
+            name="uq_broker_action_tuple",
         ),
     )
 
@@ -1148,6 +1161,18 @@ class ProjectStore:
     def reserve_broker_action(self, payload: dict[str, Any]) -> bool:
         """Atomically consume a gateway confirmation before capability issuance."""
         with self._session_factory.begin() as session:
+            latest_sequence = (
+                session.query(func.max(BrokerActionRecord.user_message_seq))
+                .filter(
+                    BrokerActionRecord.session_id == payload.get("session_id"),
+                    BrokerActionRecord.thread_id == payload.get("thread_id"),
+                )
+                .scalar()
+            )
+            if latest_sequence is not None and int(payload["user_message_seq"]) <= int(
+                latest_sequence
+            ):
+                return False
             record = BrokerActionRecord(id=str(uuid.uuid4()), created_at=utc_now(), **payload)
             try:
                 session.add(record)
@@ -1160,14 +1185,33 @@ class ProjectStore:
             return True
 
     def finish_broker_action(
-        self, confirmation_id: str, status: str, result: dict[str, Any] | None = None
+        self,
+        confirmation_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        *,
+        expected: Mapping[str, Any] | None = None,
     ) -> None:
+        if status not in {"authorized", "completed", "rejected", "indeterminate"}:
+            raise ValueError("invalid broker action status")
         with self._session_factory.begin() as session:
-            record = (
-                session.query(BrokerActionRecord)
-                .filter(BrokerActionRecord.confirmation_id == confirmation_id)
-                .one_or_none()
+            query = session.query(BrokerActionRecord).filter(
+                BrokerActionRecord.confirmation_id == confirmation_id,
+                BrokerActionRecord.status == "authorized",
             )
+            if expected is not None:
+                for key in (
+                    "session_id",
+                    "thread_id",
+                    "action",
+                    "change_set_id",
+                    "plan_hash",
+                    "patch_hash",
+                    "scope_hash",
+                    "project_id",
+                ):
+                    query = query.filter(getattr(BrokerActionRecord, key) == expected.get(key))
+            record = query.one_or_none()
             if record is not None:
                 record.status = status
                 record.finished_at = utc_now()
@@ -1175,6 +1219,31 @@ class ProjectStore:
                     record.result_json = json.dumps(
                         redact_sensitive_payload(result), ensure_ascii=False, sort_keys=True
                     )
+
+    def get_broker_action_result(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Return a previously persisted terminal result for an exact action tuple."""
+        keys = (
+            "session_id",
+            "thread_id",
+            "action",
+            "change_set_id",
+            "plan_hash",
+            "patch_hash",
+            "scope_hash",
+            "project_id",
+        )
+        with self._session_factory() as session:
+            query = session.query(BrokerActionRecord)
+            for key in keys:
+                query = query.filter(getattr(BrokerActionRecord, key) == payload.get(key))
+            record = query.one_or_none()
+            if record is None or record.result_json is None:
+                return None
+            try:
+                result = json.loads(record.result_json)
+            except (TypeError, ValueError):
+                return None
+            return cast(dict[str, Any], result) if isinstance(result, dict) else None
 
     def list_applying_change_sets(self) -> list[tuple[str, str]]:
         with self._session_factory() as session:

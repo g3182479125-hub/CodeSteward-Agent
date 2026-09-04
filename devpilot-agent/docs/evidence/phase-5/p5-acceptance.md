@@ -1,49 +1,46 @@
 # P5 Acceptance Evidence
 
-> 当前状态：`in_progress`。本文件中的历史结果只用于追溯；本轮事件桥接和 Action Broker
-> 尚未完成 Gateway 真实接入、nanobot 聊天 E2E 和新的并行 Standards/Spec review。
+当前状态：`review_pending`。代码和本地门禁已完成；等待本轮 Standards 与 Spec
+subagent 对同一工作树给出最终结论后，才把状态改为 `complete`。
 
 ## Scope
 
-Historical P5 evidence: the local API contract, durable event projection and
-the optional React console were verified before ADR-0003. The React console
-scope is now superseded; nanobot's chat WebUI is the only current user entry
-point. The current implementation additionally contains event bridge hardening
-and the Action Broker core, but does not yet certify the full confirmation-to-action path.
+P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopback FastAPI
+内部控制面、SQLite durable events/SSE、事件桥接和受信 Action Broker；不新增或
+恢复独立 React 控制台。用户在 nanobot 对话中看到提案、Diff 摘要、阶段、终态、
+错误码、Artifact 引用和回滚结果。
 
-## Verified locally
+## Implemented safety path
 
-- P5 API/SSE contract tests: 23 passed.
-- Full Python suite: 194 passed, 3 skipped.
-- Ruff: passed.
-- Pyright: passed after syncing the E-drive project environment.
-- React/Vite build, console smoke and browser smoke: passed before ADR-0003;
-  retained as historical evidence only and removed from the current gate.
+- WebSocket Gateway 只接受受信 WebUI 的精确确认词 `执行`、`验证`、`撤销`。
+- WebUI 发送展示过的完整 tuple：`change_set_id`、`plan_hash`、`patch_hash`、
+  `scope_hash`、`project_id`；Gateway 在本地签名，模型不能生成或替换它。
+- `RequestContext.attributes` 只在当前 Tool 请求内携带 signer/context；hooks、
+  runtime events、Session 持久化和聊天文本会过滤 `devpilot_*` 属性。
+- Action Broker 验签、校验当前 trusted snapshot 和有效期，再在 capability 发行
+  前持久化一次性消费；相同 action tuple 的刷新确认会被唯一约束拒绝。
+- Broker 终态和脱敏结果写回 `broker_actions.result_json`；审批 token 和 API key
+  不进入模型、Session、WebUI、SSE 或日志。
+- 生产 store 和 FastAPI 启动严格要求 Alembic head
+  `0009_p5_broker_tuple_replay`；旧库不会通过 `create_all()` 静默升级。
+
+## Verification
+
+- DevPilot full Python suite: `194 passed, 3 skipped`.
+- DevPilot focused Broker/migration suite: `11 passed`.
+- DevPilot Ruff: passed.
+- DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
+- nanobot Gateway/BaseChannel/runtime tests: `26 passed, 1 skipped`.
+- Native WebUI client has a regression test for confirmation tuple serialization.
 - `git diff --check`: passed.
-- tracked secret-pattern scan: no secret-like tokens found.
-- Current focused bridge/Broker/API tests: `37 passed`.
 
-The three skipped Python tests require Windows `SeCreateSymbolicLinkPrivilege`;
-they are existing symlink escape tests and are reported as skips rather than
-treated as successful security coverage.
+The skipped tests are existing Windows symlink-privilege checks and are reported as
+skips, not successful security coverage. npm dependency installation was unavailable
+because the registry/cache repeatedly returned corrupted tarball checksums; ADR-0003
+explicitly removes frontend build/browser smoke from the P5 gate.
 
-## Safety evidence
+## Review gate
 
-- API remains loopback-only.
-- JSON responses carry a bounded request ID; idempotent replays retain their
-  original response identity for compatibility.
-- SSE uses database event IDs and `Last-Event-ID` replay semantics.
-- event payloads are already redacted by the storage layer, including
-  credential-shaped text and absolute filesystem paths.
-- nanobot WebUI is the only intended user surface; the future local action
-  Broker must not expose approval tokens to the model or chat messages.
-- an unconfigured or unverified execution backend is displayed as unavailable,
-  not healthy.
-
-## Review gate status
-
-The historical parallel Standards and Spec review passed against fixed point
-`5860598`; that result certifies only the historical console scope. A new parallel
-review is required for the current event bridge/Broker diff after it is committed.
-The current nanobot Gateway confirmation injection, real ControlPlane callbacks,
-durable Broker consumption and chat E2E are still open. P6 has not started.
+Two parallel subagents are reviewing the same current P5 worktree on the Standards and
+Spec axes. Their reports must be recorded under `docs/reviews/` before P5 is marked
+complete. P6 has not started.

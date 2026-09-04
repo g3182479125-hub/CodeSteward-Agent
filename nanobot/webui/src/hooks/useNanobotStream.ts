@@ -489,6 +489,46 @@ export interface SendOptions {
   finalizeActiveTurn?: boolean;
   /** Append guidance to the running turn without detaching its active answer segment. */
   continueActiveTurn?: boolean;
+  devpilotConfirmation?: {
+    changeSetId: string;
+    planHash: string;
+    patchHash: string;
+    scopeHash: string;
+    projectId: string;
+  };
+}
+
+function readDevpilotConfirmationFromSelection(
+  selectedText: string | undefined,
+): SendOptions["devpilotConfirmation"] {
+  if (!selectedText?.trim()) return undefined;
+  const text = selectedText.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+  const candidates = [text];
+  const objectStart = text.indexOf("{");
+  const objectEnd = text.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(text.slice(objectStart, objectEnd + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(candidate) as Record<string, unknown>;
+      if (
+        typeof value.change_set_id !== "string"
+        || typeof value.plan_hash !== "string"
+        || typeof value.patch_hash !== "string"
+        || typeof value.scope_hash !== "string"
+        || typeof value.project_id !== "string"
+      ) continue;
+      return {
+        changeSetId: value.change_set_id,
+        planHash: value.plan_hash,
+        patchHash: value.patch_hash,
+        scopeHash: value.scope_hash,
+        projectId: value.project_id,
+      };
+    } catch { /* selected text may be ordinary prose */ }
+  }
+  return undefined;
 }
 
 export interface SubmittedTurn {
@@ -1437,6 +1477,10 @@ export function useNanobotStream(
       const clientOptions = {
         ...options,
         turnId,
+        ...(options?.devpilotConfirmation || (content.trim() === "执行" || content.trim() === "验证" || content.trim() === "撤销")
+          ? { devpilotConfirmation: options?.devpilotConfirmation
+              ?? readDevpilotConfirmationFromSelection(options?.quotedContext) }
+          : {}),
         ...((sideChannel || continueActiveTurn) ? { startsNewRun: false } : {}),
       };
       delete clientOptions.quotedContext;
