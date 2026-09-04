@@ -29,6 +29,26 @@ const HEALTH_URL = loopbackUrl(window.__DEVPILOT_HEALTH_URL__, `${API.replace(/\
 type Page = "dashboard" | "projects" | "changeset" | "runs" | "artifacts" | "skills" | "security";
 type Json = Record<string, unknown>;
 
+const RUN_EVENT_TYPES = [
+  "run.started", "run.completed", "run.failed", "run.updated",
+  "plan.created", "plan.updated", "changeset.previewed", "changeset.approval_requested",
+  "changeset.approval_issued", "changeset.approvals_revoked", "changeset.applied",
+  "changeset.apply_failed", "changeset.reverted", "changeset.verification_completed",
+  "changeset.verification_failed", "execution.capability_denied", "project.trust_denied",
+  "delivery.accepted", "delivery.stopped", "tool.completed", "evidence.read.completed",
+  "evidence.search.completed", "evidence.inspect.completed", "feature_delivery.proposed",
+  "feature_delivery.failed", "bug_fix.proposed", "bug_fix.failed", "bug_fix.completed",
+  "test_repair.proposed", "test_repair.failed", "test_repair.completed",
+  "artifact.persistence_failed", "bug_check.failed", "test_check.failed",
+] as const;
+
+function subscribeToRunEvents(
+  source: EventSource,
+  handler: (message: MessageEvent<string>) => void,
+): void {
+  for (const eventType of RUN_EVENT_TYPES) source.addEventListener(eventType, handler as EventListener);
+}
+
 function initialPage(): Page {
   const candidate = new URLSearchParams(window.location.search).get("page");
   return ["dashboard", "projects", "changeset", "runs", "artifacts", "skills", "security"].includes(candidate ?? "")
@@ -101,23 +121,6 @@ function App() {
     setProjects(result.projects);
   };
 
-  const loadChangeSet = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!changeSetId.trim()) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api<Json>(`/change-sets/${encodeURIComponent(changeSetId.trim())}`);
-      setChangeSet(result);
-      const linkedRun = text(result.run_id, "");
-      if (linkedRun) setRunId(linkedRun);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const loadRun = async (event: FormEvent) => {
     event.preventDefault();
     if (!runId.trim()) return;
@@ -154,20 +157,7 @@ function App() {
         setError("收到无法解析的事件");
       }
     };
-    for (const eventType of [
-      "run.started", "run.completed", "run.failed", "run.updated",
-      "plan.created", "plan.updated", "changeset.previewed", "changeset.approval_requested",
-      "changeset.approval_issued", "changeset.approvals_revoked", "changeset.applied",
-      "changeset.apply_failed", "changeset.reverted", "changeset.verification_completed",
-      "changeset.verification_failed", "execution.capability_denied", "project.trust_denied",
-      "delivery.accepted", "delivery.stopped", "tool.completed", "evidence.read.completed",
-      "evidence.search.completed", "evidence.inspect.completed", "feature_delivery.proposed",
-      "feature_delivery.failed", "bug_fix.proposed", "bug_fix.failed", "bug_fix.completed",
-      "test_repair.proposed", "test_repair.failed", "test_repair.completed",
-      "artifact.persistence_failed", "bug_check.failed", "test_check.failed",
-    ]) {
-      source.addEventListener(eventType, handleEvent as EventListener);
-    }
+    subscribeToRunEvents(source, handleEvent);
     source.onerror = () => {
       source.close();
       eventSource.current = null;
@@ -212,7 +202,10 @@ function App() {
     const queryChangeSetId = query.get("change_set_id");
     if (page === "changeset" && queryChangeSetId) {
       setChangeSetId(queryChangeSetId);
-      void api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}`).then((result) => setChangeSet(result)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet"));
+      void Promise.all([
+        api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}`),
+        api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}/delivery-report`),
+      ]).then(([result, report]) => setChangeSet({ ...result, ...report })).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet"));
     }
     const queryRunId = query.get("run_id");
     if (page === "runs" && queryRunId) {
@@ -238,7 +231,7 @@ function App() {
         setError("收到无法解析的事件");
       }
     };
-    source.addEventListener("run.completed", handleEvent as EventListener);
+    subscribeToRunEvents(source, handleEvent);
     return () => source.close();
   }, [page]);
 
@@ -268,6 +261,43 @@ function App() {
     ["security", "安全后端", "Security / Backends"],
   ];
 
+  const loadChangeSetDetails = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!changeSetId.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const [result, report] = await Promise.all([
+        api<Json>(`/change-sets/${encodeURIComponent(changeSetId.trim())}`),
+        api<Json>(`/change-sets/${encodeURIComponent(changeSetId.trim())}/delivery-report`),
+      ]);
+      setChangeSet({ ...result, ...report });
+      const linkedRun = text(result.run_id, "");
+      if (linkedRun) setRunId(linkedRun);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const requestRollback = async (displayedChangeSetId: string) => {
+    if (!window.confirm("请再次确认：申请回滚授权？真正的回滚仍需 nanobot 确认链路执行。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<Json>(`/change-sets/${encodeURIComponent(displayedChangeSetId)}/approval-requests`, {
+        method: "POST",
+        body: JSON.stringify({ capability: "r1.rollback", user_confirmation: "撤销" }),
+      });
+      setChangeSet((current) => ({ ...(current ?? {}), approval_request: result, approval_status: result.status }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "回滚授权申请失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -282,7 +312,7 @@ function App() {
         {error && <div className="alert" role="alert">{error}</div>}
         {page === "dashboard" && <Dashboard projects={projects} health={health} onProjects={() => { setPage("projects"); void loadProjects(); }} />}
         {page === "projects" && <section className="content"><div className="section-head"><div><h2>Projects</h2><p>登记后由服务端校验允许根和仓库指纹；页面不展示绝对路径。</p></div><button className="ghost" onClick={() => void loadProjects()}>刷新</button></div><form className="inline-form" onSubmit={registerProject}><label>本地项目路径<input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="E:\\projects\\my-agent" /></label><button className="primary" disabled={busy}>登记项目</button></form><div className="card-list">{projects.length === 0 ? <Empty>还没有登记项目。</Empty> : projects.map((project) => <article className="list-row" key={project.project_id}><div><strong>{project.project_id}</strong><p>{project.project_name}</p></div><Badge tone={project.trust_state === "trusted" ? "good" : "warn"}>{project.trust_state}</Badge></article>)}</div></section>}
-        {page === "changeset" && <section className="content"><div className="section-head"><div><h2>ChangeSet / Diff</h2><p>输入已有 ChangeSet ID，查看范围、风险和可审查 Diff。</p></div></div><form className="inline-form" onSubmit={loadChangeSet}><label>ChangeSet ID<input value={changeSetId} onChange={(event) => setChangeSetId(event.target.value)} placeholder="粘贴 ChangeSet ID" /></label><button className="primary" disabled={busy}>读取</button></form>{changeSet ? <ChangeSetView data={changeSet} onDecision={async (decision, displayedChangeSetId) => { const confirmation = decision === "accept" ? "接受" : "停止"; const label = decision === "accept" ? "接受交付" : "停止交付"; if (!window.confirm(`请再次确认：${label}？`)) return; setBusy(true); setError(""); try { const key = `console-${crypto.randomUUID()}`; const result = await api<Json>(`/change-sets/${encodeURIComponent(displayedChangeSetId)}/decision`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({ decision, user_confirmation: confirmation }) }); setChangeSet((current) => ({ ...(current ?? {}), ...result })); } catch (cause) { setError(cause instanceof Error ? cause.message : "交付决策失败"); } finally { setBusy(false); } }} /> : <Empty>尚未选择 ChangeSet。</Empty>}</section>}
+        {page === "changeset" && <section className="content"><div className="section-head"><div><h2>ChangeSet / Diff</h2><p>输入已有 ChangeSet ID，查看范围、风险、审批状态和可审查 Diff。</p></div></div><form className="inline-form" onSubmit={loadChangeSetDetails}><label>ChangeSet ID<input value={changeSetId} onChange={(event) => setChangeSetId(event.target.value)} placeholder="粘贴 ChangeSet ID" /></label><button className="primary" disabled={busy}>读取</button></form>{changeSet ? <ChangeSetView data={changeSet} busy={busy} onDecision={async (decision, displayedChangeSetId) => { const confirmation = decision === "accept" ? "接受" : "停止"; const label = decision === "accept" ? "接受交付" : "停止交付"; if (!window.confirm(`请再次确认：${label}？`)) return; setBusy(true); setError(""); try { const key = `console-${crypto.randomUUID()}`; const result = await api<Json>(`/change-sets/${encodeURIComponent(displayedChangeSetId)}/decision`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({ decision, user_confirmation: confirmation }) }); setChangeSet((current) => ({ ...(current ?? {}), ...result })); } catch (cause) { setError(cause instanceof Error ? cause.message : "交付决策失败"); } finally { setBusy(false); } }} onRollbackRequest={requestRollback} /> : <Empty>尚未选择 ChangeSet。</Empty>}</section>}
         {page === "runs" && <section className="content"><div className="section-head"><div><h2>Run Timeline</h2><p>SSE 是事件投影；连接失败时可刷新读取数据库快照。</p></div></div><form className="inline-form" onSubmit={loadRun}><label>Run ID<input value={runId} onChange={(event) => setRunId(event.target.value)} placeholder="粘贴 Run ID" /></label><button className="primary" disabled={busy}>读取快照</button><button type="button" className="ghost" onClick={openEventStream}>连接 SSE</button></form><Timeline events={events} /></section>}
         {page === "artifacts" && <section className="content"><div className="section-head"><div><h2>Artifacts</h2><p>只展示服务端拥有的证据元数据，不直连项目目录。</p></div></div><form className="inline-form" onSubmit={loadArtifacts}><label>Run ID<input value={runId} onChange={(event) => setRunId(event.target.value)} placeholder="粘贴 Run ID" /></label><button className="primary" disabled={busy}>读取产物</button></form><div className="card-list">{artifacts.length === 0 ? <Empty>尚未读取 Artifact。</Empty> : artifacts.map((artifact) => <article className="list-row" key={text(artifact.id)}><div><strong>{text(artifact.kind)}</strong><p>{text(artifact.relative_path)}</p></div><code>{text(artifact.sha256).slice(0, 12)}…</code></article>)}</div></section>}
         {page === "skills" && <Catalog title="Skills Catalog" items={skills} empty="没有发现可展示的 Skill。" />}
@@ -296,11 +326,15 @@ function Dashboard({ projects, health, onProjects }: { projects: Project[]; heal
   return <section className="content"><div className="hero"><div><p className="eyebrow">P5 LOCAL CONSOLE</p><h2>把计划、变更、验证和证据放在同一个可审查界面。</h2><p>这是 DevPilot 的可选控制台；nanobot 仍然负责聊天和自然语言入口。</p></div><Badge tone={health === "online" ? "good" : "warn"}>{health === "online" ? "API 在线" : "API 未确认"}</Badge></div><div className="stats"><div><span>Projects</span><strong>{projects.length}</strong></div><div><span>审批原则</span><strong>显式确认</strong></div><div><span>执行能力</span><strong>验证专用</strong></div></div><div className="card"><div className="section-head"><div><h3>开始使用</h3><p>先登记项目，再从 nanobot 获取 ChangeSet ID 或 Run ID。</p></div><button className="primary" onClick={onProjects}>管理项目</button></div><div className="steps"><span>01 项目登记</span><span>02 审查 Diff</span><span>03 查看 Run / SSE</span><span>04 下载证据</span></div></div></section>;
 }
 
-function ChangeSetView({ data, onDecision }: { data: Json; onDecision: (decision: "accept" | "stop", changeSetId: string) => Promise<void> }) {
+function ChangeSetView({ data, busy, onDecision, onRollbackRequest }: { data: Json; busy: boolean; onDecision: (decision: "accept" | "stop", changeSetId: string) => Promise<void>; onRollbackRequest: (changeSetId: string) => Promise<void> }) {
   const status = text(data.status);
   const diff = text(data.diff, "暂无 Diff");
   const changeSetId = text(data.change_set_id, "");
-  return <div className="stack"><div className="summary-grid"><div><span>状态</span><strong>{status}</strong></div><div><span>风险</span><strong>{text(data.risk_summary)}</strong></div><div><span>Patch hash</span><code>{text(data.patch_hash).slice(0, 16)}…</code></div></div><details className="diff" open><summary>展开 / 收起 Diff <span>{diff.split("\n").length} 行</span></summary><pre>{diff}</pre></details><div className="notice">Apply、Verify、Rollback 仍由 nanobot 的既有确认链路发起；此页面不会接收或保存 capability token。</div><div className="decision-card"><strong>最终交付决策</strong><p>仅在验证完成后使用。点击后还会弹出一次浏览器确认，不会直接修改项目文件。</p><div className="button-row"><button className="primary" type="button" disabled={!changeSetId} onClick={() => void onDecision("accept", changeSetId)}>接受交付</button><button className="danger" type="button" disabled={!changeSetId} onClick={() => void onDecision("stop", changeSetId)}>停止交付</button></div></div></div>;
+  const decision = data.decision as Json | undefined;
+  const available = Array.isArray(data.available_decisions) ? data.available_decisions.map(String) : [];
+  const approvalRequest = data.approval_request as Json | undefined;
+  const approvalStatus = text(approvalRequest?.status, decision?.type ? `已${text(decision.type)}` : available.includes("rollback") ? "可申请回滚授权" : available.length > 0 ? "等待人工决策" : "由 nanobot 确认链路管理");
+  return <div className="stack"><div className="summary-grid"><div><span>状态</span><strong>{status}</strong></div><div><span>审批状态</span><strong>{approvalStatus}</strong></div><div><span>风险</span><strong>{text(data.risk_summary)}</strong></div><div><span>Patch hash</span><code>{text(data.patch_hash).slice(0, 16)}…</code></div></div><details className="diff" open><summary>展开 / 收起 Diff <span>{diff.split("\n").length} 行</span></summary><pre>{diff}</pre></details><div className="notice">Apply、Verify 和真正的 Rollback 仍由 nanobot 的既有确认链路发起；“申请回滚”只提交人工确认意图，此页面不会接收或保存 capability token。</div><div className="decision-card"><strong>最终交付决策</strong><p>仅在验证完成后使用。点击后还会弹出一次浏览器确认，不会直接修改项目文件。</p><div className="button-row"><button className="primary" type="button" disabled={busy || !changeSetId || !available.includes("accept")} onClick={() => void onDecision("accept", changeSetId)}>接受交付</button><button className="danger" type="button" disabled={busy || !changeSetId || !available.includes("stop")} onClick={() => void onDecision("stop", changeSetId)}>停止交付</button><button className="danger" type="button" disabled={busy || !changeSetId || !available.includes("rollback")} onClick={() => void onRollbackRequest(changeSetId)}>申请回滚</button></div></div></div>;
 }
 
 function Timeline({ events }: { events: RunEvent[] }) {

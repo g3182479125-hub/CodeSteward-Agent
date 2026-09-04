@@ -14,8 +14,10 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
 )
 _SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(?<![A-Za-z0-9_-])"
-    r"(?P<prefix>[\"']?(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?P<prefix>[\"']?(?:(?:[A-Za-z0-9]+[_-])*)"
+    r"(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
+    r"(?:[_-][A-Za-z0-9]+)*"
     r"[\"']?\s*[=:]\s*)"
     r"(?P<value>[^\r\n]*)"
 )

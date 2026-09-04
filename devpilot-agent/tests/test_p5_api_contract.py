@@ -92,8 +92,14 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
     assert "Bearer abc123" not in redacted
     assert github_token not in redacted
     assert "json-secret" not in redacted
+    prefixed = redact_sensitive_text(
+        "OPENAI_API_KEY=prefix-secret\nAWS_SECRET_ACCESS_KEY=aws-secret\n"
+    )
+    assert "prefix-secret" not in prefixed
+    assert "aws-secret" not in prefixed
+    aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
-        {"AWS_ACCESS_KEY_ID": "AKIA1234567890ABCDEF", "token": "value"}
+        {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
     )
     assert payload == {"AWS_ACCESS_KEY_ID": "[REDACTED]", "token": "[REDACTED]"}
 
@@ -245,3 +251,21 @@ def test_sse_rejects_invalid_last_event_id_without_leaking_details(tmp_path: Pat
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "REQUEST_INVALID"
+
+
+def test_sse_cors_allows_last_event_id_replay_header(tmp_path: Path) -> None:
+    client, manager, project = setup_app(tmp_path)
+    preview = make_preview(client, project)
+    run_id = manager.get_run_id(str(preview["change_set_id"]))
+    assert run_id is not None
+
+    response = client.options(
+        f"/api/v1/runs/{run_id}/events",
+        headers={
+            "Origin": "http://127.0.0.1:18801",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Last-Event-ID",
+        },
+    )
+    assert response.status_code == 200
+    assert "Last-Event-ID" in response.headers["access-control-allow-headers"]

@@ -1297,7 +1297,13 @@ def create_app(
         ],
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "Last-Event-ID",
+            "X-Request-ID",
+        ],
     )
     app.state.manager = manager
     app.state.idempotency_request_ids = {}

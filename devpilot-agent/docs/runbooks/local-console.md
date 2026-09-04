@@ -42,6 +42,13 @@ Open `http://127.0.0.1:18801`. The console reads only `/api/v1` and
 6. Keep Apply, Verify, Rollback, and final acceptance in the existing explicit
    confirmation chain. The console never stores capability tokens.
 
+For local browser smoke and bookmarked diagnostics, the console also accepts
+these optional query parameters: `page` selects a view; `change_set_id` loads
+the ChangeSet and delivery report; `run_id` loads a Run or its Artifacts; and
+`sse=1` connects the Run Timeline to the event stream. These parameters are
+loopback-only convenience links and do not grant permissions or bypass the
+nanobot confirmation chain.
+
 ## Troubleshooting
 
 - `API offline`: confirm port `18800` is running and the control-plane feature

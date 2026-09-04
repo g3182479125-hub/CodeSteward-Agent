@@ -40,6 +40,10 @@ const apiServer = createServer((request, response) => {
     change_set_id: "fixture-change-set", status: "verified", risk_summary: "fixture",
     patch_hash: "fixture-patch", diff: "--- a/fixture.txt\n+++ b/fixture.txt\n+ok\n",
   });
+  if (path === "/api/v1/change-sets/fixture-change-set/delivery-report") return json(response, {
+    change_set_id: "fixture-change-set", status: "verified", available_decisions: ["rollback"],
+    decision: { type: null }, rollback: { capability: "r1.rollback", requires_approval_token: true },
+  });
   if (path === "/api/v1/runs/fixture-run") return json(response, {
     run_id: "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
   });
@@ -49,7 +53,7 @@ const apiServer = createServer((request, response) => {
       "cache-control": "no-cache",
       "content-type": "text/event-stream",
     });
-    response.end('id: 1\nevent: run.completed\ndata: {"event_id":1,"sequence":1,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
+    response.end('id: 2\nevent: run.started\ndata: {"event_id":2,"sequence":2,"event_type":"run.started","created_at":"fixture","payload":{}}\n\nid: 3\nevent: run.completed\ndata: {"event_id":3,"sequence":3,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
     return;
   }
   if (path === "/api/v1/runs/fixture-run/artifacts") return json(response, { run_id: "fixture-run", artifacts: [{ id: "fixture-artifact", kind: "fixture", relative_path: "fixture.md", sha256: "fixture-hash" }] });
@@ -149,8 +153,8 @@ try {
   await runBrowser(dashboardUrl, ["把计划、变更、验证和证据放在同一个可审查界面。", "P5 LOCAL CONSOLE", "API 在线"]);
   for (const [query, markers] of [
     ["page=projects", ["fixture-project", "登记项目"]],
-    ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "最终交付决策"]],
-    ["page=runs&run_id=fixture-run&sse=1", ["run.completed", "读取快照", "连接 SSE"]],
+    ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "申请回滚"]],
+    ["page=runs&run_id=fixture-run&sse=1", ["run.started", "run.completed", "读取快照", "连接 SSE"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],
     ["page=security", ["Execution Backends", "fixture-backend", "unavailable"]],
@@ -159,7 +163,7 @@ try {
   }
   for (const path of [
     "/api/v1/projects", "/api/v1/skills", "/api/v1/security/backends",
-    "/api/v1/change-sets/fixture-change-set", "/api/v1/runs/fixture-run",
+    "/api/v1/change-sets/fixture-change-set", "/api/v1/change-sets/fixture-change-set/delivery-report", "/api/v1/runs/fixture-run",
     "/api/v1/runs/fixture-run/artifacts", "/api/v1/runs/fixture-run/events",
   ]) {
     if (!requestedPaths.has(path)) throw new Error(`browser fixture did not receive request: ${path}`);
