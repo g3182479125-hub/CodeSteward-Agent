@@ -126,9 +126,19 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         assert secret not in redact_sensitive_text(assignment)
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
-        {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
+        {
+            "AWS_ACCESS_KEY_ID": aws_access_key,
+            "token": "value",
+            "api-key": "hyphen-api-key",
+            "private-key": "hyphen-private-key",
+        }
     )
-    assert payload == {"AWS_ACCESS_KEY_ID": "[REDACTED]", "token": "[REDACTED]"}
+    assert payload == {
+        "AWS_ACCESS_KEY_ID": "[REDACTED]",
+        "token": "[REDACTED]",
+        "api-key": "[REDACTED]",
+        "private-key": "[REDACTED]",
+    }
 
 
 def test_nanobot_adapter_removes_control_plane_metadata() -> None:
@@ -216,6 +226,20 @@ def test_request_id_body_and_header_stay_identical_for_credential_shaped_id(
     response = client.get("/api/v1/does-not-exist", headers={"X-Request-ID": request_id})
 
     assert response.status_code == 404
+    assert response.headers["X-Request-ID"] == request_id
+    assert response.json()["request_id"] == request_id
+
+
+def test_caller_request_id_wins_over_idempotency_derived_id(tmp_path: Path) -> None:
+    client, _manager, _project = setup_app(tmp_path)
+    request_id = "caller-request-1"
+
+    response = client.get(
+        "/healthz",
+        headers={"X-Request-ID": request_id, "Idempotency-Key": "stable-key"},
+    )
+
+    assert response.status_code == 200
     assert response.headers["X-Request-ID"] == request_id
     assert response.json()["request_id"] == request_id
 

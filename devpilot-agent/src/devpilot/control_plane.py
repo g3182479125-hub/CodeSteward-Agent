@@ -1357,7 +1357,7 @@ def create_app(
             response = await call_next(request)
         response_request_id = request_id
         key = request.headers.get("Idempotency-Key")
-        if key and response.status_code < 400:
+        if key and response.status_code < 400 and request.headers.get("X-Request-ID") is None:
             response_request_id = _idempotency_request_id(key)
         return await _json_response_with_request_id(
             response,

@@ -69,7 +69,7 @@ def redact_sensitive_text(value: str) -> str:
 
 def is_sensitive_field_name(value: str) -> bool:
     """Return whether a mapping key describes credential material."""
-    folded = value.casefold()
+    folded = value.casefold().replace("-", "_")
     if folded in {"requires_approval_token"}:
         return False
     return any(marker in folded for marker in _SENSITIVE_FIELD_MARKERS)
