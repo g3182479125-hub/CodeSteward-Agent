@@ -13,6 +13,15 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
 )
+_ABSOLUTE_PATH_PATTERNS = (
+    re.compile(
+        r"(?i)(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])"
+        r"(?:[^\\/\r\n\"'<> ]+[\\/])*[^\\/\r\n\"'<> ]+"
+    ),
+    re.compile(
+        r"(?<![A-Za-z0-9.])/(?:Users|home|tmp|var|workspace|mnt|opt|root|private|data)/[^\r\n\"'<>]*"
+    ),
+)
 _SENSITIVE_NAME = (
     r"(?:[A-Za-z0-9]*(?:api[_-]?(?:key|token)|access[_-]?(?:key|token)|"
     r"auth(?:[_-]?token)?|authorization|secret(?:[_-]?key)?|private[_-]?key|credential|"
@@ -64,6 +73,8 @@ def redact_sensitive_text(value: str) -> str:
     )
     for pattern in _SENSITIVE_PATTERNS:
         result = pattern.sub("[REDACTED]", result)
+    for pattern in _ABSOLUTE_PATH_PATTERNS:
+        result = pattern.sub("[REDACTED_PATH]", result)
     return result
 
 

@@ -1387,16 +1387,18 @@ def create_app(
                 response_request_id = stored_request_id
             elif request.headers.get("X-Request-ID") is None:
                 response_request_id = _idempotency_request_id(key)
+            if store is not None:
+                bound_request_id = store.bind_idempotency_request_id(
+                    key, response_request_id
+                )
+                if bound_request_id is not None:
+                    response_request_id = bound_request_id
         wrapped = await _json_response_with_request_id(
             response,
             response_request_id,
             preserve_approval_token=request.url.path.endswith("/approve"),
             scrub_payload=request.url.path != "/openapi.json",
         )
-        if key and response.status_code < 400 and store is not None:
-            effective_request_id = wrapped.headers.get("X-Request-ID")
-            if effective_request_id is not None:
-                store.bind_idempotency_request_id(key, effective_request_id)
         return wrapped
 
     @app.exception_handler(PatchError)

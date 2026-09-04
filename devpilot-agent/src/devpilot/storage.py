@@ -28,6 +28,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .redaction import redact_sensitive_payload
 
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -1052,22 +1054,52 @@ class ProjectStore:
                 raise KeyError("unknown idempotency key")
             record.response_json = response_json
 
-    def bind_idempotency_request_id(self, key: str, request_id: str) -> None:
-        """Persist the public request identity alongside a completed replay."""
+    def bind_idempotency_request_id(self, key: str, request_id: str) -> str | None:
+        """Atomically bind and return the identity used by a completed replay."""
         with self._session_factory.begin() as session:
             record = session.get(IdempotencyRecord, key)
             if record is None or record.response_json is None:
-                return
+                return None
+            original = record.response_json
             try:
-                payload = json.loads(record.response_json)
+                payload = json.loads(original)
             except (TypeError, ValueError):
-                return
+                return None
             if not isinstance(payload, dict):
-                return
+                return None
             typed_payload = cast(dict[str, Any], payload)
-            typed_payload.setdefault("request_id", request_id)
-            record.response_json = json.dumps(
+            existing = typed_payload.get("request_id")
+            if isinstance(existing, str) and _REQUEST_ID_PATTERN.fullmatch(existing):
+                return existing
+            typed_payload["request_id"] = request_id
+            updated = json.dumps(
                 typed_payload, ensure_ascii=False, sort_keys=True
+            )
+            result = session.execute(
+                update(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.key == key,
+                    IdempotencyRecord.response_json == original,
+                )
+                .values(response_json=updated)
+            )
+            if int(cast(Any, result).rowcount or 0) == 1:
+                return request_id
+            refreshed = session.get(IdempotencyRecord, key)
+            if refreshed is None or refreshed.response_json is None:
+                return None
+            try:
+                refreshed_payload = json.loads(refreshed.response_json)
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(refreshed_payload, dict):
+                return None
+            refreshed_id = cast(dict[str, Any], refreshed_payload).get("request_id")
+            return (
+                refreshed_id
+                if isinstance(refreshed_id, str)
+                and _REQUEST_ID_PATTERN.fullmatch(refreshed_id)
+                else None
             )
 
     def abort_idempotency(self, key: str) -> None:

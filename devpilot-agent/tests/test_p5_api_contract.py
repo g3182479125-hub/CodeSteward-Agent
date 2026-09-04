@@ -125,6 +125,12 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         ("authorization=authorization-secret", "authorization-secret"),
     ):
         assert secret not in redact_sensitive_text(assignment)
+    redacted_path = redact_sensitive_text(
+        "error at C:/Users/alice/project/main.py and /tmp/devpilot/run.log"
+    )
+    assert "C:/Users/alice/project/main.py" not in redacted_path
+    assert "/tmp/devpilot/run.log" not in redacted_path
+    assert redacted_path.count("[REDACTED_PATH]") == 2
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {
@@ -255,6 +261,20 @@ def test_idempotency_request_id_echoes_caller_and_stays_stable_on_replay(tmp_pat
     assert replay.headers["X-Request-ID"] == request_id
     assert first.json()["request_id"] == request_id
     assert replay.json()["request_id"] == request_id
+    assert manager.store.get_idempotency(key)[1] == (
+        '{"request_id": "caller-request-1", "status": "ok"}'
+    )
+
+
+def test_idempotency_request_id_binding_is_first_writer_wins(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    key = "first-writer-key"
+    assert store.reserve_idempotency(key, "request-hash")[0] == "new"
+    store.complete_idempotency(key, '{"status":"ok"}')
+
+    assert store.bind_idempotency_request_id(key, "caller-one") == "caller-one"
+    assert store.bind_idempotency_request_id(key, "caller-two") == "caller-one"
 
 
 def test_error_response_does_not_expose_project_path(tmp_path: Path) -> None:
