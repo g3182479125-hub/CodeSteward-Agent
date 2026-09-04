@@ -13,20 +13,38 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
 )
-_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(?<![A-Za-z0-9])"
-    r"(?P<prefix>[\"']?(?:(?:[A-Za-z0-9]+[_-])*)"
+_SENSITIVE_NAME = (
+    r"(?:[A-Za-z0-9]+[_-])*"
     r"(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
     r"(?:[_-][A-Za-z0-9]+)*"
-    r"[\"']?\s*[=:]\s*)"
+)
+_SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN = re.compile(
+    r"(?is)(?<![A-Za-z0-9])"
+    rf"(?P<prefix>[\"']?{_SENSITIVE_NAME}[\"']?\s*[=:]\s*)"
+    r"(?P<quote>\"\"\"|''')(?P<value>.*?)(?P=quote)"
+ )
+_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9])"
+    rf"(?P<prefix>[\"']?{_SENSITIVE_NAME}[\"']?\s*[=:]\s*)"
     r"(?P<value>[^\r\n]*)"
 )
+
+
+def _redact_multiline_assignment(match: re.Match[str]) -> str:
+    return (
+        f"{match.group('prefix')}{match.group('quote')}"
+        f"[REDACTED]{match.group('quote')}"
+    )
 
 
 def redact_sensitive_text(value: str) -> str:
     """Replace high-confidence credentials while retaining bounded diagnostics."""
 
     result = value
+    result = _SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN.sub(
+        _redact_multiline_assignment,
+        result,
+    )
     result = _SENSITIVE_ASSIGNMENT_PATTERN.sub(
         lambda match: f"{match.group('prefix')}[REDACTED]", result
     )

@@ -142,6 +142,15 @@ function App() {
     setEvents(result.events ?? []);
   };
 
+  const handleRunEvent = (message: MessageEvent<string>) => {
+    try {
+      const incoming = JSON.parse(message.data) as RunEvent;
+      setEvents((current) => current.some((item) => item.event_id === incoming.event_id) ? current : [...current, incoming]);
+    } catch {
+      setError("收到无法解析的事件");
+    }
+  };
+
   const openEventStream = () => {
     if (!runId.trim()) return;
     setError("");
@@ -149,15 +158,7 @@ function App() {
     if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
     const source = new EventSource(`${API}/runs/${encodeURIComponent(runId.trim())}/events`);
     eventSource.current = source;
-    const handleEvent = (message: MessageEvent<string>) => {
-      try {
-        const incoming = JSON.parse(message.data) as RunEvent;
-        setEvents((current) => current.some((item) => item.event_id === incoming.event_id) ? current : [...current, incoming]);
-      } catch {
-        setError("收到无法解析的事件");
-      }
-    };
-    subscribeToRunEvents(source, handleEvent);
+    subscribeToRunEvents(source, handleRunEvent);
     source.onerror = () => {
       source.close();
       eventSource.current = null;
@@ -223,16 +224,21 @@ function App() {
     const queryRunId = query.get("run_id");
     if (page !== "runs" || query.get("sse") !== "1" || !queryRunId) return;
     const source = new EventSource(`${API}/runs/${encodeURIComponent(queryRunId)}/events`);
-    const handleEvent = (message: MessageEvent<string>) => {
-      try {
-        const incoming = JSON.parse(message.data) as RunEvent;
-        setEvents((current) => current.some((item) => item.event_id === incoming.event_id) ? current : [...current, incoming]);
-      } catch {
-        setError("收到无法解析的事件");
-      }
+    subscribeToRunEvents(source, handleRunEvent);
+    let queryPollTimer: number | null = null;
+    source.onerror = () => {
+      if (queryPollTimer !== null) return;
+      setError("SSE 暂时不可用，已自动切换为数据库轮询。");
+      queryPollTimer = window.setInterval(() => {
+        void api<{ events?: RunEvent[] }>(`/runs/${encodeURIComponent(queryRunId)}`)
+          .then((result) => setEvents(result.events ?? []))
+          .catch(() => setError("SSE 和轮询均暂时不可用。"));
+      }, 3000);
     };
-    subscribeToRunEvents(source, handleEvent);
-    return () => source.close();
+    return () => {
+      source.close();
+      if (queryPollTimer !== null) window.clearInterval(queryPollTimer);
+    };
   }, [page]);
 
   const registerProject = async (event: FormEvent) => {

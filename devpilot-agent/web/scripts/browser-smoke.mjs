@@ -53,7 +53,8 @@ const apiServer = createServer((request, response) => {
       "cache-control": "no-cache",
       "content-type": "text/event-stream",
     });
-    response.end('id: 2\nevent: run.started\ndata: {"event_id":2,"sequence":2,"event_type":"run.started","created_at":"fixture","payload":{}}\n\nid: 3\nevent: run.completed\ndata: {"event_id":3,"sequence":3,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
+    response.write('id: 2\nevent: run.started\ndata: {"event_id":2,"sequence":2,"event_type":"run.started","created_at":"fixture","payload":{}}\n\nid: 3\nevent: run.completed\ndata: {"event_id":3,"sequence":3,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
+    setTimeout(() => response.end(), 5000);
     return;
   }
   if (path === "/api/v1/runs/fixture-run/artifacts") return json(response, { run_id: "fixture-run", artifacts: [{ id: "fixture-artifact", kind: "fixture", relative_path: "fixture.md", sha256: "fixture-hash" }] });

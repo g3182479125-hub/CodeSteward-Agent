@@ -97,6 +97,9 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
     )
     assert "prefix-secret" not in prefixed
     assert "aws-secret" not in prefixed
+    multiline = redact_sensitive_text('token = """\nMULTILINE-SECRET\n"""')
+    assert "MULTILINE-SECRET" not in multiline
+    assert "[REDACTED]" in multiline
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
