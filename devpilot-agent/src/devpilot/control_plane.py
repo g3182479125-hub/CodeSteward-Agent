@@ -36,7 +36,7 @@ from .patches import (
     _Snapshot,
 )
 from .paths import AllowedRoots, PathBoundaryError
-from .redaction import redact_sensitive_text
+from .redaction import is_sensitive_field_name, redact_sensitive_text
 from .storage import ProjectStore
 from .verification import VerificationProfile, build_verification_request
 
@@ -1172,20 +1172,7 @@ def _public_payload(
                 key: (
                     "[REDACTED]"
                     if not (preserve_approval_token and key == "approval_token")
-                    and any(
-                        marker in key.casefold()
-                        for marker in (
-                            "token",
-                            "secret",
-                            "password",
-                            "passwd",
-                            "api_key",
-                            "apikey",
-                            "access_key",
-                            "accesskey",
-                            "authorization",
-                        )
-                    )
+                    and is_sensitive_field_name(key)
                     else clean(item)
                 )
                 for key, item in mapping.items()
@@ -1205,7 +1192,11 @@ def _contract_payload(request: Request, payload: dict[str, Any]) -> dict[str, An
 
 
 async def _json_response_with_request_id(
-    response: Any, request_id: str, *, preserve_approval_token: bool = False
+    response: Any,
+    request_id: str,
+    *,
+    preserve_approval_token: bool = False,
+    scrub_payload: bool = True,
 ) -> Any:
     content_type = response.headers.get("content-type", "")
     body = getattr(response, "body", None)
@@ -1222,11 +1213,13 @@ async def _json_response_with_request_id(
     if not isinstance(payload, dict):
         response.headers["X-Request-ID"] = request_id
         return response
-    payload = _public_payload(
-        cast(dict[str, Any], payload),
-        preserve_approval_token=preserve_approval_token,
-    )
-    payload.setdefault("request_id", request_id)
+    payload = cast(dict[str, Any], payload)
+    if scrub_payload:
+        payload = _public_payload(
+            payload,
+            preserve_approval_token=preserve_approval_token,
+        )
+    payload["request_id"] = request_id
     headers = {
         key: value
         for key, value in response.headers.items()
@@ -1364,6 +1357,7 @@ def create_app(
             response,
             response_request_id,
             preserve_approval_token=request.url.path.endswith("/approve"),
+            scrub_payload=request.url.path != "/openapi.json",
         )
 
     @app.exception_handler(PatchError)

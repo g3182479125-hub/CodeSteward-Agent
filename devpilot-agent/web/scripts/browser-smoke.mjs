@@ -22,6 +22,7 @@ const json = (response, payload, status = 200) => {
 
 const requestedPaths = new Set();
 let runSnapshotRequests = 0;
+let failedRunSnapshotRequests = 0;
 const apiServer = createServer((request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -46,19 +47,20 @@ const apiServer = createServer((request, response) => {
     change_set_id: "fixture-change-set", status: "verified", available_decisions: ["accept", "stop", "rollback"],
     decision: { type: null }, rollback: { capability: "r1.rollback", requires_approval_token: true },
   });
-  if (path === "/api/v1/runs/fixture-run") {
+  if (path === "/api/v1/runs/fixture-run" || path === "/api/v1/runs/fixture-failed-sse") {
     runSnapshotRequests += 1;
+    if (path.endsWith("fixture-failed-sse")) failedRunSnapshotRequests += 1;
     return json(response, {
-    run_id: "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
+    run_id: path.endsWith("fixture-failed-sse") ? "fixture-failed-sse" : "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
     });
   }
-  if (path === "/api/v1/runs/fixture-run/events") {
+  if (path === "/api/v1/runs/fixture-run/events" || path === "/api/v1/runs/fixture-failed-sse/events") {
     response.writeHead(200, {
       "access-control-allow-origin": "*",
       "cache-control": "no-cache",
       "content-type": "text/event-stream",
     });
-    if (requestUrl.searchParams.get("fail_sse") === "1") {
+    if (path.endsWith("fixture-failed-sse/events")) {
       response.end();
       return;
     }
@@ -165,7 +167,7 @@ try {
     ["page=projects", ["fixture-project", "登记项目"]],
     ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "接受交付", "停止交付", "申请回滚"]],
     ["page=runs&run_id=fixture-run&sse=1", ["run.started", "run.completed", "读取快照", "连接 SSE"]],
-    ["page=runs&run_id=fixture-run&sse=1&fail_sse=1", ["SSE 暂时不可用", "读取快照"]],
+    ["page=runs&run_id=fixture-failed-sse&sse=1", ["SSE 暂时不可用", "读取快照"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],
     ["page=security", ["Execution Backends", "fixture-backend", "unavailable"]],
@@ -173,10 +175,12 @@ try {
     await runBrowser(`http://127.0.0.1:${webPort}/?${query}`, markers);
   }
   if (runSnapshotRequests < 2) throw new Error("browser fixture did not exercise polling fallback");
+  if (failedRunSnapshotRequests < 2) throw new Error("browser fixture did not poll after SSE failure");
   for (const path of [
     "/api/v1/projects", "/api/v1/skills", "/api/v1/security/backends",
     "/api/v1/change-sets/fixture-change-set", "/api/v1/change-sets/fixture-change-set/delivery-report", "/api/v1/runs/fixture-run",
     "/api/v1/runs/fixture-run/artifacts", "/api/v1/runs/fixture-run/events",
+    "/api/v1/runs/fixture-failed-sse", "/api/v1/runs/fixture-failed-sse/events",
   ]) {
     if (!requestedPaths.has(path)) throw new Error(`browser fixture did not receive request: ${path}`);
   }

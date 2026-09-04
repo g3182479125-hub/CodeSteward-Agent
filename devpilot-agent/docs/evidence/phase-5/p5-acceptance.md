@@ -8,8 +8,8 @@ language entry point.
 
 ## Verified locally
 
-- P5 API/SSE contract tests: 16 passed.
-- Full Python suite: 176 passed, 3 skipped.
+- P5 API/SSE contract tests: 18 passed.
+- Full Python suite: 178 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
 - Web TypeScript check: passed with `npm test`.

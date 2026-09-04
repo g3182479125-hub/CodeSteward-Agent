@@ -17,6 +17,20 @@ _SENSITIVE_NAME = (
     r"(?:[A-Za-z0-9]*(?:api[_-]?(?:key|token)|access[_-]?(?:key|token)|"
     r"auth[_-]?token|secret(?:[_-]?key)?|token|password|passwd)[A-Za-z0-9_-]*)"
 )
+_SENSITIVE_FIELD_MARKERS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "access_key",
+    "accesskey",
+    "authorization",
+    "private_key",
+    "privatekey",
+    "credential",
+)
 _SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN = re.compile(
     r"(?is)(?<![A-Za-z0-9])"
     rf"(?P<prefix>[\"']?{_SENSITIVE_NAME}[\"']?\s*[=:]\s*)"
@@ -52,6 +66,12 @@ def redact_sensitive_text(value: str) -> str:
     return result
 
 
+def is_sensitive_field_name(value: str) -> bool:
+    """Return whether a mapping key describes credential material."""
+    folded = value.casefold()
+    return any(marker in folded for marker in _SENSITIVE_FIELD_MARKERS)
+
+
 def redact_sensitive_payload(value: object) -> object:
     """Recursively redact strings and sensitive mapping values before persistence."""
     if isinstance(value, str):
@@ -59,19 +79,7 @@ def redact_sensitive_payload(value: object) -> object:
     if isinstance(value, dict):
         result: dict[str, object] = {}
         for key, item in cast(dict[str, object], value).items():
-            if any(
-                marker in key.casefold()
-                for marker in (
-                    "token",
-                    "secret",
-                    "password",
-                    "passwd",
-                    "api_key",
-                    "apikey",
-                    "access_key",
-                    "authorization",
-                )
-            ):
+            if is_sensitive_field_name(key):
                 result[key] = "[REDACTED]"
             else:
                 result[key] = redact_sensitive_payload(item)
