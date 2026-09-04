@@ -180,14 +180,12 @@ def _durable_store() -> ProjectStore:
 
 
 def _service(workspace: Path) -> ProjectAnalysisService:
-    store = ProjectStore(_data_dir() / "devpilot.db")
-    store.initialize()
+    store = _durable_store()
     return ProjectAnalysisService(allowed_roots=_configured_roots(workspace), store=store)
 
 
 def _code_access_service(workspace: Path) -> CodeAccessService:
-    store = ProjectStore(_data_dir() / "devpilot.db")
-    store.initialize()
+    store = _durable_store()
     return CodeAccessService(allowed_roots=_configured_roots(workspace), store=store)
 
 
