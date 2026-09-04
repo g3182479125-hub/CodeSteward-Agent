@@ -1052,6 +1052,24 @@ class ProjectStore:
                 raise KeyError("unknown idempotency key")
             record.response_json = response_json
 
+    def bind_idempotency_request_id(self, key: str, request_id: str) -> None:
+        """Persist the public request identity alongside a completed replay."""
+        with self._session_factory.begin() as session:
+            record = session.get(IdempotencyRecord, key)
+            if record is None or record.response_json is None:
+                return
+            try:
+                payload = json.loads(record.response_json)
+            except (TypeError, ValueError):
+                return
+            if not isinstance(payload, dict):
+                return
+            typed_payload = cast(dict[str, Any], payload)
+            typed_payload.setdefault("request_id", request_id)
+            record.response_json = json.dumps(
+                typed_payload, ensure_ascii=False, sort_keys=True
+            )
+
     def abort_idempotency(self, key: str) -> None:
         """Release a reservation whose operation failed before a response existed."""
         with self._session_factory.begin() as session:

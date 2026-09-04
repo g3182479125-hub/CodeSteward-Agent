@@ -59,6 +59,12 @@ Clients may send `X-Request-ID` only when it matches a bounded, opaque token
 format. Otherwise the server generates one. The same value is returned in the
 `X-Request-ID` response header and JSON body. Error status mapping is stable:
 
+For a successful response carrying an `Idempotency-Key`, a valid caller-supplied
+`X-Request-ID` is echoed on the first request. The effective identity is stored
+with the completed idempotency record, so later replays keep that identity even
+if the caller sends a different request ID or omits the header. When no caller
+ID is supplied, the server derives a stable opaque ID from the idempotency key.
+
 - `PatchError`: existing domain code and HTTP 409;
 - request validation: `REQUEST_INVALID`, HTTP 422;
 - unknown application failure: `INTERNAL_ERROR`, HTTP 500, with no traceback;

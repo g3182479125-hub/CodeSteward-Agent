@@ -1151,6 +1151,24 @@ def _request_id(request: Request) -> str:
     return f"req_{uuid.uuid4().hex}"
 
 
+def _stored_request_id(response_json: str | None) -> str | None:
+    """Read a previously persisted request identity from an idempotency record."""
+    if not response_json:
+        return None
+    try:
+        payload = json.loads(response_json)
+    except (TypeError, ValueError):
+        return None
+    candidate: Any = (
+        cast(dict[str, Any], payload).get("request_id")
+        if isinstance(payload, dict)
+        else None
+    )
+    if isinstance(candidate, str) and _REQUEST_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return None
+
+
 def _idempotency_request_id(key: str) -> str:
     """Derive a stable opaque request ID without persisting the raw key."""
     digest = hashlib.sha256(f"devpilot-request:{key}".encode()).hexdigest()
@@ -1357,16 +1375,29 @@ def create_app(
             response = await call_next(request)
         if request.url.path == "/openapi.json":
             return response
-        response_request_id = request_id
         key = request.headers.get("Idempotency-Key")
+        store = getattr(request.app.state.manager, "store", None)
+        existing_idempotency = store.get_idempotency(key) if store is not None and key else None
+        response_request_id = request_id
         if key and response.status_code < 400:
-            response_request_id = _idempotency_request_id(key)
-        return await _json_response_with_request_id(
+            stored_request_id = _stored_request_id(
+                existing_idempotency[1] if existing_idempotency is not None else None
+            )
+            if stored_request_id is not None:
+                response_request_id = stored_request_id
+            elif request.headers.get("X-Request-ID") is None:
+                response_request_id = _idempotency_request_id(key)
+        wrapped = await _json_response_with_request_id(
             response,
             response_request_id,
             preserve_approval_token=request.url.path.endswith("/approve"),
             scrub_payload=request.url.path != "/openapi.json",
         )
+        if key and response.status_code < 400 and store is not None:
+            effective_request_id = wrapped.headers.get("X-Request-ID")
+            if effective_request_id is not None:
+                store.bind_idempotency_request_id(key, effective_request_id)
+        return wrapped
 
     @app.exception_handler(PatchError)
     async def patch_error_handler(request: Request, exc: PatchError) -> JSONResponse:

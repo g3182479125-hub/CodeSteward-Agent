@@ -122,6 +122,7 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         ("client_secret=client-secret", "client-secret"),
         ("private_key=private-secret", "private-secret"),
         ("credential=credential-secret", "credential-secret"),
+        ("authorization=authorization-secret", "authorization-secret"),
     ):
         assert secret not in redact_sensitive_text(assignment)
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
@@ -231,19 +232,28 @@ def test_request_id_body_and_header_stay_identical_for_credential_shaped_id(
     assert response.json()["request_id"] == request_id
 
 
-def test_idempotency_request_id_stays_stable_across_caller_ids(tmp_path: Path) -> None:
-    client, _manager, _project = setup_app(tmp_path)
+def test_idempotency_request_id_echoes_caller_and_stays_stable_on_replay(tmp_path: Path) -> None:
+    client, manager, _project = setup_app(tmp_path)
+    request_id = "caller-request-1"
     key = "stable-key"
+    assert manager.store is not None
+    assert manager.store.reserve_idempotency(key, "healthz-request")[0] == "new"
+    manager.store.complete_idempotency(key, '{"status":"ok"}')
 
     first = client.get(
         "/healthz",
-        headers={"X-Request-ID": "caller-request-1", "Idempotency-Key": key},
+        headers={"X-Request-ID": request_id, "Idempotency-Key": key},
     )
-    replay = client.get("/healthz", headers={"Idempotency-Key": key})
+    replay = client.get(
+        "/healthz",
+        headers={"X-Request-ID": "different-caller", "Idempotency-Key": key},
+    )
 
     assert first.status_code == replay.status_code == 200
-    assert first.headers["X-Request-ID"] == replay.headers["X-Request-ID"]
-    assert first.json()["request_id"] == replay.json()["request_id"]
+    assert first.headers["X-Request-ID"] == request_id
+    assert replay.headers["X-Request-ID"] == request_id
+    assert first.json()["request_id"] == request_id
+    assert replay.json()["request_id"] == request_id
 
 
 def test_error_response_does_not_expose_project_path(tmp_path: Path) -> None:
