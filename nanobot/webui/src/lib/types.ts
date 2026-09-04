@@ -1268,6 +1268,14 @@ export type InboundEvent =
       reason?: string;
       /** Present when this error rejects a specific outbound WebUI turn. */
       turn_id?: string;
+      /** Gateway-signed DevPilot tuple requested by a trusted confirmation. */
+      devpilot_confirmation?: {
+        change_set_id: string;
+        plan_hash: string;
+        patch_hash: string;
+        scope_hash: string;
+        project_id: string;
+      };
     };
 
 /** Base64-encoded file attached to an outbound ``message`` envelope.

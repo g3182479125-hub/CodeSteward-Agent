@@ -165,6 +165,20 @@ def _data_dir() -> Path:
     return Path(os.environ.get("DEVPILOT_DATA_DIR", "./local-data")).expanduser().resolve()
 
 
+def _durable_store() -> ProjectStore:
+    """Open the store without letting create_all bypass an Alembic database."""
+    store = ProjectStore(_data_dir() / "devpilot.db")
+    with store.engine.connect() as connection:
+        has_version = connection.exec_driver_sql(
+            "select name from sqlite_master where type='table' and name='alembic_version'"
+        ).scalar_one_or_none()
+    if has_version:
+        store.require_schema_head("0008_p5_broker_actions")
+    else:
+        store.initialize()
+    return store
+
+
 def _service(workspace: Path) -> ProjectAnalysisService:
     store = ProjectStore(_data_dir() / "devpilot.db")
     store.initialize()
@@ -331,8 +345,7 @@ class PublishArtifactTool(Tool):
         if kwargs.get("name") != "project-overview.md":
             return ToolResult.error("P1 Artifact rejected: unsupported name")
         try:
-            store = ProjectStore(_data_dir() / "devpilot.db")
-            store.initialize()
+            store = _durable_store()
             write = ProjectAnalysisService(
                 allowed_roots=_configured_roots(self.workspace), store=store
             ).publish_overview(
@@ -1048,8 +1061,7 @@ class ConfirmedActionTool(Tool):
             if not callable(getattr(signer, "sign", None)):
                 raise ValueError("missing trusted signer")
             context = ConfirmationContext.from_mapping(attributes["context"])
-            store = ProjectStore(_data_dir() / "devpilot.db")
-            store.initialize()
+            store = _durable_store()
 
             def consume(request: BrokerActionRequest) -> bool:
                 return store.reserve_broker_action(

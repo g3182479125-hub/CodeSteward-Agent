@@ -853,6 +853,13 @@ export class NanobotClient {
       turnId?: string;
       /** False for side-channel or injected messages that do not own a lifecycle. */
       startsNewRun?: boolean;
+      devpilotConfirmation?: {
+        changeSetId: string;
+        planHash: string;
+        patchHash: string;
+        scopeHash: string;
+        projectId: string;
+      };
     },
   ): void {
     const temporary = this.temporaryChatIds.has(chatId);
@@ -870,6 +877,15 @@ export class NanobotClient {
       ...(options?.quotedContext?.trim() ? { quoted_context: options.quotedContext.trim() } : {}),
       ...(options?.workspaceScope ? { workspace_scope: options.workspaceScope } : {}),
       ...(options?.turnId ? { turn_id: options.turnId } : {}),
+      ...(options?.devpilotConfirmation
+        ? { devpilot_confirmation: {
+            change_set_id: options.devpilotConfirmation.changeSetId,
+            plan_hash: options.devpilotConfirmation.planHash,
+            patch_hash: options.devpilotConfirmation.patchHash,
+            scope_hash: options.devpilotConfirmation.scopeHash,
+            project_id: options.devpilotConfirmation.projectId,
+          } }
+        : {}),
       webui: true,
     };
     if (!this.frameFitsTransport(frame)) {

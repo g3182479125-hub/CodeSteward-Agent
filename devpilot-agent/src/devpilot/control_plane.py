@@ -1331,7 +1331,7 @@ def create_app(
             Path(data_dir) if data_dir is not None else _configured_data_dir()
         ).expanduser().resolve()
         store = ProjectStore(resolved_data_dir / "devpilot.db")
-        store.require_schema_head("0007_project_trust")
+        store.require_schema_head("0008_p5_broker_actions")
         execution_backend: ExecutionBackend | None = None
         if os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") == "1":
             from .fc_sandbox import build_fc_backend_from_environment

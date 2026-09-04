@@ -155,6 +155,21 @@ async def test_handle_message_uses_authorization_id_without_changing_sender() ->
 
 
 @pytest.mark.asyncio
+async def test_handle_message_keeps_trusted_attributes_out_of_metadata() -> None:
+    bus = MessageBus()
+    channel = _DummyChannel({"allowFrom": ["alice"]}, bus)
+
+    await channel._handle_message(
+        sender_id="alice", chat_id="chat1", content="执行",
+        metadata={"webui": True}, attributes={"trusted": object()},
+    )
+
+    msg = await bus.consume_inbound()
+    assert msg.metadata == {"webui": True}
+    assert msg.attributes["trusted"] is not None
+
+
+@pytest.mark.asyncio
 async def test_handle_message_rejects_when_authorization_id_is_not_allowed() -> None:
     bus = MessageBus()
     channel = _DummyChannel({"allowFrom": ["member-lid"]}, bus)
@@ -167,4 +182,3 @@ async def test_handle_message_rejects_when_authorization_id_is_not_allowed() -> 
     )
 
     assert bus.inbound_size == 0
-
