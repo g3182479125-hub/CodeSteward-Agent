@@ -15,7 +15,7 @@ _SENSITIVE_PATTERNS = (
 )
 _SENSITIVE_NAME = (
     r"(?:[A-Za-z0-9]+[_-])*"
-    r"(?:api[_-]?key|access[_-]?key|secret|token|password|passwd)"
+    r"(?:api[_-]?key|access[_-]?(?:key|token)|auth[_-]?token|secret|token|password|passwd)"
     r"(?:[_-][A-Za-z0-9]+)*"
 )
 _SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN = re.compile(

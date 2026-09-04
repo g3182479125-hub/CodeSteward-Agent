@@ -100,6 +100,11 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
     multiline = redact_sensitive_text('token = """\nMULTILINE-SECRET\n"""')
     assert "MULTILINE-SECRET" not in multiline
     assert "[REDACTED]" in multiline
+    camel_case = redact_sensitive_text(
+        'const accessToken = "camel-secret"; const authToken="auth-secret";'
+    )
+    assert "camel-secret" not in camel_case
+    assert "auth-secret" not in camel_case
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
@@ -272,3 +277,28 @@ def test_sse_cors_allows_last_event_id_replay_header(tmp_path: Path) -> None:
     )
     assert response.status_code == 200
     assert "Last-Event-ID" in response.headers["access-control-allow-headers"]
+
+
+def test_idempotency_request_id_is_stable_across_app_instances(tmp_path: Path) -> None:
+    client, _manager, project = setup_app(tmp_path)
+    preview = make_preview(client, project)
+    change_set_id = str(preview["change_set_id"])
+    key = "stable-request-id"
+    first = client.get(
+        f"/api/v1/change-sets/{change_set_id}",
+        headers={"Idempotency-Key": key},
+    )
+    assert first.status_code == 200
+
+    restarted_store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    restarted_manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]), store=restarted_store
+    )
+    restarted = TestClient(
+        create_app(manager=restarted_manager), client=("127.0.0.1", 50001)
+    ).get(
+        f"/api/v1/change-sets/{change_set_id}",
+        headers={"Idempotency-Key": key},
+    )
+    assert restarted.status_code == 200
+    assert restarted.headers["X-Request-ID"] == first.headers["X-Request-ID"]

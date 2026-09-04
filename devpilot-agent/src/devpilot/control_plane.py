@@ -1145,6 +1145,12 @@ def _request_id(request: Request) -> str:
     return f"req_{uuid.uuid4().hex}"
 
 
+def _idempotency_request_id(key: str) -> str:
+    """Derive a stable opaque request ID without persisting the raw key."""
+    digest = hashlib.sha256(f"devpilot-request:{key}".encode()).hexdigest()
+    return f"req_{digest[:32]}"
+
+
 def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
     return {
         "error": {"code": code, "message": message},
@@ -1306,7 +1312,6 @@ def create_app(
         ],
     )
     app.state.manager = manager
-    app.state.idempotency_request_ids = {}
 
     @app.middleware("http")
     async def require_loopback_and_contract(request: Request, call_next: Any) -> Any:
@@ -1328,10 +1333,7 @@ def create_app(
         response_request_id = request_id
         key = request.headers.get("Idempotency-Key")
         if key and response.status_code < 400:
-            request_ids = cast(dict[str, str], app.state.idempotency_request_ids)
-            response_request_id = request_ids.setdefault(key, request_id)
-            if len(request_ids) > 4096:
-                request_ids.pop(next(iter(request_ids)))
+            response_request_id = _idempotency_request_id(key)
         return await _json_response_with_request_id(response, response_request_id)
 
     @app.exception_handler(PatchError)

@@ -37,7 +37,10 @@ behaviour consumable by a future console and nanobot adapter:
 
 The canonical HTTP prefix becomes `/api/v1`. Every currently supported
 control-plane route is registered at that prefix, while the existing `/v1`
-route remains available as a compatibility alias with identical behaviour.
+route remains available as a compatibility alias with identical safe
+behaviour. “Identical” means both prefixes use the same response adapter,
+status mapping, request-ID contract, and redaction/path-removal rules; local
+filesystem coordinates are not restored on the compatibility alias.
 The health check remains `/healthz`; OpenAPI remains `/openapi.json` and
 `/docs`.
 
