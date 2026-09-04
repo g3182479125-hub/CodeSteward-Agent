@@ -973,9 +973,9 @@ class WatchRunTool(Tool):
                     # status and latest event cursor.
                     snapshot = _get_control_plane(_safe_resource_path(run_id, "runs"))
                     projection = project_run_state(snapshot, fallback=True)
-            except (OSError, URLError, TimeoutError):
+            except (OSError, URLError, TimeoutError, ValueError):
                 # The database snapshot is the source of truth.  A broken SSE
-                # connection is never interpreted as success.
+                # connection or malformed replay is never interpreted as success.
                 snapshot = _get_control_plane(_safe_resource_path(run_id, "runs"))
                 projection = project_run_state(snapshot, fallback=True)
             return json.dumps(projection.to_dict(), ensure_ascii=False, sort_keys=True)

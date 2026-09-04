@@ -236,6 +236,27 @@ def test_watch_run_falls_back_to_snapshot_on_sse_transport_failure(monkeypatch: 
     assert calls == ["events", "/v1/runs/run-4"]
 
 
+def test_watch_run_falls_back_to_snapshot_on_malformed_sse(monkeypatch: Any) -> None:
+    def fake_events(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("control-plane SSE event order is invalid")
+
+    monkeypatch.setattr(nanobot_tools, "_get_control_plane_events", fake_events)
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_get_control_plane",
+        lambda _path: {
+            "run_id": "run-malformed",
+            "status": "completed",
+            "events": [],
+        },
+    )
+    raw = asyncio.run(WatchRunTool().execute(run_id="run-malformed"))
+    assert not isinstance(raw, ToolResult)
+    payload = json.loads(str(raw))
+    assert payload["fallback"] is True
+    assert payload["status"] == "completed"
+
+
 def test_watch_run_falls_back_to_snapshot_when_sse_has_no_new_events(monkeypatch: Any) -> None:
     calls: list[str] = []
 
