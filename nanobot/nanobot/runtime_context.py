@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 if TYPE_CHECKING:
@@ -112,8 +112,16 @@ async def resolve_runtime_context(
 ) -> list[RuntimeContextBlock]:
     """Resolve providers once, sequentially, in the caller's stable order."""
     blocks: list[RuntimeContextBlock] = []
+    public_request = replace(
+        request,
+        attributes={
+            key: value
+            for key, value in request.attributes.items()
+            if not key.startswith("devpilot_")
+        },
+    )
     for provider in providers:
-        blocks.extend(normalize_runtime_context_blocks(await provider(request)))
+        blocks.extend(normalize_runtime_context_blocks(await provider(public_request)))
     return blocks
 
 

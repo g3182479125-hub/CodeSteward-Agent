@@ -2,9 +2,9 @@
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "review_pending",
-  "implementation_commit": "aac845f",
-  "evidence_commit": "aac845f",
-  "evidence_ref_type": "git_commit",
+  "implementation_commit": "p5-candidate-20260905",
+  "evidence_commit": "p5-candidate-20260905",
+  "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
   "evidence_window": {

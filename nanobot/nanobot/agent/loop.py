@@ -949,7 +949,7 @@ class AgentLoop:
                         original_user_text=pending_msg.content,
                         runtime=runtime,
                         metadata=dict(metadata),
-                        attributes=dict(request_ctx.attributes),
+                        attributes=dict(pending_msg.attributes),
                         sender_id=pending_msg.sender_id,
                         turn_id=request_ctx.turn_id,
                         workspace=scope.project_path,
@@ -1269,6 +1269,7 @@ class AgentLoop:
                         on_stream_end=delivery.on_stream_end,
                         pending_queue=pending,
                         delivery=delivery,
+                        attributes=msg.attributes,
                     )
                     continuing = turn_continuation.internal_continuation_pending(msg.metadata)
                     await delivery.complete(
