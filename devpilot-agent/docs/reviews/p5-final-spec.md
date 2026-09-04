@@ -1,32 +1,50 @@
 # P5 Final Spec Review
 
+## Verdict
+
+**PASS** — all P5 acceptance criteria are covered with no actionable finding.
+
 ## Review scope
 
 - Fixed point: `5860598`
-- Reviewed diff: `git diff 5860598...HEAD`
-- Required reviewer: Spec subagent
+- Exact reviewed diff: `git diff 5860598...HEAD`
+- Review axis: frozen P5 plan/spec, API compatibility, request/error
+  contracts, idempotency, OpenAPI exception, SSE/poll fallback, console
+  controls, evidence, and out-of-scope behavior.
+- Reviewer: independent Spec subagent, dispatched in parallel with the
+  independent Standards subagent.
 
-## Status
+## Severity counts
 
-Final parallel review rerun is pending. This file intentionally does not claim
-approval until the Spec subagent has returned a PASS report for the exact diff
-above.
+- Blocker: 0
+- Must-fix: 0
+- Follow-up: 0
+- Observation: 0
 
-## Contract and product resolution checklist
+## Acceptance audit
 
-- The committed browser smoke runs the built console against an asynchronous
-  fake API fixture, checks page-specific UI data and controls, and asserts that
-  all expected API/SSE paths were requested.
-- Project registration remains the existing frozen-plan route behavior and is
-  covered by the same public response safety adapter.
-- Configured-but-unverified execution backends are shown as unavailable.
-- Canonical and compatibility responses both remove local filesystem
-  coordinates and redact credential-shaped text.
-- ChangeSet detail keeps accept/stop/rollback decision controls in the console;
-  approval tokens remain outside browser state.
+- Canonical `/api/v1` and compatibility `/v1` routes share handlers and the
+  safe response contract.
+- JSON success and error responses carry bounded request IDs; valid caller
+  IDs and durable idempotent replay identity are preserved.
+- Successful `/openapi.json` remains undecorated; unsuccessful OpenAPI
+  requests still receive the normal error/request-ID contract.
+- SQLite run events, SSE event IDs, `Last-Event-ID` replay, invalid cursor
+  handling, and polling fallback are covered.
+- React Dashboard, Projects, ChangeSet/Diff, Runs, Artifacts, Skills,
+  Security/Backends, and confirmation-gated decision controls are covered by
+  browser smoke and contract tests.
+- Approval tokens remain outside console state, read models, event payloads,
+  and nanobot model results; unverified execution backends remain unavailable.
+- No nanobot WebUI migration, database migration, public auth, or external
+  network behavior was added in the reviewed P5 diff.
 
-## Scope notes
+## Verification evidence
 
-The optional console intentionally keeps token-gated Apply, Verify, and
-Rollback in nanobot's existing confirmation chain, while ChangeSet detail
-contains the final accept/stop decision controls and never stores tokens.
+- Full Python suite: `183 passed, 3 skipped`.
+- P5 API contract suite: `23 passed`.
+- Ruff, Pyright, secret scan, Markdown check, `git diff --check`, web type
+  check/build, and browser smoke: passed.
+
+Spec review passes. No files were changed by the reviewer. The two unrelated
+user-owned fixture modifications were excluded from the fixed-point review.

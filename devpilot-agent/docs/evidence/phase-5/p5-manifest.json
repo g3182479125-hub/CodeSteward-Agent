@@ -1,6 +1,6 @@
 {
   "phase": "P5",
-  "status": "ready_for_final_review",
+  "status": "certified",
   "canonical_api_prefix": "/api/v1",
   "compatibility_prefix": "/v1",
   "sse": {
@@ -24,6 +24,6 @@
     "ruff": "passed",
     "pyright": "passed",
     "git_diff_check": "passed",
-    "parallel_review": "pending final parallel Standards and Spec review against 5860598"
+    "parallel_review": "PASS: independent Standards and Spec reviews against 5860598...HEAD; no actionable findings"
   }
 }

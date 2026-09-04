@@ -43,6 +43,7 @@ treated as successful security coverage.
 
 ## Review gate status
 
-The final parallel Standards and Spec review rerun is pending against the
-fixed point `5860598`. P5 is not certified and P6 must not start until both
-reports return PASS for `git diff 5860598...HEAD`.
+The final parallel Standards and Spec review passed against the fixed point
+`5860598`; both independent reports found no actionable code or scope issue
+in `git diff 5860598...HEAD`. P5 is certified. P6 is now unlocked but has not
+started.
