@@ -231,18 +231,19 @@ def test_request_id_body_and_header_stay_identical_for_credential_shaped_id(
     assert response.json()["request_id"] == request_id
 
 
-def test_caller_request_id_wins_over_idempotency_derived_id(tmp_path: Path) -> None:
+def test_idempotency_request_id_stays_stable_across_caller_ids(tmp_path: Path) -> None:
     client, _manager, _project = setup_app(tmp_path)
-    request_id = "caller-request-1"
+    key = "stable-key"
 
-    response = client.get(
+    first = client.get(
         "/healthz",
-        headers={"X-Request-ID": request_id, "Idempotency-Key": "stable-key"},
+        headers={"X-Request-ID": "caller-request-1", "Idempotency-Key": key},
     )
+    replay = client.get("/healthz", headers={"Idempotency-Key": key})
 
-    assert response.status_code == 200
-    assert response.headers["X-Request-ID"] == request_id
-    assert response.json()["request_id"] == request_id
+    assert first.status_code == replay.status_code == 200
+    assert first.headers["X-Request-ID"] == replay.headers["X-Request-ID"]
+    assert first.json()["request_id"] == replay.json()["request_id"]
 
 
 def test_error_response_does_not_expose_project_path(tmp_path: Path) -> None:

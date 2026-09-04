@@ -103,11 +103,14 @@ diff, and secret scans run after implementation.
 
 - The frozen plan's canonical `/api/v1` prefix is available locally.
 - Existing `/v1` tests and callers continue to pass.
-- All JSON responses from the app carry a request ID without exposing tokens
+- All application JSON responses from the app carry a request ID without exposing tokens
   or tracebacks. The operator-only `POST .../approve` response is the explicit
   exception: it returns the newly issued one-time capability token to its
   caller so the existing control-plane apply/verify flow remains compatible.
   The console never calls that endpoint, and read models, SSE, events, and
-  apply results must never expose the token.
+  apply results must never expose the token. The standards-defined
+  `/openapi.json` document is also an explicit exception to the application
+  response adapter: it remains byte-for-byte OpenAPI-compatible and is not
+  decorated with application `request_id` or redaction fields.
 - The new contract tests pass, and the full test suite remains green.
 - No frontend, database migration, or external network behaviour changes.

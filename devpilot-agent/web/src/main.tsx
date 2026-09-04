@@ -242,7 +242,7 @@ function App() {
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
-    const queryRunId = query.get("run_id");
+    const queryRunId = runId.trim();
     if (page !== "runs" || query.get("sse") !== "1" || !queryRunId) return;
     const source = new EventSource(`${API}/runs/${encodeURIComponent(queryRunId)}/events`);
     subscribeToRunEvents(source, handleRunEvent);
@@ -261,7 +261,7 @@ function App() {
       source.close();
       if (queryPollTimer !== null) window.clearInterval(queryPollTimer);
     };
-  }, [page]);
+  }, [page, runId]);
 
   const registerProject = async (event: FormEvent) => {
     event.preventDefault();
