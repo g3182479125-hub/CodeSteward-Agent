@@ -178,6 +178,7 @@ def test_validation_and_domain_errors_use_stable_error_contract(tmp_path: Path) 
 
     method_not_allowed = client.post("/api/v1/skills")
     assert method_not_allowed.status_code == 405
+    assert method_not_allowed.headers["Allow"] == "GET"
     assert method_not_allowed.json()["error"]["code"] == "METHOD_NOT_ALLOWED"
     assert method_not_allowed.json()["request_id"] == method_not_allowed.headers["X-Request-ID"]
 

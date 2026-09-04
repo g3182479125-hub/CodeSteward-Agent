@@ -1423,10 +1423,12 @@ def create_app(
             exc.status_code, ("HTTP_ERROR", "request failed")
         )
         request_id = getattr(request.state, "request_id", _request_id(request))
+        headers = dict(exc.headers or {})
+        headers["X-Request-ID"] = request_id
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, code, message),
-            headers={"X-Request-ID": request_id},
+            headers=headers,
         )
 
     @app.exception_handler(RequestValidationError)
