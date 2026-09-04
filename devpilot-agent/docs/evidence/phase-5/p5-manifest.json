@@ -2,7 +2,7 @@
   "phase": "P5",
   "status": "review_pending",
   "current_scope_manifest": "docs/evidence/phase-5/p5-nanobot-only-scope-manifest.json",
-  "evidence_commit": "p5-candidate-20260905-r3",
+  "evidence_commit": "p5-candidate-20260905-r4",
   "evidence_ref_type": "immutable_tag",
   "current_frontend": "nanobot-native-webui-only",
   "canonical_api_prefix": "/api/v1",
