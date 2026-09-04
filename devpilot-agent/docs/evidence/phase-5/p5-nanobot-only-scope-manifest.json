@@ -1,0 +1,49 @@
+{
+  "phase": "P5",
+  "node": "ADR-0003-nanobot-only-frontend",
+  "status": "in_progress",
+  "implementation_commit": "67ae98a",
+  "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
+  "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
+  "config": {
+    "bind": "127.0.0.1",
+    "api_port": 18800,
+    "frontend_port": null,
+    "cors": "disabled",
+    "fc_sandbox": "not enabled"
+  },
+  "database_migration": "0007_project_trust",
+  "tests": [
+    {
+      "command": "uv run pytest --disable-warnings",
+      "exit_code": 0,
+      "result": "182 passed, 3 skipped"
+    },
+    {
+      "command": "uv run pytest tests/test_p5_api_contract.py --disable-warnings",
+      "exit_code": 0,
+      "result": "23 passed"
+    },
+    {
+      "command": "uv run ruff check src tests",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "uv run pyright",
+      "exit_code": 0,
+      "result": "0 errors, 0 warnings, 0 informations"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "result": "passed"
+    }
+  ],
+  "artifacts": [
+    "docs/adr/ADR-0003-nanobot-only-frontend.md",
+    "docs/runbooks/local-nanobot-devpilot.md"
+  ],
+  "rollback_point": "29dff92",
+  "note": "event bridge and Action Broker are specified but not implemented; amended P5 remains in_progress"
+}
