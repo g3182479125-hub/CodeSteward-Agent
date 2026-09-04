@@ -268,6 +268,44 @@ class IdempotencyRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class BrokerActionRecord(Base):
+    """Durable, non-secret proof that one gateway confirmation was consumed."""
+
+    __tablename__ = "broker_actions"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "thread_id",
+            "confirmation_id",
+            "user_event_nonce",
+            name="uq_broker_action_confirmation",
+        ),
+        UniqueConstraint(
+            "session_id", "thread_id", "user_message_seq", name="uq_broker_action_sequence"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    confirmation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_event_nonce: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_message_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    change_set_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    patch_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    project_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    signature_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_digest: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="authorized")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_json: Mapped[str | None] = mapped_column(Text)
+
+
 class ProjectStore:
     """Repository-style operations; callers never build SQL strings."""
 
@@ -494,8 +532,7 @@ class ProjectStore:
         if len(set(canonical_targets)) != len(canonical_targets):
             raise ValueError(f"{label} target files must be unique after canonicalization")
         if any(
-            not re.fullmatch(r"[0-9a-f]{64}", str(value))
-            for value in canonical_hashes.values()
+            not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in canonical_hashes.values()
         ):
             raise ValueError(f"{label} before hashes must be SHA-256 values")
         if any(item not in canonical_hashes for item in canonical_targets):
@@ -518,10 +555,7 @@ class ProjectStore:
                 if candidate.is_symlink():
                     raise ValueError(f"{label} targets must be regular project files")
                 target = candidate.resolve(strict=True)
-                if (
-                    not target.is_file()
-                    or not target.is_relative_to(project_path)
-                ):
+                if not target.is_file() or not target.is_relative_to(project_path):
                     raise ValueError(f"{label} targets must be regular project files")
                 actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
                 if canonical_hashes[relative_path] != actual_hash:
@@ -1072,9 +1106,7 @@ class ProjectStore:
             if isinstance(existing, str) and _REQUEST_ID_PATTERN.fullmatch(existing):
                 return existing
             typed_payload["request_id"] = request_id
-            updated = json.dumps(
-                typed_payload, ensure_ascii=False, sort_keys=True
-            )
+            updated = json.dumps(typed_payload, ensure_ascii=False, sort_keys=True)
             result = session.execute(
                 update(IdempotencyRecord)
                 .where(
@@ -1097,8 +1129,7 @@ class ProjectStore:
             refreshed_id = cast(dict[str, Any], refreshed_payload).get("request_id")
             return (
                 refreshed_id
-                if isinstance(refreshed_id, str)
-                and _REQUEST_ID_PATTERN.fullmatch(refreshed_id)
+                if isinstance(refreshed_id, str) and _REQUEST_ID_PATTERN.fullmatch(refreshed_id)
                 else None
             )
 
@@ -1113,6 +1144,37 @@ class ProjectStore:
         with self._session_factory() as session:
             record = session.get(IdempotencyRecord, key)
             return None if record is None else (record.request_hash, record.response_json)
+
+    def reserve_broker_action(self, payload: dict[str, Any]) -> bool:
+        """Atomically consume a gateway confirmation before capability issuance."""
+        with self._session_factory.begin() as session:
+            record = BrokerActionRecord(id=str(uuid.uuid4()), created_at=utc_now(), **payload)
+            try:
+                session.add(record)
+                session.flush()
+            except Exception as exc:
+                # SQLite uniqueness means replay or sequence re-use; hide DB details.
+                if "UNIQUE constraint failed" in str(exc):
+                    return False
+                raise
+            return True
+
+    def finish_broker_action(
+        self, confirmation_id: str, status: str, result: dict[str, Any] | None = None
+    ) -> None:
+        with self._session_factory.begin() as session:
+            record = (
+                session.query(BrokerActionRecord)
+                .filter(BrokerActionRecord.confirmation_id == confirmation_id)
+                .one_or_none()
+            )
+            if record is not None:
+                record.status = status
+                record.finished_at = utc_now()
+                if result is not None:
+                    record.result_json = json.dumps(
+                        redact_sensitive_payload(result), ensure_ascii=False, sort_keys=True
+                    )
 
     def list_applying_change_sets(self) -> list[tuple[str, str]]:
         with self._session_factory() as session:

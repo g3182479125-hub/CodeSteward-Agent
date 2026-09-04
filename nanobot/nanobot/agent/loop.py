@@ -1269,6 +1269,7 @@ class AgentLoop:
                         on_stream_end=delivery.on_stream_end,
                         pending_queue=pending,
                         delivery=delivery,
+                        attributes=msg.attributes,
                     )
                     continuing = turn_continuation.internal_continuation_pending(msg.metadata)
                     await delivery.complete(
@@ -2293,6 +2294,7 @@ class AgentLoop:
         msg = InboundMessage(
             channel=channel, sender_id=sender_id, chat_id=chat_id,
             content=content, media=media or [], metadata=metadata,
+            attributes=dict(attributes or {}),
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._get_session_lock(session_key)

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import ipaddress
 import json
 import re
+import secrets
 import ssl
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Self, TypeGuard, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -373,6 +376,10 @@ class WebSocketChannel(BaseChannel):
         self._conn_default: dict[ServerConnection, str] = {}
         # Connections authenticated with a one-time token from /webui/bootstrap.
         self._webui_connections: set[ServerConnection] = set()
+        # Ephemeral only: never copied to metadata, transcripts, or sessions.
+        self._devpilot_signer = self._DevPilotSigner(secrets.token_bytes(32))
+        self._devpilot_session_id = uuid.uuid4().hex
+        self._devpilot_confirmation_sequences: dict[str, int] = {}
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
@@ -391,6 +398,49 @@ class WebSocketChannel(BaseChannel):
         )
 
         self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
+
+    def _devpilot_confirmation_attributes(
+        self, connection: ServerConnection, chat_id: str, content: str,
+        turn_id: str | None, confirmation: object = None,
+    ) -> dict[str, Any]:
+        """Return non-persisted intent evidence for an exact trusted WebUI confirmation."""
+        if connection not in self._webui_connections:
+            return {}
+        action = {"执行": "apply", "验证": "verify", "撤销": "rollback"}.get(content.strip())
+        if action is None:
+            return {}
+        if not isinstance(confirmation, dict):
+            return {}
+        required = {"change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id"}
+        if set(confirmation) != required or any(
+            not isinstance(confirmation.get(key), str) or not confirmation[key]
+            for key in required
+        ):
+            return {}
+        values = {key: str(confirmation[key]) for key in required}
+        sequence = self._devpilot_confirmation_sequences.get(chat_id, 0) + 1
+        self._devpilot_confirmation_sequences[chat_id] = sequence
+        now = datetime.now(UTC)
+        issued_at = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+        confirmation_id = uuid.uuid4().hex
+        nonce = secrets.token_hex(16)
+        capability = {"apply": "r1.apply", "verify": "r2.verify", "rollback": "r1.rollback"}[action]
+        session_id = f"websocket:{self._devpilot_session_id}:{chat_id}"
+        canonical = "\n".join(("v1", session_id, turn_id or chat_id,
+            str(sequence), confirmation_id, values["change_set_id"], values["plan_hash"],
+            values["patch_hash"], values["scope_hash"], values["project_id"], capability,
+            issued_at, expires_at, nonce))
+        return {
+            "devpilot_confirmation": {
+                "action": action,
+                "context": {"session_id": session_id, "thread_id": turn_id or chat_id,
+                    "user_message_seq": sequence, "confirmation_id": confirmation_id,
+                    "issued_at": issued_at, "expires_at": expires_at,
+                    "user_event_nonce": nonce, "signature": self._devpilot_signer.sign(canonical.encode())},
+                "signer": self._devpilot_signer,
+            }
+        }
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -1017,6 +1067,10 @@ class WebSocketChannel(BaseChannel):
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
             trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
+            attributes = self._devpilot_confirmation_attributes(
+                connection, cid, content, turn_id if isinstance(turn_id, str) else None,
+                envelope.get("devpilot_confirmation")
+            ) if trusted_webui else {}
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps
@@ -1079,6 +1133,7 @@ class WebSocketChannel(BaseChannel):
                     content=content,
                     media=media_paths or None,
                     metadata=metadata,
+                    attributes=attributes,
                     is_dm=False,
                     session_key=(
                         temporary_policy.session_key
@@ -1615,3 +1670,12 @@ class WebSocketChannel(BaseChannel):
         raw = json.dumps(body, ensure_ascii=False)
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" turn_model_updated ")
+    class _DevPilotSigner:
+        def __init__(self, key: bytes) -> None:
+            self._key = key
+
+        def sign(self, payload: bytes) -> str:
+            return hmac.new(self._key, payload, hashlib.sha256).hexdigest()
+
+        def verify(self, payload: str, signature: str) -> bool:
+            return hmac.compare_digest(self.sign(payload.encode()), signature)

@@ -32,6 +32,9 @@ class InboundMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
+    # Trusted in-process attributes.  Unlike metadata these values are never
+    # persisted to the transcript or supplied to the model prompt.
+    attributes: dict[str, Any] = field(default_factory=dict)
     session_key_override: str | None = None  # Optional override for thread-scoped sessions
     require_existing_session: bool = False
 

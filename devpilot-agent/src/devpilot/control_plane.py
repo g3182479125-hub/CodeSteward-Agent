@@ -211,6 +211,9 @@ def plan_payload(entry: _PendingChangeSet) -> dict[str, Any]:
         "project_path": str(plan.project_path),
         "status": plan.change_set.status.value,
         "patch_hash": plan.patch_hash,
+        # The persisted P4 plan contract currently binds its plan hash to the
+        # immutable patch hash; expose it for the P5 confirmation tuple.
+        "plan_hash": plan.patch_hash,
         "scope_hash": plan.scope_hash,
         "plan_version": 1,
         "risk_summary": (

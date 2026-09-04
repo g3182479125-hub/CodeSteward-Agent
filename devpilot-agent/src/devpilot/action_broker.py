@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import re
 import secrets
-import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -230,6 +229,9 @@ def sign_confirmation_context(
 SnapshotReader = Callable[[str], Mapping[str, Any]]
 CapabilityIssuer = Callable[[str, str], str]
 CapabilityExecutor = Callable[[str, str, str, str, str | None], Mapping[str, Any]]
+ConfirmationConsumer = Callable[[BrokerActionRequest], bool]
+ConfirmationFinisher = Callable[[BrokerActionRequest, str], None]
+ConfirmationVerifier = Callable[[str, str], bool]
 Clock = Callable[[], datetime]
 
 
@@ -238,48 +240,61 @@ class ActionBroker:
 
     def __init__(
         self,
-        gateway_key: bytes,
+        gateway_key: bytes | None = None,
         *,
         snapshot_reader: SnapshotReader,
         capability_issuer: CapabilityIssuer,
         capability_executor: CapabilityExecutor,
+        confirmation_consumer: ConfirmationConsumer | None = None,
+        confirmation_finisher: ConfirmationFinisher | None = None,
+        signature_verifier: ConfirmationVerifier | None = None,
         clock: Clock | None = None,
     ) -> None:
-        if len(gateway_key) != 32:
+        if gateway_key is not None and len(gateway_key) != 32:
             raise ValueError("gateway key must be 32 bytes")
-        self._gateway_key = bytes(gateway_key)
+        if gateway_key is None and signature_verifier is None:
+            raise ValueError("a gateway key or signature verifier is required")
+        self._gateway_key = bytes(gateway_key) if gateway_key is not None else None
+        self._signature_verifier = signature_verifier
         self._snapshot_reader = snapshot_reader
         self._capability_issuer = capability_issuer
         self._capability_executor = capability_executor
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._lock = threading.Lock()
-        self._consumed: set[tuple[str, str, str, str]] = set()
-        self._last_sequence: dict[tuple[str, str], int] = {}
+        self._confirmation_consumer = confirmation_consumer
+        self._confirmation_finisher = confirmation_finisher
 
     @classmethod
     def new_gateway_key(cls) -> bytes:
         return secrets.token_bytes(32)
 
     def execute(self, request: BrokerActionRequest) -> BrokerActionResult:
+        reserved = False
         try:
             request.validate()
             now = self._clock().astimezone(UTC)
             request.context.validate_time(now)
             capability = _CAPABILITIES[request.action]
-            expected = sign_confirmation_context(
-                request.context,
-                self._gateway_key,
-                change_set_id=request.change_set_id,
-                plan_hash=request.plan_hash,
-                patch_hash=request.patch_hash,
-                scope_hash=request.scope_hash,
-                project_id=request.project_id,
+            canonical = canonical_confirmation_string(
+                request.context, change_set_id=request.change_set_id,
+                plan_hash=request.plan_hash, patch_hash=request.patch_hash,
+                scope_hash=request.scope_hash, project_id=request.project_id,
                 capability=capability,
             )
-            if not hmac.compare_digest(expected, request.context.signature):
+            valid = (
+                self._signature_verifier(canonical, request.context.signature)
+                if self._signature_verifier is not None
+                else hmac.compare_digest(
+                    hmac.new(
+                        self._gateway_key or b"", canonical.encode(), hashlib.sha256
+                    ).hexdigest(),
+                    request.context.signature,
+                )
+            )
+            if not valid:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
-            self._consume_confirmation(request)
             self._check_snapshot(request)
+            self._consume_confirmation(request)
+            reserved = True
             token = self._capability_issuer(request.action, request.change_set_id)
             if not token or len(token) > 512:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
@@ -294,8 +309,13 @@ class ActionBroker:
                 )
             finally:
                 token = ""
-            return self._result_from_executor(request, raw)
+            result = self._result_from_executor(request, raw)
+            if self._confirmation_finisher is not None:
+                self._confirmation_finisher(request, result.status)
+            return result
         except BrokerError as exc:
+            if reserved and self._confirmation_finisher is not None:
+                self._confirmation_finisher(request, "failed")
             return BrokerActionResult(
                 status="rejected",
                 change_set_id=request.change_set_id,
@@ -303,6 +323,8 @@ class ActionBroker:
                 error_code=exc.code,
             )
         except (KeyError, TypeError, ValueError, OSError, RuntimeError):
+            if reserved and self._confirmation_finisher is not None:
+                self._confirmation_finisher(request, "failed")
             return BrokerActionResult(
                 status="rejected",
                 change_set_id=request.change_set_id,
@@ -311,21 +333,10 @@ class ActionBroker:
             )
 
     def _consume_confirmation(self, request: BrokerActionRequest) -> None:
-        context = request.context
-        replay_key = (
-            context.session_id,
-            context.thread_id,
-            context.confirmation_id,
-            context.user_event_nonce,
-        )
-        sequence_key = (context.session_id, context.thread_id)
-        with self._lock:
-            if replay_key in self._consumed:
-                raise BrokerError("APPROVAL_CONFIRMATION_REPLAYED")
-            if context.user_message_seq <= self._last_sequence.get(sequence_key, 0):
-                raise BrokerError("APPROVAL_CONFIRMATION_REPLAYED")
-            self._consumed.add(replay_key)
-            self._last_sequence[sequence_key] = context.user_message_seq
+        if self._confirmation_consumer is None:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        if not self._confirmation_consumer(request):
+            raise BrokerError("APPROVAL_CONFIRMATION_REPLAYED")
 
     def _check_snapshot(self, request: BrokerActionRequest) -> None:
         snapshot = self._snapshot_reader(request.change_set_id)
@@ -337,6 +348,8 @@ class ActionBroker:
             "project_id": request.project_id,
         }
         if any(snapshot.get(key) != value for key, value in expected.items()):
+            raise BrokerError("APPROVAL_SCOPE_MISMATCH")
+        if snapshot.get("trust_state") != "trusted":
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
 
     @staticmethod

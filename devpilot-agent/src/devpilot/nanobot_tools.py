@@ -9,13 +9,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -46,7 +48,11 @@ except ImportError:  # pragma: no cover - exercised only outside nanobot
 if TYPE_CHECKING:
     from nanobot.agent.tools.context import ToolContext
 
-from .action_broker import ActionBroker, BrokerActionRequest, BrokerError, ConfirmationContext
+from .action_broker import (
+    ActionBroker,
+    BrokerActionRequest,
+    ConfirmationContext,
+)
 from .code_access import CodeAccessError, CodeAccessService
 from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
@@ -137,20 +143,15 @@ def configure_action_broker(broker: ActionBroker | None) -> None:
     _action_broker = broker
 
 
-def _trusted_confirmation_context() -> ConfirmationContext | None:
-    """Read only the Gateway-owned, out-of-band confirmation attribute."""
+def _trusted_confirmation_attributes() -> dict[str, Any] | None:
+    """Read the WebUI-only confirmation envelope; it is never model input."""
     try:
         from nanobot.agent.tools.context import current_request_context
-    except ImportError:
-        return None
-    context = current_request_context()
-    if context is None:
-        return None
-    try:
-        return ConfirmationContext.from_mapping(
-            context.attributes.get("devpilot_confirmation_context")
-        )
-    except (BrokerError, TypeError, ValueError):
+
+        context = current_request_context()
+        value = context.attributes.get("devpilot_confirmation") if context else None
+        return value if isinstance(value, dict) else None
+    except (ImportError, TypeError, ValueError):
         return None
 
 
@@ -588,9 +589,7 @@ def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _request_approval(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_control_plane(
-        _change_set_path(change_set_id, "approval-requests"), payload
-    )
+    return _post_control_plane(_change_set_path(change_set_id, "approval-requests"), payload)
 
 
 def _http_error_message(exc: HTTPError) -> str:
@@ -620,10 +619,15 @@ def _post_control_plane(
     payload: dict[str, Any] | None = None,
     *,
     authorization_token: str | None = None,
+    idempotency_key: str | None = None,
+    redact: bool = True,
 ) -> dict[str, Any]:
     """Call one local control-plane action and remove bearer-like secrets."""
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotency_key or str(uuid.uuid4()),
+    }
     if authorization_token:
         headers["Authorization"] = f"DevPilotGrant {authorization_token}"
     request = Request(
@@ -639,7 +643,7 @@ def _post_control_plane(
     result = json.loads(response_body.decode("utf-8"))
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
-    return _model_result(result)
+    return _model_result(result) if redact else result
 
 
 def _get_control_plane(path: str) -> dict[str, Any]:
@@ -811,7 +815,6 @@ def _safe_resource_path(identifier: str, resource: str) -> str:
         "additionalProperties": False,
     }
 )
-
 class GetChangeSetTool(Tool):
     """Read one server-owned immutable ChangeSet preview and its persisted contract."""
 
@@ -1037,11 +1040,89 @@ class ConfirmedActionTool(Tool):
         return True
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
-        broker = _action_broker
-        context = _trusted_confirmation_context()
-        if broker is None or context is None:
+        attributes = _trusted_confirmation_attributes()
+        if attributes is None or attributes.get("action") != kwargs.get("action"):
             return ToolResult.error("P5 action rejected: APPROVAL_BROKER_UNAVAILABLE")
         try:
+            signer = cast(Any, attributes.get("signer"))
+            if not callable(getattr(signer, "sign", None)):
+                raise ValueError("missing trusted signer")
+            context = ConfirmationContext.from_mapping(attributes["context"])
+            store = ProjectStore(_data_dir() / "devpilot.db")
+            store.initialize()
+
+            def consume(request: BrokerActionRequest) -> bool:
+                return store.reserve_broker_action(
+                    {
+                        "session_id": request.context.session_id,
+                        "thread_id": request.context.thread_id,
+                        "confirmation_id": request.context.confirmation_id,
+                        "user_event_nonce": request.context.user_event_nonce,
+                        "user_message_seq": request.context.user_message_seq,
+                        "action": request.action,
+                        "change_set_id": request.change_set_id,
+                        "plan_hash": request.plan_hash,
+                        "patch_hash": request.patch_hash,
+                        "scope_hash": request.scope_hash,
+                        "project_id": request.project_id,
+                        "signature_digest": hashlib.sha256(
+                            request.context.signature.encode()
+                        ).hexdigest(),
+                        "idempotency_digest": None,
+                        "status": "authorized",
+                        "expires_at": request.context.validate_time(datetime.now(UTC))[1],
+                    }
+                )
+
+            def snapshot(change_set_id: str) -> dict[str, Any]:
+                result = _get_control_plane(_safe_resource_path(change_set_id, "change-sets"))
+                security = _get_control_plane(f"/v1/projects/{kwargs['project_id']}/security")
+                return {**result, "trust_state": security.get("trust_state")}
+
+            def finish(request: BrokerActionRequest, status: str) -> None:
+                store.finish_broker_action(request.context.confirmation_id, status)
+
+            def issue(action_name: str, change_set_id: str) -> str:
+                raw = _post_control_plane(
+                    _change_set_path(change_set_id, "approve"),
+                    {
+                        "capability": {
+                            "apply": "r1.apply",
+                            "verify": "r2.verify",
+                            "rollback": "r1.rollback",
+                        }[action_name]
+                    },
+                    redact=False,
+                )
+                token = raw.get("approval_token")
+                if not isinstance(token, str):
+                    raise ValueError("approval token unavailable")
+                return token
+
+            def execute(
+                action_name: str, change_set_id: str, token: str, key: str, profile: str | None
+            ) -> dict[str, Any]:
+                payload = (
+                    {"profile": profile or "python-syntax"} if action_name == "verify" else None
+                )
+                raw = _post_control_plane(
+                    _change_set_path(change_set_id, action_name),
+                    payload,
+                    authorization_token=token,
+                    idempotency_key=key,
+                )
+                return {
+                    key: raw.get(key) for key in ("status", "run_id", "error_code", "result_ref")
+                }
+
+            broker = ActionBroker(
+                signature_verifier=signer.verify,
+                snapshot_reader=snapshot,
+                capability_issuer=issue,
+                capability_executor=execute,
+                confirmation_consumer=consume,
+                confirmation_finisher=finish,
+            )
             result = broker.execute(
                 BrokerActionRequest(
                     context=context,
@@ -1377,9 +1458,7 @@ class TestRepairProposeTool(Tool):
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
-            return ToolResult.error(
-                f"P4 test-repair proposal rejected: {_http_error_message(exc)}"
-            )
+            return ToolResult.error(f"P4 test-repair proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 test-repair proposal rejected: {type(exc).__name__}")
 
@@ -1517,9 +1596,7 @@ class ExecuteChangeSetTool(Tool):
                 return ToolResult.error(
                     "P2B execution rejected: explicit user confirmation required"
                 )
-            result = _apply_changeset(
-                str(kwargs["change_set_id"]), str(kwargs["approval_token"])
-            )
+            result = _apply_changeset(str(kwargs["change_set_id"]), str(kwargs["approval_token"]))
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
             return ToolResult.error(f"P2B execution failed: {_http_error_message(exc)}")

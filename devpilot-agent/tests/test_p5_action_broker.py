@@ -8,6 +8,7 @@ from devpilot.action_broker import (
     ConfirmationContext,
     sign_confirmation_context,
 )
+from devpilot.storage import ProjectStore
 
 NOW = datetime(2026, 9, 4, 20, 0, tzinfo=UTC)
 HASHES = {
@@ -49,13 +50,27 @@ def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest
 
 
 def _broker(calls: list[tuple[str, ...]]) -> ActionBroker:
+    consumed: set[tuple[str, str, str, str]] = set()
     def snapshot(change_set_id: str) -> dict[str, str]:
         assert change_set_id == "change-set-1"
         return {
             "change_set_id": change_set_id,
             "project_id": "project-1",
+            "trust_state": "trusted",
             **HASHES,
         }
+
+    def consume(request: BrokerActionRequest) -> bool:
+        key = (
+            request.context.session_id,
+            request.context.thread_id,
+            request.context.confirmation_id,
+            request.context.user_event_nonce,
+        )
+        if key in consumed:
+            return False
+        consumed.add(key)
+        return True
 
     def issue(action: str, change_set_id: str) -> str:
         calls.append(("issue", action, change_set_id))
@@ -76,6 +91,7 @@ def _broker(calls: list[tuple[str, ...]]) -> ActionBroker:
         snapshot_reader=snapshot,
         capability_issuer=issue,
         capability_executor=execute,
+        confirmation_consumer=consume,
         clock=lambda: NOW,
     )
 
@@ -127,6 +143,7 @@ def test_broker_rejects_expired_confirmation_and_bad_snapshot() -> None:
         snapshot_reader=lambda _change_set_id: {"project_id": "other"},
         capability_issuer=lambda *_args: "token",
         capability_executor=lambda *_args: {"status": "completed"},
+        confirmation_consumer=lambda _request: True,
         clock=lambda: NOW,
     )
     assert mismatch.execute(_request()).error_code == "APPROVAL_SCOPE_MISMATCH"
@@ -139,6 +156,7 @@ def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
         snapshot_reader=lambda _change_set_id: {
             "change_set_id": "change-set-1",
             "project_id": "project-1",
+            "trust_state": "trusted",
             **HASHES,
         },
         capability_issuer=lambda *_args: "token",
@@ -146,6 +164,7 @@ def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
             "status": "completed",
             "run_id": "e2b_1234567890abcdef_token",
         },
+        confirmation_consumer=lambda _request: True,
         clock=lambda: NOW,
     ).execute(_request())
     assert token_result.error_code == "APPROVAL_BROKER_UNAVAILABLE"
@@ -155,10 +174,43 @@ def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
         snapshot_reader=lambda _change_set_id: {
             "change_set_id": "change-set-1",
             "project_id": "project-1",
+            "trust_state": "trusted",
             **HASHES,
         },
         capability_issuer=lambda *_args: "token",
         capability_executor=lambda *_args: {"status": "completed"},
+        confirmation_consumer=lambda _request: True,
         clock=lambda: NOW,
     ).execute(_request())
     assert false_success.error_code == "APPROVAL_BROKER_UNAVAILABLE"
+
+
+def test_broker_confirmation_reservation_survives_store_reopen(tmp_path) -> None:
+    store = ProjectStore(tmp_path / "devpilot.db")
+    store.initialize()
+    request = _request()
+
+    def reserve(candidate: BrokerActionRequest) -> bool:
+        return store.reserve_broker_action(
+            {
+                "session_id": candidate.context.session_id,
+                "thread_id": candidate.context.thread_id,
+                "confirmation_id": candidate.context.confirmation_id,
+                "user_event_nonce": candidate.context.user_event_nonce,
+                "user_message_seq": candidate.context.user_message_seq,
+                "action": candidate.action,
+                "change_set_id": candidate.change_set_id,
+                "plan_hash": candidate.plan_hash,
+                "patch_hash": candidate.patch_hash,
+                "scope_hash": candidate.scope_hash,
+                "project_id": candidate.project_id,
+                "signature_digest": "a" * 64,
+                "status": "authorized",
+            }
+        )
+
+    assert reserve(request) is True
+    reopened = ProjectStore(tmp_path / "devpilot.db")
+    reopened.initialize()
+    store = reopened
+    assert reserve(request) is False
