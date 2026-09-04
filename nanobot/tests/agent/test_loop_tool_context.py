@@ -34,6 +34,7 @@ class _ContextRecordingTool:
             "chat_id": ctx.chat_id,
             "metadata": ctx.metadata,
             "session_key": ctx.session_key,
+            "attributes": ctx.attributes,
         })
         return "created"
 
@@ -84,6 +85,14 @@ async def test_loop_binds_request_context_for_tool_execution(tmp_path: Path) -> 
 
     metadata = {"slack": {"thread_ts": "111.222", "channel_type": "channel"}}
     runtime = loop.llm_runtime()
+    request_context = RequestContext(
+        channel="slack",
+        chat_id="C123",
+        metadata=metadata,
+        session_key="slack:C123:111.222",
+        attributes={"tenant": "acme", "devpilot_confirmation": {"secret": "hidden"}},
+        runtime=runtime,
+    )
     await loop._run_agent_loop(
         [],
         runtime=runtime,
@@ -91,6 +100,7 @@ async def test_loop_binds_request_context_for_tool_execution(tmp_path: Path) -> 
         chat_id="C123",
         metadata=metadata,
         session_key="slack:C123:111.222",
+        request_context=request_context,
     )
 
     assert cron.contexts[-1] == {
@@ -98,6 +108,7 @@ async def test_loop_binds_request_context_for_tool_execution(tmp_path: Path) -> 
         "chat_id": "C123",
         "metadata": metadata,
         "session_key": "slack:C123:111.222",
+        "attributes": {"tenant": "acme", "devpilot_confirmation": {"secret": "hidden"}},
     }
     assert cron.runtimes[-1] is runtime
 

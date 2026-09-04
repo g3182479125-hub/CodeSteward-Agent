@@ -34,8 +34,11 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 - DevPilot focused Broker/migration suite: `17 passed`.
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
-- nanobot Gateway/BaseChannel/runtime tests: `27 passed, 1 skipped`.
+- nanobot Gateway/BaseChannel/runtime and AgentLoop context integration tests: `28 passed, 1 skipped`.
 - Native WebUI client has a regression test for confirmation tuple serialization.
+- Fake nanobot tool-loop chat coverage proves trusted attributes reach one tool turn while
+  remaining absent from runtime events and Session persistence; provider-backed live chat was
+  not available in this environment.
 - `git diff --check`: passed.
 
 The skipped tests are existing Windows symlink-privilege checks and are reported as

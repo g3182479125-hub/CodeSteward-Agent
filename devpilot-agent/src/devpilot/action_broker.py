@@ -7,7 +7,7 @@ import hmac
 import re
 import secrets
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -130,6 +130,9 @@ class BrokerActionRequest:
     scope_hash: str
     project_id: str
     verification_profile: str | None = None
+    # Set only by ActionBroker after the confirmation is validated. It is
+    # intentionally excluded from the canonical signature and model schema.
+    idempotency_key: str | None = None
 
     def validate(self) -> None:
         if self.action not in _ACTIONS:
@@ -141,6 +144,8 @@ class BrokerActionRequest:
         _identifier(self.project_id)
         if self.verification_profile is not None:
             _identifier(self.verification_profile)
+        if self.idempotency_key is not None:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
 
 
 @dataclass(frozen=True)
@@ -311,6 +316,7 @@ class ActionBroker:
                 return self._result_from_replay(request, reservation.terminal_result)
             reserved = True
             idempotency_key = reservation.idempotency_key
+            request = replace(request, idempotency_key=idempotency_key)
             token = self._capability_issuer(request.action, request.change_set_id)
             if not token or len(token) > 512:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")

@@ -9,6 +9,8 @@ reference against the current loopback Control Plane ChangeSet before signing an
 only a non-persistent confirmation context plus a verifier-only capability through
 `RequestContext.attributes`.
 The model never receives a key, token, metadata copy, transcript copy, or idempotency key.
+`BrokerActionRequest` carries the hidden key only after Action Broker reservation; the key is
+random, persisted for crash recovery, and never accepted from the Tool schema.
 
 The Broker validates the signature, current trusted-project snapshot, and expiry, then
 atomically reserves the confirmation in SQLite before issuing a Control Plane capability.
@@ -21,7 +23,7 @@ refused rather than silently altered by `create_all()`.
 
 - DevPilot full suite completed without a failure; focused P5 and migration tests pass.
 - DevPilot Ruff and Pyright pass.
-- nanobot confirmation/BaseChannel/gateway runtime tests: `27 passed, 1 skipped` with TEMP/TMP redirected to E:.
+- nanobot confirmation/BaseChannel/gateway/AgentLoop integration tests: `28 passed, 1 skipped` with TEMP/TMP redirected to E:.
 - `git diff --check` passes.
 - Native WebUI client test covers serialization of the exact confirmation tuple. The local
   npm registry/cache was unavailable during this run, so Vite compilation is not a P5 gate
