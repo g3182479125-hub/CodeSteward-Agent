@@ -626,7 +626,10 @@ class ControlPlaneManager:
                 )
                 if finalize_run:
                     self._finish_run(entry, "failed", {"code": "VERIFICATION_PROFILE_UNSUPPORTED"})
-                raise PatchError("VERIFICATION_PROFILE_UNSUPPORTED", str(exc)) from exc
+                raise PatchError(
+                    "VERIFICATION_PROFILE_UNSUPPORTED",
+                    "verification profile is not supported",
+                ) from exc
             self._consume_approval(entry, approval_token, VERIFY_CAPABILITY)
             self._reserve_idempotency(
                 idempotency_key,
@@ -821,7 +824,9 @@ class ControlPlaneManager:
                 allowed_root_id=root_id,
             )
         except (KeyError, PathBoundaryError, ValueError) as exc:
-            raise PatchError("PROJECT_TRUST_INVALID", str(exc)) from exc
+            raise PatchError(
+                "PROJECT_TRUST_INVALID", "project trust validation failed"
+            ) from exc
 
     def request_approval(
         self, change_set_id: str, capability: str, user_confirmation: str
@@ -889,7 +894,7 @@ class ControlPlaneManager:
             )
         except (KeyError, PathBoundaryError, ValueError) as exc:
             self._event(entry, "project.trust_denied", {"code": "PROJECT_TRUST_REQUIRED"})
-            raise PatchError("PROJECT_TRUST_REQUIRED", str(exc)) from exc
+            raise PatchError("PROJECT_TRUST_REQUIRED", "trusted project is required") from exc
 
     def _consume_approval(
         self, entry: _PendingChangeSet, token: str, capability: str

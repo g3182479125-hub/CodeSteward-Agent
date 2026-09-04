@@ -15,7 +15,8 @@ _SENSITIVE_PATTERNS = (
 )
 _SENSITIVE_NAME = (
     r"(?:[A-Za-z0-9]*(?:api[_-]?(?:key|token)|access[_-]?(?:key|token)|"
-    r"auth[_-]?token|secret(?:[_-]?key)?|token|password|passwd)[A-Za-z0-9_-]*)"
+    r"auth[_-]?token|secret(?:[_-]?key)?|private[_-]?key|credential|"
+    r"token|password|passwd)[A-Za-z0-9_-]*)"
 )
 _SENSITIVE_FIELD_MARKERS = (
     "token",

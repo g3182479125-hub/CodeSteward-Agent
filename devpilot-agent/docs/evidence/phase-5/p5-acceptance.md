@@ -8,8 +8,8 @@ language entry point.
 
 ## Verified locally
 
-- P5 API/SSE contract tests: 18 passed.
-- Full Python suite: 178 passed, 3 skipped.
+- P5 API/SSE contract tests: 19 passed.
+- Full Python suite: 179 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
 - Web TypeScript check: passed with `npm test`.
@@ -19,7 +19,9 @@ language entry point.
 - Browser smoke: `pnpm run browser-smoke` is committed and uses an ephemeral
   fake API fixture; the page-level check covers Dashboard, API online,
   ChangeSet accept/stop/rollback controls, and Security/Backends unavailable
-  labeling. It also forces an SSE disconnect and verifies the polling fallback.
+  labeling. It also forces an SSE disconnect and verifies the polling fallback;
+  a CDP-driven interaction check verifies cancelled confirmation causes no POST
+  and confirmed delivery submits exactly once.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
 

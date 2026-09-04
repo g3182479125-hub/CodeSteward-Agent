@@ -20,7 +20,9 @@ The local API and Vite console were started on loopback ports `18800` and
    the production bundle so Edge/Chrome can load the actual React page against
    fixture responses. It checks page-body data for every console view plus
    Diff, timeline, accept/stop/rollback controls, and the SSE-to-polling
-   fallback after a forced disconnect. Set `DEVPILOT_BROWSER` or
+   fallback after a forced disconnect. It also uses browser remote debugging
+   to verify that cancelling the confirmation does not POST a decision and
+   confirming it submits exactly one decision. Set `DEVPILOT_BROWSER` or
    `DEVPILOT_BROWSER_PROFILE_ROOT` when the local browser paths differ.
 
 The automated browser smoke is dependency-free and does not require

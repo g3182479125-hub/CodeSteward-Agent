@@ -23,11 +23,12 @@ const json = (response, payload, status = 200) => {
 const requestedPaths = new Set();
 let runSnapshotRequests = 0;
 let failedRunSnapshotRequests = 0;
+let decisionRequests = 0;
 const apiServer = createServer((request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
-      "access-control-allow-headers": "Content-Type",
-      "access-control-allow-methods": "GET, OPTIONS",
+      "access-control-allow-headers": "Content-Type, Idempotency-Key",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-origin": "*",
     });
     response.end();
@@ -47,6 +48,12 @@ const apiServer = createServer((request, response) => {
     change_set_id: "fixture-change-set", status: "verified", available_decisions: ["accept", "stop", "rollback"],
     decision: { type: null }, rollback: { capability: "r1.rollback", requires_approval_token: true },
   });
+  if (path === "/api/v1/change-sets/fixture-change-set/decision" && request.method === "POST") {
+    decisionRequests += 1;
+    return json(response, {
+      change_set_id: "fixture-change-set", status: "accepted", decision: { type: "accept" },
+    });
+  }
   if (path === "/api/v1/runs/fixture-run" || path === "/api/v1/runs/fixture-failed-sse") {
     runSnapshotRequests += 1;
     if (path.endsWith("fixture-failed-sse")) failedRunSnapshotRequests += 1;
@@ -162,6 +169,72 @@ try {
       });
     });
   };
+  const runInteractionBrowser = async (url) => {
+    const debugProbe = createServer();
+    const debugPort = await listen(debugProbe);
+    debugProbe.close();
+    const profile = await mkdtemp(join(profileRoot, "devpilot-browser-interaction-"));
+    const child = spawn(candidates[0], [
+      "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--disable-extensions",
+      "--disable-background-networking", "--disable-component-update", "--no-default-browser-check",
+      "--no-first-run", "--remote-allow-origins=*", `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${profile}`, url,
+    ], { windowsHide: true });
+    const childClosed = new Promise((resolvePromise) => child.once("close", resolvePromise));
+    let socket;
+    try {
+      let target;
+      const deadline = Date.now() + 10000;
+      while (!target && Date.now() < deadline) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
+          const pages = await response.json();
+          target = pages.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
+        } catch { /* Chrome is still starting. */ }
+        if (!target) await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+      }
+      if (!target) throw new Error("remote debugging target did not start");
+      socket = new WebSocket(target.webSocketDebuggerUrl);
+      await new Promise((resolvePromise, reject) => {
+        socket.addEventListener("open", resolvePromise, { once: true });
+        socket.addEventListener("error", reject, { once: true });
+      });
+      let messageId = 0;
+      const evaluate = (expression) => new Promise((resolvePromise, reject) => {
+        const id = ++messageId;
+        const onMessage = (event) => {
+          const message = JSON.parse(event.data);
+          if (message.id !== id) return;
+          socket.removeEventListener("message", onMessage);
+          if (message.error) reject(new Error(message.error.message));
+          else if (message.result?.exceptionDetails) reject(new Error("browser interaction raised an exception"));
+          else resolvePromise(message.result?.result?.value);
+        };
+        socket.addEventListener("message", onMessage);
+        socket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
+      });
+      await evaluate("document.readyState");
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+      const initialButton = await evaluate(`(() => { const button = [...document.querySelectorAll("button")].find((item) => item.textContent.includes("接受交付")); if (!button) throw new Error("accept button missing"); return { disabled: button.disabled, text: button.textContent }; })()`);
+      if (initialButton.disabled) throw new Error(`accept button unexpectedly disabled: ${JSON.stringify(initialButton)}`);
+      await evaluate(`(() => { Object.defineProperty(window, "confirm", { value: () => false, configurable: true }); const button = [...document.querySelectorAll("button")].find((item) => item.textContent.includes("接受交付")); button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return true; })()`);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+      if (decisionRequests !== 0) throw new Error("cancelled decision unexpectedly posted");
+      const beforeConfirm = await evaluate(`(() => { Object.defineProperty(window, "confirm", { value: () => true, configurable: true }); const button = [...document.querySelectorAll("button")].find((item) => item.textContent.includes("接受交付")); if (!button) throw new Error("accept button missing after cancel"); return { disabled: button.disabled, text: button.textContent }; })()`);
+      if (beforeConfirm.disabled) throw new Error(`accept button disabled after cancel: ${JSON.stringify(beforeConfirm)}`);
+      await evaluate(`(() => { const button = [...document.querySelectorAll("button")].find((item) => item.textContent.includes("接受交付")); button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); return true; })()`);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+      if (decisionRequests !== 1) throw new Error(`confirmed decision was not posted exactly once: ${decisionRequests}; paths=${JSON.stringify([...requestedPaths])}`);
+    } finally {
+      socket?.close();
+      child.kill();
+      await Promise.race([
+        childClosed,
+        new Promise((resolvePromise) => setTimeout(resolvePromise, 3000)),
+      ]);
+      await rm(profile, { recursive: true, force: true });
+    }
+  };
   await runBrowser(dashboardUrl, ["把计划、变更、验证和证据放在同一个可审查界面。", "P5 LOCAL CONSOLE", "API 在线"]);
   for (const [query, markers] of [
     ["page=projects", ["fixture-project", "登记项目"]],
@@ -174,6 +247,7 @@ try {
   ]) {
     await runBrowser(`http://127.0.0.1:${webPort}/?${query}`, markers);
   }
+  await runInteractionBrowser(`http://127.0.0.1:${webPort}/?page=changeset&change_set_id=fixture-change-set`);
   if (runSnapshotRequests < 2) throw new Error("browser fixture did not exercise polling fallback");
   if (failedRunSnapshotRequests < 2) throw new Error("browser fixture did not poll after SSE failure");
   for (const path of [

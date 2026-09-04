@@ -117,14 +117,13 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         "db-secret",
     ):
         assert secret not in other_camel_case
-    bare_names = redact_sensitive_text(
-        "secret=plain-secret; client_secret=client-secret; "
-        "private_key=private-secret; credential=credential-secret"
-    )
-    assert "plain-secret" not in bare_names
-    assert "client-secret" not in bare_names
-    assert "private-secret" not in bare_names
-    assert "credential-secret" not in bare_names
+    for assignment, secret in (
+        ("secret=plain-secret", "plain-secret"),
+        ("client_secret=client-secret", "client-secret"),
+        ("private_key=private-secret", "private-secret"),
+        ("credential=credential-secret", "credential-secret"),
+    ):
+        assert secret not in redact_sensitive_text(assignment)
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
@@ -219,6 +218,21 @@ def test_request_id_body_and_header_stay_identical_for_credential_shaped_id(
     assert response.status_code == 404
     assert response.headers["X-Request-ID"] == request_id
     assert response.json()["request_id"] == request_id
+
+
+def test_error_response_does_not_expose_project_path(tmp_path: Path) -> None:
+    client, _manager, project = setup_app(tmp_path)
+    project_id = client.get("/api/v1/projects").json()["projects"][0]["project_id"]
+    project.rmdir()
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/trust",
+        json={"confirmation": "trust"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PROJECT_TRUST_INVALID"
+    assert str(project) not in response.text
 
 
 def test_console_read_models_expose_projects_skills_backends_and_diff(
