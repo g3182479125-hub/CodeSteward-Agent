@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from nanobot.agent.tools.context import ToolContext
 
 from .code_access import CodeAccessError, CodeAccessService
+from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
 from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
@@ -627,6 +628,85 @@ def _get_control_plane(path: str) -> dict[str, Any]:
     return _model_result(result)
 
 
+def _get_control_plane_events(
+    path: str, *, last_event_id: int | None = None
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Read the finite, server-owned SSE projection without accepting arbitrary URLs."""
+    headers: dict[str, str] = {"Accept": "text/event-stream"}
+    if last_event_id is not None:
+        headers["Last-Event-ID"] = str(last_event_id)
+    request = Request(f"{_control_plane_url()}{path}", headers=headers, method="GET")
+    with urlopen(request, timeout=15) as response:
+        body = response.read(512 * 1024 + 1)
+    if len(body) > 512 * 1024:
+        raise ValueError("control-plane event stream is too large")
+
+    events: list[dict[str, Any]] = []
+    event_id: str | None = None
+    event_name: str | None = None
+    data_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal event_id, event_name, data_lines
+        if not data_lines:
+            event_id = None
+            event_name = None
+            return
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("control-plane SSE data is invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("control-plane SSE event is invalid")
+        if event_id is None:
+            raise ValueError("control-plane SSE event id is missing")
+        try:
+            numeric_id = int(event_id)
+        except ValueError as exc:
+            raise ValueError("control-plane SSE event id is invalid") from exc
+        if numeric_id < 0:
+            raise ValueError("control-plane SSE event id is invalid")
+        payload.setdefault("event_id", numeric_id)
+        if event_name:
+            payload.setdefault("type", event_name)
+        events.append(payload)
+        event_id = None
+        event_name = None
+        data_lines = []
+
+    for raw_line in body.decode("utf-8", errors="strict").splitlines():
+        if not raw_line:
+            flush()
+            continue
+        if raw_line.startswith(":"):
+            continue
+        field, separator, value = raw_line.partition(":")
+        if not separator:
+            continue
+        value = value[1:] if value.startswith(" ") else value
+        if field == "id":
+            event_id = value
+        elif field == "event":
+            event_name = value
+        elif field == "data":
+            data_lines.append(value)
+    flush()
+
+    run_id = ""
+    status = "running"
+    if events:
+        run_id = str(events[-1].get("run_id", ""))
+        for event in reversed(events):
+            event_type = event.get("type")
+            if event_type == "run.completed":
+                status = "completed"
+                break
+            if event_type == "run.failed":
+                status = "failed"
+                break
+    return run_id, status, events
+
+
 def _change_set_path(change_set_id: str, action: str) -> str:
     """Build a safe local control-plane path from an exact ChangeSet ID."""
     value = str(change_set_id)
@@ -789,6 +869,66 @@ class GetRunStateTool(Tool):
             return ToolResult.error(f"P4 Run read failed: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 Run read failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "run_id": {"type": "string", "minLength": 1},
+            "last_event_id": {"type": "integer", "minimum": 0},
+        },
+        "required": ["run_id"],
+        "additionalProperties": False,
+    }
+)
+class WatchRunTool(Tool):
+    """Project persisted Run events into safe nanobot conversation updates."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_watch_run"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Read the next redacted DevPilot Run events through the internal SSE projection. "
+            "Supports Last-Event-ID replay and falls back to the durable snapshot on a "
+            "transport failure; never returns raw output, paths, credentials or tokens."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            run_id = str(kwargs["run_id"])
+            cursor = kwargs.get("last_event_id")
+            if cursor is not None and (not isinstance(cursor, int) or cursor < 0):
+                raise ValueError("last_event_id must be a non-negative integer")
+            path = _safe_resource_path(run_id, "runs") + "/events"
+            try:
+                streamed_run_id, status, events = _get_control_plane_events(
+                    path, last_event_id=cursor
+                )
+                projection = project_sse_events(
+                    run_id=streamed_run_id or run_id,
+                    status=status,
+                    events=events,
+                )
+            except (OSError, URLError, TimeoutError):
+                # The database snapshot is the source of truth.  A broken SSE
+                # connection is never interpreted as success.
+                snapshot = _get_control_plane(_safe_resource_path(run_id, "runs"))
+                projection = project_run_state(snapshot, fallback=True)
+            return json.dumps(projection.to_dict(), ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"P5 Run event bridge failed: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"P5 Run event bridge failed: {type(exc).__name__}")
 
 
 @tool_parameters(
