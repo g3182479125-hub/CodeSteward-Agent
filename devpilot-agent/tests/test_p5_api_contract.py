@@ -312,6 +312,35 @@ def test_json_response_boundary_redacts_nested_approval_token(
     assert "nested-capability" not in response.text
 
 
+def test_approval_endpoint_preserves_opaque_token_for_operator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, manager, _project = setup_app(tmp_path)
+    operator_token = "sk-operator-token-that-must-survive"
+    monkeypatch.setattr(
+        manager,
+        "approve",
+        lambda _change_set_id, _capability: {"approval_token": operator_token},
+    )
+
+    response = client.post("/api/v1/change-sets/operator/approve")
+
+    assert response.status_code == 200
+    assert response.json()["approval_token"] == operator_token
+
+
+def test_delivery_report_preserves_boolean_capability_metadata(tmp_path: Path) -> None:
+    client, _manager, project = setup_app(tmp_path)
+    preview = make_preview(client, project)
+
+    report = client.get(
+        f"/api/v1/change-sets/{preview['change_set_id']}/delivery-report"
+    )
+
+    assert report.status_code == 200
+    assert report.json()["rollback"]["requires_approval_token"] is True
+
+
 def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> None:
     client, _manager, project = setup_app(tmp_path)
     secret_content = (

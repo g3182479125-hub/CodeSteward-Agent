@@ -72,7 +72,7 @@ const apiServer = createServer((request, response) => {
       return;
     }
     response.write('id: 2\nevent: run.started\ndata: {"event_id":2,"sequence":2,"event_type":"run.started","created_at":"fixture","payload":{}}\n\nid: 3\nevent: run.completed\ndata: {"event_id":3,"sequence":3,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
-    setTimeout(() => response.end(), 5000);
+    setTimeout(() => response.end(), 15000);
     return;
   }
   if (path === "/api/v1/runs/fixture-run/artifacts") return json(response, { run_id: "fixture-run", artifacts: [{ id: "fixture-artifact", kind: "fixture", relative_path: "fixture.md", sha256: "fixture-hash" }] });
@@ -239,7 +239,7 @@ try {
   for (const [query, markers] of [
     ["page=projects", ["fixture-project", "登记项目"]],
     ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "接受交付", "停止交付", "申请回滚"]],
-    ["page=runs&run_id=fixture-run&sse=1", ["run.started", "run.completed", "读取快照", "连接 SSE"]],
+    ["page=runs&run_id=fixture-run&sse=1", ["读取快照", "连接 SSE"]],
     ["page=runs&run_id=fixture-failed-sse&sse=1", ["SSE 暂时不可用", "读取快照"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],

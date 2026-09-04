@@ -1175,9 +1175,10 @@ def _public_payload(
             mapping = cast(dict[str, Any], value)
             return {
                 key: (
-                    "[REDACTED]"
-                    if not (preserve_approval_token and key == "approval_token")
-                    and is_sensitive_field_name(key)
+                    item
+                    if preserve_approval_token and key == "approval_token"
+                    else "[REDACTED]"
+                    if is_sensitive_field_name(key)
                     else clean(item)
                 )
                 for key, item in mapping.items()

@@ -246,6 +246,7 @@ function App() {
     subscribeToRunEvents(source, handleRunEvent);
     let queryPollTimer: number | null = null;
     source.onerror = () => {
+      source.close();
       if (queryPollTimer !== null) return;
       setError("SSE 暂时不可用，已自动切换为数据库轮询。");
       queryPollTimer = window.setInterval(() => {
