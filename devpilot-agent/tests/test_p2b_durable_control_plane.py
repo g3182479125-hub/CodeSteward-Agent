@@ -200,22 +200,6 @@ def test_http_rejects_non_loopback_client(tmp_path: Path) -> None:
     assert response.json()["error"]["code"] == "PATH_DENIED"
 
 
-def test_http_allows_loopback_review_ui_cors(tmp_path: Path) -> None:
-    _store, _project, _project_id, manager = setup_manager(tmp_path)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
-
-    response = client.options(
-        "/healthz",
-        headers={
-            "Origin": "http://127.0.0.1:18801",
-            "Access-Control-Request-Method": "GET",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:18801"
-
-
 def test_http_verification_requires_separate_capability_and_is_idempotent(tmp_path: Path) -> None:
     store, project, project_id, _unused = setup_manager(tmp_path)
     manager = ControlPlaneManager(

@@ -12,7 +12,7 @@ error contract.
 ## Goal
 
 Add a thin HTTP contract adapter that makes the existing control-plane
-behaviour consumable by a future console and nanobot adapter:
+behaviour consumable by the nanobot adapter and trusted local action broker:
 
 - expose the current supported routes under `/api/v1`;
 - preserve `/v1` as a compatibility surface during the migration;
@@ -24,10 +24,10 @@ behaviour consumable by a future console and nanobot adapter:
 
 ## Non-goals
 
-- no React or nanobot WebUI changes;
+- no React console; nanobot WebUI integration is specified by ADR-0003;
 - no SQLite schema or domain-state changes;
 - no new domain project/task/SSE resources beyond the frozen plan's existing
-  control-plane surface; the P5-03 console may consume the existing project
+  control-plane surface; nanobot adapters may consume the existing project
   read/registration routes;
 - no public authentication or non-loopback binding;
 - no command strings, absolute project paths, free-form environment values, or
@@ -113,10 +113,10 @@ diff, and secret scans run after implementation.
   or tracebacks. The operator-only `POST .../approve` response is the explicit
   exception: it returns the newly issued one-time capability token to its
   caller so the existing control-plane apply/verify flow remains compatible.
-  The console never calls that endpoint, and read models, SSE, events, and
+  The nanobot adapter never exposes that endpoint to the model, and read models, SSE, events, and
   apply results must never expose the token. The standards-defined
   `/openapi.json` document is also an explicit exception to the application
   response adapter: it remains byte-for-byte OpenAPI-compatible and is not
   decorated with application `request_id` or redaction fields.
 - The new contract tests pass, and the full test suite remains green.
-- No frontend, database migration, or external network behaviour changes.
+- No standalone frontend, database migration, or external network behaviour changes.

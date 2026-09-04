@@ -1,6 +1,7 @@
 {
   "phase": "P5",
-  "status": "certified",
+  "status": "historical-superseded-by-ADR-0003",
+  "current_frontend": "nanobot-native-webui-only",
   "canonical_api_prefix": "/api/v1",
   "compatibility_prefix": "/v1",
   "sse": {
@@ -8,22 +9,19 @@
     "resume_header": "Last-Event-ID",
     "source_of_truth": "append-only SQLite run_events"
   },
-  "console": {
-    "directory": "web",
-    "dev_url": "http://127.0.0.1:18801",
-    "nanobot_webui_modified": false
+  "frontend_scope": {
+    "product_entry": "nanobot-native-webui",
+    "standalone_console": "deleted-by-ADR-0003",
+    "internal_event_source": "/api/v1/runs/{run_id}/events"
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "183 passed, 3 skipped",
+    "python_full": "182 passed, 3 skipped",
     "p5_api_tests": "23 passed",
-    "web_test": "passed",
-    "web_build": "passed",
-    "web_smoke": "passed: HTTP smoke and in-app browser fixture check",
-    "pnpm_frozen_install": "passed",
+    "historical_web_checks": "passed before ADR-0003; no longer a current gate",
     "ruff": "passed",
     "pyright": "passed",
     "git_diff_check": "passed",
-    "parallel_review": "PASS: independent Standards and Spec reviews against 5860598...HEAD; no actionable findings"
+    "parallel_review": "PASS for historical console scope; amended nanobot-only scope requires new independent review"
   }
 }

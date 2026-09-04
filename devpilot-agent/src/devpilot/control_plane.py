@@ -18,7 +18,6 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Header, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -1342,24 +1341,9 @@ def create_app(
             artifacts_root=resolved_data_dir,
         )
     app = FastAPI(title="DevPilot Local Control Plane", version="0.2.0")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:18801",
-            "http://localhost:18801",
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-        ],
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "Idempotency-Key",
-            "Last-Event-ID",
-            "X-Request-ID",
-        ],
-    )
+    # This is an internal loopback API for nanobot adapters and the local action
+    # broker. There is no standalone browser client, so CORS is intentionally
+    # not enabled.
     app.state.manager = manager
 
     @app.middleware("http")

@@ -308,7 +308,7 @@ def test_error_response_does_not_expose_project_path(tmp_path: Path) -> None:
     assert str(project) not in response.text
 
 
-def test_console_read_models_expose_projects_skills_backends_and_diff(
+def test_internal_api_read_models_expose_projects_skills_backends_and_diff(
     tmp_path: Path,
 ) -> None:
     client, _manager, project = setup_app(tmp_path)
@@ -337,6 +337,18 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert backend["verified"] is False
     assert backend["status"] == "unavailable"
     assert "skills" in client.get("/api/v1/skills").json()
+
+
+def test_internal_api_does_not_emit_browser_cors_headers(tmp_path: Path) -> None:
+    client, _manager, _project = setup_app(tmp_path)
+
+    response = client.get(
+        "/healthz",
+        headers={"Origin": "http://127.0.0.1:18801"},
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_json_response_boundary_redacts_nested_credential_fields(
@@ -476,24 +488,6 @@ def test_sse_rejects_invalid_last_event_id_without_leaking_details(tmp_path: Pat
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "REQUEST_INVALID"
-
-
-def test_sse_cors_allows_last_event_id_replay_header(tmp_path: Path) -> None:
-    client, manager, project = setup_app(tmp_path)
-    preview = make_preview(client, project)
-    run_id = manager.get_run_id(str(preview["change_set_id"]))
-    assert run_id is not None
-
-    response = client.options(
-        f"/api/v1/runs/{run_id}/events",
-        headers={
-            "Origin": "http://127.0.0.1:18801",
-            "Access-Control-Request-Method": "GET",
-            "Access-Control-Request-Headers": "Last-Event-ID",
-        },
-    )
-    assert response.status_code == 200
-    assert "Last-Event-ID" in response.headers["access-control-allow-headers"]
 
 
 def test_idempotency_request_id_is_stable_across_app_instances(tmp_path: Path) -> None:

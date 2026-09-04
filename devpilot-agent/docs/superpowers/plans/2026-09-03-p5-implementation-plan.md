@@ -20,35 +20,37 @@ consumer.
 - emit a finite current projection so clients can reconnect safely;
 - add tests for ordering, replay, redaction, and invalid cursors.
 
-### P5-03 — local React console
+### P5-03 — nanobot WebUI event bridge and action broker
 
-- restore a small, optional DevPilot web workspace under `devpilot-agent/web`;
-- implement Dashboard, Projects, ChangeSet/Diff, approval status/final
-  decision controls, Run Timeline, and Artifacts views against `/api/v1`;
-- keep approval and rollback actions inside the ChangeSet detail flow with
-  explicit confirmation; do not add an approval-only page or touch nanobot's
-  chat WebUI;
-- add keyboard-visible focus, semantic buttons, loading/error states, and a
-  polling fallback when SSE is unavailable.
+- do not create or restore a DevPilot web workspace;
+- expose proposal, plan, Diff summary, risk, approval state, progress, result,
+  Artifact and rollback outcome through nanobot's existing WebUI conversation;
+- bridge internal DevPilot RunEvent/SSE records into redacted structured
+  nanobot messages without changing nanobot's core Agent Loop;
+- implement a trusted local action broker for chat confirmation. It may hold a
+  capability token only inside the trusted process and must consume it without
+  returning it to the model, Tool result, Session, WebUI text, SSE or logs.
 
-### P5-04 — skills/security and evidence
+### P5-04 — nanobot integration and evidence
 
-- add Skills and Security/Backends views;
-- surface unavailable/denied states honestly;
-- add browser build and smoke checks;
-- record P5 evidence and a reproducible local runbook.
+- surface Skills, security/backend capability, unavailable/denied states and
+  next steps as structured nanobot chat messages;
+- add nanobot adapter contract tests, Fake backend event tests, replay/fallback
+  tests and a real nanobot chat E2E when the provider is available;
+- record P5 evidence and the nanobot-only local runbook; no browser console or
+  frontend build is required.
 
 ## Verification gates
 
 After each backend slice: focused tests, Ruff, Pyright, and `git diff --check`.
-After the web slice: TypeScript build and a browser smoke test against a fake
-API fixture. Before closing P5: full Python suite, web build, secret scan,
-OpenAPI route check, and two parallel subagent reviews (Standards and Spec),
-recorded under `docs/reviews/`.
+After the nanobot integration slice: adapter contract, event redaction/replay,
+and Fake backend tests. Before closing P5: full Python suite, secret scan,
+OpenAPI route check, nanobot integration evidence, and two parallel subagent
+reviews (Standards and Spec), recorded under `docs/reviews/`.
 
 ## Explicit safety boundaries
 
-The console never receives or stores approval tokens in local storage, URLs,
-SSE payloads, or logs. It calls the localhost API only, does not access SQLite
-or project files directly, and never claims a run succeeded when the API
-reports a failure or unavailable backend.
+The nanobot WebUI never receives or stores approval tokens in messages, Session,
+URLs, SSE payloads, or logs. The trusted local action broker calls the localhost
+API only, does not expose SQLite or project files to the model, and never claims
+a run succeeded when the API reports a failure or unavailable backend.

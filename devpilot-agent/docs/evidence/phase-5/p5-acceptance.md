@@ -2,26 +2,20 @@
 
 ## Scope
 
-P5 delivers the local API contract, durable event projection, optional React
-console, and Skills/Security views. nanobot's chat WebUI remains the natural
-language entry point.
+Historical P5 evidence: the local API contract, durable event projection and
+the optional React console were verified before ADR-0003. The React console
+scope is now superseded; nanobot's chat WebUI is the only current user entry
+point. This file is retained for historical traceability and is not a current
+frontend acceptance claim.
 
 ## Verified locally
 
 - P5 API/SSE contract tests: 23 passed.
-- Full Python suite: 183 passed, 3 skipped.
+- Full Python suite: 182 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
-- Web TypeScript check: passed with `npm test`.
-- Web production build: passed with Vite.
-- Web dependency installation: `pnpm install --frozen-lockfile` passed.
-- Local console smoke: `npm run smoke` passed against ports 18800/18801.
-- Browser smoke: `pnpm run browser-smoke` is committed and uses an ephemeral
-  fake API fixture; the page-level check covers Dashboard, API online,
-  ChangeSet accept/stop/rollback controls, and Security/Backends unavailable
-  labeling. It also forces an SSE disconnect and verifies the polling fallback;
-  a CDP-driven interaction check verifies cancelled confirmation causes no POST
-  and confirmed delivery submits exactly once.
+- React/Vite build, console smoke and browser smoke: passed before ADR-0003;
+  retained as historical evidence only and removed from the current gate.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
 
@@ -37,7 +31,8 @@ treated as successful security coverage.
 - SSE uses database event IDs and `Last-Event-ID` replay semantics.
 - event payloads are already redacted by the storage layer, including
   credential-shaped text and absolute filesystem paths.
-- the UI does not store approval tokens or access SQLite/project files.
+- nanobot WebUI is the only intended user surface; the future local action
+  Broker must not expose approval tokens to the model or chat messages.
 - an unconfigured or unverified execution backend is displayed as unavailable,
   not healthy.
 
@@ -45,5 +40,6 @@ treated as successful security coverage.
 
 The final parallel Standards and Spec review passed against the fixed point
 `5860598`; both independent reports found no actionable code or scope issue
-in `git diff 5860598...HEAD`. P5 is certified. P6 is now unlocked but has not
-started.
+in `git diff 5860598...HEAD`. That result certifies the historical P5 scope.
+ADR-0003 requires a new nanobot-only integration review before the amended P5
+scope can be called certified. P6 has not started.

@@ -15,7 +15,8 @@
 Apply、Rollback 和持久化恢复。当前还没有把仓库代码交给本机任意 Shell 执行；
 FC Agent Sandbox 的可选执行端口已实现，但云端连通性必须由用户配置凭据后单独验证。
 项目不改写 nanobot 的 Runtime、权限和执行边界；当前主流程通过 nanobot Tool 和对话确认完成
-Changeset 交付。独立审批 WebUI 已移除，主流程只通过 nanobot 对话完成确认和执行。
+Changeset 提案和状态查看。R1/R2 动作仍需受信任的本地 Action Broker；Broker 完成前不得
+声称“仅靠聊天即可执行”。独立审批 WebUI 已移除，主流程只使用 nanobot 自带 WebUI。
 
 新 AI/开发者接手本项目时，先阅读
 [P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
@@ -78,6 +79,10 @@ Apply/Verify/Rollback。独立审批页面已移除，不再作为运行依赖�
 控制面仍默认关闭；只有开发者明确设置
 `DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE=1` 且数据库已执行 `alembic upgrade head`
 后才可用于本机测试。它不是 OS Sandbox，不得处理真实生产仓库。
+
+当前生效的前端范围修订见
+[ADR-0003：统一使用 nanobot 原生前端](docs/adr/ADR-0003-nanobot-only-frontend.md)。
+独立 React/Vite 控制台已删除；FastAPI、持久事件和内部 SSE 仅服务 nanobot 适配层。
 
 FC Sandbox 的可选依赖和真实连通性检查见
 [FC Sandbox runbook](docs/runbooks/local-development.md#fc-agent-sandbox-optional)。
