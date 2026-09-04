@@ -131,3 +131,34 @@ def test_broker_rejects_expired_confirmation_and_bad_snapshot() -> None:
     )
     assert mismatch.execute(_request()).error_code == "APPROVAL_SCOPE_MISMATCH"
     assert mismatch_calls == []
+
+
+def test_broker_rejects_token_shaped_or_false_completed_results() -> None:
+    token_result = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: "token",
+        capability_executor=lambda *_args: {
+            "status": "completed",
+            "run_id": "e2b_1234567890abcdef_token",
+        },
+        clock=lambda: NOW,
+    ).execute(_request())
+    assert token_result.error_code == "APPROVAL_BROKER_UNAVAILABLE"
+
+    false_success = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: "token",
+        capability_executor=lambda *_args: {"status": "completed"},
+        clock=lambda: NOW,
+    ).execute(_request())
+    assert false_success.error_code == "APPROVAL_BROKER_UNAVAILABLE"

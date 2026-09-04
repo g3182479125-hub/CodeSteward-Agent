@@ -102,6 +102,7 @@ def test_projection_rejects_unsafe_scalar_details_and_keeps_preview_events() -> 
                         "capability": "sk-1234567890-secret-token",
                         "backend": "fake",
                         "files": r"D:\private\other.txt",
+                        "exit_code": r"D:\private\exit.txt",
                     },
                 }
             ],

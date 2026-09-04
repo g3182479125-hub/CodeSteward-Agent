@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from .redaction import redact_execution_output, redact_sensitive_text
+
 MAX_CONFIRMATION_TTL = timedelta(minutes=5)
 _ACTIONS = frozenset({"apply", "verify", "rollback"})
 _CAPABILITIES = {
@@ -113,7 +115,7 @@ class ConfirmationContext:
         expires = expires.astimezone(UTC)
         if expires <= issued or expires - issued > MAX_CONFIRMATION_TTL:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
-        if now < issued or now > expires:
+        if now < issued or now >= expires:
             raise BrokerError("APPROVAL_CONFIRMATION_EXPIRED")
         return issued, expires
 
@@ -342,17 +344,21 @@ class ActionBroker:
         request: BrokerActionRequest, raw: Mapping[str, Any]
     ) -> BrokerActionResult:
         status = raw.get("status")
-        if not isinstance(status, str) or _IDENTIFIER.fullmatch(status) is None:
+        status = ActionBroker._safe_result_identifier(status)
+        if status is None:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
         values: dict[str, str | None] = {}
         for key in ("run_id", "error_code", "result_ref"):
             value = raw.get(key)
             if value is None:
                 values[key] = None
-            elif isinstance(value, str) and _IDENTIFIER.fullmatch(value):
-                values[key] = value
             else:
-                raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+                safe_value = ActionBroker._safe_result_identifier(value)
+                if safe_value is None:
+                    raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+                values[key] = safe_value
+        if status == "completed" and values["run_id"] is None and values["result_ref"] is None:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
         return BrokerActionResult(
             status=status,
             change_set_id=request.change_set_id,
@@ -361,3 +367,13 @@ class ActionBroker:
             error_code=values["error_code"],
             result_ref=values["result_ref"],
         )
+
+    @staticmethod
+    def _safe_result_identifier(value: object) -> str | None:
+        if not isinstance(value, str) or len(value) > 128:
+            return None
+        value = redact_sensitive_text(value)
+        value = redact_execution_output(value)
+        if "[REDACTED" in value or _IDENTIFIER.fullmatch(value) is None:
+            return None
+        return value

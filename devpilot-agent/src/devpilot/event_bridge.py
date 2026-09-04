@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from .redaction import redact_sensitive_text
+from .redaction import redact_execution_output, redact_sensitive_text
 
 MAX_EVENTS = 64
 MAX_MESSAGE_CHARS = 400
@@ -92,7 +92,8 @@ def _string(value: Any, *, limit: int = 160) -> str | None:
 def _safe_detail_string(key: str, value: str) -> str | None:
     """Keep only bounded labels; reject paths and credential-shaped values."""
     value = redact_sensitive_text(value[:160])
-    if value == "[REDACTED]" or "[REDACTED]" in value:
+    value = redact_execution_output(value)
+    if value == "[REDACTED]" or "[REDACTED]" in value or "[REDACTED_PATH]" in value:
         return None
     if key in _SAFE_LABEL_KEYS and _SAFE_LABEL_PATTERN.fullmatch(value) is None:
         return None
