@@ -1167,7 +1167,25 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, dict):
             mapping = cast(dict[str, Any], value)
             return {
-                key: clean(item)
+                key: (
+                    "[REDACTED]"
+                    if key != "approval_token"
+                    and any(
+                        marker in key.casefold()
+                        for marker in (
+                            "token",
+                            "secret",
+                            "password",
+                            "passwd",
+                            "api_key",
+                            "apikey",
+                            "access_key",
+                            "accesskey",
+                            "authorization",
+                        )
+                    )
+                    else clean(item)
+                )
                 for key, item in mapping.items()
                 if key not in {"project_path", "real_path"}
             }
@@ -1200,7 +1218,7 @@ async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
     if not isinstance(payload, dict):
         response.headers["X-Request-ID"] = request_id
         return response
-    payload = cast(dict[str, Any], payload)
+    payload = _public_payload(cast(dict[str, Any], payload))
     payload.setdefault("request_id", request_id)
     headers = {
         key: value

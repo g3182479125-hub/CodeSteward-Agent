@@ -219,6 +219,32 @@ def test_console_read_models_expose_projects_skills_backends_and_diff(
     assert "skills" in client.get("/api/v1/skills").json()
 
 
+def test_json_response_boundary_redacts_nested_credential_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, manager, _project = setup_app(tmp_path)
+
+    def leaky(_change_set_id: str) -> dict[str, object]:
+        return {
+            "change_set_id": _change_set_id,
+            "status": "verified",
+            "metadata": {
+                "accessKey": "nested-secret",
+                "display_name": "safe-value",
+            },
+        }
+
+    monkeypatch.setattr(manager, "get", leaky)
+    response = client.get("/api/v1/change-sets/fixture-boundary")
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == {
+        "accessKey": "[REDACTED]",
+        "display_name": "safe-value",
+    }
+    assert "nested-secret" not in response.text
+
+
 def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> None:
     client, _manager, project = setup_app(tmp_path)
     secret_content = (

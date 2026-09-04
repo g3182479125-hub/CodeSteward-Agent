@@ -41,7 +41,7 @@ const apiServer = createServer((request, response) => {
     patch_hash: "fixture-patch", diff: "--- a/fixture.txt\n+++ b/fixture.txt\n+ok\n",
   });
   if (path === "/api/v1/change-sets/fixture-change-set/delivery-report") return json(response, {
-    change_set_id: "fixture-change-set", status: "verified", available_decisions: ["rollback"],
+    change_set_id: "fixture-change-set", status: "verified", available_decisions: ["accept", "stop", "rollback"],
     decision: { type: null }, rollback: { capability: "r1.rollback", requires_approval_token: true },
   });
   if (path === "/api/v1/runs/fixture-run") return json(response, {
@@ -154,7 +154,7 @@ try {
   await runBrowser(dashboardUrl, ["把计划、变更、验证和证据放在同一个可审查界面。", "P5 LOCAL CONSOLE", "API 在线"]);
   for (const [query, markers] of [
     ["page=projects", ["fixture-project", "登记项目"]],
-    ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "申请回滚"]],
+    ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "接受交付", "停止交付", "申请回滚"]],
     ["page=runs&run_id=fixture-run&sse=1", ["run.started", "run.completed", "读取快照", "连接 SSE"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],
