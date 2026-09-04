@@ -15,11 +15,11 @@ _SENSITIVE_PATTERNS = (
 )
 _ABSOLUTE_PATH_PATTERNS = (
     re.compile(
-        r"(?i)(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/])"
-        r"(?:[^\\/\r\n\"'<> ]+[\\/])*[^\\/\r\n\"'<> ]+"
+        r"(?i)(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)"
+        r"[^\r\n\"'<>]*"
     ),
     re.compile(
-        r"(?<![A-Za-z0-9.])/(?:Users|home|tmp|var|workspace|mnt|opt|root|private|data)/[^\r\n\"'<>]*"
+        r"(?<![A-Za-z0-9.])/(?!/)[^\r\n\"'<>]*"
     ),
 )
 _SENSITIVE_NAME = (

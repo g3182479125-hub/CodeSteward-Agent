@@ -1373,7 +1373,7 @@ def create_app(
             )
         else:
             response = await call_next(request)
-        if request.url.path == "/openapi.json":
+        if request.url.path == "/openapi.json" and response.status_code < 400:
             return response
         key = request.headers.get("Idempotency-Key")
         store = getattr(request.app.state.manager, "store", None)

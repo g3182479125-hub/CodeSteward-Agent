@@ -78,6 +78,11 @@ def test_loopback_contract_rejects_forwarded_requests(tmp_path: Path) -> None:
     response = client.get("/healthz", headers={"X-Forwarded-For": "10.0.0.8"})
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "PATH_DENIED"
+    openapi_error = client.get(
+        "/openapi.json", headers={"X-Forwarded-For": "10.0.0.8"}
+    )
+    assert openapi_error.status_code == 403
+    assert openapi_error.json()["request_id"] == openapi_error.headers["X-Request-ID"]
 
 
 def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
@@ -125,12 +130,14 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         ("authorization=authorization-secret", "authorization-secret"),
     ):
         assert secret not in redact_sensitive_text(assignment)
-    redacted_path = redact_sensitive_text(
-        "error at C:/Users/alice/project/main.py and /tmp/devpilot/run.log"
-    )
-    assert "C:/Users/alice/project/main.py" not in redacted_path
-    assert "/tmp/devpilot/run.log" not in redacted_path
-    assert redacted_path.count("[REDACTED_PATH]") == 2
+    for absolute_path in (
+        "C:/Users/alice/project/main.py",
+        r"C:\Users\Alice\My Project\secret.txt",
+        r"\\server\share\project\file.txt",
+        "/tmp/devpilot/run.log",
+        "/usr/local/project/file.txt",
+    ):
+        assert absolute_path not in redact_sensitive_text(f"error at {absolute_path}")
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {
