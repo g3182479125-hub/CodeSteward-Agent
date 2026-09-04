@@ -1159,8 +1159,10 @@ def _error_payload(request: Request, code: str, message: str) -> dict[str, Any]:
     }
 
 
-def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Remove local filesystem coordinates from control-plane responses."""
+def _public_payload(
+    payload: dict[str, Any], *, preserve_approval_token: bool = False
+) -> dict[str, Any]:
+    """Remove local coordinates and credentials from control-plane responses."""
     def clean(value: Any) -> Any:
         if isinstance(value, str):
             return redact_sensitive_text(value)
@@ -1169,7 +1171,7 @@ def _public_payload(payload: dict[str, Any]) -> dict[str, Any]:
             return {
                 key: (
                     "[REDACTED]"
-                    if key != "approval_token"
+                    if not (preserve_approval_token and key == "approval_token")
                     and any(
                         marker in key.casefold()
                         for marker in (
@@ -1202,7 +1204,9 @@ def _contract_payload(request: Request, payload: dict[str, Any]) -> dict[str, An
     return _public_payload(payload)
 
 
-async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
+async def _json_response_with_request_id(
+    response: Any, request_id: str, *, preserve_approval_token: bool = False
+) -> Any:
     content_type = response.headers.get("content-type", "")
     body = getattr(response, "body", None)
     if body is None and "application/json" in content_type:
@@ -1218,7 +1222,10 @@ async def _json_response_with_request_id(response: Any, request_id: str) -> Any:
     if not isinstance(payload, dict):
         response.headers["X-Request-ID"] = request_id
         return response
-    payload = _public_payload(cast(dict[str, Any], payload))
+    payload = _public_payload(
+        cast(dict[str, Any], payload),
+        preserve_approval_token=preserve_approval_token,
+    )
     payload.setdefault("request_id", request_id)
     headers = {
         key: value
@@ -1353,7 +1360,11 @@ def create_app(
         key = request.headers.get("Idempotency-Key")
         if key and response.status_code < 400:
             response_request_id = _idempotency_request_id(key)
-        return await _json_response_with_request_id(response, response_request_id)
+        return await _json_response_with_request_id(
+            response,
+            response_request_id,
+            preserve_approval_token=request.url.path.endswith("/approve"),
+        )
 
     @app.exception_handler(PatchError)
     async def patch_error_handler(request: Request, exc: PatchError) -> JSONResponse:

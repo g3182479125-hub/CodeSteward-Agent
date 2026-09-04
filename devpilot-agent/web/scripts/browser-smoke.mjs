@@ -21,6 +21,7 @@ const json = (response, payload, status = 200) => {
 };
 
 const requestedPaths = new Set();
+let runSnapshotRequests = 0;
 const apiServer = createServer((request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, {
@@ -31,7 +32,8 @@ const apiServer = createServer((request, response) => {
     response.end();
     return;
   }
-  const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+  const path = requestUrl.pathname;
   requestedPaths.add(path);
   if (path === "/healthz") return json(response, { status: "ok" });
   if (path === "/api/v1/projects") return json(response, { projects: [{ project_id: "fixture-project", project_name: "fixture-project", trust_state: "trusted" }] });
@@ -44,15 +46,22 @@ const apiServer = createServer((request, response) => {
     change_set_id: "fixture-change-set", status: "verified", available_decisions: ["accept", "stop", "rollback"],
     decision: { type: null }, rollback: { capability: "r1.rollback", requires_approval_token: true },
   });
-  if (path === "/api/v1/runs/fixture-run") return json(response, {
+  if (path === "/api/v1/runs/fixture-run") {
+    runSnapshotRequests += 1;
+    return json(response, {
     run_id: "fixture-run", status: "completed", events: [{ event_id: 1, sequence: 1, event_type: "run.completed", created_at: "fixture", payload: {} }],
-  });
+    });
+  }
   if (path === "/api/v1/runs/fixture-run/events") {
     response.writeHead(200, {
       "access-control-allow-origin": "*",
       "cache-control": "no-cache",
       "content-type": "text/event-stream",
     });
+    if (requestUrl.searchParams.get("fail_sse") === "1") {
+      response.end();
+      return;
+    }
     response.write('id: 2\nevent: run.started\ndata: {"event_id":2,"sequence":2,"event_type":"run.started","created_at":"fixture","payload":{}}\n\nid: 3\nevent: run.completed\ndata: {"event_id":3,"sequence":3,"event_type":"run.completed","created_at":"fixture","payload":{}}\n\n');
     setTimeout(() => response.end(), 5000);
     return;
@@ -156,12 +165,14 @@ try {
     ["page=projects", ["fixture-project", "登记项目"]],
     ["page=changeset&change_set_id=fixture-change-set", ["fixture.txt", "展开 / 收起 Diff", "审批状态", "接受交付", "停止交付", "申请回滚"]],
     ["page=runs&run_id=fixture-run&sse=1", ["run.started", "run.completed", "读取快照", "连接 SSE"]],
+    ["page=runs&run_id=fixture-run&sse=1&fail_sse=1", ["SSE 暂时不可用", "读取快照"]],
     ["page=artifacts&run_id=fixture-run", ["fixture.md", "读取产物"]],
     ["page=skills", ["fixture-skill", "Skills Catalog"]],
     ["page=security", ["Execution Backends", "fixture-backend", "unavailable"]],
   ]) {
     await runBrowser(`http://127.0.0.1:${webPort}/?${query}`, markers);
   }
+  if (runSnapshotRequests < 2) throw new Error("browser fixture did not exercise polling fallback");
   for (const path of [
     "/api/v1/projects", "/api/v1/skills", "/api/v1/security/backends",
     "/api/v1/change-sets/fixture-change-set", "/api/v1/change-sets/fixture-change-set/delivery-report", "/api/v1/runs/fixture-run",

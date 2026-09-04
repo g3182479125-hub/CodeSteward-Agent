@@ -245,6 +245,26 @@ def test_json_response_boundary_redacts_nested_credential_fields(
     assert "nested-secret" not in response.text
 
 
+def test_json_response_boundary_redacts_nested_approval_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client, manager, _project = setup_app(tmp_path)
+
+    monkeypatch.setattr(
+        manager,
+        "get",
+        lambda change_set_id: {
+            "change_set_id": change_set_id,
+            "metadata": {"approval_token": "nested-capability"},
+        },
+    )
+    response = client.get("/api/v1/change-sets/fixture-boundary")
+
+    assert response.status_code == 200
+    assert response.json()["metadata"]["approval_token"] == "[REDACTED]"
+    assert "nested-capability" not in response.text
+
+
 def test_canonical_diff_redacts_credential_shaped_content(tmp_path: Path) -> None:
     client, _manager, project = setup_app(tmp_path)
     secret_content = (

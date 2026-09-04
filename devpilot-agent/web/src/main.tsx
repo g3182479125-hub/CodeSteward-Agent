@@ -112,6 +112,7 @@ function App() {
   const [projectPath, setProjectPath] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pageLoading, setPageLoading] = useState(false);
   const [health, setHealth] = useState("checking");
   const eventSource = useRef<EventSource | null>(null);
   const pollTimer = useRef<number | null>(null);
@@ -196,27 +197,45 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (page === "projects") void loadProjects().catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取项目"));
-    if (page === "skills") void api<{ skills: Json[] }>("/skills").then((result) => setSkills(result.skills)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Skills"));
-    if (page === "security") void api<{ backends: Json[] }>("/security/backends").then((result) => setBackends(result.backends)).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取后端"));
+    let active = true;
     const query = new URLSearchParams(window.location.search);
     const queryChangeSetId = query.get("change_set_id");
-    if (page === "changeset" && queryChangeSetId) {
-      setChangeSetId(queryChangeSetId);
-      void Promise.all([
-        api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}`),
-        api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}/delivery-report`),
-      ]).then(([result, report]) => setChangeSet({ ...result, ...report })).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 ChangeSet"));
-    }
     const queryRunId = query.get("run_id");
-    if (page === "runs" && queryRunId) {
-      setRunId(queryRunId);
-      void api<{ events?: RunEvent[] }>(`/runs/${encodeURIComponent(queryRunId)}`).then((result) => setEvents(result.events ?? [])).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Run"));
-    }
-    if (page === "artifacts" && queryRunId) {
-      setRunId(queryRunId);
-      void api<{ artifacts?: Json[] }>(`/runs/${encodeURIComponent(queryRunId)}/artifacts`).then((result) => setArtifacts(result.artifacts ?? [])).catch((cause) => setError(cause instanceof Error ? cause.message : "无法读取 Artifact"));
-    }
+    const loadPage = async () => {
+      setPageLoading(true);
+      try {
+        if (page === "projects") {
+          await loadProjects();
+        } else if (page === "skills") {
+          const result = await api<{ skills: Json[] }>("/skills");
+          setSkills(result.skills);
+        } else if (page === "security") {
+          const result = await api<{ backends: Json[] }>("/security/backends");
+          setBackends(result.backends);
+        } else if (page === "changeset" && queryChangeSetId) {
+          setChangeSetId(queryChangeSetId);
+          const [result, report] = await Promise.all([
+            api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}`),
+            api<Json>(`/change-sets/${encodeURIComponent(queryChangeSetId)}/delivery-report`),
+          ]);
+          setChangeSet({ ...result, ...report });
+        } else if (page === "runs" && queryRunId) {
+          setRunId(queryRunId);
+          const result = await api<{ events?: RunEvent[] }>(`/runs/${encodeURIComponent(queryRunId)}`);
+          setEvents(result.events ?? []);
+        } else if (page === "artifacts" && queryRunId) {
+          setRunId(queryRunId);
+          const result = await api<{ artifacts?: Json[] }>(`/runs/${encodeURIComponent(queryRunId)}/artifacts`);
+          setArtifacts(result.artifacts ?? []);
+        }
+      } catch (cause) {
+        if (active) setError(cause instanceof Error ? cause.message : "页面数据读取失败");
+      } finally {
+        if (active) setPageLoading(false);
+      }
+    };
+    void loadPage();
+    return () => { active = false; };
   }, [page]);
 
   useEffect(() => {
@@ -316,6 +335,7 @@ function App() {
       <main className="main">
         <header className="topbar"><div><p className="eyebrow">LOCAL DEVELOPMENT CONTROL PLANE</p><h1>{nav.find(([key]) => key === page)?.[2]}</h1></div><div className="health"><span className={`dot ${health}`} /> API {health}</div></header>
         {error && <div className="alert" role="alert">{error}</div>}
+        {pageLoading && <div className="notice" role="status">正在读取页面数据…</div>}
         {page === "dashboard" && <Dashboard projects={projects} health={health} onProjects={() => { setPage("projects"); void loadProjects(); }} />}
         {page === "projects" && <section className="content"><div className="section-head"><div><h2>Projects</h2><p>登记后由服务端校验允许根和仓库指纹；页面不展示绝对路径。</p></div><button className="ghost" onClick={() => void loadProjects()}>刷新</button></div><form className="inline-form" onSubmit={registerProject}><label>本地项目路径<input value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="E:\\projects\\my-agent" /></label><button className="primary" disabled={busy}>登记项目</button></form><div className="card-list">{projects.length === 0 ? <Empty>还没有登记项目。</Empty> : projects.map((project) => <article className="list-row" key={project.project_id}><div><strong>{project.project_id}</strong><p>{project.project_name}</p></div><Badge tone={project.trust_state === "trusted" ? "good" : "warn"}>{project.trust_state}</Badge></article>)}</div></section>}
         {page === "changeset" && <section className="content"><div className="section-head"><div><h2>ChangeSet / Diff</h2><p>输入已有 ChangeSet ID，查看范围、风险、审批状态和可审查 Diff。</p></div></div><form className="inline-form" onSubmit={loadChangeSetDetails}><label>ChangeSet ID<input value={changeSetId} onChange={(event) => setChangeSetId(event.target.value)} placeholder="粘贴 ChangeSet ID" /></label><button className="primary" disabled={busy}>读取</button></form>{changeSet ? <ChangeSetView data={changeSet} busy={busy} onDecision={async (decision, displayedChangeSetId) => { const confirmation = decision === "accept" ? "接受" : "停止"; const label = decision === "accept" ? "接受交付" : "停止交付"; if (!window.confirm(`请再次确认：${label}？`)) return; setBusy(true); setError(""); try { const key = `console-${crypto.randomUUID()}`; const result = await api<Json>(`/change-sets/${encodeURIComponent(displayedChangeSetId)}/decision`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({ decision, user_confirmation: confirmation }) }); const report = await api<Json>(`/change-sets/${encodeURIComponent(displayedChangeSetId)}/delivery-report`); setChangeSet((current) => ({ ...(current ?? {}), ...result, ...report })); } catch (cause) { setError(cause instanceof Error ? cause.message : "交付决策失败"); } finally { setBusy(false); } }} onRollbackRequest={requestRollback} /> : <Empty>尚未选择 ChangeSet。</Empty>}</section>}
