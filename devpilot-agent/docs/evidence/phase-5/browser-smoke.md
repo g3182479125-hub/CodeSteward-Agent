@@ -11,14 +11,16 @@ The local API and Vite console were started on loopback ports `18800` and
    Skills, and Security / Backends.
 3. Confirm the Skills catalog renders the discovered local skills and the
    Security page labels the unverified execution backend as unavailable.
-4. Confirm ChangeSet Diff is collapsible and the delivery decision controls
-   are inside the ChangeSet view; no separate approval-only page is created.
+4. Confirm ChangeSet Diff is collapsible and the delivery decision controls for
+   accept, stop, and rollback are inside the ChangeSet view; no separate
+   approval-only page is created.
 5. Run `pnpm run smoke` from this directory. The script verifies the console
    shell, API health, and Skills JSON boundary without storing credentials.
 6. Run `pnpm run browser-smoke`. This starts an ephemeral fake API and serves
    the production bundle so Edge/Chrome can load the actual React page against
    fixture responses. It checks page-body data for every console view plus
-   Diff, timeline, and decision controls. Set `DEVPILOT_BROWSER` or
+   Diff, timeline, accept/stop/rollback controls, and the SSE-to-polling
+   fallback after a forced disconnect. Set `DEVPILOT_BROWSER` or
    `DEVPILOT_BROWSER_PROFILE_ROOT` when the local browser paths differ.
 
 The automated browser smoke is dependency-free and does not require

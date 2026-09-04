@@ -8,8 +8,8 @@ language entry point.
 
 ## Verified locally
 
-- P5 API/SSE contract tests: 14 passed.
-- Full Python suite: 174 passed, 3 skipped.
+- P5 API/SSE contract tests: 16 passed.
+- Full Python suite: 176 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
 - Web TypeScript check: passed with `npm test`.
@@ -17,8 +17,9 @@ language entry point.
 - Web dependency installation: `pnpm install --frozen-lockfile` passed.
 - Local console smoke: `npm run smoke` passed against ports 18800/18801.
 - Browser smoke: `pnpm run browser-smoke` is committed and uses an ephemeral
-  fake API fixture; the in-app browser page-level check passed for Dashboard,
-  API online, and Security/Backends unavailable labeling.
+  fake API fixture; the page-level check covers Dashboard, API online,
+  ChangeSet accept/stop/rollback controls, and Security/Backends unavailable
+  labeling. It also forces an SSE disconnect and verifies the polling fallback.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
 
