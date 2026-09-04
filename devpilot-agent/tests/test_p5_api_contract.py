@@ -6,7 +6,11 @@ from fastapi.testclient import TestClient
 
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.paths import AllowedRoots
-from devpilot.redaction import redact_sensitive_payload, redact_sensitive_text
+from devpilot.redaction import (
+    redact_execution_output,
+    redact_sensitive_payload,
+    redact_sensitive_text,
+)
 from devpilot.storage import ProjectStore
 
 
@@ -137,7 +141,7 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         "/tmp/devpilot/run.log",
         "/usr/local/project/file.txt",
     ):
-        assert absolute_path not in redact_sensitive_text(f"error at {absolute_path}")
+        assert absolute_path not in redact_execution_output(f"error at {absolute_path}")
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {

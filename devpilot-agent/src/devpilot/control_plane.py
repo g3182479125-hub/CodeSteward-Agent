@@ -36,7 +36,11 @@ from .patches import (
     _Snapshot,
 )
 from .paths import AllowedRoots, PathBoundaryError
-from .redaction import is_sensitive_field_name, redact_sensitive_text
+from .redaction import (
+    is_sensitive_field_name,
+    redact_execution_output,
+    redact_sensitive_text,
+)
 from .storage import ProjectStore
 from .verification import VerificationProfile, build_verification_request
 
@@ -685,8 +689,8 @@ class ControlPlaneManager:
                 "template": result.template,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
-                "stdout": redact_sensitive_text(result.stdout[-8000:]),
-                "stderr": redact_sensitive_text(result.stderr[-8000:]),
+                "stdout": redact_execution_output(result.stdout[-8000:]),
+                "stderr": redact_execution_output(result.stderr[-8000:]),
             }
             self._event(entry, "changeset.verification_completed", payload)
             if finalize_run:
@@ -711,8 +715,8 @@ class ControlPlaneManager:
                 "template": result.template,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
-                "stdout": redact_sensitive_text(result.stdout[-8000:]),
-                "stderr": redact_sensitive_text(result.stderr[-8000:]),
+                "stdout": redact_execution_output(result.stdout[-8000:]),
+                "stderr": redact_execution_output(result.stderr[-8000:]),
             }
             self._complete(idempotency_key, response)
             return response
@@ -1197,6 +1201,8 @@ def _public_payload(
                     if preserve_approval_token and key == "approval_token"
                     else "[REDACTED]"
                     if is_sensitive_field_name(key)
+                    else redact_execution_output(item)
+                    if key.casefold() in {"stdout", "stderr"} and isinstance(item, str)
                     else clean(item)
                 )
                 for key, item in mapping.items()

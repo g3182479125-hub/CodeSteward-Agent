@@ -19,7 +19,8 @@ _ABSOLUTE_PATH_PATTERNS = (
         r"[^\r\n\"'<>]*"
     ),
     re.compile(
-        r"(?<![A-Za-z0-9.])/(?!/)[^\r\n\"'<>]*"
+        r"(?<![A-Za-z0-9./])/(?!/)"
+        r"(?:[^/\r\n\"'<> ]+/)+[^/\r\n\"'<> ]+"
     ),
 )
 _SENSITIVE_NAME = (
@@ -73,6 +74,12 @@ def redact_sensitive_text(value: str) -> str:
     )
     for pattern in _SENSITIVE_PATTERNS:
         result = pattern.sub("[REDACTED]", result)
+    return result
+
+
+def redact_execution_output(value: str) -> str:
+    """Redact credentials and filesystem coordinates from sandbox output."""
+    result = redact_sensitive_text(value)
     for pattern in _ABSOLUTE_PATH_PATTERNS:
         result = pattern.sub("[REDACTED_PATH]", result)
     return result
@@ -95,6 +102,8 @@ def redact_sensitive_payload(value: object) -> object:
         for key, item in cast(dict[str, object], value).items():
             if is_sensitive_field_name(key):
                 result[key] = "[REDACTED]"
+            elif key.casefold() in {"stdout", "stderr"} and isinstance(item, str):
+                result[key] = redact_execution_output(item)
             else:
                 result[key] = redact_sensitive_payload(item)
         return result
