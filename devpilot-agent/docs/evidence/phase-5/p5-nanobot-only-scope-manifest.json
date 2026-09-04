@@ -3,8 +3,20 @@
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "in_progress",
   "implementation_commit": "67ae98a",
+  "evidence_commit": "5379e5bfc9bca526ae9b44be50e4c328a4db6334",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
+  "evidence_window": {
+    "started_at": "2026-09-04T17:19:05+08:00",
+    "completed_at": "2026-09-04T17:22:32+08:00"
+  },
+  "inputs_sha256": {
+    "uv.lock": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D"
+  },
+  "artifact_sha256": {
+    "docs/adr/ADR-0003-nanobot-only-frontend.md": "6828E8DEA0755298E4CABB1EAEF9ED5AA8CCAF3A0178E0D0853E84B783DEECB7",
+    "docs/runbooks/local-nanobot-devpilot.md": "1B77E1CE2F1EEF90BAF7AEBA5CF584F9C6CCD1F32B64F58D5B652A966BE9CF8A"
+  },
   "config": {
     "bind": "127.0.0.1",
     "api_port": 18800,

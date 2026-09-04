@@ -1,5 +1,9 @@
 # P5 Browser Smoke Evidence
 
+> 历史证据（ADR-0003 之前）。本文件记录的是已删除的独立 React/Vite 控制台，
+> 不属于当前运行入口、测试门禁或交付要求。当前产品只使用 nanobot 自带 WebUI；
+> `18801`、Vite 和下列 browser smoke 命令均不应再启动。
+
 Date: 2026-09-03
 
 The local API and Vite console were started on loopback ports `18800` and

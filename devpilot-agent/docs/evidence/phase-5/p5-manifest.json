@@ -2,6 +2,7 @@
   "phase": "P5",
   "status": "historical-superseded-by-ADR-0003",
   "current_scope_manifest": "docs/evidence/phase-5/p5-nanobot-only-scope-manifest.json",
+  "evidence_commit": "5379e5bfc9bca526ae9b44be50e4c328a4db6334",
   "current_frontend": "nanobot-native-webui-only",
   "canonical_api_prefix": "/api/v1",
   "compatibility_prefix": "/v1",
