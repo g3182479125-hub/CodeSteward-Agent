@@ -666,9 +666,11 @@ def _get_control_plane_events(
             raise ValueError("control-plane SSE event id is invalid") from exc
         if numeric_id < 0:
             raise ValueError("control-plane SSE event id is invalid")
-        payload.setdefault("event_id", numeric_id)
+        # The SSE frame is the server-owned envelope.  Never let JSON data
+        # override the cursor or event type parsed from that envelope.
+        payload["event_id"] = numeric_id
         if event_name:
-            payload.setdefault("type", event_name)
+            payload["type"] = event_name
         events.append(payload)
         event_id = None
         event_name = None
@@ -914,11 +916,19 @@ class WatchRunTool(Tool):
                 streamed_run_id, status, events = _get_control_plane_events(
                     path, last_event_id=cursor
                 )
-                projection = project_sse_events(
-                    run_id=streamed_run_id or run_id,
-                    status=status,
-                    events=events,
-                )
+                if events:
+                    projection = project_sse_events(
+                        run_id=streamed_run_id or run_id,
+                        status=status,
+                        events=events,
+                    )
+                else:
+                    # An empty replay says only that no new events arrived;
+                    # it cannot prove that the Run is still running.  Read the
+                    # durable snapshot to recover the authoritative terminal
+                    # status and latest event cursor.
+                    snapshot = _get_control_plane(_safe_resource_path(run_id, "runs"))
+                    projection = project_run_state(snapshot, fallback=True)
             except (OSError, URLError, TimeoutError):
                 # The database snapshot is the source of truth.  A broken SSE
                 # connection is never interpreted as success.

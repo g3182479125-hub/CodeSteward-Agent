@@ -85,6 +85,51 @@ def test_sse_projection_preserves_replay_order_and_hides_raw_output() -> None:
     assert all("stderr" not in json.dumps(item.to_dict()) for item in projection.events)
 
 
+def test_projection_rejects_unsafe_scalar_details_and_keeps_preview_events() -> None:
+    projection = project_run_state(
+        {
+            "run_id": "run-safe",
+            "status": "running",
+            "events": [
+                {
+                    "event_id": 1,
+                    "sequence": 1,
+                    "event_type": "changeset.previewed",
+                    "created_at": "now",
+                    "payload": {
+                        "code": r"D:\private\secret.txt",
+                        "artifact_ref": r"D:\private\artifact.md",
+                        "capability": "sk-1234567890-secret-token",
+                        "backend": "fake",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert len(projection.events) == 1
+    details = projection.events[0].details
+    assert details == {"backend": "fake"}
+
+
+def test_sse_frame_metadata_wins_over_conflicting_payload_metadata(monkeypatch: Any) -> None:
+    def fake_urlopen(_request: Any, timeout: int) -> _Response:
+        assert timeout == 15
+        return _Response(
+            b"id: 7\n"
+            b"event: changeset.previewed\n"
+            b'data: {"event_id": 999,"run_id":"run-5","sequence":99,"type":"run.failed",'
+            b'"created_at":"now","redacted_payload":{}}\n\n'
+        )
+
+    monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
+    run_id, _status, events = nanobot_tools._get_control_plane_events("/v1/runs/run-5/events")
+
+    assert run_id == "run-5"
+    assert events[0]["event_id"] == 7
+    assert events[0]["type"] == "changeset.previewed"
+
+
 class _Response:
     def __init__(self, body: bytes) -> None:
         self.body = body
@@ -154,3 +199,37 @@ def test_watch_run_falls_back_to_snapshot_on_sse_transport_failure(monkeypatch: 
     assert payload["fallback"] is True
     assert payload["status"] == "failed"
     assert calls == ["events", "/v1/runs/run-4"]
+
+
+def test_watch_run_falls_back_to_snapshot_when_sse_has_no_new_events(monkeypatch: Any) -> None:
+    calls: list[str] = []
+
+    def fake_events(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append("events")
+        return "", "running", []
+
+    def fake_snapshot(path: str) -> dict[str, Any]:
+        calls.append(path)
+        return {
+            "run_id": "run-5",
+            "status": "completed",
+            "events": [
+                {
+                    "event_id": 4,
+                    "sequence": 4,
+                    "event_type": "run.completed",
+                    "created_at": "now",
+                    "payload": {},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(nanobot_tools, "_get_control_plane_events", fake_events)
+    monkeypatch.setattr(nanobot_tools, "_get_control_plane", fake_snapshot)
+    raw = asyncio.run(WatchRunTool().execute(run_id="run-5", last_event_id=3))
+
+    assert not isinstance(raw, ToolResult)
+    payload = json.loads(str(raw))
+    assert payload["fallback"] is True
+    assert payload["status"] == "completed"
+    assert calls == ["events", "/v1/runs/run-5"]

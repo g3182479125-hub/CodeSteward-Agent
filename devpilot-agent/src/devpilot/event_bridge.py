@@ -8,9 +8,12 @@ capability tokens to the nanobot conversation.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
+
+from .redaction import redact_sensitive_text
 
 MAX_EVENTS = 64
 MAX_MESSAGE_CHARS = 400
@@ -19,6 +22,7 @@ _SAFE_EVENT_TYPES = frozenset(
     {
         "run.started",
         "plan.created",
+        "changeset.previewed",
         "changeset.approval_requested",
         "changeset.approval_issued",
         "changeset.applying",
@@ -60,12 +64,36 @@ _SAFE_PAYLOAD_KEYS = frozenset(
         "count",
     }
 )
+_SAFE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+_SAFE_LABEL_KEYS = frozenset(
+    {
+        "code",
+        "capability",
+        "profile",
+        "command_profile",
+        "backend",
+        "region",
+        "template",
+        "artifact_id",
+        "artifact_ref",
+    }
+)
 
 
 def _string(value: Any, *, limit: int = 160) -> str | None:
     if isinstance(value, str) and value:
         return value[:limit]
     return None
+
+
+def _safe_detail_string(key: str, value: str) -> str | None:
+    """Keep only bounded labels; reject paths and credential-shaped values."""
+    value = redact_sensitive_text(value[:160])
+    if value == "[REDACTED]" or "[REDACTED]" in value:
+        return None
+    if key in _SAFE_LABEL_KEYS and _SAFE_LABEL_PATTERN.fullmatch(value) is None:
+        return None
+    return value
 
 
 def _safe_payload(payload: Any) -> dict[str, Any]:
@@ -77,7 +105,9 @@ def _safe_payload(payload: Any) -> dict[str, Any]:
         value = mapping.get(key)
         if isinstance(value, (str, int, float, bool)):
             if isinstance(value, str):
-                value = value[:160]
+                value = _safe_detail_string(key, value)
+                if value is None:
+                    continue
             result[key] = value
         elif key in {"files", "file_count", "round", "max_rounds", "count"}:
             # A file list is never forwarded; only a bounded count is useful
