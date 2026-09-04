@@ -13,6 +13,8 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 ## Implemented safety path
 
 - WebSocket Gateway 只接受受信 WebUI 的精确确认词 `执行`、`验证`、`撤销`。
+- 确认上下文使用 Gateway 生成的服务端线程 UUID；ChangeSet 在进程内绑定首次确认线程，
+  客户端不能通过修改 chat/turn 标识跨线程复用。
 - WebUI 只从用户显式选中的消息引用中发送完整 tuple：`change_set_id`、`plan_hash`、
   `patch_hash`、`scope_hash`、`project_id`；它不会从模型历史自动选择 tuple。
 - Gateway 再向 loopback Control Plane 解析当前 ChangeSet，只有服务端 tuple 与用户
@@ -34,7 +36,7 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 - DevPilot focused Broker/migration suite: `17 passed`.
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
-- nanobot Gateway/BaseChannel/runtime and AgentLoop context integration tests: `28 passed, 1 skipped`.
+- nanobot Gateway/BaseChannel/runtime and AgentLoop context integration tests: `35 passed, 1 skipped`.
 - Native WebUI client has a regression test for confirmation tuple serialization.
 - Fake nanobot tool-loop chat coverage proves trusted attributes reach one tool turn while
   remaining absent from runtime events and Session persistence; provider-backed live chat was

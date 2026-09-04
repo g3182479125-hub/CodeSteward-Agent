@@ -5,7 +5,8 @@
 P5 now uses nanobot's native WebUI only. A trusted WebUI message carrying an exact tuple
 selected by the user from the displayed reference is accepted only for the exact
 confirmation words `执行`, `验证`, or `撤销`. The WebSocket Gateway resolves that
-reference against the current loopback Control Plane ChangeSet before signing and passes
+reference against the current loopback Control Plane ChangeSet before signing, binds the
+ChangeSet to a Gateway-owned thread UUID, and passes
 only a non-persistent confirmation context plus a verifier-only capability through
 `RequestContext.attributes`.
 The model never receives a key, token, metadata copy, transcript copy, or idempotency key.

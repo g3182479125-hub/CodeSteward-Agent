@@ -383,6 +383,8 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_signer = self._DevPilotSigner(secrets.token_bytes(32))
         self._devpilot_session_id = uuid.uuid4().hex
         self._devpilot_confirmation_sequences: dict[str, int] = {}
+        self._devpilot_thread_ids: dict[str, str] = {}
+        self._devpilot_changeset_threads: dict[str, str] = {}
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
@@ -421,8 +423,13 @@ class WebSocketChannel(BaseChannel):
         ):
             return {}
         values = {key: str(confirmation[key]) for key in required}
-        sequence = self._devpilot_confirmation_sequences.get(chat_id, 0) + 1
-        self._devpilot_confirmation_sequences[chat_id] = sequence
+        thread_id = self._devpilot_thread_ids.setdefault(chat_id, uuid.uuid4().hex)
+        bound_thread = self._devpilot_changeset_threads.get(values["change_set_id"])
+        if bound_thread is not None and bound_thread != thread_id:
+            return {}
+        self._devpilot_changeset_threads[values["change_set_id"]] = thread_id
+        sequence = self._devpilot_confirmation_sequences.get(thread_id, 0) + 1
+        self._devpilot_confirmation_sequences[thread_id] = sequence
         now = datetime.now(UTC)
         issued_at = now.isoformat().replace("+00:00", "Z")
         expires_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
@@ -430,9 +437,6 @@ class WebSocketChannel(BaseChannel):
         nonce = secrets.token_hex(16)
         capability = {"apply": "r1.apply", "verify": "r2.verify", "rollback": "r1.rollback"}[action]
         session_id = f"websocket:{self._devpilot_session_id}:{chat_id}"
-        # ``turn_id`` is client metadata used for transcript correlation. The
-        # confirmation thread boundary must be server-owned and stable per chat.
-        thread_id = chat_id
         canonical = "\n".join(("v1", session_id, thread_id,
             str(sequence), confirmation_id, values["change_set_id"], values["plan_hash"],
             values["patch_hash"], values["scope_hash"], values["project_id"], capability,

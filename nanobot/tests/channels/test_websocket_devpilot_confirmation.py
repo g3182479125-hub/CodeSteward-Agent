@@ -7,6 +7,8 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
     channel = object.__new__(WebSocketChannel)
     channel._webui_connections = {"trusted"}
     channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
     channel._devpilot_session_id = "instance"
     channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
 
@@ -29,8 +31,32 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
         "session_id", "thread_id", "user_message_seq", "confirmation_id",
         "issued_at", "expires_at", "user_event_nonce", "signature",
     }
-    assert confirmation["context"]["thread_id"] == "chat"
+    assert confirmation["context"]["thread_id"] != "chat"
     assert callable(confirmation["verifier"])
+
+
+def test_gateway_binds_a_changeset_to_one_server_owned_thread() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_session_id = "instance"
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+
+    assert channel._devpilot_confirmation_attributes(
+        "trusted", "chat-1", "执行", "turn-1", tuple_value
+    )
+    assert channel._devpilot_confirmation_attributes(
+        "trusted", "chat-2", "执行", "turn-2", tuple_value
+    ) == {}
 
 
 def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
