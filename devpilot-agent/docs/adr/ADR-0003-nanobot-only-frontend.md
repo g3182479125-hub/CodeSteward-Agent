@@ -76,8 +76,8 @@ URL、SSE payload、日志或 Artifact。用户的聊天确认不是把 token �
    路径、凭据、原始执行输出或 capability token。事件桥接丢失时只能读取持久快照，不得
    把“未收到事件”解释成成功。
 
-本文当前只冻结上述契约，尚未声称 Broker 已实现；在 Broker 和对应测试完成前，
-nanobot-only P5 修订状态为 `in_progress`，R1/R2 不得通过模型参数直接执行。
+本文冻结的契约已由 nanobot-only P5 实现并通过对应测试；R1/R2 仍不得通过模型
+参数直接执行，必须经过 Gateway 服务端 ChangeSet 校验、用户显式引用和 Broker。
 
 ## 对冻结计划的具体修订
 

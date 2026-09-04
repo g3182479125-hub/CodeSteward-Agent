@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import re
 import secrets
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -296,7 +295,7 @@ class ActionBroker:
             if not valid:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
             self._check_snapshot(request)
-            idempotency_key = f"broker-{uuid.uuid4().hex}"
+            idempotency_key = f"broker-{hashlib.sha256(canonical.encode()).hexdigest()}"
             replayed = self._consume_confirmation(request, idempotency_key)
             if replayed is not None:
                 return self._result_from_replay(request, replayed)

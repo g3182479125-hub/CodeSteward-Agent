@@ -13,8 +13,10 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 ## Implemented safety path
 
 - WebSocket Gateway 只接受受信 WebUI 的精确确认词 `执行`、`验证`、`撤销`。
-- WebUI 发送展示过的完整 tuple：`change_set_id`、`plan_hash`、`patch_hash`、
-  `scope_hash`、`project_id`；Gateway 在本地签名，模型不能生成或替换它。
+- WebUI 只从用户显式选中的消息引用中发送完整 tuple：`change_set_id`、`plan_hash`、
+  `patch_hash`、`scope_hash`、`project_id`；它不会从模型历史自动选择 tuple。
+- Gateway 再向 loopback Control Plane 解析当前 ChangeSet，只有服务端 tuple 与用户
+  引用一致时才在本地签名。
 - `RequestContext.attributes` 只在当前 Tool 请求内携带 signer/context；hooks、
   runtime events、Session 持久化和聊天文本会过滤 `devpilot_*` 属性。
 - Action Broker 验签、校验当前 trusted snapshot 和有效期，再在 capability 发行
@@ -26,11 +28,11 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 
 ## Verification
 
-- DevPilot full Python suite: `194 passed, 3 skipped`.
-- DevPilot focused Broker/migration suite: `11 passed`.
+- DevPilot full Python suite: `203 passed, 3 skipped`.
+- DevPilot focused Broker/migration suite: `15 passed`.
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
-- nanobot Gateway/BaseChannel/runtime tests: `26 passed, 1 skipped`.
+- nanobot Gateway/BaseChannel/runtime tests: `27 passed, 1 skipped`.
 - Native WebUI client has a regression test for confirmation tuple serialization.
 - `git diff --check`: passed.
 

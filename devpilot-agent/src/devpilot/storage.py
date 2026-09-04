@@ -1161,6 +1161,35 @@ class ProjectStore:
     def reserve_broker_action(self, payload: dict[str, Any]) -> bool:
         """Atomically consume a gateway confirmation before capability issuance."""
         with self._session_factory.begin() as session:
+            existing_tuple = (
+                session.query(BrokerActionRecord)
+                .filter(
+                    BrokerActionRecord.session_id == payload.get("session_id"),
+                    BrokerActionRecord.thread_id == payload.get("thread_id"),
+                    BrokerActionRecord.action == payload.get("action"),
+                    BrokerActionRecord.change_set_id == payload.get("change_set_id"),
+                    BrokerActionRecord.plan_hash == payload.get("plan_hash"),
+                    BrokerActionRecord.patch_hash == payload.get("patch_hash"),
+                    BrokerActionRecord.scope_hash == payload.get("scope_hash"),
+                    BrokerActionRecord.project_id == payload.get("project_id"),
+                )
+                .one_or_none()
+            )
+            if existing_tuple is not None:
+                # A retry after execution can recover the authorization only when
+                # it is the same deterministic request. Fresh confirmation fields
+                # must remain rejected by the durable tuple uniqueness boundary.
+                if (
+                    existing_tuple.status == "authorized"
+                    and existing_tuple.confirmation_id == payload.get("confirmation_id")
+                    and existing_tuple.user_event_nonce == payload.get("user_event_nonce")
+                    and existing_tuple.user_message_seq == payload.get("user_message_seq")
+                    and existing_tuple.signature_digest == payload.get("signature_digest")
+                    and existing_tuple.idempotency_digest is not None
+                    and existing_tuple.idempotency_digest == payload.get("idempotency_digest")
+                ):
+                    return True
+                return False
             latest_sequence = (
                 session.query(func.max(BrokerActionRecord.user_message_seq))
                 .filter(

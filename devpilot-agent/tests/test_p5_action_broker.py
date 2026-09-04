@@ -345,6 +345,31 @@ def test_store_rejects_same_action_tuple_with_fresh_confirmation_fields(tmp_path
     )
 
 
+def test_store_recovers_same_authorization_for_idempotent_retry(tmp_path) -> None:
+    store = ProjectStore(tmp_path / "devpilot.db")
+    store.initialize()
+    request = _request()
+    payload = {
+        "session_id": request.context.session_id,
+        "thread_id": request.context.thread_id,
+        "confirmation_id": request.context.confirmation_id,
+        "user_event_nonce": request.context.user_event_nonce,
+        "user_message_seq": request.context.user_message_seq,
+        "action": request.action,
+        "change_set_id": request.change_set_id,
+        "plan_hash": request.plan_hash,
+        "patch_hash": request.patch_hash,
+        "scope_hash": request.scope_hash,
+        "project_id": request.project_id,
+        "signature_digest": "a" * 64,
+        "idempotency_digest": "b" * 64,
+        "status": "authorized",
+    }
+
+    assert store.reserve_broker_action(payload) is True
+    assert store.reserve_broker_action(dict(payload)) is True
+
+
 def test_store_requires_strictly_increasing_message_sequence(tmp_path) -> None:
     store = ProjectStore(tmp_path / "devpilot.db")
     store.initialize()
