@@ -215,6 +215,7 @@ def test_openapi_exposes_canonical_and_compatibility_routes(tmp_path: Path) -> N
     assert "/api/v1/runs/{run_id}/events" in paths
     assert "/api/v1/security/backends" in paths
     assert "project_path" in openapi["components"]["schemas"]["PreviewRequest"]["properties"]
+    assert "request_id" not in openapi
 
 
 def test_request_id_body_and_header_stay_identical_for_credential_shaped_id(

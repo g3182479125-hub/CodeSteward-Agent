@@ -1355,6 +1355,8 @@ def create_app(
             )
         else:
             response = await call_next(request)
+        if request.url.path == "/openapi.json":
+            return response
         response_request_id = request_id
         key = request.headers.get("Idempotency-Key")
         if key and response.status_code < 400 and request.headers.get("X-Request-ID") is None:

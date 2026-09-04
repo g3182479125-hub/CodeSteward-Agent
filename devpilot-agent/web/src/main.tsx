@@ -172,8 +172,10 @@ function App() {
 
   useEffect(() => () => {
     eventSource.current?.close();
+    eventSource.current = null;
     if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
-  }, []);
+    pollTimer.current = null;
+  }, [page, runId]);
 
   const loadArtifacts = async (event: FormEvent) => {
     event.preventDefault();
