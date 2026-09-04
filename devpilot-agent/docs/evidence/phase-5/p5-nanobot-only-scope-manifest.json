@@ -3,7 +3,8 @@
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "in_progress",
   "implementation_commit": "67ae98a",
-  "evidence_commit": "c553d6398e14a40518918d8ded662bd8e04a589f",
+  "evidence_commit": "p5-nanobot-only-final",
+  "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
   "evidence_window": {
