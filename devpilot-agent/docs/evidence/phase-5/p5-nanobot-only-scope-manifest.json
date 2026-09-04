@@ -2,8 +2,8 @@
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "review_pending",
-  "implementation_commit": "p5-candidate-20260905",
-  "evidence_commit": "p5-candidate-20260905",
+  "implementation_commit": "p5-candidate-20260905-r3",
+  "evidence_commit": "p5-candidate-20260905-r3",
   "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
@@ -12,7 +12,7 @@
     "completed_at": "2026-09-04T17:22:32+08:00"
   },
   "inputs_sha256": {
-    "uv.lock": "982424EFDA5CE0EB08DA9737EBCC9CD1FCFE91CF58D54E0FD30EA5B865E7767D"
+    "uv.lock": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"
   },
   "artifact_sha256": {
     "docs/adr/ADR-0003-nanobot-only-frontend.md": "2A981BC163425B731D4440D31E8629A74C2342E3C3AC9AC5A789E1BDB9F9D015",
