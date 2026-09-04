@@ -1,12 +1,15 @@
 # P5 Acceptance Evidence
 
+> 当前状态：`in_progress`。本文件中的历史结果只用于追溯；本轮事件桥接和 Action Broker
+> 尚未完成 Gateway 真实接入、nanobot 聊天 E2E 和新的并行 Standards/Spec review。
+
 ## Scope
 
 Historical P5 evidence: the local API contract, durable event projection and
 the optional React console were verified before ADR-0003. The React console
 scope is now superseded; nanobot's chat WebUI is the only current user entry
-point. This file is retained for historical traceability and is not a current
-frontend acceptance claim.
+point. The current implementation additionally contains event bridge hardening
+and the Action Broker core, but does not yet certify the full confirmation-to-action path.
 
 ## Verified locally
 
@@ -18,6 +21,7 @@ frontend acceptance claim.
   retained as historical evidence only and removed from the current gate.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
+- Current focused bridge/Broker/API tests: `35 passed`.
 
 The three skipped Python tests require Windows `SeCreateSymbolicLinkPrivilege`;
 they are existing symlink escape tests and are reported as skips rather than
@@ -38,8 +42,8 @@ treated as successful security coverage.
 
 ## Review gate status
 
-The final parallel Standards and Spec review passed against the fixed point
-`5860598`; both independent reports found no actionable code or scope issue
-in `git diff 5860598...HEAD`. That result certifies the historical P5 scope.
-ADR-0003 requires a new nanobot-only integration review before the amended P5
-scope can be called certified. P6 has not started.
+The historical parallel Standards and Spec review passed against fixed point
+`5860598`; that result certifies only the historical console scope. A new parallel
+review is required for the current event bridge/Broker diff after it is committed.
+The current nanobot Gateway confirmation injection, real ControlPlane callbacks,
+durable Broker consumption and chat E2E are still open. P6 has not started.

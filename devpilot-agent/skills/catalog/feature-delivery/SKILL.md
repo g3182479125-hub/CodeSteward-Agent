@@ -18,6 +18,7 @@ metadata:
       - devpilot_get_delivery_report
       - devpilot_get_run_state
       - devpilot_watch_run
+      - devpilot_confirmed_action
     risk_level: R1
     source: catalog
 ---
@@ -56,6 +57,8 @@ metadata:
 - `devpilot_get_changeset`：读取服务端保存的 ChangeSet、Diff、哈希和完整契约；只读。
 - `devpilot_get_delivery_report`：读取脱敏交付结果、Artifact 元数据和可用决策；只读。
 - `devpilot_get_run_state`：读取服务端 Run 状态和已脱敏事件；只读。
+- `devpilot_watch_run`：读取脱敏阶段事件，支持断点重放和持久快照降级；只读。
+- `devpilot_confirmed_action`：仅把 Gateway 签名的用户确认交给受信任 Broker；不接受 token。
 
 Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回，
 之后可用 `devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet

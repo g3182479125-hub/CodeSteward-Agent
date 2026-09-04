@@ -17,6 +17,7 @@ metadata:
       - devpilot_get_run_state
       - devpilot_get_delivery_report
       - devpilot_watch_run
+      - devpilot_confirmed_action
     risk_level: R1
     source: catalog
 ---
@@ -48,6 +49,8 @@ metadata:
 - `devpilot_propose_changeset`：创建不可变 Diff，只读提案；
 - `devpilot_request_approval`：登记用户确认的审批意图，不接收或返回 capability token；
 - `devpilot_get_changeset`、`devpilot_get_run_state`：读取服务端事实。
+- `devpilot_watch_run`：读取脱敏阶段事件，支持断点重放和持久快照降级；只读。
+- `devpilot_confirmed_action`：仅把 Gateway 签名的用户确认交给受信任 Broker；不接受 token。
 
 Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用户动作完成。接受或停止
 必须在 nanobot 对话中取得用户明确确认；回滚只返回现有 R1 审批入口，不得由 Skill 自行取得 capability。

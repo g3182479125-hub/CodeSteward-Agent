@@ -1,6 +1,6 @@
 {
   "phase": "P5",
-  "status": "historical-superseded-by-ADR-0003",
+  "status": "in_progress",
   "current_scope_manifest": "docs/evidence/phase-5/p5-nanobot-only-scope-manifest.json",
   "evidence_commit": "p5-nanobot-only-final",
   "evidence_ref_type": "immutable_tag",
@@ -19,12 +19,12 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "182 passed, 3 skipped",
-    "p5_api_tests": "23 passed",
+    "python_full": "pending-final-rerun; prior baseline 182 passed, 3 skipped",
+    "p5_api_tests": "35 passed across API, event bridge and Action Broker focused tests",
     "historical_web_checks": "passed before ADR-0003; no longer a current gate",
     "ruff": "passed",
     "pyright": "passed",
     "git_diff_check": "passed",
-    "parallel_review": "PASS for historical console scope; amended nanobot-only scope requires new independent review"
+    "parallel_review": "historical console scope PASS; current event bridge/Broker scope requires new independent review"
   }
 }

@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover - exercised only outside nanobot
 if TYPE_CHECKING:
     from nanobot.agent.tools.context import ToolContext
 
+from .action_broker import ActionBroker, BrokerActionRequest, BrokerError, ConfirmationContext
 from .code_access import CodeAccessError, CodeAccessService
 from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
@@ -126,6 +127,31 @@ _PATH_DENIAL_CODES = frozenset(
         "TARGET_NOT_FILE",
     }
 )
+
+_action_broker: ActionBroker | None = None
+
+
+def configure_action_broker(broker: ActionBroker | None) -> None:
+    """Install the trusted in-process broker supplied by the nanobot Gateway."""
+    global _action_broker
+    _action_broker = broker
+
+
+def _trusted_confirmation_context() -> ConfirmationContext | None:
+    """Read only the Gateway-owned, out-of-band confirmation attribute."""
+    try:
+        from nanobot.agent.tools.context import current_request_context
+    except ImportError:
+        return None
+    context = current_request_context()
+    if context is None:
+        return None
+    try:
+        return ConfirmationContext.from_mapping(
+            context.attributes.get("devpilot_confirmation_context")
+        )
+    except (BrokerError, TypeError, ValueError):
+        return None
 
 
 def _configured_roots(workspace: Path) -> AllowedRoots:
@@ -645,9 +671,11 @@ def _get_control_plane_events(
     event_id: str | None = None
     event_name: str | None = None
     data_lines: list[str] = []
+    previous_event_id: int | None = None
+    previous_sequence: int | None = None
 
     def flush() -> None:
-        nonlocal event_id, event_name, data_lines
+        nonlocal event_id, event_name, data_lines, previous_event_id, previous_sequence
         if not data_lines:
             event_id = None
             event_name = None
@@ -666,12 +694,28 @@ def _get_control_plane_events(
             raise ValueError("control-plane SSE event id is invalid") from exc
         if numeric_id < 0:
             raise ValueError("control-plane SSE event id is invalid")
+        sequence_value = payload.get("sequence")
+        if not isinstance(sequence_value, (int, str)) or isinstance(sequence_value, bool):
+            raise ValueError("control-plane SSE sequence is invalid")
+        try:
+            numeric_sequence = int(sequence_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("control-plane SSE sequence is invalid") from exc
+        if numeric_sequence < 1:
+            raise ValueError("control-plane SSE sequence is invalid")
+        if previous_event_id is not None and numeric_id <= previous_event_id:
+            raise ValueError("control-plane SSE event order is invalid")
+        if previous_sequence is not None and numeric_sequence <= previous_sequence:
+            raise ValueError("control-plane SSE sequence order is invalid")
         # The SSE frame is the server-owned envelope.  Never let JSON data
         # override the cursor or event type parsed from that envelope.
         payload["event_id"] = numeric_id
+        payload["sequence"] = numeric_sequence
         if event_name:
             payload["type"] = event_name
         events.append(payload)
+        previous_event_id = numeric_id
+        previous_sequence = numeric_sequence
         event_id = None
         event_name = None
         data_lines = []
@@ -939,6 +983,84 @@ class WatchRunTool(Tool):
             return ToolResult.error(f"P5 Run event bridge failed: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P5 Run event bridge failed: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["apply", "verify", "rollback"]},
+            "change_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "patch_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "scope_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "verification_profile": {
+                "type": ["string", "null"],
+                "enum": ["python-syntax", "python-run", "node-syntax", None],
+            },
+        },
+        "required": [
+            "action",
+            "change_set_id",
+            "plan_hash",
+            "patch_hash",
+            "scope_hash",
+            "project_id",
+        ],
+        "additionalProperties": False,
+    }
+)
+class ConfirmedActionTool(Tool):
+    """Request one trusted user-confirmed action without accepting a token."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_confirmed_action"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Execute exactly one apply, verify, or rollback action only when the nanobot "
+            "Gateway supplies a valid out-of-band signed user confirmation. The model cannot "
+            "provide a token, confirmation context, or idempotency key."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    @property
+    def exclusive(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        broker = _action_broker
+        context = _trusted_confirmation_context()
+        if broker is None or context is None:
+            return ToolResult.error("P5 action rejected: APPROVAL_BROKER_UNAVAILABLE")
+        try:
+            result = broker.execute(
+                BrokerActionRequest(
+                    context=context,
+                    action=str(kwargs["action"]),
+                    change_set_id=str(kwargs["change_set_id"]),
+                    plan_hash=str(kwargs["plan_hash"]),
+                    patch_hash=str(kwargs["patch_hash"]),
+                    scope_hash=str(kwargs["scope_hash"]),
+                    project_id=str(kwargs["project_id"]),
+                    verification_profile=(
+                        str(kwargs["verification_profile"])
+                        if kwargs.get("verification_profile") is not None
+                        else None
+                    ),
+                )
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            return ToolResult.error(f"P5 action rejected: {type(exc).__name__}")
 
 
 @tool_parameters(

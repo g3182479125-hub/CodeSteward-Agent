@@ -32,9 +32,10 @@ ADR-0003 删除。
 3. 阅读文件范围、风险、验证项和停止条件；
 4. 查看当前 Run 状态、阶段事件、失败原因、Artifact 引用和下一步。
 
-当前尚未实现 nanobot 事件桥接和本地 Action Broker，因此 Apply、Verify、Rollback
-不会执行；用户在聊天中请求这些动作时必须返回 `APPROVAL_BROKER_UNAVAILABLE`，保持
-fail closed。P5-03/P5-04 完成后，才允许在同一聊天中完成“用户确认 → Broker → 动作 →
+当前已经有 nanobot 事件桥接和 Action Broker 核心，但 Gateway 的 WebUI 确认事件尚未完成
+受信上下文注入，真实 ControlPlane 回调也尚未接通。因此 Apply、Verify、Rollback 在默认
+运行方式下仍应返回 `APPROVAL_BROKER_UNAVAILABLE`，保持 fail closed；不能因为 Tool 已注册
+就把它当成动作已经可执行。P5-04 完成后，才允许在同一聊天中完成“用户确认 → Broker → 动作 →
 验证/回滚”的闭环，并补充真实 nanobot WebUI E2E 证据。
 
 DevPilot 的持久 RunEvent/SSE 是内部事件源，不能被当作公开浏览器页面。nanobot

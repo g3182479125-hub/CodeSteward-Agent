@@ -67,6 +67,8 @@ _SAFE_PAYLOAD_KEYS = frozenset(
 _SAFE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SAFE_LABEL_KEYS = frozenset(
     {
+        "run_id",
+        "status",
         "code",
         "capability",
         "profile",
@@ -78,6 +80,7 @@ _SAFE_LABEL_KEYS = frozenset(
         "artifact_ref",
     }
 )
+_SAFE_TIMESTAMP_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9T:+.\-Z]{0,63}$")
 
 
 def _string(value: Any, *, limit: int = 160) -> str | None:
@@ -93,6 +96,8 @@ def _safe_detail_string(key: str, value: str) -> str | None:
         return None
     if key in _SAFE_LABEL_KEYS and _SAFE_LABEL_PATTERN.fullmatch(value) is None:
         return None
+    if key == "created_at" and _SAFE_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        return None
     return value
 
 
@@ -105,6 +110,8 @@ def _safe_payload(payload: Any) -> dict[str, Any]:
         value = mapping.get(key)
         if isinstance(value, (str, int, float, bool)):
             if isinstance(value, str):
+                if key == "files":
+                    continue
                 value = _safe_detail_string(key, value)
                 if value is None:
                     continue
@@ -206,10 +213,18 @@ def project_run_state(
     state: Mapping[str, Any], *, fallback: bool = False, max_events: int = MAX_EVENTS
 ) -> NanobotRunProjection:
     """Build a deterministic safe projection from ``GET /runs/{id}`."""
-    run_id = _string(state.get("run_id"), limit=128)
+    run_id_value = _string(state.get("run_id"), limit=128)
+    run_id = (
+        _safe_detail_string("run_id", run_id_value)
+        if run_id_value is not None
+        else None
+    )
     if run_id is None:
         raise ValueError("run_id is required")
-    status = _string(state.get("status"), limit=32) or "unknown"
+    status_value = _string(state.get("status"), limit=32)
+    status = (
+        _safe_detail_string("status", status_value) if status_value is not None else None
+    ) or "unknown"
     raw_events = state.get("events")
     if not isinstance(raw_events, list):
         raw_events = []
@@ -256,7 +271,12 @@ def _project_event(raw: Any) -> NanobotRunEvent | None:
         return None
     if event_id < 0 or sequence < 1:
         return None
-    created_at = _string(mapping.get("created_at"), limit=64) or ""
+    created_at_value = _string(mapping.get("created_at"), limit=64)
+    created_at = (
+        _safe_detail_string("created_at", created_at_value)
+        if created_at_value is not None
+        else None
+    ) or ""
     details = _safe_payload(mapping.get("redacted_payload", mapping.get("payload")))
     message = _event_message(event_type, details)[:MAX_MESSAGE_CHARS]
     return NanobotRunEvent(

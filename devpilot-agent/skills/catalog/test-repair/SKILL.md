@@ -17,6 +17,7 @@ metadata:
       - devpilot_get_run_state
       - devpilot_get_delivery_report
       - devpilot_watch_run
+      - devpilot_confirmed_action
     risk_level: R1
     source: catalog
 ---
@@ -39,6 +40,9 @@ Sandbox、扩大文件范围、自动批准或自动回滚时不得使用。
 - 已有 repo-analysis inspect/search/read 证据；
 - 已有属于目标项目的失败 `test-check` Run，包含目标文件与服务端计算的 before hash；
 - symptom、expected behavior、允许文件和 `python-run` 或 `node-syntax` profile 已明确。
+
+- `devpilot_watch_run`：读取脱敏阶段事件，支持断点重放和持久快照降级；只读。
+- `devpilot_confirmed_action`：仅把 Gateway 签名的用户确认交给受信任 Broker；不接受 token。
 
 ## 执行步骤
 
