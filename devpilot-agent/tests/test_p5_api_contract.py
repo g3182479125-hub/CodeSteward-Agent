@@ -105,6 +105,18 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
     )
     assert "camel-secret" not in camel_case
     assert "auth-secret" not in camel_case
+    other_camel_case = redact_sensitive_text(
+        'openaiApiKey = "openai-secret"; clientApiToken="client-secret"; '
+        'githubToken="github-secret"; secretKey="key-secret"; dbPassword="db-secret";'
+    )
+    for secret in (
+        "openai-secret",
+        "client-secret",
+        "github-secret",
+        "key-secret",
+        "db-secret",
+    ):
+        assert secret not in other_camel_case
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
@@ -130,6 +142,16 @@ def test_validation_and_domain_errors_use_stable_error_contract(tmp_path: Path) 
     assert invalid.json()["error"]["code"] == "REQUEST_INVALID"
     assert invalid.json()["request_id"] == invalid.headers["X-Request-ID"]
     assert "traceback" not in invalid.text.lower()
+
+    not_found = client.get("/api/v1/does-not-exist")
+    assert not_found.status_code == 404
+    assert not_found.json()["error"]["code"] == "ROUTE_NOT_FOUND"
+    assert not_found.json()["request_id"] == not_found.headers["X-Request-ID"]
+
+    method_not_allowed = client.post("/api/v1/skills")
+    assert method_not_allowed.status_code == 405
+    assert method_not_allowed.json()["error"]["code"] == "METHOD_NOT_ALLOWED"
+    assert method_not_allowed.json()["request_id"] == method_not_allowed.headers["X-Request-ID"]
 
     missing = client.get("/api/v1/change-sets/does-not-exist")
     assert missing.status_code == 409

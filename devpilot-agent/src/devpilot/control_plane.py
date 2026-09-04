@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
 from .execution import ExecutionBackend, ExecutionError, FakeExecutionBackend
@@ -1342,6 +1343,27 @@ def create_app(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"error": {"code": exc.code, "message": exc.message}, "request_id": request_id},
+            headers={"X-Request-ID": request_id},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        error_details = {
+            status.HTTP_404_NOT_FOUND: ("ROUTE_NOT_FOUND", "route not found"),
+            status.HTTP_405_METHOD_NOT_ALLOWED: (
+                "METHOD_NOT_ALLOWED",
+                "method not allowed",
+            ),
+        }
+        code, message = error_details.get(
+            exc.status_code, ("HTTP_ERROR", "request failed")
+        )
+        request_id = getattr(request.state, "request_id", _request_id(request))
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_error_payload(request, code, message),
             headers={"X-Request-ID": request_id},
         )
 

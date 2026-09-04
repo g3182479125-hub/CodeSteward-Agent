@@ -15,8 +15,8 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "172 passed, 3 skipped",
-    "p5_api_tests": "13 passed",
+    "python_full": "174 passed, 3 skipped",
+    "p5_api_tests": "14 passed",
     "web_test": "passed",
     "web_build": "passed",
     "web_smoke": "passed: HTTP smoke and in-app browser fixture check",

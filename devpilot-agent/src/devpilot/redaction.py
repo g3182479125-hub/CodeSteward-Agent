@@ -25,7 +25,10 @@ _SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN = re.compile(
  )
 _SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    rf"(?P<prefix>[\"']?{_SENSITIVE_NAME}[\"']?\s*[=:]\s*)"
+    r"(?P<prefix>[\"']?(?:[A-Za-z0-9]+)?"
+    r"(?:api[_-]?(?:key|token)|access[_-]?(?:key|token)|auth[_-]?token|"
+    r"secret(?:[_-]?key)?|token|password|passwd)"
+    r"(?:[_-][A-Za-z0-9]+)*[\"']?\s*[=:]\s*)"
     r"(?P<value>[^\r\n]*)"
 )
 
