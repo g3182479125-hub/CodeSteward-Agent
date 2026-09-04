@@ -1,11 +1,28 @@
 """Event types for the message bus."""
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from nanobot.bus.outbound_events import OutboundEvent
+
+
+_CURRENT_INBOUND_ATTRIBUTES: ContextVar[dict[str, Any]] = ContextVar(
+    "nanobot_current_inbound_attributes",
+    default={},
+)
+
+
+def set_current_inbound_attributes(attributes: dict[str, Any]) -> None:
+    """Expose trusted message attributes to the task consuming that message."""
+    _CURRENT_INBOUND_ATTRIBUTES.set(dict(attributes))
+
+
+def current_inbound_attributes() -> dict[str, Any]:
+    """Return the trusted attributes of the message consumed by this task."""
+    return dict(_CURRENT_INBOUND_ATTRIBUTES.get())
 
 # Optional ``OutboundMessage.metadata`` key for structured, channel-agnostic UI
 # payloads. Value is JSON-serializable with at least ``kind``; rich clients may

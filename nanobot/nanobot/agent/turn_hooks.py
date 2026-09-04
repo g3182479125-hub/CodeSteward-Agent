@@ -18,6 +18,15 @@ from nanobot.agent.hook import (
 from nanobot.agent.progress_hook import AgentProgressHook
 
 
+def _public_attributes(attributes: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep trusted transport attributes out of general-purpose hooks."""
+    return {
+        key: value
+        for key, value in (attributes or {}).items()
+        if not key.startswith("devpilot_")
+    }
+
+
 @dataclass(slots=True)
 class AgentTurnHookSpec:
     """Inputs needed to build the hook chain for one agent turn."""
@@ -63,7 +72,7 @@ def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
         message_id=spec.message_id,
         session_key=spec.session_key,
         metadata=dict(spec.metadata or {}),
-        attributes=dict(spec.attributes or {}),
+        attributes=_public_attributes(spec.attributes),
         ephemeral=spec.ephemeral,
     )
     hook_chain: list[AgentHook] = [progress_hook]

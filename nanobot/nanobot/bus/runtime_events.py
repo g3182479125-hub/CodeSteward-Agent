@@ -22,6 +22,15 @@ if TYPE_CHECKING:
     from nanobot.utils.llm_runtime import LLMRuntime
 
 
+def _public_attributes(attributes: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep transport-only attributes out of runtime events and subscribers."""
+    return {
+        key: value
+        for key, value in (attributes or {}).items()
+        if not key.startswith("devpilot_")
+    }
+
+
 @dataclass(frozen=True)
 class RuntimeEventContext:
     """Routing context common to turn-scoped runtime events."""
@@ -174,7 +183,7 @@ class RuntimeEventPublisher:
             chat_id=chat_id,
             session_key=session_key,
             metadata=dict(metadata or {}),
-            attributes=dict(attributes or {}),
+            attributes=_public_attributes(attributes),
         )
 
     def record_turn_runtime(self, session_key: str, runtime: LLMRuntime) -> None:

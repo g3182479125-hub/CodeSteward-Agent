@@ -11,7 +11,7 @@ from nanobot.agent.tools.context import (
     current_request_context,
     reset_request_context,
 )
-from nanobot.bus.events import InboundMessage
+from nanobot.bus.events import InboundMessage, current_inbound_attributes
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 from nanobot.session.turn_continuation import INTERNAL_CONTINUATION_META
@@ -111,6 +111,24 @@ async def test_loop_binds_request_context_for_tool_execution(tmp_path: Path) -> 
         "attributes": {"tenant": "acme", "devpilot_confirmation": {"secret": "hidden"}},
     }
     assert cron.runtimes[-1] is runtime
+
+
+@pytest.mark.asyncio
+async def test_bus_message_attributes_stay_in_transport_context_without_loop_changes() -> None:
+    bus = MessageBus()
+    await bus.publish_inbound(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="chat",
+            content="执行",
+            attributes={"devpilot_confirmation": {"secret": "hidden"}},
+        )
+    )
+    await bus.consume_inbound()
+    assert current_inbound_attributes() == {
+        "devpilot_confirmation": {"secret": "hidden"}
+    }
 
 
 def test_request_context_nested_bind_restores_outer_context() -> None:

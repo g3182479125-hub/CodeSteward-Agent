@@ -2,7 +2,11 @@
 
 import asyncio
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import (
+    InboundMessage,
+    OutboundMessage,
+    set_current_inbound_attributes,
+)
 
 
 class MessageBus:
@@ -23,7 +27,9 @@ class MessageBus:
 
     async def consume_inbound(self) -> InboundMessage:
         """Consume the next inbound message (blocks until available)."""
-        return await self.inbound.get()
+        msg = await self.inbound.get()
+        set_current_inbound_attributes(msg.attributes)
+        return msg
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Publish a response from the agent to channels."""

@@ -33,8 +33,19 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("result_json", sa.Text(), nullable=True),
-        sa.UniqueConstraint("session_id", "thread_id", "confirmation_id", "user_event_nonce", name="uq_broker_action_confirmation"),
-        sa.UniqueConstraint("session_id", "thread_id", "user_message_seq", name="uq_broker_action_sequence"),
+        sa.UniqueConstraint(
+            "session_id",
+            "thread_id",
+            "confirmation_id",
+            "user_event_nonce",
+            name="uq_broker_action_confirmation",
+        ),
+        sa.UniqueConstraint(
+            "session_id",
+            "thread_id",
+            "user_message_seq",
+            name="uq_broker_action_sequence",
+        ),
     )
 
 

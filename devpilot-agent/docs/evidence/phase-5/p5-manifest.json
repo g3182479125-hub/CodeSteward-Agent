@@ -2,8 +2,8 @@
   "phase": "P5",
   "status": "review_pending",
   "current_scope_manifest": "docs/evidence/phase-5/p5-nanobot-only-scope-manifest.json",
-  "evidence_commit": "e2b5266",
-  "evidence_ref_type": "immutable_tag",
+  "evidence_commit": "aac845f",
+  "evidence_ref_type": "git_commit",
   "current_frontend": "nanobot-native-webui-only",
   "canonical_api_prefix": "/api/v1",
   "compatibility_prefix": "/v1",
@@ -19,12 +19,12 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "205 passed, 3 existing Windows symlink checks skipped",
-    "p5_api_tests": "17 focused API, event bridge, Action Broker and migration tests passed",
+    "python_full": "206 passed, 3 existing Windows symlink checks skipped",
+    "p5_api_tests": "18 focused API, event bridge, Action Broker and migration tests passed",
     "historical_web_checks": "passed before ADR-0003; no longer a current gate",
     "ruff": "passed",
     "pyright": "passed",
     "git_diff_check": "passed",
-    "parallel_review": "current Standards and Spec reviews pending on the final candidate"
+    "parallel_review": "pending on the candidate commit; reports will be recorded separately"
   }
 }

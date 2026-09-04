@@ -18,6 +18,17 @@ HASHES = {
 }
 
 
+def test_nanobot_terminal_states_are_durable_broker_completion() -> None:
+    from devpilot.nanobot_tools import _broker_terminal_status
+
+    assert [_broker_terminal_status(value) for value in ("applied", "verified", "reverted")] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+    assert _broker_terminal_status("rejected") == "rejected"
+
+
 def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest:
     issued = NOW.isoformat()
     expires = (NOW + timedelta(minutes=5)).isoformat()

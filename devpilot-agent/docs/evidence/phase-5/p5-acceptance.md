@@ -1,7 +1,7 @@
 # P5 Acceptance Evidence
 
-当前状态：`review_pending`。代码和本地门禁已完成；等待本轮 Standards 与 Spec
-subagent 对同一工作树给出最终结论后，才把状态改为 `complete`。
+当前状态：`review_pending`。代码和本地门禁已完成；等待本轮 Standards 与
+Spec subagent 对同一候选提交给出最终结论。
 
 ## Scope
 
@@ -32,11 +32,11 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 
 ## Verification
 
-- DevPilot full Python suite: `205 passed, 3 skipped`.
-- DevPilot focused Broker/migration suite: `17 passed`.
+- DevPilot full Python suite: `206 passed, 3 skipped`.
+- DevPilot focused Broker/migration suite: `18 passed`.
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
-- nanobot Gateway/BaseChannel/runtime and AgentLoop context integration tests: `35 passed, 1 skipped`.
+- nanobot Gateway/BaseChannel/runtime and AgentLoop context integration tests: `36 passed, 1 skipped`.
 - Native WebUI client has a regression test for confirmation tuple serialization.
 - Fake nanobot tool-loop chat coverage proves trusted attributes reach one tool turn while
   remaining absent from runtime events and Session persistence; provider-backed live chat was
@@ -50,6 +50,5 @@ explicitly removes frontend build/browser smoke from the P5 gate.
 
 ## Review gate
 
-Two parallel subagents are reviewing the same current P5 worktree on the Standards and
-Spec axes. Their reports must be recorded under `docs/reviews/` before P5 is marked
-complete. P6 has not started.
+两份并行 subagent review 必须分别记录在 `docs/reviews/`，并在 P5 标为
+`complete` 或 certified 前通过。P6 尚未开始。

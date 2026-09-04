@@ -135,14 +135,24 @@ _PATH_DENIAL_CODES = frozenset(
     }
 )
 
+_BROKER_SUCCESS_STATUSES = frozenset({"applied", "verified", "reverted"})
+
+
+def _broker_terminal_status(status: str) -> str:
+    """Map control-plane success states to the broker's durable terminal state."""
+    return "completed" if status in _BROKER_SUCCESS_STATUSES else status
+
 
 def _trusted_confirmation_attributes() -> dict[str, Any] | None:
     """Read the WebUI-only confirmation envelope; it is never model input."""
     try:
         from nanobot.agent.tools.context import current_request_context
+        from nanobot.bus.events import current_inbound_attributes
 
         context = current_request_context()
-        value = context.attributes.get("devpilot_confirmation") if context else None
+        value = current_inbound_attributes().get("devpilot_confirmation")
+        if value is None and context is not None:
+            value = context.attributes.get("devpilot_confirmation")
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None
@@ -1148,9 +1158,14 @@ class ConfirmedActionTool(Tool):
             def finish(
                 request: BrokerActionRequest, status: str, result: Mapping[str, Any]
             ) -> None:
+                # The control plane reports its domain terminal state (for
+                # example, ``applied`` or ``verified``), while the broker
+                # record uses ``completed`` for every successful terminal
+                # action. Keep the domain status in result_json for replay.
+                broker_status = _broker_terminal_status(status)
                 store.finish_broker_action(
                     request.context.confirmation_id,
-                    status,
+                    broker_status,
                     dict(result),
                     expected={
                         "session_id": request.context.session_id,

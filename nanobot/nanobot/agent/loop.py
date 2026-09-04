@@ -141,7 +141,6 @@ class TurnContext:
     input_persisted_early: bool = False
     save_skip: int = 0
 
-
     outbound: OutboundMessage | None = None
     suppress_response: bool = False
 
@@ -176,11 +175,6 @@ class TurnContext:
         if self.session is None:
             raise RuntimeError("turn session is not initialized; RESTORE must run before this stage")
         return self.session
-
-
-def _public_runtime_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep trusted tool-only attributes out of hooks, events, and persistence."""
-    return {key: value for key, value in attributes.items() if not key.startswith("devpilot_")}
 
 
 class AgentLoop:
@@ -955,7 +949,7 @@ class AgentLoop:
                         original_user_text=pending_msg.content,
                         runtime=runtime,
                         metadata=dict(metadata),
-                        attributes=_public_runtime_attributes(pending_msg.attributes),
+                        attributes=dict(request_ctx.attributes),
                         sender_id=pending_msg.sender_id,
                         turn_id=request_ctx.turn_id,
                         workspace=scope.project_path,
@@ -1060,7 +1054,7 @@ class AgentLoop:
                 chat_id=chat_id,
                 message_id=message_id,
                 metadata=metadata,
-                attributes=_public_runtime_attributes(request_ctx.attributes),
+                attributes=dict(request_ctx.attributes),
                 session_key=active_session_key,
                 workspace=effective_scope.project_path,
                 tool_hint_max_length=self.tool_hint_max_length,
@@ -1275,7 +1269,6 @@ class AgentLoop:
                         on_stream_end=delivery.on_stream_end,
                         pending_queue=pending,
                         delivery=delivery,
-                        attributes=msg.attributes,
                     )
                     continuing = turn_continuation.internal_continuation_pending(msg.metadata)
                     await delivery.complete(
@@ -1717,7 +1710,7 @@ class AgentLoop:
                         ctx.msg,
                         ctx.session_key,
                         turn_id=ctx.turn_id,
-                        attributes=_public_runtime_attributes(ctx.attributes),
+                        attributes=ctx.attributes,
                     )
             return True
         return False
@@ -1932,7 +1925,7 @@ class AgentLoop:
                 ctx.msg,
                 ctx.session_key,
                 turn_id=ctx.turn_id,
-                attributes=_public_runtime_attributes(ctx.attributes),
+                attributes=ctx.attributes,
             )
 
     async def _prepare_outbound(self, ctx: TurnContext) -> None:
@@ -2300,7 +2293,6 @@ class AgentLoop:
         msg = InboundMessage(
             channel=channel, sender_id=sender_id, chat_id=chat_id,
             content=content, media=media or [], metadata=metadata,
-            attributes=dict(attributes or {}),
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._get_session_lock(session_key)
