@@ -14,14 +14,14 @@ and the Action Broker core, but does not yet certify the full confirmation-to-ac
 ## Verified locally
 
 - P5 API/SSE contract tests: 23 passed.
-- Full Python suite: 182 passed, 3 skipped.
+- Full Python suite: 194 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
 - React/Vite build, console smoke and browser smoke: passed before ADR-0003;
   retained as historical evidence only and removed from the current gate.
 - `git diff --check`: passed.
 - tracked secret-pattern scan: no secret-like tokens found.
-- Current focused bridge/Broker/API tests: `35 passed`.
+- Current focused bridge/Broker/API tests: `37 passed`.
 
 The three skipped Python tests require Windows `SeCreateSymbolicLinkPrivilege`;
 they are existing symlink escape tests and are reported as skips rather than

@@ -2,7 +2,7 @@
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "in_progress",
-  "implementation_commit": "67ae98a",
+  "implementation_commit": "cbac06a",
   "evidence_commit": "p5-nanobot-only-final",
   "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
@@ -30,12 +30,12 @@
     {
       "command": "uv run pytest --disable-warnings",
       "exit_code": 0,
-      "result": "182 passed, 3 skipped"
+      "result": "194 passed, 3 skipped"
     },
     {
       "command": "uv run pytest tests/test_p5_api_contract.py --disable-warnings",
       "exit_code": 0,
-      "result": "23 passed"
+      "result": "23 passed (API contract); current bridge/Broker focused suite: 37 passed"
     },
     {
       "command": "uv run ruff check src tests",
@@ -58,5 +58,5 @@
     "docs/runbooks/local-nanobot-devpilot.md"
   ],
   "rollback_point": "29dff92",
-  "note": "event bridge and Action Broker are specified but not implemented; amended P5 remains in_progress"
+  "note": "event bridge hardening and Action Broker core are implemented; Gateway injection, durable consumption and chat E2E remain open; amended P5 remains in_progress"
 }

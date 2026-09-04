@@ -19,8 +19,8 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "pending-final-rerun; prior baseline 182 passed, 3 skipped",
-    "p5_api_tests": "35 passed across API, event bridge and Action Broker focused tests",
+    "python_full": "194 passed, 3 skipped",
+    "p5_api_tests": "37 passed across API, event bridge and Action Broker focused tests",
     "historical_web_checks": "passed before ADR-0003; no longer a current gate",
     "ruff": "passed",
     "pyright": "passed",
