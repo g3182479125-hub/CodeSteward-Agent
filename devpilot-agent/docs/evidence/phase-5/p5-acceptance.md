@@ -21,15 +21,17 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
   runtime events、Session 持久化和聊天文本会过滤 `devpilot_*` 属性。
 - Action Broker 验签、校验当前 trusted snapshot 和有效期，再在 capability 发行
   前持久化一次性消费；相同 action tuple 的刷新确认会被唯一约束拒绝。
+- Broker 自己生成不可预测的幂等键；同一确认在执行中断后可从 durable record 恢复
+  原幂等键，新的确认事件不会复用旧动作。
 - Broker 终态和脱敏结果写回 `broker_actions.result_json`；审批 token 和 API key
   不进入模型、Session、WebUI、SSE 或日志。
 - 生产 store 和 FastAPI 启动严格要求 Alembic head
-  `0009_p5_broker_tuple_replay`；旧库不会通过 `create_all()` 静默升级。
+  `0010_p5_persist_idempotency_key`；旧库不会通过 `create_all()` 静默升级。
 
 ## Verification
 
-- DevPilot full Python suite: `203 passed, 3 skipped`.
-- DevPilot focused Broker/migration suite: `15 passed`.
+- DevPilot full Python suite: `205 passed, 3 skipped`.
+- DevPilot focused Broker/migration suite: `17 passed`.
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
 - nanobot Gateway/BaseChannel/runtime tests: `27 passed, 1 skipped`.

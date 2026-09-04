@@ -52,6 +52,7 @@ from .action_broker import (
     ActionBroker,
     BrokerActionRequest,
     ConfirmationContext,
+    ConfirmationReservation,
 )
 from .code_access import CodeAccessError, CodeAccessService
 from .event_bridge import project_run_state, project_sse_events
@@ -166,7 +167,7 @@ def _durable_store() -> ProjectStore:
         ).scalar_one_or_none()
     if not has_version:
         raise RuntimeError("database schema is not initialized by Alembic")
-    store.require_schema_head("0009_p5_broker_tuple_replay")
+    store.require_schema_head("0010_p5_persist_idempotency_key")
     return store
 
 
@@ -187,7 +188,7 @@ def _read_only_code_access_store() -> ProjectStore:
         }
         has_version = "alembic_version" in tables
     if has_version:
-        store.require_schema_head("0009_p5_broker_tuple_replay")
+        store.require_schema_head("0010_p5_persist_idempotency_key")
     elif "projects" not in tables:
         raise RuntimeError("database schema is not initialized")
     return store
@@ -683,6 +684,24 @@ def _get_control_plane(path: str) -> dict[str, Any]:
     return _model_result(result)
 
 
+def _snapshot_verification_profile(snapshot: Mapping[str, Any]) -> str:
+    """Read the server-owned verification profile from a ChangeSet snapshot."""
+    direct = snapshot.get("verification_profile")
+    if isinstance(direct, str) and direct in {"python-syntax", "python-run", "node-syntax"}:
+        return direct
+    for key in ("bug_fix_contract", "test_repair_contract"):
+        contract = snapshot.get(key)
+        if isinstance(contract, Mapping):
+            profile = contract.get("verification_profile")
+            if isinstance(profile, str) and profile in {
+                "python-syntax",
+                "python-run",
+                "node-syntax",
+            }:
+                return profile
+    return "python-syntax"
+
+
 def _get_control_plane_events(
     path: str, *, last_event_id: int | None = None
 ) -> tuple[str, str, list[dict[str, Any]]]:
@@ -1074,10 +1093,11 @@ class ConfirmedActionTool(Tool):
                 raise ValueError("missing trusted verifier")
             context = ConfirmationContext.from_mapping(attributes["context"])
             store = _durable_store()
+            request_action = str(kwargs.get("action", ""))
 
             def consume(
                 request: BrokerActionRequest, idempotency_key: str
-            ) -> bool | Mapping[str, Any]:
+            ) -> bool | Mapping[str, Any] | ConfirmationReservation:
                 tuple_payload: dict[str, Any] = {
                     "session_id": request.context.session_id,
                     "thread_id": request.context.thread_id,
@@ -1098,18 +1118,32 @@ class ConfirmedActionTool(Tool):
                             request.context.signature.encode()
                         ).hexdigest(),
                         "idempotency_digest": hashlib.sha256(idempotency_key.encode()).hexdigest(),
+                        "idempotency_key": idempotency_key,
                         "status": "authorized",
                         "expires_at": request.context.validate_time(datetime.now(UTC))[1],
                     }
                 )
                 if reserved:
                     return True
-                return store.get_broker_action_result(tuple_payload) or False
+                replayed = store.get_broker_action_result(tuple_payload)
+                if replayed is not None:
+                    return replayed
+                previous_key = store.get_broker_action_idempotency_key(tuple_payload)
+                if previous_key is not None:
+                    return ConfirmationReservation(previous_key)
+                return False
 
             def snapshot(change_set_id: str) -> dict[str, Any]:
                 result = _get_control_plane(_safe_resource_path(change_set_id, "change-sets"))
                 security = _get_control_plane(f"/v1/projects/{kwargs['project_id']}/security")
-                return {**result, "trust_state": security.get("trust_state")}
+                profile = _snapshot_verification_profile(result)
+                if request_action == "verify" and kwargs.get("verification_profile") != profile:
+                    raise ValueError("verification profile is not bound to the ChangeSet")
+                return {
+                    **result,
+                    "trust_state": security.get("trust_state"),
+                    "verification_profile": profile,
+                }
 
             def finish(
                 request: BrokerActionRequest, status: str, result: Mapping[str, Any]

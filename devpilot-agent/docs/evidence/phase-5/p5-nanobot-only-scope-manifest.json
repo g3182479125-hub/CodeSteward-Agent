@@ -25,17 +25,17 @@
     "cors": "disabled",
     "fc_sandbox": "not enabled"
   },
-  "database_migration": "0009_p5_broker_tuple_replay",
+  "database_migration": "0010_p5_persist_idempotency_key",
   "tests": [
     {
       "command": "uv run pytest --disable-warnings",
       "exit_code": 0,
-      "result": "203 passed, 3 existing Windows symlink checks skipped"
+      "result": "205 passed, 3 existing Windows symlink checks skipped"
     },
     {
       "command": "uv run pytest tests/test_p5_api_contract.py --disable-warnings",
       "exit_code": 0,
-      "result": "15 focused API, event bridge, Action Broker and migration tests passed"
+      "result": "17 focused API, event bridge, Action Broker and migration tests passed"
     },
     {
       "command": "uv run ruff check src tests",

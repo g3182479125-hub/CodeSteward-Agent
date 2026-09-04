@@ -334,6 +334,43 @@ async def test_run_exposes_attributes_to_context_provider_without_persisting_the
 
 
 @pytest.mark.asyncio
+async def test_run_filters_devpilot_attributes_from_runtime_events_and_session(tmp_path):
+    from nanobot import SessionTurnPersisted
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.providers.base import LLMResponse
+
+    provider = _fake_provider("test-model")
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
+        content="done",
+        tool_calls=[],
+    ))
+    bot = Nanobot(AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+    ))
+    events: list[SessionTurnPersisted] = []
+    unsubscribe = bot.runtime.on_session_turn_persisted(events.append)
+
+    await bot.run(
+        "hi",
+        session_key="sdk:devpilot-filter",
+        attributes={
+            "tenant": "acme",
+            "devpilot_confirmation": {"context": {"signature": "secret"}},
+        },
+    )
+
+    assert events[0].context.attributes == {"tenant": "acme"}
+    snapshot = bot.sessions.export("sdk:devpilot-filter")
+    assert snapshot is not None
+    assert all("devpilot_confirmation" not in str(message) for message in snapshot.messages)
+    unsubscribe()
+
+
+@pytest.mark.asyncio
 async def test_persisted_turn_callback_is_best_effort_and_reads_display_safe_session(tmp_path):
     from nanobot import SessionTurnPersisted
     from nanobot.agent.loop import AgentLoop

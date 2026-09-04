@@ -12,8 +12,9 @@ The model never receives a key, token, metadata copy, transcript copy, or idempo
 
 The Broker validates the signature, current trusted-project snapshot, and expiry, then
 atomically reserves the confirmation in SQLite before issuing a Control Plane capability.
-The record stores only hashes and redacted audit fields; terminal status is written back.
-Alembic head is `0009_p5_broker_tuple_replay`. An existing Alembic database at an older head is
+It generates an unpredictable hidden idempotency key and persists it only for crash recovery;
+the record otherwise stores hashes and redacted audit fields, with terminal status written back.
+Alembic head is `0010_p5_persist_idempotency_key`. An existing Alembic database at an older head is
 refused rather than silently altered by `create_all()`.
 
 ## Validation

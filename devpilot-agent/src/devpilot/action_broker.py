@@ -167,6 +167,14 @@ class BrokerActionResult:
         return result
 
 
+@dataclass(frozen=True)
+class ConfirmationReservation:
+    """Internal reservation outcome; never serialized to model-visible output."""
+
+    idempotency_key: str
+    terminal_result: Mapping[str, Any] | None = None
+
+
 def canonical_confirmation_string(
     context: ConfirmationContext,
     *,
@@ -228,7 +236,9 @@ def sign_confirmation_context(
 SnapshotReader = Callable[[str], Mapping[str, Any]]
 CapabilityIssuer = Callable[[str, str], str]
 CapabilityExecutor = Callable[[str, str, str, str, str | None], Mapping[str, Any]]
-ConfirmationConsumer = Callable[[BrokerActionRequest, str], bool | Mapping[str, Any]]
+ConfirmationConsumer = Callable[
+    [BrokerActionRequest, str], bool | Mapping[str, Any] | ConfirmationReservation
+]
 ConfirmationFinisher = Callable[[BrokerActionRequest, str, Mapping[str, Any]], None]
 ConfirmationVerifier = Callable[[str, str], bool]
 Clock = Callable[[], datetime]
@@ -295,11 +305,12 @@ class ActionBroker:
             if not valid:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
             self._check_snapshot(request)
-            idempotency_key = f"broker-{hashlib.sha256(canonical.encode()).hexdigest()}"
-            replayed = self._consume_confirmation(request, idempotency_key)
-            if replayed is not None:
-                return self._result_from_replay(request, replayed)
+            candidate_key = f"broker-{secrets.token_urlsafe(32)}"
+            reservation = self._consume_confirmation(request, candidate_key)
+            if reservation.terminal_result is not None:
+                return self._result_from_replay(request, reservation.terminal_result)
             reserved = True
+            idempotency_key = reservation.idempotency_key
             token = self._capability_issuer(request.action, request.change_set_id)
             if not token or len(token) > 512:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
@@ -350,15 +361,17 @@ class ActionBroker:
 
     def _consume_confirmation(
         self, request: BrokerActionRequest, idempotency_key: str
-    ) -> Mapping[str, Any] | None:
+    ) -> ConfirmationReservation:
         if self._confirmation_consumer is None:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
         outcome = self._confirmation_consumer(request, idempotency_key)
-        if isinstance(outcome, Mapping):
+        if isinstance(outcome, ConfirmationReservation):
             return outcome
+        if isinstance(outcome, Mapping):
+            return ConfirmationReservation(idempotency_key, terminal_result=outcome)
         if not outcome:
             raise BrokerError("APPROVAL_CONFIRMATION_REPLAYED")
-        return None
+        return ConfirmationReservation(idempotency_key)
 
     def _finish_confirmation(
         self, request: BrokerActionRequest, status: str, result: Mapping[str, Any]
@@ -392,6 +405,11 @@ class ActionBroker:
         if any(snapshot.get(key) != value for key, value in expected.items()):
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
         if snapshot.get("trust_state") != "trusted":
+            raise BrokerError("APPROVAL_SCOPE_MISMATCH")
+        if (
+            request.verification_profile is not None
+            and snapshot.get("verification_profile") != request.verification_profile
+        ):
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
 
     @staticmethod

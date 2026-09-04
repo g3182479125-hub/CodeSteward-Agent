@@ -19,8 +19,8 @@
   },
   "secret_policy": "no API keys, tokens, databases, logs, or node_modules committed",
   "verification": {
-    "python_full": "203 passed, 3 existing Windows symlink checks skipped",
-    "p5_api_tests": "15 focused API, event bridge, Action Broker and migration tests passed",
+    "python_full": "205 passed, 3 existing Windows symlink checks skipped",
+    "p5_api_tests": "17 focused API, event bridge, Action Broker and migration tests passed",
     "historical_web_checks": "passed before ADR-0003; no longer a current gate",
     "ruff": "passed",
     "pyright": "passed",

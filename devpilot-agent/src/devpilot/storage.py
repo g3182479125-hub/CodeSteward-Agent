@@ -312,6 +312,7 @@ class BrokerActionRecord(Base):
     project_id: Mapped[str] = mapped_column(String(128), nullable=False)
     signature_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_digest: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="authorized")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1177,7 +1178,7 @@ class ProjectStore:
             )
             if existing_tuple is not None:
                 # A retry after execution can recover the authorization only when
-                # it is the same deterministic request. Fresh confirmation fields
+                # it is the same request. Fresh confirmation fields
                 # must remain rejected by the durable tuple uniqueness boundary.
                 if (
                     existing_tuple.status == "authorized"
@@ -1250,10 +1251,13 @@ class ProjectStore:
                     )
 
     def get_broker_action_result(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Return a previously persisted terminal result for an exact action tuple."""
+        """Return a terminal result for an exact confirmation and action tuple."""
         keys = (
             "session_id",
             "thread_id",
+            "confirmation_id",
+            "user_event_nonce",
+            "user_message_seq",
             "action",
             "change_set_id",
             "plan_hash",
@@ -1273,6 +1277,30 @@ class ProjectStore:
             except (TypeError, ValueError):
                 return None
             return cast(dict[str, Any], result) if isinstance(result, dict) else None
+
+    def get_broker_action_idempotency_key(self, payload: Mapping[str, Any]) -> str | None:
+        """Return the hidden key for an exact still-authorized retry."""
+        keys = (
+            "session_id",
+            "thread_id",
+            "confirmation_id",
+            "user_event_nonce",
+            "user_message_seq",
+            "action",
+            "change_set_id",
+            "plan_hash",
+            "patch_hash",
+            "scope_hash",
+            "project_id",
+        )
+        with self._session_factory() as session:
+            query = session.query(BrokerActionRecord)
+            for key in keys:
+                query = query.filter(getattr(BrokerActionRecord, key) == payload.get(key))
+            record = query.one_or_none()
+            if record is None or record.status != "authorized":
+                return None
+            return record.idempotency_key
 
     def list_applying_change_sets(self) -> list[tuple[str, str]]:
         with self._session_factory() as session:

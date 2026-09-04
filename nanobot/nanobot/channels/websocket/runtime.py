@@ -430,14 +430,17 @@ class WebSocketChannel(BaseChannel):
         nonce = secrets.token_hex(16)
         capability = {"apply": "r1.apply", "verify": "r2.verify", "rollback": "r1.rollback"}[action]
         session_id = f"websocket:{self._devpilot_session_id}:{chat_id}"
-        canonical = "\n".join(("v1", session_id, turn_id or chat_id,
+        # ``turn_id`` is client metadata used for transcript correlation. The
+        # confirmation thread boundary must be server-owned and stable per chat.
+        thread_id = chat_id
+        canonical = "\n".join(("v1", session_id, thread_id,
             str(sequence), confirmation_id, values["change_set_id"], values["plan_hash"],
             values["patch_hash"], values["scope_hash"], values["project_id"], capability,
             issued_at, expires_at, nonce))
         return {
             "devpilot_confirmation": {
                 "action": action,
-            "context": {"session_id": session_id, "thread_id": turn_id or chat_id,
+                "context": {"session_id": session_id, "thread_id": thread_id,
                     "user_message_seq": sequence, "confirmation_id": confirmation_id,
                     "issued_at": issued_at, "expires_at": expires_at,
                     "user_event_nonce": nonce, "signature": self._devpilot_signer._sign(canonical.encode())},

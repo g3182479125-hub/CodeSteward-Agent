@@ -29,6 +29,7 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
         "session_id", "thread_id", "user_message_seq", "confirmation_id",
         "issued_at", "expires_at", "user_event_nonce", "signature",
     }
+    assert confirmation["context"]["thread_id"] == "chat"
     assert callable(confirmation["verifier"])
 
 

@@ -154,6 +154,54 @@ def test_broker_finisher_receives_terminal_result_and_bound_idempotency_key() ->
     ]
 
 
+def test_broker_generates_unpredictable_idempotency_keys() -> None:
+    keys: list[str] = []
+
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: "token",
+        capability_executor=lambda *_args: {"status": "completed", "run_id": "run-1"},
+        confirmation_consumer=lambda _request, key: (keys.append(key) or True),
+        clock=lambda: NOW,
+    )
+
+    assert broker.execute(_request()).status == "completed"
+    assert broker.execute(_request(sequence=2)).status == "completed"
+    assert len(keys) == 2 and keys[0] != keys[1]
+
+
+def test_broker_binds_verification_profile_to_trusted_snapshot() -> None:
+    request = BrokerActionRequest(
+        **{**_request(action="verify").__dict__, "verification_profile": "python-run"}
+    )
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            "verification_profile": "python-syntax",
+            **HASHES,
+        },
+        capability_issuer=lambda *_args: (_ for _ in ()).throw(AssertionError("must not issue")),
+        capability_executor=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not execute")
+        ),
+        confirmation_consumer=lambda _request, _key: (_ for _ in ()).throw(
+            AssertionError("must reject before consume")
+        ),
+        clock=lambda: NOW,
+    )
+
+    assert broker.execute(request).error_code == "APPROVAL_SCOPE_MISMATCH"
+
+
 def test_broker_does_not_claim_success_when_terminal_persistence_fails() -> None:
     broker = ActionBroker(
         b"k" * 32,
