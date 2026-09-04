@@ -8,7 +8,7 @@ language entry point.
 
 ## Verified locally
 
-- P5 API/SSE contract tests: 22 passed.
+- P5 API/SSE contract tests: 23 passed.
 - Full Python suite: 182 passed, 3 skipped.
 - Ruff: passed.
 - Pyright: passed after syncing the E-drive project environment.
@@ -35,7 +35,8 @@ treated as successful security coverage.
 - JSON responses carry a bounded request ID; idempotent replays retain their
   original response identity for compatibility.
 - SSE uses database event IDs and `Last-Event-ID` replay semantics.
-- event payloads are already redacted by the storage layer.
+- event payloads are already redacted by the storage layer, including
+  credential-shaped text and absolute filesystem paths.
 - the UI does not store approval tokens or access SQLite/project files.
 - an unconfigured or unverified execution backend is displayed as unavailable,
   not healthy.
