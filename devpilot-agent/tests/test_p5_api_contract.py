@@ -138,10 +138,15 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         "C:/Users/alice/project/main.py",
         r"C:\Users\Alice\My Project\secret.txt",
         r"\\server\share\project\file.txt",
+        "/tmp",
         "/tmp/devpilot/run.log",
         "/usr/local/project/file.txt",
+        "/home/alice/My Project/secret.txt",
+        "/srv/app/secret.txt",
     ):
-        assert absolute_path not in redact_execution_output(f"error at {absolute_path}")
+        output = redact_execution_output(f"error at {absolute_path}")
+        assert absolute_path not in output
+        assert output == "error at [REDACTED_PATH]"
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {

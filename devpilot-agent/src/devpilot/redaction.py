@@ -13,14 +13,12 @@ _SENSITIVE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
 )
-_ABSOLUTE_PATH_PATTERNS = (
+_ABSOLUTE_PATH_START_PATTERNS = (
     re.compile(
         r"(?i)(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)"
-        r"[^\r\n\"'<>]*"
     ),
     re.compile(
         r"(?<![A-Za-z0-9./])/(?!/)"
-        r"(?:[^/\r\n\"'<> ]+/)+[^/\r\n\"'<> ]+"
     ),
 )
 _SENSITIVE_NAME = (
@@ -80,9 +78,20 @@ def redact_sensitive_text(value: str) -> str:
 def redact_execution_output(value: str) -> str:
     """Redact credentials and filesystem coordinates from sandbox output."""
     result = redact_sensitive_text(value)
-    for pattern in _ABSOLUTE_PATH_PATTERNS:
-        result = pattern.sub("[REDACTED_PATH]", result)
-    return result
+    lines = result.splitlines(keepends=True)
+    redacted_lines: list[str] = []
+    for line in lines:
+        match: re.Match[str] | None = None
+        for pattern in _ABSOLUTE_PATH_START_PATTERNS:
+            match = pattern.search(line)
+            if match is not None:
+                break
+        if match is None:
+            redacted_lines.append(line)
+            continue
+        newline = "\n" if line.endswith("\n") else ""
+        redacted_lines.append(f"{line[:match.start()]}[REDACTED_PATH]{newline}")
+    return "".join(redacted_lines)
 
 
 def is_sensitive_field_name(value: str) -> bool:
