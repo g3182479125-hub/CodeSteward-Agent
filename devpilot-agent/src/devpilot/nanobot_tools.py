@@ -150,9 +150,9 @@ def _trusted_confirmation_attributes() -> dict[str, Any] | None:
         from nanobot.bus.events import current_inbound_attributes
 
         context = current_request_context()
-        value = current_inbound_attributes().get("devpilot_confirmation")
-        if value is None and context is not None:
-            value = context.attributes.get("devpilot_confirmation")
+        value = context.attributes.get("devpilot_confirmation") if context else None
+        if value is None:
+            value = current_inbound_attributes().get("devpilot_confirmation")
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None

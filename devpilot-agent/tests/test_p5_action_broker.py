@@ -29,6 +29,34 @@ def test_nanobot_terminal_states_are_durable_broker_completion() -> None:
     assert _broker_terminal_status("rejected") == "rejected"
 
 
+def test_nanobot_confirmation_prefers_current_request_over_transport_fallback() -> None:
+    from nanobot.agent.tools.context import (
+        RequestContext,
+        bind_request_context,
+        reset_request_context,
+    )
+    from nanobot.bus.events import set_current_inbound_attributes
+
+    from devpilot.nanobot_tools import _trusted_confirmation_attributes
+
+    set_current_inbound_attributes({
+        "devpilot_confirmation": {"confirmation_id": "old"},
+    })
+    token = bind_request_context(
+        RequestContext(
+            channel="websocket",
+            chat_id="chat",
+            attributes={"devpilot_confirmation": {"confirmation_id": "new"}},
+        )
+    )
+    try:
+        assert _trusted_confirmation_attributes() == {
+            "confirmation_id": "new"
+        }
+    finally:
+        reset_request_context(token)
+
+
 def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest:
     issued = NOW.isoformat()
     expires = (NOW + timedelta(minutes=5)).isoformat()
