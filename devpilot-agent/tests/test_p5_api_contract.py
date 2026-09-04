@@ -117,11 +117,26 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         "db-secret",
     ):
         assert secret not in other_camel_case
+    bare_names = redact_sensitive_text(
+        "secret=plain-secret; client_secret=client-secret"
+    )
+    assert "plain-secret" not in bare_names
+    assert "client-secret" not in bare_names
     aws_access_key = "AKIA" + "1234567890" + "ABCDEF"
     payload = redact_sensitive_payload(
         {"AWS_ACCESS_KEY_ID": aws_access_key, "token": "value"}
     )
     assert payload == {"AWS_ACCESS_KEY_ID": "[REDACTED]", "token": "[REDACTED]"}
+
+
+def test_nanobot_adapter_removes_control_plane_metadata() -> None:
+    from devpilot.nanobot_tools import _model_result
+
+    payload = _model_result(
+        {"request_id": "req-secret", "approval_token": "capability", "status": "ok"}
+    )
+
+    assert payload == {"status": "ok"}
 
 
 def test_failed_idempotency_reservation_can_be_released(tmp_path: Path) -> None:

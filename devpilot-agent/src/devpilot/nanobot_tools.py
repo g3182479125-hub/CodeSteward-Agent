@@ -478,6 +478,13 @@ def _control_plane_url() -> str:
     return raw
 
 
+def _model_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove control-plane metadata before a result reaches model context."""
+    result.pop("approval_token", None)
+    result.pop("request_id", None)
+    return result
+
+
 def _post_preview(payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = Request(
@@ -493,8 +500,7 @@ def _post_preview(payload: dict[str, Any]) -> dict[str, Any]:
     result = json.loads(response_body.decode("utf-8"))
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
-    result.pop("approval_token", None)
-    return result
+    return _model_result(result)
 
 
 def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
@@ -513,7 +519,7 @@ def _post_feature_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
     result["requires_user_confirmation"] = True
-    return result
+    return _model_result(result)
 
 
 def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
@@ -532,7 +538,7 @@ def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
     result["requires_user_confirmation"] = True
-    return result
+    return _model_result(result)
 
 
 def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
@@ -551,7 +557,7 @@ def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
     result["requires_user_confirmation"] = True
-    return result
+    return _model_result(result)
 
 
 def _request_approval(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -606,7 +612,7 @@ def _post_control_plane(
     result = json.loads(response_body.decode("utf-8"))
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
-    return result
+    return _model_result(result)
 
 
 def _get_control_plane(path: str) -> dict[str, Any]:
@@ -618,8 +624,7 @@ def _get_control_plane(path: str) -> dict[str, Any]:
     result = json.loads(response_body.decode("utf-8"))
     if not isinstance(result, dict):
         raise ValueError("control-plane response is invalid")
-    result.pop("approval_token", None)
-    return result
+    return _model_result(result)
 
 
 def _change_set_path(change_set_id: str, action: str) -> str:
@@ -1162,8 +1167,7 @@ class RequestApprovalTool(Tool):
                     "user_confirmation": str(kwargs["user_confirmation"]),
                 },
             )
-            result.pop("approval_token", None)
-            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+            return json.dumps(_model_result(result), ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
             return ToolResult.error(f"P4 approval request rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
