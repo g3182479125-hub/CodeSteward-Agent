@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
@@ -50,6 +50,13 @@ class ContextAware(Protocol):
 
 def bind_request_context(ctx: RequestContext) -> Token[RequestContext | None]:
     return _CURRENT_REQUEST_CONTEXT.set(ctx)
+
+
+def replace_request_context_attributes(attributes: dict[str, Any]) -> None:
+    """Replace trusted attributes when a follow-up message enters the active turn."""
+    current = _CURRENT_REQUEST_CONTEXT.get()
+    if current is not None:
+        _CURRENT_REQUEST_CONTEXT.set(replace(current, attributes=dict(attributes)))
 
 
 def reset_request_context(token: Token[RequestContext | None]) -> None:

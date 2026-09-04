@@ -31,7 +31,12 @@ from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
+from nanobot.agent.tools.context import (
+    RequestContext,
+    bind_request_context,
+    replace_request_context_attributes,
+    reset_request_context,
+)
 from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
@@ -916,6 +921,9 @@ class AgentLoop:
                 return []
 
             async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
+                # The next model/tool iteration must use this message's exact
+                # confirmation envelope, never the original turn's envelope.
+                replace_request_context_attributes(pending_msg.attributes)
                 content = pending_msg.content
                 image_paths = pending_msg.media if pending_msg.media else None
                 if image_paths:

@@ -9,6 +9,7 @@ from nanobot.agent.tools.context import (
     RequestContext,
     bind_request_context,
     current_request_context,
+    replace_request_context_attributes,
     reset_request_context,
 )
 from nanobot.bus.events import InboundMessage, current_inbound_attributes
@@ -148,6 +149,27 @@ def test_request_context_nested_bind_restores_outer_context() -> None:
         reset_request_context(outer_token)
 
     assert current_request_context() is None
+
+
+def test_pending_message_replaces_only_the_active_request_attributes() -> None:
+    token = bind_request_context(
+        RequestContext(
+            channel="websocket",
+            chat_id="chat",
+            attributes={"devpilot_confirmation": {"confirmation_id": "old"}},
+        )
+    )
+    try:
+        replace_request_context_attributes(
+            {"devpilot_confirmation": {"confirmation_id": "new"}}
+        )
+        context = current_request_context()
+        assert context is not None
+        assert context.attributes == {
+            "devpilot_confirmation": {"confirmation_id": "new"}
+        }
+    finally:
+        reset_request_context(token)
 
 
 @pytest.mark.asyncio
