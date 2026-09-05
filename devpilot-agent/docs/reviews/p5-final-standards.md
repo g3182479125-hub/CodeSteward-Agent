@@ -8,8 +8,8 @@ Standards verdict is recorded in `p5-standards-review-2026-09-05.md`.
 ## Review scope
 
 - Fixed point: `91b46e3`
-- Candidate: `p5-candidate-20260905-r8`
-- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r8`
+- Candidate: `p5-candidate-20260905-r9`
+- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r9`
 - Review axis: repository standards, safety boundaries, privacy, credentials,
   approval-token handling, idempotency concurrency, SSE lifecycle, backend
   fail-closed behavior, rollback, and regression risk.
@@ -28,7 +28,7 @@ Standards verdict is recorded in `p5-standards-review-2026-09-05.md`.
 - Full DevPilot suite: `208 passed, 3 skipped`.
 - Focused P5 suite: `39 passed`; nanobot P5 integration: `26 passed`.
 - Ruff, Pyright, secret scan, Markdown check, and `git diff --check`: passed.
-- Web TypeScript check, Vite production build, and Edge browser smoke: passed.
+- Nanobot-native WebUI confirmation serialization and Gateway binding tests: passed.
 - Atomic first-writer-wins idempotency request-ID binding and regression tests.
 - Execution-output-only redaction for credentials and Windows/POSIX paths;
   code and Diff strings remain unchanged.

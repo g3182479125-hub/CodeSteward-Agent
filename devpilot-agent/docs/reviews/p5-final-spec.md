@@ -8,8 +8,8 @@ Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
 ## Review scope
 
 - Fixed point: `91b46e3`
-- Candidate: `p5-candidate-20260905-r8`
-- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r8`
+- Candidate: `p5-candidate-20260905-r9`
+- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r9`
 - Review axis: frozen P5 plan/spec, API compatibility, request/error
   contracts, idempotency, OpenAPI exception, SSE/poll fallback, console
   controls, evidence, and out-of-scope behavior.
@@ -33,9 +33,8 @@ Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
   requests still receive the normal error/request-ID contract.
 - SQLite run events, SSE event IDs, `Last-Event-ID` replay, invalid cursor
   handling, and polling fallback are covered.
-- React Dashboard, Projects, ChangeSet/Diff, Runs, Artifacts, Skills,
-  Security/Backends, and confirmation-gated decision controls are covered by
-  browser smoke and contract tests.
+- Nanobot-native WebUI confirmation serialization and confirmation-gated decision
+  controls are covered by Gateway/runtime contract tests.
 - Approval tokens remain outside console state, read models, event payloads,
   and nanobot model results; unverified execution backends remain unavailable.
 - No nanobot WebUI migration, database migration, public auth, or external
@@ -45,8 +44,7 @@ Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
 
 - Full DevPilot suite: `208 passed, 3 skipped`.
 - Focused P5 suite: `39 passed`; nanobot P5 integration: `26 passed`.
-- Ruff, Pyright, secret scan, Markdown check, `git diff --check`, web type
-  check/build, and browser smoke: passed.
+- Ruff, Pyright, secret scan, Markdown check, and `git diff --check`: passed.
 
 Final Spec review is pending on the candidate above; the historical review below is
 not evidence for the current candidate. No files were changed by the reviewer. The two unrelated
