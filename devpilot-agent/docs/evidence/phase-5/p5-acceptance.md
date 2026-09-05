@@ -21,6 +21,10 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
   引用一致时才在本地签名。
 - `RequestContext.attributes` 只在当前 Tool 请求内携带 signer/context；hooks、
   runtime events、Session 持久化和聊天文本会过滤 `devpilot_*` 属性。
+- 提案工具把完整 tuple 只交给当前 turn 的内部投递元数据；Gateway 只登记本 chat
+  已产生的服务端提案，确认时拒绝未登记、跨 chat 或被替换的 tuple。
+- 提案后的模型指引统一进入 `devpilot_confirmed_action`；不再把用户引向只创建
+  `approval_pending` 的旧 `devpilot_request_approval` 工具。
 - Action Broker 验签、校验当前 trusted snapshot 和有效期，再在 capability 发行
   前持久化一次性消费；相同 action tuple 的刷新确认会被唯一约束拒绝。
 - Broker 自己生成不可预测的幂等键；同一确认在执行中断后可从 durable record 恢复
@@ -36,7 +40,7 @@ P5 采用 nanobot 原生 WebUI 作为唯一用户入口。DevPilot 保留 loopba
 - DevPilot focused P5 suite: `39 passed` (`23` API contract + `16` Action Broker).
 - DevPilot Ruff: passed.
 - DevPilot Pyright: `0 errors, 0 warnings, 0 informations`.
-- nanobot Gateway/WebSocket/runtime and AgentLoop context integration tests: `24 passed`.
+- nanobot Gateway/WebSocket/runtime and AgentLoop context integration tests: `26 passed`.
 - Native WebUI client has a regression test for confirmation tuple serialization.
 - `nanobot/tests/agent/test_loop_tool_context.py` provides fake tool-loop coverage proving
   trusted attributes reach one tool turn while remaining absent from runtime events and
