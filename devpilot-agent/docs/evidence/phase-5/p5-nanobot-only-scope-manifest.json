@@ -2,8 +2,8 @@
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "review_pending",
-  "implementation_commit": "p5-candidate-20260905-r4",
-  "evidence_commit": "p5-candidate-20260905-r4",
+  "implementation_commit": "p5-candidate-20260905-r5",
+  "evidence_commit": "p5-candidate-20260905-r5",
   "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
@@ -30,12 +30,18 @@
     {
       "command": "uv run pytest --disable-warnings",
       "exit_code": 0,
-      "result": "206 passed, 3 existing Windows symlink checks skipped"
+      "result": "208 passed, 3 existing Windows symlink checks skipped"
     },
     {
-      "command": "uv run pytest tests/test_p5_api_contract.py --disable-warnings",
+      "command": "uv run pytest tests/test_p5_action_broker.py tests/test_p5_api_contract.py --disable-warnings",
       "exit_code": 0,
-      "result": "18 focused API, event bridge, Action Broker and migration tests passed"
+      "result": "39 focused P5 tests passed (23 API contract + 16 Action Broker)"
+    },
+    {
+      "command": "uv run pytest tests/channels/test_websocket_devpilot_confirmation.py tests/agent/test_loop_tool_context.py tests/agent/test_runtime_context.py --disable-warnings",
+      "working_directory": "nanobot",
+      "exit_code": 0,
+      "result": "24 nanobot P5 integration tests passed"
     },
     {
       "command": "uv run ruff check src tests",
@@ -58,5 +64,5 @@
     "docs/runbooks/local-nanobot-devpilot.md"
   ],
   "rollback_point": "29dff92",
-  "note": "P5 implementation and local gates are complete in the nanobot-only scope; final Standards and Spec review is pending on the candidate commit"
+  "note": "P5 implementation and local gates are complete in the nanobot-only scope; final Standards and Spec review is pending on p5-candidate-20260905-r5"
 }
