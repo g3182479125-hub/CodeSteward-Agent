@@ -1958,6 +1958,10 @@ class AgentLoop:
             log_content=ctx.require_session().policy.log_content,
             turn_latency_ms=ctx.turn_latency_ms,
         )
+        if ctx.outbound is not None and ctx.request_context is not None:
+            proposal = ctx.request_context.attributes.get("devpilot_proposal")
+            if isinstance(proposal, dict):
+                ctx.outbound.metadata["_devpilot_proposal"] = dict(proposal)
         if ctx.ephemeral and ctx.outbound is not None:
             ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
 

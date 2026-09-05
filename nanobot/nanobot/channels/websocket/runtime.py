@@ -385,6 +385,8 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_confirmation_sequences: dict[str, int] = {}
         self._devpilot_thread_ids: dict[str, str] = {}
         self._devpilot_changeset_threads: dict[str, str] = {}
+        self._devpilot_pending_proposals: dict[str, dict[str, str]] = {}
+        self._devpilot_changeset_chats: dict[str, str] = {}
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
@@ -423,6 +425,8 @@ class WebSocketChannel(BaseChannel):
         ):
             return {}
         values = {key: str(confirmation[key]) for key in required}
+        if self._devpilot_pending_proposals.get(chat_id) != values:
+            return {}
         thread_id = self._devpilot_thread_ids.setdefault(chat_id, uuid.uuid4().hex)
         bound_thread = self._devpilot_changeset_threads.get(values["change_set_id"])
         if bound_thread is not None and bound_thread != thread_id:
@@ -451,6 +455,28 @@ class WebSocketChannel(BaseChannel):
                 "verifier": self._devpilot_signer.verify,
             }
         }
+
+    def _register_devpilot_proposal(
+        self, chat_id: str, proposal: object
+    ) -> bool:
+        """Register a server-produced proposal before accepting a confirmation tuple."""
+        if not isinstance(proposal, dict):
+            return False
+        required = {"change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id"}
+        if set(proposal) != required or any(
+            not isinstance(proposal.get(key), str) or not proposal[key]
+            for key in required
+        ):
+            return False
+        values = {key: str(proposal[key]) for key in required}
+        change_set_id = values["change_set_id"]
+        bound_chat = self._devpilot_changeset_chats.get(change_set_id)
+        if bound_chat is not None and bound_chat != chat_id:
+            return False
+        self._devpilot_thread_ids.setdefault(chat_id, uuid.uuid4().hex)
+        self._devpilot_changeset_chats[change_set_id] = chat_id
+        self._devpilot_pending_proposals[chat_id] = values
+        return True
 
     @staticmethod
     def _resolve_devpilot_tuple(confirmation: object) -> dict[str, str] | None:
@@ -1322,6 +1348,14 @@ class WebSocketChannel(BaseChannel):
         return persisted
 
     async def send(self, msg: OutboundMessage) -> None:
+        proposal = msg.metadata.get("_devpilot_proposal")
+        if proposal is not None:
+            self._register_devpilot_proposal(msg.chat_id, proposal)
+        transcript_metadata = {
+            key: value
+            for key, value in msg.metadata.items()
+            if key != "_devpilot_proposal"
+        }
         event = outbound_event_from_message(msg)
         progress_event = event if isinstance(event, ProgressEvent) else None
         if isinstance(event, RuntimeModelUpdatedEvent):
@@ -1450,7 +1484,7 @@ class WebSocketChannel(BaseChannel):
         self._persist_turn_transcript_event(
             msg.chat_id,
             payload,
-            metadata=msg.metadata,
+            metadata=transcript_metadata,
             phase=phase,
             include_source=True,
             transcript_overrides={"text": text},

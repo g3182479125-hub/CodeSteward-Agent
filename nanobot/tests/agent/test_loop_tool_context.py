@@ -1,10 +1,11 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
+from nanobot.agent.loop import AgentLoop, TurnKind
 from nanobot.agent.tools.context import (
     RequestContext,
     bind_request_context,
@@ -170,6 +171,42 @@ def test_pending_message_replaces_only_the_active_request_attributes() -> None:
         }
     finally:
         reset_request_context(token)
+
+
+@pytest.mark.asyncio
+async def test_prepare_outbound_forwards_proposal_only_as_internal_metadata() -> None:
+    loop = object.__new__(AgentLoop)
+    loop._assemble_outbound = lambda *_args, **_kwargs: SimpleNamespace(metadata={})
+    proposal = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+    ctx = SimpleNamespace(
+        suppress_response=False,
+        kind=TurnKind.USER,
+        msg=SimpleNamespace(),
+        final_content="done",
+        stop_reason="stop",
+        had_injections=False,
+        streamed_content=False,
+        turn_latency_ms=None,
+        require_session=lambda: SimpleNamespace(
+            policy=SimpleNamespace(log_content=True)
+        ),
+        request_context=RequestContext(
+            channel="websocket",
+            chat_id="chat",
+            attributes={"devpilot_proposal": proposal},
+        ),
+        ephemeral=False,
+    )
+
+    await loop._prepare_outbound(ctx)
+
+    assert ctx.outbound.metadata == {"_devpilot_proposal": proposal}
 
 
 @pytest.mark.asyncio

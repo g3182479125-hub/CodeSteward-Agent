@@ -9,18 +9,22 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
     channel._devpilot_confirmation_sequences = {}
     channel._devpilot_thread_ids = {}
     channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
     channel._devpilot_session_id = "instance"
     channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+    assert channel._register_devpilot_proposal("chat", tuple_value)
 
     attrs = channel._devpilot_confirmation_attributes(
         "trusted", "chat", "执行", "turn-1",
-        {
-            "change_set_id": "cs-1",
-            "plan_hash": "a" * 64,
-            "patch_hash": "b" * 64,
-            "scope_hash": "c" * 64,
-            "project_id": "project-1",
-        },
+        tuple_value,
     )
 
     confirmation = attrs["devpilot_confirmation"]
@@ -42,6 +46,8 @@ def test_gateway_binds_a_changeset_to_one_server_owned_thread() -> None:
     channel._devpilot_session_id = "instance"
     channel._devpilot_thread_ids = {}
     channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
     channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
     tuple_value = {
         "change_set_id": "cs-1",
@@ -51,11 +57,38 @@ def test_gateway_binds_a_changeset_to_one_server_owned_thread() -> None:
         "project_id": "project-1",
     }
 
+    assert channel._register_devpilot_proposal("chat-1", tuple_value)
     assert channel._devpilot_confirmation_attributes(
         "trusted", "chat-1", "执行", "turn-1", tuple_value
     )
     assert channel._devpilot_confirmation_attributes(
         "trusted", "chat-2", "执行", "turn-2", tuple_value
+    ) == {}
+
+
+def test_gateway_rejects_confirmation_without_a_server_registered_proposal() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
+    channel._devpilot_session_id = "instance"
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+
+    assert channel._devpilot_confirmation_attributes(
+        "trusted",
+        "chat",
+        "执行",
+        "turn-1",
+        {
+            "change_set_id": "cs-1",
+            "plan_hash": "a" * 64,
+            "patch_hash": "b" * 64,
+            "scope_hash": "c" * 64,
+            "project_id": "project-1",
+        },
     ) == {}
 
 

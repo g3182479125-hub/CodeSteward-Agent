@@ -159,6 +159,24 @@ def _trusted_confirmation_attributes() -> dict[str, Any] | None:
         return None
 
 
+def _record_current_turn_proposal(result: Mapping[str, Any]) -> None:
+    """Expose a safe proposal reference to the WebSocket delivery seam only."""
+    try:
+        from nanobot.agent.tools.context import current_request_context
+
+        values = {
+            key: result.get(key)
+            for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
+        }
+        if not all(isinstance(value, str) and value for value in values.values()):
+            return
+        context = current_request_context()
+        if context is not None:
+            context.attributes["devpilot_proposal"] = dict(values)
+    except (ImportError, TypeError, ValueError):
+        return
+
+
 def _configured_roots(workspace: Path) -> AllowedRoots:
     raw = os.environ.get("DEVPILOT_ALLOWED_ROOTS", "")
     values: list[str | Path] = [item for item in raw.split(os.pathsep) if item]
@@ -1320,11 +1338,12 @@ class ProposeChangeSetTool(Tool):
             if kwargs.get("project_id") is not None:
                 payload["project_id"] = str(kwargs["project_id"])
             result = _post_preview(payload)
+            _record_current_turn_proposal(result)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "在 nanobot 对话中展示这份 Diff，并停止等待用户决定；"
-                "用户确认后调用 devpilot_request_approval；token 只由控制面用户动作签发，"
-                "不会进入 nanobot Tool 参数。"
+                "用户明确输入执行、验证或撤销后，使用这份完整 tuple 调用 "
+                "devpilot_confirmed_action；不要调用旧审批工具，也不要请求或传播 token。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -1384,10 +1403,11 @@ class FeatureDeliveryProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_feature_proposal(payload)
+            _record_current_turn_proposal(result)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
-                "展示精确 Diff 并停止等待用户；批准动作必须由控制面用户完成，"
-                "Skill 不得签发或传播 approval token。"
+                "展示精确 Diff 并停止等待用户；用户明确输入执行、验证或撤销后，"
+                "使用这份完整 tuple 调用 devpilot_confirmed_action，不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -1470,9 +1490,11 @@ class BugFixProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_bug_fix_proposal(payload)
+            _record_current_turn_proposal(result)
             result["next_step"] = (
                 "展示失败证据、精确 Diff 和 stop conditions，并停止等待用户；"
-                "批准动作必须由控制面用户完成，Skill 不得签发或传播 approval token。"
+                "用户明确输入执行、验证或撤销后，使用这份完整 tuple 调用 "
+                "devpilot_confirmed_action，不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -1550,9 +1572,11 @@ class TestRepairProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_test_repair_proposal(payload)
+            _record_current_turn_proposal(result)
             result["next_step"] = (
                 "展示精确 Diff、当前轮次和剩余预算，并停止等待用户；"
-                "每轮 Apply 和 Verify 都必须由控制面用户分别批准。"
+                "每轮都等待用户明确输入执行或验证，再使用这份完整 tuple 调用 "
+                "devpilot_confirmed_action；不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
