@@ -4,6 +4,10 @@
 
 ## 冻结架构
 
+每次开发及修复前必读 [ADR-0004：批量修复与增量复审](docs/adr/ADR-0004-batched-review-and-incremental-recheck.md)。
+它是冻结计划的流程修订：集中修改和预检、并行双轴审查、按影响范围增量复审，
+两轴明确通过后才能完成；原冻结计划与现有安全门禁继续有效。
+
 - 主 Runtime：nanobot（Python）
 - 插件与组合设计参考：DeepSeek Harness
 - 权限、Sandbox、审批和执行协议参考：Codex Harness
@@ -19,6 +23,8 @@ Changeset 提案和状态查看。R1/R2 动作仍需受信任的本地 Action Br
 声称“仅靠聊天即可执行”。独立审批 WebUI 已移除，主流程只使用 nanobot 自带 WebUI。
 
 新 AI/开发者接手本项目时，先阅读
+ [当前精简执行计划](docs/plans/CURRENT_PLAN.md) 和
+ [计划修订依据](docs/adr/ADR-0005-lean-delivery-plan.md)。以下交接仅用于历史定位：
 [P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
 以及最新的
 [P5 → P6 交接文档](docs/handoffs/2026-09-04-p5-p6-handoff.md)，
@@ -93,4 +99,6 @@ nanobot 不需要额外的 DevPilot 审批页面或前端补丁；只需安装 D
 
 ## 阶段门禁
 
-开发必须遵守仓库外的《代码交付 Agent 冻结版实施计划》。旧计划保留为 P0/P1 历史基线，后续阶段的接管关系见 [ADR-0001](docs/adr/ADR-0001-code-delivery-pivot-and-sandbox-port.md)。P1 验收证据见 [P1 acceptance](docs/evidence/phase-1/p1-acceptance.md)。本仓库不覆盖冻结计划；如需改变冻结决策，只能新增 ADR。
+开发以仓库内 [CURRENT_PLAN](docs/plans/CURRENT_PLAN.md) 为当前入口，效力见
+[ADR-0005](docs/adr/ADR-0005-lean-delivery-plan.md)。仓库外冻结计划和旧交接保留为
+历史来源；P1 证据见 [P1 acceptance](docs/evidence/phase-1/p1-acceptance.md)。

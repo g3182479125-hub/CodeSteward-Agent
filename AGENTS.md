@@ -11,6 +11,10 @@ At the beginning of every task, read:
 
 1. `agent-skills/mattpocock-skills/README.md`
 2. The relevant `SKILL.md` under `agent-skills/mattpocock-skills/skills/`
+3. `devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`
+   (mandatory review/fix workflow amendment to the frozen plan).
+4. `devpilot-agent/docs/plans/CURRENT_PLAN.md` (current product scope, design,
+   node acceptance, and module map; precedence is recorded in ADR-0005).
 
 Do not begin implementation, editing, or test changes until the relevant Skill
 has been read. If the task is ambiguous, use the engineering skill that helps
@@ -45,6 +49,13 @@ send the two independent prompts in parallel, wait for both reports, and
 record them separately. A local self-review may supplement this process but
 must never be presented as a substitute. If subagent tooling is unavailable,
 the review is blocked and the final report must say so explicitly.
+
+Apply ADR-0004 to scheduling and follow-up: batch fixes, validate once per changed
+scope, then dispatch both axes against one immutable candidate. Reuse the same
+reviewers for documented incremental rechecks. Only the main agent dispatches the
+pair; reviewers do not recursively spawn reviewers. A reviewer's lack of spawning
+tools is not a blocker when the main agent has successfully dispatched both axes.
+Never infer PASS from silence, a timeout, or a request to finish quickly.
 
 ## Project skill source
 

@@ -19,3 +19,8 @@ mandatory: run independent Standards and Spec reviews through parallel
 subagents, aggregate them under separate headings, and never replace them with
 only a main-agent self-review. If subagent tooling is unavailable, report the
 review as blocked instead of claiming completion.
+
+For this repository, also read
+`devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`
+from the repository root. This project amendment governs batching, incremental
+rechecks, and main-agent/reviewer responsibilities; it preserves both review axes.
