@@ -720,6 +720,7 @@ def _snapshot_verification_profile(snapshot: Mapping[str, Any]) -> str:
     direct = snapshot.get("verification_profile")
     if isinstance(direct, str) and direct in {
         "python-syntax",
+        "python-regression",
         "python-run",
         "node-syntax",
         "react-static",
@@ -1081,7 +1082,10 @@ class WatchRunTool(Tool):
             "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "verification_profile": {
                 "type": ["string", "null"],
-                "enum": ["python-syntax", "python-run", "node-syntax", "react-static", None],
+                "enum": [
+                    "python-syntax", "python-regression", "python-run", "node-syntax",
+                    "react-static", None,
+                ],
             },
         },
         "required": [
@@ -1382,7 +1386,7 @@ class ProposeChangeSetTool(Tool):
             "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
             "verification_profile": {
                 "type": "string",
-                "enum": ["python-syntax", "python-run", "node-syntax"],
+                "enum": ["python-syntax", "python-regression", "python-run", "node-syntax"],
             },
         },
         "required": ["project_path", "patches", "evidence_ids"],
@@ -1454,6 +1458,7 @@ class FeatureDeliveryProposeTool(Tool):
                 "type": "string",
                 "enum": [
                     "python-syntax",
+                    "python-regression",
                     "python-run",
                     "node-syntax",
                     "react-static",
@@ -1539,7 +1544,7 @@ class BugFixProposeTool(Tool):
             "allowed_files": {"type": "array", "minItems": 1, "maxItems": 32},
             "verification_profile": {
                 "type": "string",
-                "enum": ["python-run", "node-syntax"],
+                "enum": ["python-regression", "python-run", "node-syntax"],
             },
         },
         "required": [
