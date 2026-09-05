@@ -52,6 +52,10 @@ skips, not successful security coverage. npm dependency installation was unavail
 because the registry/cache repeatedly returned corrupted tarball checksums; ADR-0003
 explicitly removes frontend build/browser smoke from the P5 gate.
 
+The repository-wide nanobot run also reported one existing timing-sensitive failure in
+`tests/tools/test_exec_session_tools.py`; the P5-specific nanobot integration set remains
+green and no P5 file is involved in that failure.
+
 ## Review gate
 
 两份并行 subagent review 必须分别记录在 `docs/reviews/`，并在 P5 标为
