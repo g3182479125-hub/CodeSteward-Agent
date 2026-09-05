@@ -18,9 +18,12 @@ At the beginning of every task, read:
 
 The product is a personal agent based on nanobot, with selective Harness design
 adoption tracked in `devpilot-agent/docs/plans/HARNESS_ADOPTION.md`. For remaining
-work follow CURRENT_PLAN 3.2, including the full node specifications in section 6
+work follow CURRENT_PLAN 3.3, including the full node specifications in section 6
 and mandatory review procedure in section 7. Every developer and reviewer must
 read these before acting; a prior-model summary is not sufficient.
+For P8, also read `devpilot-agent/docs/plans/SKILL_IMPROVEMENT.md` in full.
+ADR-0007 authorizes this bounded addition; it does not authorize autonomous
+production Skill updates or weaken any review or execution gate.
 Do not reopen completed P0-P5 work or recreate
 nanobot capabilities merely to demonstrate borrowing from a reference project.
 

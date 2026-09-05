@@ -1,6 +1,6 @@
 # DevPilot Agent
 
-个人研发自动化 Agent：以 nanobot 作为主 Runtime，在其外部增加项目分析、Git 总结、测试报告、定时任务和可追踪执行能力。
+个人研发 Agent：以 nanobot 为主 Runtime，复用其聊天、定时任务、记忆和 Skills；DevPilot 补充受控代码交付与验证。后续能力以当前计划为准，不把计划设计当作已实现功能。
 
 ## 冻结架构
 
@@ -8,9 +8,12 @@
 它是冻结计划的流程修订：集中修改和预检、并行双轴审查、按影响范围增量复审，
 两轴明确通过后才能完成；原冻结计划与现有安全门禁继续有效。
 
-后续模型必须读取 [CURRENT_PLAN 3.2](docs/plans/CURRENT_PLAN.md)：第 0 节接手步骤、
+后续模型必须读取 [CURRENT_PLAN 3.3](docs/plans/CURRENT_PLAN.md)：第 0 节接手步骤、
 第 5/6 节全部剩余节点的实施与验收、第 7 节开发和 Review 规则。详细设计不是
 已实现状态；已完成 P0–P5 不重做。
+
+P8 的必读实施规格：[Skill 持续改进](docs/plans/SKILL_IMPROVEMENT.md)；
+本次范围修订见 [ADR-0007](docs/adr/ADR-0007-controlled-skill-improvement.md)。
 
 - 主 Runtime：nanobot（Python）
 - 插件与组合设计参考：DeepSeek Harness
