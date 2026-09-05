@@ -10,6 +10,18 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
 
 Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
 
+## Local project policy (required)
+
+In nanobot-devpilot-agent, first read root `AGENTS.md`,
+`devpilot-agent/docs/plans/CURRENT_PLAN.md` sections 0/6/7 and the relevant node,
+and `devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`.
+These project-specific rules govern review scheduling: one complete batch review,
+followed by incremental and impact rechecks using the same two reviewers.
+Do not repeat full review per fix or recursively spawn reviewers from a reviewer.
+An unchanged previously reviewed scope retains its verdict; an unreviewed change
+does not. Report unresolved issues honestly; never infer PASS from elapsed time.
+This local addition does not change the upstream two-axis criteria below.
+
 The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
 
 ## Process

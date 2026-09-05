@@ -24,3 +24,8 @@ For this repository, also read
 `devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`
 from the repository root. This project amendment governs batching, incremental
 rechecks, and main-agent/reviewer responsibilities; it preserves both review axes.
+
+For every development or review task, also read the repository's
+`devpilot-agent/docs/plans/CURRENT_PLAN.md`: sections 0, 6 and 7 define the required
+handoff, node implementation details, batch review, delta rechecks and closure.
+This project policy applies to the vendored review skill as well.

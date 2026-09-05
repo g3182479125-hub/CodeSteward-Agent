@@ -8,6 +8,10 @@
 它是冻结计划的流程修订：集中修改和预检、并行双轴审查、按影响范围增量复审，
 两轴明确通过后才能完成；原冻结计划与现有安全门禁继续有效。
 
+后续模型必须读取 [CURRENT_PLAN 3.2](docs/plans/CURRENT_PLAN.md)：第 0 节接手步骤、
+第 5/6 节全部剩余节点的实施与验收、第 7 节开发和 Review 规则。详细设计不是
+已实现状态；已完成 P0–P5 不重做。
+
 - 主 Runtime：nanobot（Python）
 - 插件与组合设计参考：DeepSeek Harness
 - 权限、Sandbox、审批和执行协议参考：Codex Harness

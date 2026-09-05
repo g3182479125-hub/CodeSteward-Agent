@@ -18,7 +18,10 @@ At the beginning of every task, read:
 
 The product is a personal agent based on nanobot, with selective Harness design
 adoption tracked in `devpilot-agent/docs/plans/HARNESS_ADOPTION.md`. For remaining
-work follow CURRENT_PLAN 3.1. Do not reopen completed P0-P5 work or recreate
+work follow CURRENT_PLAN 3.2, including the full node specifications in section 6
+and mandatory review procedure in section 7. Every developer and reviewer must
+read these before acting; a prior-model summary is not sufficient.
+Do not reopen completed P0-P5 work or recreate
 nanobot capabilities merely to demonstrate borrowing from a reference project.
 
 Do not begin implementation, editing, or test changes until the relevant Skill
@@ -61,6 +64,12 @@ reviewers for documented incremental rechecks. Only the main agent dispatches th
 pair; reviewers do not recursively spawn reviewers. A reviewer's lack of spawning
 tools is not a blocker when the main agent has successfully dispatched both axes.
 Never infer PASS from silence, a timeout, or a request to finish quickly.
+
+Review a completed batch once along both axes, then reuse reviewers for delta and
+impact checks. Do not restart full reviews for each finding or for recording a
+verdict. If the same issue survives a second recheck, diagnose the cause before
+another review; never waive an unresolved defect because a round limit was reached.
+Include CURRENT_PLAN sections 0/6/7 and the relevant node in every review prompt.
 
 ## Project skill source
 
