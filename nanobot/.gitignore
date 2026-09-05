@@ -87,6 +87,9 @@ Desktop.ini
 *~
 nano.*.save
 
+# The P5 integration evidence uses this lockfile for reproducible nanobot checks.
+!uv.lock
+
 # Environment & secrets (keep examples tracked if needed)
 .env.*
 !.env.example

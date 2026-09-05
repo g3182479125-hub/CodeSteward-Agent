@@ -2,17 +2,18 @@
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
   "status": "review_pending",
-  "implementation_commit": "p5-candidate-20260905-r7",
-  "evidence_commit": "p5-candidate-20260905-r7",
+  "implementation_commit": "p5-candidate-20260905-r8",
+  "evidence_commit": "p5-candidate-20260905-r8",
   "evidence_ref_type": "immutable_tag",
   "plan": "DEVPILOT_FROZEN_PLAN.md@2.2.0 + ADR-0003",
   "scope": "delete standalone web; retain internal FastAPI/SSE; nanobot-only UI",
   "evidence_window": {
     "started_at": "2026-09-04T17:19:05+08:00",
-    "completed_at": "2026-09-05T22:18:00+08:00"
+    "completed_at": "2026-09-05T22:35:00+08:00"
   },
   "inputs_sha256": {
-    "uv.lock": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05"
+    "uv.lock": "35831A79A72F6E0BD20905C875DADCE51BF07D8D3AAEAC350B950DF0F7872A05",
+    "../nanobot/uv.lock": "4B3B39EA1F101293C1C3F2B1660590B369577424F564C8E5D0DB2582E598D560"
   },
   "artifact_sha256": {
     "docs/adr/ADR-0003-nanobot-only-frontend.md": "2A981BC163425B731D4440D31E8629A74C2342E3C3AC9AC5A789E1BDB9F9D015",
@@ -38,10 +39,10 @@
       "result": "39 focused P5 tests passed (23 API contract + 16 Action Broker)"
     },
     {
-      "command": "uv run pytest tests/channels/test_websocket_devpilot_confirmation.py tests/agent/test_loop_tool_context.py tests/agent/test_runtime_context.py --disable-warnings",
+      "command": "uv run --frozen pytest tests/channels/test_websocket_devpilot_confirmation.py tests/agent/test_loop_tool_context.py tests/agent/test_runtime_context.py --disable-warnings",
       "working_directory": "nanobot",
       "exit_code": 0,
-      "result": "24 nanobot P5 integration tests passed"
+      "result": "26 nanobot P5 integration tests passed"
     },
     {
       "command": "uv run ruff check src tests",
@@ -64,5 +65,5 @@
     "docs/runbooks/local-nanobot-devpilot.md"
   ],
   "rollback_point": "29dff92",
-  "note": "P5 implementation and local gates are complete in the nanobot-only scope; final Standards and Spec review is pending on p5-candidate-20260905-r7"
+  "note": "P5 implementation and local gates are complete in the nanobot-only scope; final Standards and Spec review is pending on p5-candidate-20260905-r8"
 }

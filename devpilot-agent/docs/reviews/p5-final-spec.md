@@ -1,13 +1,15 @@
-# P5 Final Spec Review
+# P5 Final Spec Review (candidate update)
 
 ## Verdict
 
-**PASS** — all P5 acceptance criteria are covered with no actionable finding.
+**REVIEW_PENDING** — this record is aligned to the next candidate; the final parallel
+Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
 
 ## Review scope
 
-- Fixed point: `5860598`
-- Exact reviewed diff: `git diff 5860598...HEAD`
+- Fixed point: `91b46e3`
+- Candidate: `p5-candidate-20260905-r8`
+- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r8`
 - Review axis: frozen P5 plan/spec, API compatibility, request/error
   contracts, idempotency, OpenAPI exception, SSE/poll fallback, console
   controls, evidence, and out-of-scope behavior.
@@ -41,10 +43,11 @@
 
 ## Verification evidence
 
-- Full Python suite: `183 passed, 3 skipped`.
-- P5 API contract suite: `23 passed`.
+- Full DevPilot suite: `208 passed, 3 skipped`.
+- Focused P5 suite: `39 passed`; nanobot P5 integration: `26 passed`.
 - Ruff, Pyright, secret scan, Markdown check, `git diff --check`, web type
   check/build, and browser smoke: passed.
 
-Spec review passes. No files were changed by the reviewer. The two unrelated
+Final Spec review is pending on the candidate above; the historical review below is
+not evidence for the current candidate. No files were changed by the reviewer. The two unrelated
 user-owned fixture modifications were excluded from the fixed-point review.

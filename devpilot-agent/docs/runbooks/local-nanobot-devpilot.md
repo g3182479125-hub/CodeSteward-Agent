@@ -32,11 +32,12 @@ ADR-0003 删除。
 3. 阅读文件范围、风险、验证项和停止条件；
 4. 查看当前 Run 状态、阶段事件、失败原因、Artifact 引用和下一步。
 
-当前已经有 nanobot 事件桥接和 Action Broker 核心，但 Gateway 的 WebUI 确认事件尚未完成
-受信上下文注入，真实 ControlPlane 回调也尚未接通。因此 Apply、Verify、Rollback 在默认
-运行方式下仍应返回 `APPROVAL_BROKER_UNAVAILABLE`，保持 fail closed；不能因为 Tool 已注册
-就把它当成动作已经可执行。P5-04 完成后，才允许在同一聊天中完成“用户确认 → Broker → 动作 →
-验证/回滚”的闭环，并补充真实 nanobot WebUI E2E 证据。
+Gateway 已完成 nanobot 原生 WebUI 的受信确认注入：提案工具先登记当前 chat 的服务端
+ChangeSet tuple，用户在同一聊天中明确输入 `执行`、`验证` 或 `撤销` 后，Gateway 才注入
+短生命周期的隐藏确认上下文，模型随后调用 `devpilot_confirmed_action` 进入 Action Broker。
+旧的 `devpilot_request_approval` 只保留给兼容/测试边界，不能作为主链路下一步；token 不进入
+模型、Session、聊天文本、SSE 或日志。未登记、跨 chat、过期、篡改或没有当前请求上下文的
+确认仍返回 `APPROVAL_BROKER_UNAVAILABLE`，保持 fail closed。
 
 DevPilot 的持久 RunEvent/SSE 是内部事件源，不能被当作公开浏览器页面。nanobot
 适配层必须将阶段、状态和结果转成脱敏的结构化聊天消息；SSE 断开时使用持久快照，
@@ -54,6 +55,7 @@ DevPilot 的持久 RunEvent/SSE 是内部事件源，不能被当作公开浏览
 
 - `API offline`：检查 18800 和 `DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE`；
 - `PROJECT_TRUST_REQUIRED`：先在 nanobot 对话中完成项目路径、来源和风险确认；
-- `APPROVAL_BROKER_UNAVAILABLE`：保持 fail closed，不恢复独立页面，不让模型携带 token；
+- `APPROVAL_BROKER_UNAVAILABLE`：检查提案是否已由同一 chat 产生且 tuple 完整匹配；保持
+  fail closed，不恢复独立页面，不让模型携带 token；
 - `EXECUTION_BACKEND_UNAVAILABLE`：检查 P6 后端证据，不把配置项当成 Sandbox 证明；
 - SSE 不可用：nanobot 读取持久 Run 快照，不能宣称实时事件已经到达。
