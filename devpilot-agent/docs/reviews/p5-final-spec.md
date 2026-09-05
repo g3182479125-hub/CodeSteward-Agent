@@ -8,8 +8,8 @@ Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
 ## Review scope
 
 - Fixed point: `91b46e3`
-- Candidate: `p5-candidate-20260905-r9`
-- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r9`
+- Candidate: `p5-candidate-20260905-r10`
+- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r10`
 - Review axis: frozen P5 plan/spec, API compatibility, request/error
   contracts, idempotency, OpenAPI exception, SSE/poll fallback, console
   controls, evidence, and out-of-scope behavior.

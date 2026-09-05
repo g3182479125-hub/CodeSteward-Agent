@@ -8,8 +8,8 @@ Standards verdict is recorded in `p5-standards-review-2026-09-05.md`.
 ## Review scope
 
 - Fixed point: `91b46e3`
-- Candidate: `p5-candidate-20260905-r9`
-- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r9`
+- Candidate: `p5-candidate-20260905-r10`
+- Exact reviewed diff: `git diff 91b46e3...p5-candidate-20260905-r10`
 - Review axis: repository standards, safety boundaries, privacy, credentials,
   approval-token handling, idempotency concurrency, SSE lifecycle, backend
   fail-closed behavior, rollback, and regression risk.
