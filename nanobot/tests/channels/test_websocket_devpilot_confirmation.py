@@ -4,6 +4,8 @@ from nanobot.channels.websocket.runtime import WebSocketChannel
 
 
 def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
+    from devpilot.action_broker import ConfirmationContext, canonical_confirmation_string
+
     channel = object.__new__(WebSocketChannel)
     channel._webui_connections = {"trusted"}
     channel._devpilot_confirmation_sequences = {}
@@ -58,6 +60,19 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
     }
     assert confirmation["context"]["thread_id"] != "chat"
     assert callable(confirmation["verifier"])
+    context = ConfirmationContext.from_mapping(confirmation["context"])
+    assert confirmation["verifier"](
+        canonical_confirmation_string(
+            context,
+            change_set_id=tuple_value["change_set_id"],
+            plan_hash=tuple_value["plan_hash"],
+            patch_hash=tuple_value["patch_hash"],
+            scope_hash=tuple_value["scope_hash"],
+            project_id=tuple_value["project_id"],
+            capability="r1.apply+r2.verify",
+        ),
+        context.signature,
+    )
 
 
 def test_gateway_binds_a_changeset_to_one_server_owned_thread() -> None:

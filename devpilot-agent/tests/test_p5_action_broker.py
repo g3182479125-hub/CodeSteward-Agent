@@ -490,6 +490,86 @@ def test_broker_reports_applied_when_verification_becomes_stale_after_apply() ->
     assert calls == ["apply"]
 
 
+def test_broker_preserves_apply_when_verify_capability_is_rejected() -> None:
+    request = _request(action="apply")
+    request = BrokerActionRequest(
+        **{**request.__dict__, "action": "apply_verify", "verification_profile": "python-syntax"}
+    )
+    signature = sign_confirmation_context(
+        request.context, b"k" * 32, change_set_id=request.change_set_id,
+        project_id=request.project_id, capability="r1.apply+r2.verify", **HASHES,
+    )
+    request = BrokerActionRequest(
+        **{**request.__dict__, "context": ConfirmationContext(
+            **{**request.context.__dict__, "signature": signature}
+        )}
+    )
+    calls: list[str] = []
+    snapshot = {
+        "change_set_id": "change-set-1", "project_id": "project-1", "trust_state": "trusted",
+        "verification_profile": "python-syntax", "verification_profile_version": "1",
+        "verification_snapshot_hash": "4" * 64, "verification_check_set_hash": "5" * 64,
+        "verification_available": True, **HASHES,
+    }
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _id: snapshot,
+        capability_issuer=lambda action, _id: calls.append(action)
+        or ("token" if action == "apply" else ""),
+        capability_executor=lambda action, *_args: {
+            "status": "applied" if action == "apply" else "verified"
+        },
+        confirmation_consumer=lambda _request, _key: True,
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(request).to_dict()
+
+    assert result["status"] == "verification_failed"
+    assert result["application"] == {"status": "applied"}
+    assert result["verification"] == {
+        "status": "failed",
+        "error_code": "APPROVAL_BROKER_UNAVAILABLE",
+    }
+    assert calls == ["apply", "verify"]
+
+
+def test_broker_replay_keeps_combined_child_results() -> None:
+    request = _request()
+    request = BrokerActionRequest(
+        **{**request.__dict__, "action": "apply_verify", "verification_profile": "python-syntax"}
+    )
+    signature = sign_confirmation_context(
+        request.context, b"k" * 32, change_set_id=request.change_set_id,
+        project_id=request.project_id, capability="r1.apply+r2.verify", **HASHES,
+    )
+    request = BrokerActionRequest(**{**request.__dict__, "context": ConfirmationContext(
+        **{**request.context.__dict__, "signature": signature}
+    )})
+    replay = {
+        "status": "verified", "application": {"status": "applied"},
+        "verification": {"status": "verified"},
+    }
+    snapshot = {
+        "change_set_id": "change-set-1", "project_id": "project-1", "trust_state": "trusted",
+        "verification_profile": "python-syntax", "verification_profile_version": "1",
+        "verification_snapshot_hash": "4" * 64, "verification_check_set_hash": "5" * 64,
+        "verification_available": True, **HASHES,
+    }
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _id: snapshot,
+        capability_issuer=lambda *_args: (_ for _ in ()).throw(AssertionError("must not issue")),
+        capability_executor=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not execute")
+        ),
+        confirmation_consumer=lambda _request, _key: replay,
+        clock=lambda: NOW,
+    )
+
+    assert broker.execute(request).to_dict()["application"] == {"status": "applied"}
+
+
 def test_broker_does_not_claim_success_when_terminal_persistence_fails() -> None:
     broker = ActionBroker(
         b"k" * 32,

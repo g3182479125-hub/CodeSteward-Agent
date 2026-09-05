@@ -472,8 +472,16 @@ class ActionBroker:
     ) -> BrokerActionResult:
         try:
             return self._execute_one(request, action, idempotency_key)
-        except BrokerError:
-            raise
+        except BrokerError as exc:
+            # This is after the outer confirmation/snapshot gate.  In a
+            # combined action it must be reported as the child result so an
+            # already applied patch is never rewritten as a rejection.
+            return BrokerActionResult(
+                status="failed",
+                change_set_id=request.change_set_id,
+                action=action,
+                error_code=exc.code,
+            )
         except Exception:
             return BrokerActionResult(
                 status="failed",
@@ -534,7 +542,32 @@ class ActionBroker:
     def _result_from_replay(
         request: BrokerActionRequest, raw: Mapping[str, Any]
     ) -> BrokerActionResult:
-        return ActionBroker._result_from_executor(request, raw)
+        result = ActionBroker._result_from_executor(request, raw)
+        application = ActionBroker._safe_component_payload(raw.get("application"))
+        verification = ActionBroker._safe_component_payload(raw.get("verification"))
+        if (application is None) != (verification is None):
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        if request.action == "apply_verify" and application is None:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        return replace(result, application=application, verification=verification)
+
+    @staticmethod
+    def _safe_component_payload(value: object) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping) or not value:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        result: dict[str, str] = {}
+        for key, item in value.items():
+            if key not in {"status", "run_id", "error_code", "result_ref"}:
+                raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+            safe = ActionBroker._safe_result_identifier(item)
+            if safe is None:
+                raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+            result[key] = safe
+        if "status" not in result:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        return result
 
     @staticmethod
     def _result_from_executor(

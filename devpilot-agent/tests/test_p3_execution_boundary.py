@@ -17,7 +17,11 @@ from devpilot.execution import (
 from devpilot.fc_sandbox import FCSandboxBackend, FCSandboxConfig
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
-from devpilot.verification import VerificationProfile, build_verification_request
+from devpilot.verification import (
+    PYTHON_REGRESSION_TIMEOUT_SECONDS,
+    VerificationProfile,
+    build_verification_request,
+)
 
 
 def test_verification_uses_complete_bounded_snapshot_and_patch_overlay(tmp_path: Path) -> None:
@@ -71,12 +75,32 @@ def test_changeset_read_exposes_server_owned_verification_binding(tmp_path: Path
     assert snapshot["verification_available"] is False
 
 
+def test_python_regression_profile_uses_fixed_test_command_and_budget(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_main.py").write_text("import main\n", encoding="utf-8")
+    manager = ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path]))
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "VALUE = 1\n")],
+    )
+    entry = manager._require(str(preview["change_set_id"]))
+
+    request = build_verification_request(entry.plan, VerificationProfile.PYTHON_REGRESSION)
+
+    assert request.command == 'python3 -m unittest discover -s tests -p "test_*.py"'
+    assert request.timeout_seconds == PYTHON_REGRESSION_TIMEOUT_SECONDS
+    assert request.network_allowed is False
+    assert {item.relative_path for item in request.files} == {"main.py", "tests/test_main.py"}
+
+
 def test_execution_port_rejects_model_supplied_shell_or_non_allowlisted_command() -> None:
     request = ExecutionRequest(
         run_id="run-1",
         project_id="project-1",
         files=(ExecutionFile("main.py", b"print(1)"),),
-        command='python3 -c "print(1)" && whoami',
+        command="python3 -c \"print(1)\" && whoami",
     )
     with pytest.raises(ExecutionError, match="EXECUTION_COMMAND_FORBIDDEN"):
         FakeExecutionBackend().run(request)

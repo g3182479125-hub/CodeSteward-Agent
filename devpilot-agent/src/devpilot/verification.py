@@ -21,6 +21,8 @@ from .patches import PatchPlan
 MAX_SNAPSHOT_FILES = MAX_EXECUTION_FILES
 MAX_SNAPSHOT_BYTES = MAX_EXECUTION_BUNDLE_BYTES
 VERIFICATION_PROFILE_VERSION = "1"
+PYTHON_REGRESSION_DEPENDENCY_TEMPLATE = "python-stdlib-unittest-v1"
+PYTHON_REGRESSION_TIMEOUT_SECONDS = 90
 _FORBIDDEN_PARTS = frozenset(
     {".git", ".hg", ".svn", "node_modules", "dist", "build", ".venv", "__pycache__"}
 )
@@ -30,6 +32,7 @@ class VerificationProfile(StrEnum):
     """Commands controlled by DevPilot rather than supplied by the model."""
 
     PYTHON_SYNTAX = "python-syntax"
+    PYTHON_REGRESSION = "python-regression"
     PYTHON_RUN = "python-run"
     NODE_SYNTAX = "node-syntax"
     REACT_STATIC = "react-static"
@@ -140,6 +143,7 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
 
     suffixes = {
         VerificationProfile.PYTHON_SYNTAX: {".py"},
+        VerificationProfile.PYTHON_REGRESSION: {".py"},
         VerificationProfile.PYTHON_RUN: {".py"},
         VerificationProfile.NODE_SYNTAX: {".js", ".mjs", ".cjs"},
         # G-02 is a static React fixture.  Its contract is intentionally
@@ -160,6 +164,10 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
     paths = [f"/workspace/devpilot/{relative_path}" for relative_path in changed_files]
     if profile is VerificationProfile.PYTHON_SYNTAX:
         command = "python3 -m py_compile " + shlex.join(paths)
+    elif profile is VerificationProfile.PYTHON_REGRESSION:
+        if not any(item.relative_path.startswith("tests/") for item in files):
+            raise ValueError("python-regression requires a tests/ snapshot")
+        command = 'python3 -m unittest discover -s tests -p "test_*.py"'
     elif profile is VerificationProfile.PYTHON_RUN:
         if len(paths) != 1:
             raise ValueError("python-run requires exactly one changed Python file")
@@ -173,7 +181,11 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
         project_id=plan.project_id,
         files=files,
         command=command,
-        timeout_seconds=120,
+        timeout_seconds=(
+            PYTHON_REGRESSION_TIMEOUT_SECONDS
+            if profile is VerificationProfile.PYTHON_REGRESSION
+            else 120
+        ),
         network_allowed=False,
         command_profile=profile.value,
     )

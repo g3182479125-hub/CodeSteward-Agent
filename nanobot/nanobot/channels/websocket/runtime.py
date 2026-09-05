@@ -1786,11 +1786,7 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Broadcast runtime model changes to every open websocket connection."""
         conns = list(self._conn_chats)
-        if (
-            not conns
-            or not isinstance(model_name, str)
-            or not model_name.strip()
-        ):
+        if not conns or not isinstance(model_name, str) or not model_name.strip():
             return
         body: dict[str, Any] = {
             "event": "runtime_model_updated",
@@ -1810,7 +1806,11 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Notify one chat's subscribers which model is handling its current request."""
         conns = list(self._subs.get(chat_id, ()))
-        if not conns or not isinstance(model_name, str) or not model_name.strip():
+        if (
+            not conns
+            or not isinstance(model_name, str)
+            or not model_name.strip()
+        ):
             return
         body: dict[str, Any] = {
             "event": "turn_model_updated",
