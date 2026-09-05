@@ -57,6 +57,28 @@ def test_nanobot_confirmation_prefers_current_request_over_transport_fallback() 
         reset_request_context(token)
 
 
+def test_nanobot_confirmation_fails_closed_when_active_request_has_no_confirmation() -> None:
+    from nanobot.agent.tools.context import (
+        RequestContext,
+        bind_request_context,
+        reset_request_context,
+    )
+    from nanobot.bus.events import set_current_inbound_attributes
+
+    from devpilot.nanobot_tools import _trusted_confirmation_attributes
+
+    set_current_inbound_attributes({
+        "devpilot_confirmation": {"confirmation_id": "stale"},
+    })
+    token = bind_request_context(
+        RequestContext(channel="websocket", chat_id="chat", attributes={})
+    )
+    try:
+        assert _trusted_confirmation_attributes() is None
+    finally:
+        reset_request_context(token)
+
+
 def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest:
     issued = NOW.isoformat()
     expires = (NOW + timedelta(minutes=5)).isoformat()
