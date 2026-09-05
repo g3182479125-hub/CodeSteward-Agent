@@ -1,7 +1,7 @@
 # P5 Acceptance Evidence
 
-当前状态：`review_pending`。代码和本地门禁已完成；等待本轮 Standards 与
-Spec subagent 对同一候选提交给出最终结论。
+当前状态：`complete`。代码、本地门禁以及同一候选提交上的 Standards 与
+Spec 并行 subagent review 均已通过。
 
 ## Scope
 
@@ -58,5 +58,5 @@ green and no P5 file is involved in that failure.
 
 ## Review gate
 
-两份并行 subagent review 必须分别记录在 `docs/reviews/`，并在 P5 标为
-`complete` 或 certified 前通过。P6 尚未开始。
+两份并行 subagent review 已分别记录在 `docs/reviews/` 并通过。P5 已完成；
+P6 尚未开始。

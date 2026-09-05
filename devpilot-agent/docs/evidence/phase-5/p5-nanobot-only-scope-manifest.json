@@ -1,7 +1,7 @@
 {
   "phase": "P5",
   "node": "ADR-0003-nanobot-only-frontend",
-  "status": "review_pending",
+  "status": "complete",
   "implementation_commit": "p5-candidate-20260905-r10",
   "evidence_commit": "p5-candidate-20260905-r10",
   "evidence_ref_type": "immutable_tag",
@@ -65,5 +65,5 @@
     "docs/runbooks/local-nanobot-devpilot.md"
   ],
   "rollback_point": "29dff92",
-  "note": "P5 implementation and local gates are complete in the nanobot-only scope; final Standards and Spec review is pending on p5-candidate-20260905-r10"
+  "note": "P5 implementation, local gates, and independent Standards/Spec review are complete in the nanobot-only scope; evidence is bound to immutable tag p5-candidate-20260905-r10"
 }

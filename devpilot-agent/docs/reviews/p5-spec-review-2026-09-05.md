@@ -2,7 +2,7 @@
 
 ## Status
 
-`REVIEW_PENDING` for candidate `p5-candidate-20260905-r10`.
+`PASS` for candidate `p5-candidate-20260905-r10`.
 
 This file is the dedicated Spec-axis record required by `AGENTS.md`. It is
 intentionally completed only after the independent Spec subagent returns its
@@ -19,5 +19,17 @@ verdict; it must not be used as evidence for an earlier candidate.
 
 ## Independent result
 
-Pending. The final verdict, findings, and evidence commands will be recorded here
-after the parallel Spec review completes.
+The independent Spec subagent reviewed the r9 implementation and the exact r9-to-r10
+increment. It found no blocker, major, or minor finding.
+
+## Verdict
+
+`PASS` — no待修复发现。
+
+## Evidence
+
+- DevPilot focused P5 tests: `39 passed`.
+- Nanobot P5 integration tests: `26 passed`.
+- Proposal tuple provenance, same-chat binding, fail-closed confirmation,
+  idempotency recovery, legacy approval bypass, and P6 blocking behavior were
+  confirmed against the P5 scope.

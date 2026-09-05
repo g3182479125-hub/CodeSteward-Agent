@@ -2,8 +2,8 @@
 
 ## Verdict
 
-**REVIEW_PENDING** — this record is aligned to the next candidate; the final parallel
-Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
+**PASS** — the independent Spec subagent found no blocker, major, or minor finding
+on the final candidate. The detailed record is in `p5-spec-review-2026-09-05.md`.
 
 ## Review scope
 
@@ -46,6 +46,6 @@ Spec verdict is recorded in `p5-spec-review-2026-09-05.md`.
 - Focused P5 suite: `39 passed`; nanobot P5 integration: `26 passed`.
 - Ruff, Pyright, secret scan, Markdown check, and `git diff --check`: passed.
 
-Final Spec review is pending on the candidate above; the historical review below is
+Final Spec review passed on the candidate above; the historical review below is
 not evidence for the current candidate. No files were changed by the reviewer. The two unrelated
 user-owned fixture modifications were excluded from the fixed-point review.

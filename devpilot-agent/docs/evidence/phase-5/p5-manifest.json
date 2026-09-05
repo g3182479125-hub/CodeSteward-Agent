@@ -1,6 +1,6 @@
 {
   "phase": "P5",
-  "status": "review_pending",
+  "status": "complete",
   "current_scope_manifest": "docs/evidence/phase-5/p5-nanobot-only-scope-manifest.json",
   "evidence_commit": "p5-candidate-20260905-r10",
   "evidence_ref_type": "immutable_tag",
@@ -25,6 +25,6 @@
     "ruff": "passed",
     "pyright": "passed",
     "git_diff_check": "passed",
-    "parallel_review": "pending on p5-candidate-20260905-r10; reports will be recorded separately"
+    "parallel_review": "passed: Standards and Spec subagents reviewed p5-candidate-20260905-r10"
   }
 }

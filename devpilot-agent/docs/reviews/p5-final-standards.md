@@ -2,8 +2,9 @@
 
 ## Verdict
 
-**REVIEW_PENDING** — this record is aligned to the next candidate; the final parallel
-Standards verdict is recorded in `p5-standards-review-2026-09-05.md`.
+**PASS** — the independent Standards subagent found no blocker, major, or minor
+finding on the final candidate. The detailed record is in
+`p5-standards-review-2026-09-05.md`.
 
 ## Review scope
 
@@ -38,11 +39,9 @@ Standards verdict is recorded in `p5-standards-review-2026-09-05.md`.
 
 ## Decision
 
-Final Standards review is pending on the candidate above; the historical review below is
-not evidence for the current candidate.
-the reviewer’s note about not spawning further descendants is a tooling note,
-not a finding, because the primary agent dispatched this independent reviewer
-in parallel with the Spec reviewer as required by `AGENTS.md`.
+Final Standards review passed on the candidate above; the historical review below is
+not evidence for the current candidate. The primary agent dispatched this independent
+reviewer in parallel with the Spec reviewer as required by `AGENTS.md`.
 
 The two pre-existing user-owned fixture modifications were excluded and remain
 untouched:
