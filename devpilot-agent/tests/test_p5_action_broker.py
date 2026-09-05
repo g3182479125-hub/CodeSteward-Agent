@@ -39,9 +39,11 @@ def test_nanobot_confirmation_prefers_current_request_over_transport_fallback() 
 
     from devpilot.nanobot_tools import _trusted_confirmation_attributes
 
-    set_current_inbound_attributes({
-        "devpilot_confirmation": {"confirmation_id": "old"},
-    })
+    set_current_inbound_attributes(
+        {
+            "devpilot_confirmation": {"confirmation_id": "old"},
+        }
+    )
     token = bind_request_context(
         RequestContext(
             channel="websocket",
@@ -50,9 +52,7 @@ def test_nanobot_confirmation_prefers_current_request_over_transport_fallback() 
         )
     )
     try:
-        assert _trusted_confirmation_attributes() == {
-            "confirmation_id": "new"
-        }
+        assert _trusted_confirmation_attributes() == {"confirmation_id": "new"}
     finally:
         reset_request_context(token)
 
@@ -67,12 +67,12 @@ def test_nanobot_confirmation_fails_closed_when_active_request_has_no_confirmati
 
     from devpilot.nanobot_tools import _trusted_confirmation_attributes
 
-    set_current_inbound_attributes({
-        "devpilot_confirmation": {"confirmation_id": "stale"},
-    })
-    token = bind_request_context(
-        RequestContext(channel="websocket", chat_id="chat", attributes={})
+    set_current_inbound_attributes(
+        {
+            "devpilot_confirmation": {"confirmation_id": "stale"},
+        }
     )
+    token = bind_request_context(RequestContext(channel="websocket", chat_id="chat", attributes={}))
     try:
         assert _trusted_confirmation_attributes() is None
     finally:
@@ -90,6 +90,10 @@ def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest
         issued_at=issued,
         expires_at=expires,
         user_event_nonce=f"nonce-{sequence}",
+        verification_profile="python-syntax",
+        verification_profile_version="1",
+        verification_snapshot_hash="4" * 64,
+        verification_check_set_hash="5" * 64,
         signature="0" * 64,
     )
     signature = sign_confirmation_context(
@@ -228,7 +232,7 @@ def test_broker_generates_unpredictable_idempotency_keys() -> None:
         },
         capability_issuer=lambda *_args: "token",
         capability_executor=lambda *_args: {"status": "completed", "run_id": "run-1"},
-        confirmation_consumer=lambda _request, key: (keys.append(key) or True),
+        confirmation_consumer=lambda _request, key: keys.append(key) or True,
         clock=lambda: NOW,
     )
 
@@ -261,6 +265,229 @@ def test_broker_binds_verification_profile_to_trusted_snapshot() -> None:
     )
 
     assert broker.execute(request).error_code == "APPROVAL_SCOPE_MISMATCH"
+
+
+def test_broker_combines_apply_and_verification_with_one_bound_confirmation() -> None:
+    """A single `执行` confirmation must issue two internal capabilities in order."""
+    issued = NOW.isoformat()
+    expires = (NOW + timedelta(minutes=5)).isoformat()
+    unsigned = ConfirmationContext(
+        session_id="session-1",
+        thread_id="thread-1",
+        user_message_seq=1,
+        confirmation_id="confirmation-combined",
+        issued_at=issued,
+        expires_at=expires,
+        user_event_nonce="nonce-combined",
+        verification_profile="python-syntax",
+        verification_profile_version="1",
+        verification_snapshot_hash="4" * 64,
+        verification_check_set_hash="5" * 64,
+        signature="0" * 64,
+    )
+    signature = sign_confirmation_context(
+        unsigned,
+        b"k" * 32,
+        change_set_id="change-set-1",
+        project_id="project-1",
+        capability="r1.apply+r2.verify",
+        **HASHES,
+    )
+    request = BrokerActionRequest(
+        context=ConfirmationContext(**{**unsigned.__dict__, "signature": signature}),
+        action="apply_verify",
+        change_set_id="change-set-1",
+        project_id="project-1",
+        verification_profile="python-syntax",
+        **HASHES,
+    )
+    calls: list[tuple[str, ...]] = []
+
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            "verification_profile": "python-syntax",
+            "verification_profile_version": "1",
+            "verification_snapshot_hash": "4" * 64,
+            "verification_check_set_hash": "5" * 64,
+            "verification_available": True,
+            **HASHES,
+        },
+        capability_issuer=lambda action, _change_set_id: calls.append(("issue", action)) or "token",
+        capability_executor=lambda action, _change_set_id, _token, key, profile: (
+            calls.append(("execute", action, key, profile or ""))
+            or {"status": "applied" if action == "apply" else "verified"}
+        ),
+        confirmation_consumer=lambda _request, _key: True,
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(request).to_dict()
+
+    assert result["status"] == "verified"
+    assert result["application"] == {"status": "applied"}
+    assert result["verification"] == {"status": "verified"}
+    assert [call[:2] for call in calls] == [
+        ("issue", "apply"),
+        ("execute", "apply"),
+        ("issue", "verify"),
+        ("execute", "verify"),
+    ]
+    assert calls[1][2] != calls[3][2]
+
+
+def test_broker_combined_action_rejects_unavailable_or_changed_verification_before_apply() -> None:
+    """An unavailable or stale validation binding must not write the ChangeSet."""
+    request = BrokerActionRequest(
+        context=ConfirmationContext(
+            session_id="session-1",
+            thread_id="thread-1",
+            user_message_seq=1,
+            confirmation_id="confirmation-unavailable",
+            issued_at=NOW.isoformat(),
+            expires_at=(NOW + timedelta(minutes=5)).isoformat(),
+            user_event_nonce="nonce-unavailable",
+            verification_profile="python-syntax",
+            verification_profile_version="1",
+            verification_snapshot_hash="4" * 64,
+            verification_check_set_hash="5" * 64,
+            signature="0" * 64,
+        ),
+        action="apply_verify",
+        change_set_id="change-set-1",
+        project_id="project-1",
+        verification_profile="python-syntax",
+        **HASHES,
+    )
+    signature = sign_confirmation_context(
+        request.context,
+        b"k" * 32,
+        change_set_id=request.change_set_id,
+        project_id=request.project_id,
+        capability="r1.apply+r2.verify",
+        **HASHES,
+    )
+    request = BrokerActionRequest(
+        **{
+            **request.__dict__,
+            "context": ConfirmationContext(
+                **{
+                    **request.context.__dict__,
+                    "signature": signature,
+                }
+            ),
+        }
+    )
+    calls: list[str] = []
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            "verification_profile": "python-syntax",
+            "verification_profile_version": "1",
+            "verification_snapshot_hash": "6" * 64,
+            "verification_check_set_hash": "5" * 64,
+            "verification_available": False,
+            **HASHES,
+        },
+        capability_issuer=lambda action, _change_set_id: calls.append(action) or "token",
+        capability_executor=lambda *_args: {"status": "applied"},
+        confirmation_consumer=lambda _request, _key: True,
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(request)
+
+    assert result.error_code == "APPROVAL_SCOPE_MISMATCH"
+    assert calls == []
+
+
+def test_broker_reports_applied_when_verification_becomes_stale_after_apply() -> None:
+    """A post-Apply guard failure must not erase the durable partial result."""
+    request = BrokerActionRequest(
+        context=ConfirmationContext(
+            session_id="session-1",
+            thread_id="thread-1",
+            user_message_seq=1,
+            confirmation_id="confirmation-post-apply",
+            issued_at=NOW.isoformat(),
+            expires_at=(NOW + timedelta(minutes=5)).isoformat(),
+            user_event_nonce="nonce-post-apply",
+            verification_profile="python-syntax",
+            verification_profile_version="1",
+            verification_snapshot_hash="4" * 64,
+            verification_check_set_hash="5" * 64,
+            signature="0" * 64,
+        ),
+        action="apply_verify",
+        change_set_id="change-set-1",
+        project_id="project-1",
+        verification_profile="python-syntax",
+        **HASHES,
+    )
+    signature = sign_confirmation_context(
+        request.context,
+        b"k" * 32,
+        change_set_id=request.change_set_id,
+        project_id=request.project_id,
+        capability="r1.apply+r2.verify",
+        **HASHES,
+    )
+    request = BrokerActionRequest(
+        **{
+            **request.__dict__,
+            "context": ConfirmationContext(**{**request.context.__dict__, "signature": signature}),
+        }
+    )
+    snapshots = iter(
+        (
+            {
+                "change_set_id": "change-set-1",
+                "project_id": "project-1",
+                "trust_state": "trusted",
+                "verification_profile": "python-syntax",
+                "verification_profile_version": "1",
+                "verification_snapshot_hash": "4" * 64,
+                "verification_check_set_hash": "5" * 64,
+                "verification_available": True,
+                **HASHES,
+            },
+            {
+                "change_set_id": "change-set-1",
+                "project_id": "project-1",
+                "trust_state": "trusted",
+                "verification_profile": "python-syntax",
+                "verification_profile_version": "1",
+                "verification_snapshot_hash": "6" * 64,
+                "verification_check_set_hash": "5" * 64,
+                "verification_available": True,
+                **HASHES,
+            },
+        )
+    )
+    calls: list[str] = []
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: next(snapshots),
+        capability_issuer=lambda action, _change_set_id: calls.append(action) or "token",
+        capability_executor=lambda action, *_args: {
+            "status": "applied" if action == "apply" else "verified"
+        },
+        confirmation_consumer=lambda _request, _key: True,
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(request).to_dict()
+
+    assert result["status"] == "verification_failed"
+    assert result["application"] == {"status": "applied"}
+    assert result["verification"] == {"status": "not_run", "error_code": "APPROVAL_SCOPE_MISMATCH"}
+    assert calls == ["apply"]
 
 
 def test_broker_does_not_claim_success_when_terminal_persistence_fails() -> None:

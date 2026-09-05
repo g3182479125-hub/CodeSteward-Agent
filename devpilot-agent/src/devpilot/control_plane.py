@@ -41,7 +41,7 @@ from .redaction import (
     redact_sensitive_text,
 )
 from .storage import ProjectStore
-from .verification import VerificationProfile, build_verification_request
+from .verification import VerificationProfile, build_verification_request, verification_binding
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18800
@@ -360,7 +360,39 @@ class ControlPlaneManager:
                             }
                             result_contract["contract_hash"] = contract["contract_hash"]
                             payload["test_repair_contract"] = result_contract
+            # The browser never supplies this binding.  It is recomputed from
+            # the immutable ChangeSet and server-owned profile on every read.
+            try:
+                payload.update(self._verification_binding(entry, payload))
+            except ValueError:
+                # A proposal without a supported fixed profile is not eligible
+                # for the combined path.  The gateway and broker fail closed.
+                payload["verification_available"] = False
             return payload
+
+    def _verification_binding(
+        self, entry: _PendingChangeSet, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        profile_name = "python-syntax"
+        check_ids = payload.get("check_ids")
+        if isinstance(check_ids, list):
+            for candidate in check_ids:
+                if isinstance(candidate, str):
+                    try:
+                        profile_name = VerificationProfile(candidate).value
+                    except ValueError:
+                        continue
+                    break
+        for key in ("bug_fix_contract", "test_repair_contract"):
+            contract = payload.get(key)
+            if isinstance(contract, dict) and isinstance(contract.get("verification_profile"), str):
+                profile_name = str(contract["verification_profile"])
+                break
+        profile = VerificationProfile(profile_name)
+        binding = verification_binding(entry.plan, profile)
+        # Real execution intentionally remains unavailable until P6-02 has
+        # authenticated and evidenced the existing FC adapter.
+        return {**binding, "verification_available": False}
 
     def get_run_id(self, change_set_id: str) -> str | None:
         """Return the server-owned run link without changing the Preview contract."""

@@ -413,15 +413,26 @@ class WebSocketChannel(BaseChannel):
         """Return non-persisted intent evidence for an exact trusted WebUI confirmation."""
         if connection not in self._webui_connections:
             return {}
-        action = {"执行": "apply", "验证": "verify", "撤销": "rollback"}.get(content.strip())
+        action = {
+            "执行": "apply_verify",
+            "仅应用": "apply",
+            "验证": "verify",
+            "撤销": "rollback",
+        }.get(content.strip())
         if action is None:
             return {}
         if not isinstance(confirmation, dict):
             return {}
         required = {"change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id"}
-        if set(confirmation) != required or any(
+        binding_keys = {
+            "verification_profile",
+            "verification_profile_version",
+            "verification_snapshot_hash",
+            "verification_check_set_hash",
+        }
+        if set(confirmation) != required | binding_keys or any(
             not isinstance(confirmation.get(key), str) or not confirmation[key]
-            for key in required
+            for key in required | binding_keys
         ):
             return {}
         values = {key: str(confirmation[key]) for key in required}
@@ -439,19 +450,50 @@ class WebSocketChannel(BaseChannel):
         expires_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
         confirmation_id = uuid.uuid4().hex
         nonce = secrets.token_hex(16)
-        capability = {"apply": "r1.apply", "verify": "r2.verify", "rollback": "r1.rollback"}[action]
+        binding = {key: str(confirmation[key]) for key in binding_keys}
+        capability = {
+            "apply": "r1.apply",
+            "verify": "r2.verify",
+            "rollback": "r1.rollback",
+            "apply_verify": "r1.apply+r2.verify",
+        }[action]
         session_id = f"websocket:{self._devpilot_session_id}:{chat_id}"
-        canonical = "\n".join(("v1", session_id, thread_id,
-            str(sequence), confirmation_id, values["change_set_id"], values["plan_hash"],
-            values["patch_hash"], values["scope_hash"], values["project_id"], capability,
-            issued_at, expires_at, nonce))
+        canonical = "\n".join(
+            (
+                "v2",
+                session_id,
+                thread_id,
+                str(sequence),
+                confirmation_id,
+                values["change_set_id"],
+                values["plan_hash"],
+                values["patch_hash"],
+                values["scope_hash"],
+                values["project_id"],
+                capability,
+                binding["verification_profile"],
+                binding["verification_profile_version"],
+                binding["verification_snapshot_hash"],
+                binding["verification_check_set_hash"],
+                issued_at,
+                expires_at,
+                nonce,
+            )
+        )
         return {
             "devpilot_confirmation": {
                 "action": action,
-                "context": {"session_id": session_id, "thread_id": thread_id,
-                    "user_message_seq": sequence, "confirmation_id": confirmation_id,
-                    "issued_at": issued_at, "expires_at": expires_at,
-                    "user_event_nonce": nonce, "signature": self._devpilot_signer._sign(canonical.encode())},
+                "context": {
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                    "user_message_seq": sequence,
+                    "confirmation_id": confirmation_id,
+                    "issued_at": issued_at,
+                    "expires_at": expires_at,
+                    "user_event_nonce": nonce,
+                    **binding,
+                    "signature": self._devpilot_signer._sign(canonical.encode()),
+                },
                 "verifier": self._devpilot_signer.verify,
             }
         }
@@ -515,7 +557,17 @@ class WebSocketChannel(BaseChannel):
             return None
         if not isinstance(current, dict):
             return None
-        return values if all(current.get(key) == value for key, value in values.items()) else None
+        binding_keys = {
+            "verification_profile",
+            "verification_profile_version",
+            "verification_snapshot_hash",
+            "verification_check_set_hash",
+        }
+        if not all(current.get(key) == value for key, value in values.items()):
+            return None
+        if any(not isinstance(current.get(key), str) or not current[key] for key in binding_keys):
+            return None
+        return {**values, **{key: str(current[key]) for key in binding_keys}}
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -1734,7 +1786,11 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Broadcast runtime model changes to every open websocket connection."""
         conns = list(self._conn_chats)
-        if not conns or not isinstance(model_name, str) or not model_name.strip():
+        if (
+            not conns
+            or not isinstance(model_name, str)
+            or not model_name.strip()
+        ):
             return
         body: dict[str, Any] = {
             "event": "runtime_model_updated",
@@ -1754,11 +1810,7 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Notify one chat's subscribers which model is handling its current request."""
         conns = list(self._subs.get(chat_id, ()))
-        if (
-            not conns
-            or not isinstance(model_name, str)
-            or not model_name.strip()
-        ):
+        if not conns or not isinstance(model_name, str) or not model_name.strip():
             return
         body: dict[str, Any] = {
             "event": "turn_model_updated",

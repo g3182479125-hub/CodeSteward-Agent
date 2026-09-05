@@ -135,7 +135,9 @@ _PATH_DENIAL_CODES = frozenset(
     }
 )
 
-_BROKER_SUCCESS_STATUSES = frozenset({"applied", "verified", "reverted"})
+_BROKER_SUCCESS_STATUSES = frozenset(
+    {"applied", "verified", "reverted", "apply_failed", "verification_failed"}
+)
 
 
 def _broker_terminal_status(status: str) -> str:
@@ -716,7 +718,12 @@ def _get_control_plane(path: str) -> dict[str, Any]:
 def _snapshot_verification_profile(snapshot: Mapping[str, Any]) -> str:
     """Read the server-owned verification profile from a ChangeSet snapshot."""
     direct = snapshot.get("verification_profile")
-    if isinstance(direct, str) and direct in {"python-syntax", "python-run", "node-syntax"}:
+    if isinstance(direct, str) and direct in {
+        "python-syntax",
+        "python-run",
+        "node-syntax",
+        "react-static",
+    }:
         return direct
     for key in ("bug_fix_contract", "test_repair_contract"):
         contract = snapshot.get(key)
@@ -726,6 +733,7 @@ def _snapshot_verification_profile(snapshot: Mapping[str, Any]) -> str:
                 "python-syntax",
                 "python-run",
                 "node-syntax",
+                "react-static",
             }:
                 return profile
     return "python-syntax"
@@ -1065,7 +1073,7 @@ class WatchRunTool(Tool):
     {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["apply", "verify", "rollback"]},
+            "action": {"type": "string", "enum": ["apply", "verify", "rollback", "apply_verify"]},
             "change_set_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "plan_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
             "patch_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -1073,7 +1081,7 @@ class WatchRunTool(Tool):
             "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "verification_profile": {
                 "type": ["string", "null"],
-                "enum": ["python-syntax", "python-run", "node-syntax", None],
+                "enum": ["python-syntax", "python-run", "node-syntax", "react-static", None],
             },
         },
         "required": [
@@ -1099,7 +1107,8 @@ class ConfirmedActionTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Execute exactly one apply, verify, or rollback action only when the nanobot "
+            "Execute a trusted apply, verify, rollback, or bounded apply-and-verify action only "
+            "when the nanobot "
             "Gateway supplies a valid out-of-band signed user confirmation. The model cannot "
             "provide a token, confirmation context, or idempotency key."
         )
@@ -1166,12 +1175,19 @@ class ConfirmedActionTool(Tool):
                 result = _get_control_plane(_safe_resource_path(change_set_id, "change-sets"))
                 security = _get_control_plane(f"/v1/projects/{kwargs['project_id']}/security")
                 profile = _snapshot_verification_profile(result)
-                if request_action == "verify" and kwargs.get("verification_profile") != profile:
+                if (
+                    request_action in {"verify", "apply_verify"}
+                    and kwargs.get("verification_profile") != profile
+                ):
                     raise ValueError("verification profile is not bound to the ChangeSet")
                 return {
                     **result,
                     "trust_state": security.get("trust_state"),
                     "verification_profile": profile,
+                    "verification_profile_version": result.get("verification_profile_version"),
+                    "verification_snapshot_hash": result.get("verification_snapshot_hash"),
+                    "verification_check_set_hash": result.get("verification_check_set_hash"),
+                    "verification_available": result.get("verification_available") is True,
                 }
 
             def finish(
@@ -1342,7 +1358,7 @@ class ProposeChangeSetTool(Tool):
             result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "在 nanobot 对话中展示这份 Diff，并停止等待用户决定；"
-                "用户明确输入执行、验证或撤销后，使用这份完整 tuple 调用 "
+                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，使用这份完整 tuple 调用 "
                 "devpilot_confirmed_action；不要调用旧审批工具，也不要请求或传播 token。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1406,7 +1422,8 @@ class FeatureDeliveryProposeTool(Tool):
             _record_current_turn_proposal(result)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
-                "展示精确 Diff 并停止等待用户；用户明确输入执行、验证或撤销后，"
+                "展示精确 Diff 并停止等待用户；执行必须用 action=apply_verify（Apply 后验证）；"
+                "仅应用、验证或撤销后，"
                 "使用这份完整 tuple 调用 devpilot_confirmed_action，不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1493,7 +1510,7 @@ class BugFixProposeTool(Tool):
             _record_current_turn_proposal(result)
             result["next_step"] = (
                 "展示失败证据、精确 Diff 和 stop conditions，并停止等待用户；"
-                "用户明确输入执行、验证或撤销后，使用这份完整 tuple 调用 "
+                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，使用这份完整 tuple 调用 "
                 "devpilot_confirmed_action，不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1575,7 +1592,8 @@ class TestRepairProposeTool(Tool):
             _record_current_turn_proposal(result)
             result["next_step"] = (
                 "展示精确 Diff、当前轮次和剩余预算，并停止等待用户；"
-                "每轮都等待用户明确输入执行或验证，再使用这份完整 tuple 调用 "
+                "每轮执行必须用 action=apply_verify（Apply 后验证）；仅应用或验证，"
+                "再使用这份完整 tuple 调用 "
                 "devpilot_confirmed_action；不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)

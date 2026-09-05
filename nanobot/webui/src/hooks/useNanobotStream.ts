@@ -1477,7 +1477,7 @@ export function useNanobotStream(
       const clientOptions = {
         ...options,
         turnId,
-        ...(options?.devpilotConfirmation || (content.trim() === "执行" || content.trim() === "验证" || content.trim() === "撤销")
+        ...(options?.devpilotConfirmation || (content.trim() === "执行" || content.trim() === "仅应用" || content.trim() === "验证" || content.trim() === "撤销")
           ? { devpilotConfirmation: options?.devpilotConfirmation
               ?? readDevpilotConfirmationFromSelection(options?.quotedContext) }
           : {}),

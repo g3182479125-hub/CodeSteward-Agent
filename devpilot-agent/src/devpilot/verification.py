@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shlex
 from enum import StrEnum
@@ -18,6 +20,7 @@ from .patches import PatchPlan
 
 MAX_SNAPSHOT_FILES = MAX_EXECUTION_FILES
 MAX_SNAPSHOT_BYTES = MAX_EXECUTION_BUNDLE_BYTES
+VERIFICATION_PROFILE_VERSION = "1"
 _FORBIDDEN_PARTS = frozenset(
     {".git", ".hg", ".svn", "node_modules", "dist", "build", ".venv", "__pycache__"}
 )
@@ -128,9 +131,7 @@ def _project_snapshot(plan: PatchPlan) -> tuple[ExecutionFile, ...]:
     return ordered
 
 
-def build_verification_request(
-    plan: PatchPlan, profile: VerificationProfile
-) -> ExecutionRequest:
+def build_verification_request(plan: PatchPlan, profile: VerificationProfile) -> ExecutionRequest:
     """Build a bounded request from a complete post-change project snapshot.
 
     The command is selected by this server-side allowlist. A model or browser
@@ -176,3 +177,35 @@ def build_verification_request(
         network_allowed=False,
         command_profile=profile.value,
     )
+
+
+def verification_binding(plan: PatchPlan, profile: VerificationProfile) -> dict[str, str]:
+    """Return stable, secret-free identities for one server-owned verification request."""
+    request = build_verification_request(plan, profile)
+    snapshot = [
+        {"path": item.relative_path, "sha256": hashlib.sha256(item.content).hexdigest()}
+        for item in request.files
+    ]
+    snapshot_payload = json.dumps(
+        {
+            "profile": profile.value,
+            "profile_version": VERIFICATION_PROFILE_VERSION,
+            "command": request.command,
+            "files": snapshot,
+            "timeout_seconds": request.timeout_seconds,
+            "network_allowed": request.network_allowed,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    check_payload = json.dumps(
+        {"profile": profile.value, "profile_version": VERIFICATION_PROFILE_VERSION},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "verification_profile": profile.value,
+        "verification_profile_version": VERIFICATION_PROFILE_VERSION,
+        "verification_snapshot_hash": hashlib.sha256(snapshot_payload).hexdigest(),
+        "verification_check_set_hash": hashlib.sha256(check_payload).hexdigest(),
+    }

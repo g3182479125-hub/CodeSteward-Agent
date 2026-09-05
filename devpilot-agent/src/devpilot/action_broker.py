@@ -14,11 +14,14 @@ from typing import Any, cast
 from .redaction import redact_execution_output, redact_sensitive_text
 
 MAX_CONFIRMATION_TTL = timedelta(minutes=5)
-_ACTIONS = frozenset({"apply", "verify", "rollback"})
+_ACTIONS = frozenset({"apply", "verify", "rollback", "apply_verify"})
 _CAPABILITIES = {
     "apply": "r1.apply",
     "verify": "r2.verify",
     "rollback": "r1.rollback",
+    # A user-facing execution confirmation authorizes both effects, but the
+    # effects still receive separate short-lived control-plane capabilities.
+    "apply_verify": "r1.apply+r2.verify",
 }
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -65,6 +68,10 @@ class ConfirmationContext:
     issued_at: str
     expires_at: str
     user_event_nonce: str
+    verification_profile: str
+    verification_profile_version: str
+    verification_snapshot_hash: str
+    verification_check_set_hash: str
     signature: str
 
     @classmethod
@@ -80,6 +87,10 @@ class ConfirmationContext:
             "issued_at",
             "expires_at",
             "user_event_nonce",
+            "verification_profile",
+            "verification_profile_version",
+            "verification_snapshot_hash",
+            "verification_check_set_hash",
             "signature",
         }
         if set(mapping) != expected:
@@ -98,6 +109,10 @@ class ConfirmationContext:
             issued_at=_text(mapping["issued_at"], max_length=64),
             expires_at=_text(mapping["expires_at"], max_length=64),
             user_event_nonce=_identifier(mapping["user_event_nonce"]),
+            verification_profile=_identifier(mapping["verification_profile"]),
+            verification_profile_version=_identifier(mapping["verification_profile_version"]),
+            verification_snapshot_hash=_digest(mapping["verification_snapshot_hash"]),
+            verification_check_set_hash=_digest(mapping["verification_check_set_hash"]),
             signature=signature,
         )
 
@@ -144,6 +159,9 @@ class BrokerActionRequest:
         _identifier(self.project_id)
         if self.verification_profile is not None:
             _identifier(self.verification_profile)
+        if self.action in {"verify", "apply_verify"}:
+            if self.verification_profile != self.context.verification_profile:
+                raise BrokerError("APPROVAL_SCOPE_MISMATCH")
         if self.idempotency_key is not None:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
 
@@ -156,6 +174,8 @@ class BrokerActionResult:
     run_id: str | None = None
     error_code: str | None = None
     result_ref: str | None = None
+    application: Mapping[str, Any] | None = None
+    verification: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -169,6 +189,10 @@ class BrokerActionResult:
             result["error_code"] = self.error_code
         if self.result_ref is not None:
             result["result_ref"] = self.result_ref
+        if self.application is not None:
+            result["application"] = dict(self.application)
+        if self.verification is not None:
+            result["verification"] = dict(self.verification)
         return result
 
 
@@ -190,12 +214,12 @@ def canonical_confirmation_string(
     project_id: str,
     capability: str,
 ) -> str:
-    """Build the exact newline-delimited HMAC input frozen by ADR-0003."""
+    """Build the exact newline-delimited HMAC input for a bound confirmation."""
     if capability not in _CAPABILITIES.values():
         raise BrokerError("CAPABILITY_INVALID")
     return "\n".join(
         (
-            "v1",
+            "v2",
             context.session_id,
             context.thread_id,
             str(context.user_message_seq),
@@ -206,6 +230,10 @@ def canonical_confirmation_string(
             _digest(scope_hash),
             _identifier(project_id),
             capability,
+            context.verification_profile,
+            context.verification_profile_version,
+            context.verification_snapshot_hash,
+            context.verification_check_set_hash,
             context.issued_at,
             context.expires_at,
             context.user_event_nonce,
@@ -317,20 +345,11 @@ class ActionBroker:
             reserved = True
             idempotency_key = reservation.idempotency_key
             request = replace(request, idempotency_key=idempotency_key)
-            token = self._capability_issuer(request.action, request.change_set_id)
-            if not token or len(token) > 512:
-                raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
-            try:
-                raw = self._capability_executor(
-                    request.action,
-                    request.change_set_id,
-                    token,
-                    idempotency_key,
-                    request.verification_profile,
-                )
-            finally:
-                token = ""
-            result = self._result_from_executor(request, raw)
+            result = (
+                self._execute_apply_verify(request)
+                if request.action == "apply_verify"
+                else self._execute_one(request, request.action, idempotency_key)
+            )
             if self._confirmation_finisher is not None:
                 if not self._finish_confirmation(request, result.status, result.to_dict()):
                     return BrokerActionResult(
@@ -390,6 +409,90 @@ class ActionBroker:
             return False
         return True
 
+    def _execute_one(
+        self, request: BrokerActionRequest, action: str, idempotency_key: str
+    ) -> BrokerActionResult:
+        token = self._capability_issuer(action, request.change_set_id)
+        if not token or len(token) > 512:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        try:
+            raw = self._capability_executor(
+                action,
+                request.change_set_id,
+                token,
+                idempotency_key,
+                request.verification_profile if action == "verify" else None,
+            )
+        finally:
+            token = ""
+        return self._result_from_executor(replace(request, action=action), raw)
+
+    def _execute_apply_verify(self, request: BrokerActionRequest) -> BrokerActionResult:
+        """Apply first, then verify the same signed snapshot without hiding partial success."""
+        if request.idempotency_key is None:
+            raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+        applied = self._execute_component(request, "apply", f"{request.idempotency_key}-apply")
+        application = self._component_payload(applied)
+        if applied.status not in {"applied", "completed"}:
+            return BrokerActionResult(
+                status="apply_failed",
+                change_set_id=request.change_set_id,
+                action=request.action,
+                error_code=applied.error_code,
+                application=application,
+            )
+        # A content/profile change after Apply must never run a different
+        # check. Preserve the fact that Apply already happened instead of
+        # turning partial completion into a misleading rejection.
+        try:
+            self._check_snapshot(request)
+        except BrokerError as exc:
+            return BrokerActionResult(
+                status="verification_failed",
+                change_set_id=request.change_set_id,
+                action=request.action,
+                error_code=exc.code,
+                application=application,
+                verification={"status": "not_run", "error_code": exc.code},
+            )
+        verified = self._execute_component(request, "verify", f"{request.idempotency_key}-verify")
+        verification = self._component_payload(verified)
+        is_verified = verified.status in {"verified", "completed"}
+        return BrokerActionResult(
+            status="verified" if is_verified else "verification_failed",
+            change_set_id=request.change_set_id,
+            action=request.action,
+            error_code=None if is_verified else verified.error_code,
+            application=application,
+            verification=verification,
+        )
+
+    def _execute_component(
+        self, request: BrokerActionRequest, action: str, idempotency_key: str
+    ) -> BrokerActionResult:
+        try:
+            return self._execute_one(request, action, idempotency_key)
+        except BrokerError:
+            raise
+        except Exception:
+            return BrokerActionResult(
+                status="failed",
+                change_set_id=request.change_set_id,
+                action=action,
+                error_code="ACTION_EXECUTION_FAILED",
+            )
+
+    @staticmethod
+    def _component_payload(result: BrokerActionResult) -> dict[str, str]:
+        payload = {"status": result.status}
+        if result.run_id is not None:
+            payload["run_id"] = result.run_id
+        if result.error_code is not None:
+            payload["error_code"] = result.error_code
+        if result.result_ref is not None:
+            payload["result_ref"] = result.result_ref
+        return payload
+
     @staticmethod
     def _rejection_payload(request: BrokerActionRequest, error_code: str) -> dict[str, Any]:
         return {
@@ -412,11 +515,20 @@ class ActionBroker:
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
         if snapshot.get("trust_state") != "trusted":
             raise BrokerError("APPROVAL_SCOPE_MISMATCH")
-        if (
-            request.verification_profile is not None
-            and snapshot.get("verification_profile") != request.verification_profile
-        ):
-            raise BrokerError("APPROVAL_SCOPE_MISMATCH")
+        if request.action in {"verify", "apply_verify"}:
+            verification_expected = {
+                "verification_profile": request.context.verification_profile,
+                "verification_profile_version": request.context.verification_profile_version,
+                "verification_snapshot_hash": request.context.verification_snapshot_hash,
+                "verification_check_set_hash": request.context.verification_check_set_hash,
+            }
+            if any(snapshot.get(key) != value for key, value in verification_expected.items()):
+                raise BrokerError("APPROVAL_SCOPE_MISMATCH")
+            if (
+                request.action == "apply_verify"
+                and snapshot.get("verification_available") is not True
+            ):
+                raise BrokerError("EXECUTION_BACKEND_UNAVAILABLE")
 
     @staticmethod
     def _result_from_replay(

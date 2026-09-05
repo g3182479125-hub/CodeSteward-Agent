@@ -51,12 +51,32 @@ def test_verification_uses_complete_bounded_snapshot_and_patch_overlay(tmp_path:
     assert request.command_profile == "python-syntax"
 
 
+def test_changeset_read_exposes_server_owned_verification_binding(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    manager = ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path]))
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+
+    snapshot = manager.get(str(preview["change_set_id"]))
+
+    assert snapshot["verification_profile"] == "python-syntax"
+    assert snapshot["verification_profile_version"] == "1"
+    assert len(snapshot["verification_snapshot_hash"]) == 64
+    assert len(snapshot["verification_check_set_hash"]) == 64
+    # P6-01 binds the request but does not pretend FC has been verified.
+    assert snapshot["verification_available"] is False
+
+
 def test_execution_port_rejects_model_supplied_shell_or_non_allowlisted_command() -> None:
     request = ExecutionRequest(
         run_id="run-1",
         project_id="project-1",
         files=(ExecutionFile("main.py", b"print(1)"),),
-        command="python3 -c \"print(1)\" && whoami",
+        command='python3 -c "print(1)" && whoami',
     )
     with pytest.raises(ExecutionError, match="EXECUTION_COMMAND_FORBIDDEN"):
         FakeExecutionBackend().run(request)
