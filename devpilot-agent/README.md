@@ -24,7 +24,8 @@ Changeset 提案和状态查看。R1/R2 动作仍需受信任的本地 Action Br
 
 新 AI/开发者接手本项目时，先阅读
  [当前精简执行计划](docs/plans/CURRENT_PLAN.md) 和
- [计划修订依据](docs/adr/ADR-0005-lean-delivery-plan.md)。以下交接仅用于历史定位：
+ [计划修订依据](docs/adr/ADR-0006-nanobot-first-personal-agent.md) 和
+ [Harness 借鉴落点](docs/plans/HARNESS_ADOPTION.md)。以下交接仅用于历史定位：
 [P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
 以及最新的
 [P5 → P6 交接文档](docs/handoffs/2026-09-04-p5-p6-handoff.md)，
@@ -100,5 +101,5 @@ nanobot 不需要额外的 DevPilot 审批页面或前端补丁；只需安装 D
 ## 阶段门禁
 
 开发以仓库内 [CURRENT_PLAN](docs/plans/CURRENT_PLAN.md) 为当前入口，效力见
-[ADR-0005](docs/adr/ADR-0005-lean-delivery-plan.md)。仓库外冻结计划和旧交接保留为
+[ADR-0006](docs/adr/ADR-0006-nanobot-first-personal-agent.md)。仓库外冻结计划和旧交接保留为
 历史来源；P1 证据见 [P1 acceptance](docs/evidence/phase-1/p1-acceptance.md)。

@@ -14,7 +14,12 @@ At the beginning of every task, read:
 3. `devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`
    (mandatory review/fix workflow amendment to the frozen plan).
 4. `devpilot-agent/docs/plans/CURRENT_PLAN.md` (current product scope, design,
-   node acceptance, and module map; precedence is recorded in ADR-0005).
+   node acceptance, and module map; precedence is recorded in ADR-0006).
+
+The product is a personal agent based on nanobot, with selective Harness design
+adoption tracked in `devpilot-agent/docs/plans/HARNESS_ADOPTION.md`. For remaining
+work follow CURRENT_PLAN 3.1. Do not reopen completed P0-P5 work or recreate
+nanobot capabilities merely to demonstrate borrowing from a reference project.
 
 Do not begin implementation, editing, or test changes until the relevant Skill
 has been read. If the task is ambiguous, use the engineering skill that helps
