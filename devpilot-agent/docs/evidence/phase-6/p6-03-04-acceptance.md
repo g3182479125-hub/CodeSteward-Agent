@@ -32,6 +32,7 @@
 对应自动化覆盖包括 `test_p2b_durable_control_plane.py`、`test_p5_action_broker.py`、
 `test_p5_event_bridge.py`、WebSocket confirmation tests 和 `test_fc_sandbox_contract.py`。
 本次真实 FC 证据与 Fake 契约证据分列，Fake 不冒充云端隔离证明。
+逐场景命令、版本和脱敏供应商关联记录见 [P6 真实执行证据清单](p6-real-evidence-manifest.md)。
 
 ## P6-04 启用决定
 
