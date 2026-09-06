@@ -28,7 +28,7 @@ from .execution import (
 SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
 FC_VERIFICATION_PROFILES = frozenset(
-    {"python-syntax", "python-regression", "python-run", "node-syntax"}
+    {"python-syntax", "python-run", "node-syntax"}
 )
 
 

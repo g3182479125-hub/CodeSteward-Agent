@@ -243,6 +243,7 @@ def test_fc_backend_exposes_only_real_evidenced_profiles() -> None:
 
     assert backend.supports_profile("python-syntax")
     assert backend.supports_profile("node-syntax")
+    assert not backend.supports_profile("python-regression")
     assert not backend.supports_profile("react-static")
 
 
