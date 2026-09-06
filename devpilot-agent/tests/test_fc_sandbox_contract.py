@@ -220,6 +220,32 @@ def test_fc_provider_default_mode_omits_unsupported_network_policy(
     assert "allow_internet_access" not in events[0]
 
 
+def test_fc_config_reads_explicit_project_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
+    monkeypatch.setenv("E2B_API_URL", "https://api.example.invalid")
+    monkeypatch.setenv("E2B_DOMAIN", "cn-hangzhou.e2b.fc.aliyuncs.com")
+    monkeypatch.setenv("DEVPILOT_FC_ALLOWED_PROJECTS", "E:/fixtures/a;E:/fixtures/b")
+
+    config = FCSandboxConfig.from_environment()
+
+    assert config.allowed_project_paths == ("E:\\fixtures\\a", "E:\\fixtures\\b")
+
+
+def test_fc_backend_exposes_only_real_evidenced_profiles() -> None:
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+        )
+    )
+
+    assert backend.supports_profile("python-syntax")
+    assert backend.supports_profile("node-syntax")
+    assert not backend.supports_profile("react-static")
+
+
 def test_fc_backend_cancel_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     started = Event()
     killed = Event()
@@ -339,6 +365,11 @@ def test_fc_backend_surfaces_cleanup_failure(monkeypatch: pytest.MonkeyPatch) ->
     state = backend.get_run_state("run-1")
     assert state["status"] == "cleanup_failed"
     assert state["cleanup_error"] == "FC_CLEANUP_FAILED"
+    assert state["sandbox_id"] == "cleanup-failure-sandbox"
+    assert state["cleanup_status"] == "pending"
+    backend.cleanup("run-1")
+    backend.cleanup("run-1")
+    assert backend.get_run_state("run-1")["cleanup_status"] == "manual_pending"
 
 
 def test_fc_backend_recovery_marks_unqueryable_sandbox_unknown(

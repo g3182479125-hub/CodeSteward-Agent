@@ -90,13 +90,21 @@ def run_sandbox_check() -> int:
     print(
         json.dumps(
             {
-                "status": "ok" if result.exit_code == 0 else "failed",
+                "status": (
+                    "degraded"
+                    if result.exit_code == 0 and result.network_policy == "provider-default"
+                    else "ok"
+                    if result.exit_code == 0
+                    else "failed"
+                ),
                 "backend": result.backend,
                 "sandbox_id": result.sandbox_id,
                 "exit_code": result.exit_code,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "duration_ms": result.duration_ms,
+                "network_policy": result.network_policy,
+                "network_isolation_proven": result.network_policy == "required",
             },
             ensure_ascii=False,
         )

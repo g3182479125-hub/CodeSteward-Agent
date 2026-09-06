@@ -134,6 +134,12 @@ def test_control_plane_allows_explicitly_available_remote_backend(tmp_path: Path
         def run(self, request: object) -> object:
             return self.delegate.run(request)  # type: ignore[arg-type]
 
+        def supports_profile(self, profile: str) -> bool:
+            return profile == "python-syntax"
+
+        def project_allowed(self, _project_path: str) -> bool:
+            return True
+
     manager, project = make_manager(tmp_path, execution_backend=AvailableBackend())
     preview = manager.preview(
         project_path=project,
@@ -148,6 +154,70 @@ def test_control_plane_allows_explicitly_available_remote_backend(tmp_path: Path
     result = manager.verify(change_set_id, str(verify_approval["approval_token"]))
 
     assert result["status"] == "verified"
+
+
+def test_control_plane_remote_backend_rejects_unproven_profile(tmp_path: Path) -> None:
+    class ProfileBoundBackend:
+        name = "fc-agent-sandbox"
+        verification_available = True
+
+        def supports_profile(self, profile: str) -> bool:
+            return profile in {"python-syntax", "node-syntax"}
+
+        def project_allowed(self, _project_path: str) -> bool:
+            return True
+
+        def run(self, _request: object) -> object:
+            raise AssertionError("react-static must be rejected before provider execution")
+
+    manager, project = make_manager(tmp_path, execution_backend=ProfileBoundBackend())
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[
+            FilePatch("Form.jsx", FileOperation.CREATE, "export default function Form() {}\n")
+        ],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    with pytest.raises(PatchError, match="VERIFICATION_PROFILE_UNSUPPORTED"):
+        manager.verify(
+            change_set_id,
+            str(verify_approval["approval_token"]),
+            profile=VerificationProfile.REACT_STATIC,
+        )
+
+
+def test_control_plane_remote_backend_requires_project_allowlist(tmp_path: Path) -> None:
+    class AllowlistBackend:
+        name = "fc-agent-sandbox"
+        verification_available = True
+
+        def supports_profile(self, _profile: str) -> bool:
+            return True
+
+        def project_allowed(self, _project_path: str) -> bool:
+            return False
+
+        def run(self, _request: object) -> object:
+            raise AssertionError("non-allowlisted project must not reach provider")
+
+    manager, project = make_manager(tmp_path, execution_backend=AllowlistBackend())
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    with pytest.raises(PatchError, match="EXECUTION_PROJECT_NOT_ALLOWLISTED"):
+        manager.verify(change_set_id, str(verify_approval["approval_token"]))
 
 
 def test_python_run_rejects_multiple_python_files(tmp_path: Path) -> None:

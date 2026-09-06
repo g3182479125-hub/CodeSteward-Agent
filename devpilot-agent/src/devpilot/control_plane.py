@@ -381,9 +381,9 @@ class ControlPlaneManager:
     def _verification_binding(
         self, entry: _PendingChangeSet, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        profile_name = "python-syntax"
+        profile_name = self._bound_profile_name(entry, payload)
         check_ids = payload.get("check_ids")
-        if isinstance(check_ids, list):
+        if profile_name == "python-syntax" and isinstance(check_ids, list):
             for candidate in check_ids:
                 if isinstance(candidate, str):
                     try:
@@ -391,25 +391,65 @@ class ControlPlaneManager:
                     except ValueError:
                         continue
                     break
-        for key in ("bug_fix_contract", "test_repair_contract"):
-            contract = payload.get(key)
-            if isinstance(contract, dict) and isinstance(contract.get("verification_profile"), str):
-                profile_name = str(contract["verification_profile"])
-                break
         profile = VerificationProfile(profile_name)
         binding = verification_binding(entry.plan, profile)
         backend = self.execution_backend
+        supports_profile = bool(
+            backend is not None
+            and (
+                type(backend) is FakeExecutionBackend
+                or (
+                    callable(getattr(backend, "supports_profile", None))
+                    and bool(backend.supports_profile(profile.value))  # type: ignore[attr-defined]
+                )
+            )
+        )
         return {
             **binding,
             "verification_available": bool(
-                backend is not None and getattr(backend, "verification_available", False)
+                backend is not None
+                and getattr(backend, "verification_available", False)
+                and supports_profile
             ),
         }
+
+    def _bound_profile_name(self, entry: _PendingChangeSet, payload: dict[str, Any]) -> str:
+        """Resolve a workflow's server-owned profile, never a model-supplied one."""
+
+        for key in ("bug_fix_contract", "test_repair_contract"):
+            contract = payload.get(key)
+            if isinstance(contract, dict) and isinstance(contract.get("verification_profile"), str):
+                return str(contract["verification_profile"])
+        if self.store is not None and entry.run_id is not None:
+            for event in reversed(self.store.list_run_events(entry.run_id)):
+                if event["event_type"] in {
+                    "feature_delivery.proposed",
+                    "bug_fix.proposed",
+                    "test_repair.proposed",
+                }:
+                    candidate = event["payload"].get("verification_profile")
+                    if isinstance(candidate, str):
+                        return candidate
+        return "python-syntax"
 
     def get_run_id(self, change_set_id: str) -> str | None:
         """Return the server-owned run link without changing the Preview contract."""
         with self._mutex:
             return self._require(change_set_id).run_id
+
+    def cleanup_verification(self, change_set_id: str) -> dict[str, Any]:
+        """Retry cleanup of a known FC run without creating or re-running it."""
+
+        with self._mutex:
+            entry = self._require(change_set_id)
+            backend = self.execution_backend
+            run_id = entry.run_id
+            cleanup = getattr(backend, "cleanup", None) if backend is not None else None
+            if run_id is None or not callable(cleanup):
+                raise PatchError("FC_CLEANUP_UNAVAILABLE", "verification cleanup is unavailable")
+            state = cleanup(run_id)
+            self._event(entry, "execution.cleanup_retried", state)
+            return {"change_set_id": change_set_id, "run_id": run_id, "cleanup": state}
 
     def deny_execution(self, change_set_id: str, code: str) -> None:
         """Persist a server-side execution denial without consuming approval."""
@@ -664,10 +704,35 @@ class ControlPlaneManager:
                     "EXECUTION_BACKEND_UNAVAILABLE",
                     "configured execution backend is not available for verification",
                 )
+            supports_profile = getattr(self.execution_backend, "supports_profile", None)
+            if (
+                type(self.execution_backend) is not FakeExecutionBackend
+                and (not callable(supports_profile) or not supports_profile(profile.value))
+            ):
+                raise PatchError(
+                    "VERIFICATION_PROFILE_UNSUPPORTED",
+                    "configured execution backend does not support this verification profile",
+                )
+            project_allowed = getattr(self.execution_backend, "project_allowed", None)
+            if (
+                type(self.execution_backend) is not FakeExecutionBackend
+                and callable(project_allowed)
+                and not project_allowed(str(entry.plan.project_path))
+            ):
+                raise PatchError(
+                    "EXECUTION_PROJECT_NOT_ALLOWLISTED",
+                    "project is not explicitly allowlisted for remote verification",
+                )
             if entry.plan.change_set.status is not ChangeSetStatus.APPLIED:
                 raise PatchError(
                     "CHANGESET_NOT_VERIFIABLE",
                     "ChangeSet must be applied before verification",
+                )
+            bound_profile = self._bound_profile_name(entry, plan_payload(entry))
+            if bound_profile != profile.value and bound_profile != "python-syntax":
+                raise PatchError(
+                    "VERIFICATION_PROFILE_MISMATCH",
+                    "verification profile does not match the server-owned ChangeSet profile",
                 )
             try:
                 request = build_verification_request(entry.plan, profile)
@@ -701,7 +766,11 @@ class ControlPlaneManager:
                     self._abort(idempotency_key)
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFICATION_FAILED)
                 self._persist_status(entry, failure_reason=exc.code)
-                self._event(entry, "changeset.verification_failed", {"code": exc.code})
+                self._event(
+                    entry,
+                    "changeset.verification_failed",
+                    {"code": exc.code, **getattr(exc, "details", {})},
+                )
                 if finalize_run:
                     self._finish_run(entry, "failed", {"code": exc.code})
                 raise PatchError("VERIFICATION_FAILED", "sandbox verification failed") from exc
@@ -1803,6 +1872,11 @@ def create_app(
             profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
             idempotency_key=idempotency_key,
         )
+
+    @app.post("/api/v1/change-sets/{change_set_id}/verification-cleanup")
+    @app.post("/v1/change-sets/{change_set_id}/verification-cleanup")
+    def verification_cleanup(request: Request, change_set_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.cleanup_verification(change_set_id))
 
     @app.post("/api/v1/change-sets/{change_set_id}/rollback")
     @app.post("/v1/change-sets/{change_set_id}/rollback")

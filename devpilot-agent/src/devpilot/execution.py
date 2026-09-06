@@ -22,9 +22,12 @@ MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
 class ExecutionError(RuntimeError):
     """Safe, stable error raised by an execution backend."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, *, details: Mapping[str, object] | None = None
+    ) -> None:
         self.code = code
         self.message = message
+        self.details = dict(details or {})
         super().__init__(f"{code}: {message}")
 
 

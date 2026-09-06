@@ -66,9 +66,12 @@ applied:
 Each request uses a complete but bounded UTF-8 project snapshot and a server-controlled command.
 The adapter excludes dependency/build/cache directories and secret-like files, creates one
 short-lived Sandbox, returns bounded stdout/stderr/exit code, and always calls `kill()` in cleanup.
-Network access remains disabled. It does not mount the local project or write results back to the
-local project. In the nanobot UI, the user confirms “执行” in chat; DevPilot internally issues
-the verification grant and no separate approval page is needed.
+In strict mode the request includes the deny-network policy; in `provider-default` mode the FC
+endpoint receives no network-policy parameter, so provider network behavior is unknown and
+isolation is not proven. Remote verification also requires an explicit
+`DEVPILOT_FC_ALLOWED_PROJECTS` path allowlist. It does not mount the local project or write
+results back to the local project. In the nanobot UI, the user confirms “执行” in chat; DevPilot
+internally issues the verification grant and no separate approval page is needed.
 
 FC Agent Sandbox currently uses the E2B-compatible SDK path. Region, API URL, domain and
 resource region must match, and the official compatibility list marks Snapshots, Volume,

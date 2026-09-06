@@ -57,24 +57,17 @@ def test_nanobot_confirmation_prefers_current_request_over_transport_fallback() 
         reset_request_context(token)
 
 
-def test_nanobot_confirmation_uses_current_inbound_envelope_when_request_context_is_empty() -> None:
+def test_nanobot_confirmation_does_not_reuse_stale_inbound_envelope() -> None:
     from nanobot.agent.tools.context import (
         RequestContext,
         bind_request_context,
         reset_request_context,
     )
-    from nanobot.bus.events import set_current_inbound_attributes
 
     from devpilot.nanobot_tools import _trusted_confirmation_attributes
-
-    set_current_inbound_attributes(
-        {
-            "devpilot_confirmation": {"confirmation_id": "current"},
-        }
-    )
     token = bind_request_context(RequestContext(channel="websocket", chat_id="chat", attributes={}))
     try:
-        assert _trusted_confirmation_attributes() == {"confirmation_id": "current"}
+        assert _trusted_confirmation_attributes() is None
     finally:
         reset_request_context(token)
 

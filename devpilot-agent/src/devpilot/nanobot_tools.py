@@ -173,12 +173,9 @@ def _trusted_confirmation_attributes() -> dict[str, Any] | None:
     """Read the WebUI-only confirmation envelope; it is never model input."""
     try:
         from nanobot.agent.tools.context import current_request_context
-        from nanobot.bus.events import current_inbound_attributes
 
         context = current_request_context()
         value = context.attributes.get("devpilot_confirmation") if context is not None else None
-        if not isinstance(value, dict):
-            value = current_inbound_attributes().get("devpilot_confirmation")
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None

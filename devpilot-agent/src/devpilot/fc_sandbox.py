@@ -26,6 +26,10 @@ from .execution import (
 )
 
 SANDBOX_ROOT = "/workspace/devpilot"
+MAX_CLEANUP_ATTEMPTS = 3
+FC_VERIFICATION_PROFILES = frozenset(
+    {"python-syntax", "python-regression", "python-run", "node-syntax"}
+)
 
 
 def _provider_error(stage: str, exc: Exception) -> ExecutionError:
@@ -63,6 +67,7 @@ class FCSandboxConfig:
     max_timeout_seconds: int = 900
     region: str = ""
     network_policy_mode: str = "required"
+    allowed_project_paths: tuple[str, ...] = ()
 
     @classmethod
     def from_environment(cls) -> FCSandboxConfig:
@@ -89,6 +94,11 @@ class FCSandboxConfig:
                 "DEVPILOT_FC_NETWORK_POLICY_MODE must be required or provider-default",
             )
         domain = required("E2B_DOMAIN")
+        allowed_project_paths = tuple(
+            str(os.path.abspath(item.strip()))
+            for item in os.environ.get("DEVPILOT_FC_ALLOWED_PROJECTS", "").split(os.pathsep)
+            if item.strip()
+        )
         return cls(
             api_key=required("E2B_API_KEY"),
             api_url=required("E2B_API_URL"),
@@ -99,6 +109,7 @@ class FCSandboxConfig:
             max_timeout_seconds=max_timeout_seconds,
             region=os.environ.get("DEVPILOT_FC_REGION", domain.split(".", 1)[0]).strip(),
             network_policy_mode=network_policy_mode,
+            allowed_project_paths=allowed_project_paths,
         )
 
 
@@ -128,6 +139,7 @@ class _FCSandboxRun:
     cleanup_error: str | None = None
     cancel_requested: bool = False
     cleanup_done: bool = False
+    cleanup_attempts: int = 0
 
 
 class FCSandboxBackend:
@@ -151,6 +163,24 @@ class FCSandboxBackend:
 
         return self.config.network_policy_mode == "provider-default"
 
+    @property
+    def supported_profiles(self) -> frozenset[str]:
+        """Profiles with real FC evidence; React static remains Fake-only."""
+
+        return FC_VERIFICATION_PROFILES
+
+    def supports_profile(self, profile: str) -> bool:
+        return profile in self.supported_profiles
+
+    def project_allowed(self, project_path: str) -> bool:
+        """Require an explicit operator allowlist before sending a snapshot to FC."""
+
+        try:
+            resolved = os.path.abspath(project_path)
+        except (TypeError, ValueError):
+            return False
+        return resolved in self.config.allowed_project_paths
+
     def _reserve_run(self, run_id: str) -> _FCSandboxRun:
         with self._lock:
             if run_id in self._runs:
@@ -166,6 +196,14 @@ class FCSandboxBackend:
             "status": state.status,
             "error_code": state.error_code,
             "cleanup_error": state.cleanup_error,
+            "cleanup_attempts": state.cleanup_attempts,
+            "cleanup_status": (
+                "cleaned"
+                if state.cleanup_done
+                else "manual_pending"
+                if state.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS
+                else "pending"
+            ),
             "network_policy": self.config.network_policy_mode,
         }
         if state.result is not None:
@@ -196,6 +234,8 @@ class FCSandboxBackend:
                     "status": "unknown",
                     "error_code": "FC_RUN_NOT_TRACKED",
                     "cleanup_error": None,
+                    "cleanup_attempts": 0,
+                    "cleanup_status": "unknown",
                     "network_policy": self.config.network_policy_mode,
                 }
             return self._state_payload(state)
@@ -212,12 +252,16 @@ class FCSandboxBackend:
             state = self._runs.get(run_id)
             if state is None:
                 return self.get_run_state(run_id)
-            if state.status not in {"starting", "running"}:
+            if state.status not in {"starting", "running"} and not state.cleanup_error:
                 return self._state_payload(state)
             state.cancel_requested = True
             handle = state.handle
         if handle is None:
             return self.get_run_state(run_id)
+        with self._lock:
+            if state.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
+                return self._state_payload(state)
+            state.cleanup_attempts += 1
         try:
             handle.kill()
         except Exception as exc:
@@ -226,6 +270,7 @@ class FCSandboxBackend:
             return self.get_run_state(run_id)
         with self._lock:
             state.cleanup_done = True
+            state.cleanup_error = None
         return self.get_run_state(run_id)
 
     def cleanup(self, run_id: str) -> dict[str, Any]:
@@ -375,20 +420,37 @@ class FCSandboxBackend:
                 cleanup_done = state.cleanup_done
             if sandbox is not None and not cleanup_done:
                 try:
+                    with self._lock:
+                        state.cleanup_attempts += 1
                     sandbox.kill()
                     with self._lock:
                         state.cleanup_done = True
+                        state.cleanup_error = None
                 except Exception as exc:
                     cleanup_error = _provider_error("cleanup", exc)
                     with self._lock:
                         state.cleanup_error = cleanup_error.code
+                        cleanup_error.details.update(
+                            {
+                                "sandbox_id": state.sandbox_id,
+                                "cleanup_status": (
+                                    "manual_pending"
+                                    if state.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS
+                                    else "pending"
+                                ),
+                                "cleanup_error": cleanup_error.code,
+                            }
+                        )
+                        if primary_error is not None:
+                            primary_error.details.update(cleanup_error.details)
                         if primary_error is None:
                             state.status = "cleanup_failed"
                             state.error_code = cleanup_error.code
                     if primary_error is None:
                         raise cleanup_error from exc
             with self._lock:
-                state.handle = None
+                if state.cleanup_done:
+                    state.handle = None
 
 
 def build_fc_backend_from_environment() -> ExecutionBackend:
