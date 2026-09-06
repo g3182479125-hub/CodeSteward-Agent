@@ -1,7 +1,8 @@
 # P6 真实执行证据清单
 
-本清单绑定候选提交 `dc54f3fcb0c8a06cf167affdae9ab5b602361b98`，记录真实杭州 FC
-与本地集成测试的可审计边界。API Key、SQLite、项目源码和原始日志不进入仓库。
+本清单绑定代码候选提交 `1161722eb369799c44ac8befc30f708806dc5343`；本文件随后由
+证据文档提交带入仓库。代码提交与证据提交分开记录，避免文档自引用 SHA。它记录真实
+杭州 FC 与本地集成测试的可审计边界。API Key、SQLite、项目源码和原始日志不进入仓库。
 
 ## 固定配置
 
@@ -22,7 +23,7 @@
 
 | 场景 | profile/命令 | 结果 | sandbox 关联 |
 |---|---|---|---|
-| CLI lifecycle | 固定 `python3 /workspace/devpilot/sandbox_check.py` | `exit_code=0`，`status=degraded`，清理完成 | `sbx-f4e0a873-f0bc-4139-b4f6-d0265dcff25f` |
+| CLI lifecycle | 固定 `python3 /workspace/devpilot/sandbox_check.py` | `exit_code=0`，`status=degraded`，清理完成 | `sbx-dc40e18d-87b0-4c57-9847-2621053c04ef` |
 | Node syntax | `node --check /workspace/devpilot/main.js` | `exit_code=0`，`network_policy=provider-default`，清理完成 | `sbx-246efbbd-dae8-4559-9eb4-ebc3e2f9a104` |
 | Python syntax failure | `python-syntax` 非敏感语法错误 fixture | `exit_code=1`，stderr 保留，失败与成功分离 | 见 `p6-02-fc-hangzhou-diagnosis.md` 现场记录 |
 | timeout | `python-run` 无限循环 fixture | `FC_TIMEOUT`，运行失败并清理 | 见同上 |
