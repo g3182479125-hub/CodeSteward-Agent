@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -110,19 +111,50 @@ def test_fc_backend_uses_short_lived_sandbox_lifecycle(monkeypatch: pytest.Monke
         "e2b_code_interpreter",
         SimpleNamespace(Sandbox=FakeSandboxFactory),
     )
-    result = FCSandboxBackend(
+    backend = FCSandboxBackend(
         FCSandboxConfig(
             api_key="test-key",
             api_url="https://api.example.invalid",
             domain="example.invalid",
         )
-    ).run(valid_request())
+    )
+    result = backend.run(valid_request())
 
     assert result.sandbox_id == "fc-test-sandbox"
     assert result.stdout == "ok"
     assert events[0][0] == "create"
     assert ("write", "/workspace/devpilot/src/main.py", b"print('ok')") in events
     assert events[-1] == "kill"
+    assert backend.get_run_state("run-1")["status"] == "completed"
+
+
+def test_fc_backend_rejects_duplicate_run_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSandboxFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> object:
+            return SimpleNamespace(
+                sandbox_id="duplicate-sandbox",
+                files=SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None),
+                commands=SimpleNamespace(
+                    run=lambda _command, timeout: SimpleNamespace(
+                        exit_code=0, stdout="ok", stderr=""
+                    )
+                ),
+                kill=lambda: None,
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=FakeSandboxFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    backend.run(valid_request())
+    with pytest.raises(ExecutionError, match="FC_RUN_DUPLICATE"):
+        backend.run(valid_request())
 
 
 def test_fc_backend_rejects_network_before_provider_call() -> None:
@@ -135,3 +167,224 @@ def test_fc_backend_rejects_network_before_provider_call() -> None:
     )
     with pytest.raises(ExecutionError, match="FC_NETWORK_DENIED"):
         backend.run(valid_request(network_allowed=True))
+
+
+def test_fc_provider_default_mode_omits_unsupported_network_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict[str, object]] = []
+
+    class FakeFiles:
+        def make_dir(self, path: str) -> None:
+            return None
+
+        def write(self, path: str, content: bytes) -> None:
+            return None
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int) -> SimpleNamespace:
+            return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "degraded-sandbox"
+        files = FakeFiles()
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            return None
+
+    class ProviderDefaultFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> FakeSandbox:
+            events.append(kwargs)
+            return FakeSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=ProviderDefaultFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+        )
+    )
+
+    result = backend.run(valid_request())
+
+    assert backend.verification_available is True
+    assert result.exit_code == 0
+    assert "allow_internet_access" not in events[0]
+
+
+def test_fc_backend_cancel_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = Event()
+    killed = Event()
+    outcome: list[ExecutionError] = []
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int) -> SimpleNamespace:
+            started.set()
+            killed.wait(2)
+            return SimpleNamespace(exit_code=0, stdout="late", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "cancel-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            killed.set()
+
+    class CancelFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=CancelFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    def execute() -> None:
+        try:
+            backend.run(valid_request())
+        except ExecutionError as exc:
+            outcome.append(exc)
+
+    thread = Thread(target=execute, daemon=True)
+    thread.start()
+    assert started.wait(1)
+    backend.cancel("run-1")
+    backend.cancel("run-1")
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert outcome and outcome[0].code == "FC_CANCELLED"
+    assert backend.get_run_state("run-1")["status"] == "cancelled"
+
+
+def test_fc_backend_preserves_sdk_nonzero_exit_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NonZeroCommandError(Exception):
+        exit_code = 2
+        stdout = ""
+        stderr = "syntax error"
+
+    class NonZeroSandbox:
+        sandbox_id = "nonzero-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = SimpleNamespace(
+            run=lambda _command, timeout: (_ for _ in ()).throw(NonZeroCommandError())
+        )
+
+        def kill(self) -> None:
+            return None
+
+    class NonZeroFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> NonZeroSandbox:
+            return NonZeroSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=NonZeroFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    result = backend.run(valid_request())
+
+    assert result.exit_code == 2
+    assert result.stderr == "syntax error"
+    assert backend.get_run_state("run-1")["status"] == "failed"
+
+
+def test_fc_backend_surfaces_cleanup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CleanupFailureSandbox:
+        sandbox_id = "cleanup-failure-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = SimpleNamespace(
+            run=lambda _command, timeout: SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+        )
+
+        def kill(self) -> None:
+            raise RuntimeError("cleanup unavailable")
+
+    class CleanupFailureFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> CleanupFailureSandbox:
+            return CleanupFailureSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=CleanupFailureFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    with pytest.raises(ExecutionError, match="FC_CLEANUP_FAILED"):
+        backend.run(valid_request())
+
+    state = backend.get_run_state("run-1")
+    assert state["status"] == "cleanup_failed"
+    assert state["cleanup_error"] == "FC_CLEANUP_FAILED"
+
+
+def test_fc_backend_recovery_marks_unqueryable_sandbox_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecoveryFactory:
+        @classmethod
+        def connect(cls, sandbox_id: str, **kwargs: object) -> object:
+            raise RuntimeError("provider query failed")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=RecoveryFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    state = backend.recover("run-after-restart", "remote-sandbox")
+
+    assert state["status"] == "unknown"
+    assert state["sandbox_id"] == "remote-sandbox"
+    assert state["error_code"] == "FC_RECOVERY_UNKNOWN"
+
+
+def test_fc_backend_classifies_unsupported_provider_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnsupportedSandboxFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> object:
+            raise RuntimeError("400: Feature 'SessionNetworkPolicy' is not supported")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=UnsupportedSandboxFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+        )
+    )
+
+    with pytest.raises(ExecutionError, match="FC_CAPABILITY_UNSUPPORTED"):
+        backend.run(valid_request())

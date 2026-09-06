@@ -12,7 +12,7 @@ import re
 import secrets
 import ssl
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -520,18 +520,38 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_pending_proposals[chat_id] = values
         return True
 
-    @staticmethod
-    def _resolve_devpilot_tuple(confirmation: object) -> dict[str, str] | None:
-        """Resolve a client reference against the current loopback ChangeSet."""
-        if not isinstance(confirmation, dict):
+    def register_private_outbound_metadata(
+        self, chat_id: str, metadata: Mapping[str, Any]
+    ) -> None:
+        """Consume internal metadata from a streamed completion without sending it."""
+        self._register_devpilot_proposal(chat_id, metadata.get("_devpilot_proposal"))
+
+    def _resolve_devpilot_tuple(
+        self, chat_id: str, confirmation: object
+    ) -> dict[str, str] | None:
+        """Resolve the server-registered proposal against the current ChangeSet.
+
+        A WebUI confirmation is an exact user intent (for example ``执行``), not
+        a request for the browser to replay internal hashes.  The gateway owns
+        the proposal tuple it delivered to that chat and revalidates it against
+        the loopback control plane immediately before it signs the action.
+        Older clients may still send the same tuple; any mismatch fails closed.
+        """
+        pending = self._devpilot_pending_proposals.get(chat_id)
+        if pending is None:
             return None
         required = {"change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id"}
-        if set(confirmation) != required or any(
-            not isinstance(confirmation.get(key), str) or not confirmation[key]
-            for key in required
-        ):
-            return None
-        values = {key: str(confirmation[key]) for key in required}
+        if confirmation is None or confirmation == {}:
+            values = dict(pending)
+        else:
+            if not isinstance(confirmation, dict) or set(confirmation) != required or any(
+                not isinstance(confirmation.get(key), str) or not confirmation[key]
+                for key in required
+            ):
+                return None
+            values = {key: str(confirmation[key]) for key in required}
+            if values != pending:
+                return None
         base = os.environ.get("DEVPILOT_CONTROL_PLANE_URL", "http://127.0.0.1:18800").rstrip("/")
         parsed = urlsplit(base)
         if (
@@ -1197,6 +1217,7 @@ class WebSocketChannel(BaseChannel):
             resolved_confirmation = (
                 await asyncio.to_thread(
                     self._resolve_devpilot_tuple,
+                    cid,
                     envelope.get("devpilot_confirmation"),
                 )
                 if trusted_webui

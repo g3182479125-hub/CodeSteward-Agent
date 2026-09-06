@@ -1102,6 +1102,7 @@ class AgentLoop:
                 ),
                 goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
                 goal_continue_message=_goal_continue,
+                request_context=request_ctx,
                 finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
                     pending_queue_available=pending_queue is not None and session is not None,
                     session_metadata=session_metadata,
@@ -1960,6 +1961,13 @@ class AgentLoop:
         )
         if ctx.outbound is not None and ctx.request_context is not None:
             proposal = ctx.request_context.attributes.get("devpilot_proposal")
+            if not isinstance(proposal, dict):
+                try:
+                    from devpilot.nanobot_tools import take_current_turn_proposal
+
+                    proposal = take_current_turn_proposal()
+                except ImportError:
+                    proposal = None
             if isinstance(proposal, dict):
                 ctx.outbound.metadata["_devpilot_proposal"] = dict(proposal)
         if ctx.ephemeral and ctx.outbound is not None:

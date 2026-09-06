@@ -1,5 +1,8 @@
 """nanobot entry-point adapters for DevPilot analysis and chat-confirmed execution."""
 
+# Optional nanobot imports intentionally precede DevPilot's local imports.
+# ruff: noqa: E402
+
 # The package remains importable in DevPilot's own test environment.  When loaded
 # by nanobot, the real Tool base class and schema decorator are used.
 # pyright: reportMissingImports=false, reportMissingTypeStubs=false, reportAssignmentType=false
@@ -15,12 +18,18 @@ import os
 import re
 import uuid
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+_CURRENT_TURN_PROPOSAL: ContextVar[dict[str, str] | None] = ContextVar(
+    "devpilot_current_turn_proposal",
+    default=None,
+)
 
 try:
     from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
@@ -120,6 +129,21 @@ _PATCH_ITEM_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+
+def _normalize_patch_hashes(patches: list[Any]) -> list[Any]:
+    """Normalize valid SHA-256 preconditions without mutating model input."""
+    normalized: list[Any] = []
+    for patch in patches:
+        if not isinstance(patch, dict):
+            normalized.append(patch)
+            continue
+        copied = dict(patch)
+        expected = copied.get("expected_sha256")
+        if isinstance(expected, str) and re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+            copied["expected_sha256"] = expected.lower()
+        normalized.append(copied)
+    return normalized
+
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{12,}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
@@ -152,16 +176,19 @@ def _trusted_confirmation_attributes() -> dict[str, Any] | None:
         from nanobot.bus.events import current_inbound_attributes
 
         context = current_request_context()
-        if context is not None:
-            value = context.attributes.get("devpilot_confirmation")
-        else:
+        value = context.attributes.get("devpilot_confirmation") if context is not None else None
+        if not isinstance(value, dict):
             value = current_inbound_attributes().get("devpilot_confirmation")
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None
 
 
-def _record_current_turn_proposal(result: Mapping[str, Any]) -> None:
+def _record_current_turn_proposal(
+    result: Mapping[str, Any],
+    *,
+    request_context: Any | None = None,
+) -> None:
     """Expose a safe proposal reference to the WebSocket delivery seam only."""
     try:
         from nanobot.agent.tools.context import current_request_context
@@ -175,8 +202,18 @@ def _record_current_turn_proposal(result: Mapping[str, Any]) -> None:
         context = current_request_context()
         if context is not None:
             context.attributes["devpilot_proposal"] = dict(values)
+        if request_context is not None:
+            request_context.attributes["devpilot_proposal"] = dict(values)
+        _CURRENT_TURN_PROPOSAL.set(cast(dict[str, str], values))
     except (ImportError, TypeError, ValueError):
         return
+
+
+def take_current_turn_proposal() -> dict[str, str] | None:
+    """Consume the proposal created in this task when the request context was replaced."""
+    proposal = _CURRENT_TURN_PROPOSAL.get()
+    _CURRENT_TURN_PROPOSAL.set(None)
+    return dict(proposal) if proposal is not None else None
 
 
 def _configured_roots(workspace: Path) -> AllowedRoots:
@@ -1082,6 +1119,10 @@ class WatchRunTool(Tool):
             "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "verification_profile": {
                 "type": ["string", "null"],
+                "description": (
+                    "Optional hint only. For verify/apply_verify the ChangeSet's server-bound "
+                    "profile is authoritative; omit this field."
+                ),
                 "enum": [
                     "python-syntax", "python-regression", "python-run", "node-syntax",
                     "react-static", None,
@@ -1179,11 +1220,6 @@ class ConfirmedActionTool(Tool):
                 result = _get_control_plane(_safe_resource_path(change_set_id, "change-sets"))
                 security = _get_control_plane(f"/v1/projects/{kwargs['project_id']}/security")
                 profile = _snapshot_verification_profile(result)
-                if (
-                    request_action in {"verify", "apply_verify"}
-                    and kwargs.get("verification_profile") != profile
-                ):
-                    raise ValueError("verification profile is not bound to the ChangeSet")
                 return {
                     **result,
                     "trust_state": security.get("trust_state"),
@@ -1259,6 +1295,12 @@ class ConfirmedActionTool(Tool):
                 confirmation_consumer=consume,
                 confirmation_finisher=finish,
             )
+            bound_profile: str | None = None
+            if request_action in {"verify", "apply_verify"}:
+                bound_snapshot = _get_control_plane(
+                    _safe_resource_path(str(kwargs["change_set_id"]), "change-sets")
+                )
+                bound_profile = _snapshot_verification_profile(bound_snapshot)
             result = broker.execute(
                 BrokerActionRequest(
                     context=context,
@@ -1268,11 +1310,7 @@ class ConfirmedActionTool(Tool):
                     patch_hash=str(kwargs["patch_hash"]),
                     scope_hash=str(kwargs["scope_hash"]),
                     project_id=str(kwargs["project_id"]),
-                    verification_profile=(
-                        str(kwargs["verification_profile"])
-                        if kwargs.get("verification_profile") is not None
-                        else None
-                    ),
+                    verification_profile=bound_profile,
                 )
             )
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
@@ -1310,6 +1348,11 @@ class ProposeChangeSetTool(Tool):
 
     def __init__(self, workspace: Path | None = None) -> None:
         self.workspace = workspace or Path.cwd()
+        self._request_context: Any | None = None
+
+    def set_context(self, context: Any) -> None:
+        """Keep the registry's authoritative request object for this one call."""
+        self._request_context = context
 
     @classmethod
     def create(cls, ctx: ToolContext) -> ProposeChangeSetTool:
@@ -1348,21 +1391,31 @@ class ProposeChangeSetTool(Tool):
     def read_only(self) -> bool:
         return True
 
+    @property
+    def exclusive(self) -> bool:
+        """Proposal delivery mutates only the current request's private metadata."""
+        return True
+
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        request_context = self._request_context
         try:
             project_path = str(kwargs["project_path"])
             patches = kwargs["patches"]
             if not isinstance(patches, list):
                 raise TypeError("patches must be a list")
-            payload: dict[str, Any] = {"project_path": project_path, "patches": patches}
+            payload: dict[str, Any] = {
+                "project_path": project_path,
+                "patches": _normalize_patch_hashes(patches),
+            }
             if kwargs.get("project_id") is not None:
                 payload["project_id"] = str(kwargs["project_id"])
             result = _post_preview(payload)
-            _record_current_turn_proposal(result)
+            _record_current_turn_proposal(result, request_context=request_context)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "在 nanobot 对话中展示这份 Diff，并停止等待用户决定；"
-                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，使用这份完整 tuple 调用 "
+                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，"
+                "使用这份完整 tuple 调用 "
                 "devpilot_confirmed_action；不要调用旧审批工具，也不要请求或传播 token。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1370,6 +1423,8 @@ class ProposeChangeSetTool(Tool):
             return ToolResult.error(f"P2B proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P2B proposal rejected: {type(exc).__name__}")
+        finally:
+            self._request_context = None
 
 
 @tool_parameters(
@@ -1515,7 +1570,8 @@ class BugFixProposeTool(Tool):
             _record_current_turn_proposal(result)
             result["next_step"] = (
                 "展示失败证据、精确 Diff 和 stop conditions，并停止等待用户；"
-                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，使用这份完整 tuple 调用 "
+                "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，"
+                "使用这份完整 tuple 调用 "
                 "devpilot_confirmed_action，不要调用旧审批工具。"
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)

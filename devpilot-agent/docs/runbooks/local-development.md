@@ -36,6 +36,17 @@ $env:E2B_DOMAIN = "<region>.e2b.fc.aliyuncs.com"
 $env:DEVPILOT_FC_TEMPLATE = "code-interpreter-v1"
 ```
 
+The strict default sends a network-deny policy. Alibaba FC endpoints may reject that
+optional E2B capability. If you deliberately accept the provider's default network
+policy for local development, set the following before starting the control plane:
+
+```powershell
+$env:DEVPILOT_FC_NETWORK_POLICY_MODE = "provider-default"
+```
+
+This mode is reported as degraded and does not claim network isolation; do not use it
+for untrusted code or sensitive snapshots.
+
 Run the harmless connectivity/lifecycle check below. It creates a temporary Sandbox,
 writes one non-secret fixture file, runs a fixed `python3` print command, and destroys
 the Sandbox. It does not access any local project:

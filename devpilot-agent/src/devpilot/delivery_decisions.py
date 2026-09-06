@@ -29,6 +29,7 @@ _SAFE_VERIFICATION_KEYS = (
     "bundle_bytes",
     "region",
     "template",
+    "network_policy",
     "exit_code",
     "duration_ms",
 )

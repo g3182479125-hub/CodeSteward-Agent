@@ -64,6 +64,7 @@ class ExecutionResult:
     bundle_bytes: int = 0
     region: str = ""
     template: str = ""
+    network_policy: str = ""
 
 
 class ExecutionBackend(Protocol):

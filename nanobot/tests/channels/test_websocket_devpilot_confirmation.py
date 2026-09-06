@@ -75,6 +75,39 @@ def test_gateway_binds_complete_changeset_tuple_without_exporting_key() -> None:
     )
 
 
+def test_gateway_uses_its_server_registered_proposal_when_browser_sends_no_tuple() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
+    channel._devpilot_session_id = "instance"
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+    resolved = {
+        **tuple_value,
+        "verification_profile": "python-regression",
+        "verification_profile_version": "1",
+        "verification_snapshot_hash": "d" * 64,
+        "verification_check_set_hash": "e" * 64,
+    }
+    assert channel._register_devpilot_proposal("chat", tuple_value)
+
+    attrs = channel._devpilot_confirmation_attributes(
+        "trusted", "chat", "执行", "turn-1", resolved
+    )
+
+    assert attrs["devpilot_confirmation"]["action"] == "apply_verify"
+
+
 def test_gateway_binds_a_changeset_to_one_server_owned_thread() -> None:
     channel = object.__new__(WebSocketChannel)
     channel._webui_connections = {"trusted"}
@@ -146,7 +179,9 @@ def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
     assert channel._devpilot_confirmation_attributes("attacker", "chat", "执行", None, {}) == {}
 
 
-def test_gateway_resolves_confirmation_against_current_control_plane(monkeypatch) -> None:
+def test_gateway_resolves_server_registered_confirmation_against_current_control_plane(
+    monkeypatch,
+) -> None:
     tuple_value = {
         "change_set_id": "cs-1",
         "plan_hash": "a" * 64,
@@ -180,7 +215,16 @@ def test_gateway_resolves_confirmation_against_current_control_plane(monkeypatch
         "nanobot.channels.websocket.runtime.urlopen",
         lambda _request, timeout: _Response(),
     )
-    assert WebSocketChannel._resolve_devpilot_tuple(tuple_value) == {
+    channel = object.__new__(WebSocketChannel)
+    channel._devpilot_pending_proposals = {"chat": tuple_value}
+    assert channel._resolve_devpilot_tuple("chat", None) == {
+        **tuple_value,
+        "verification_profile": "python-syntax",
+        "verification_profile_version": "1",
+        "verification_snapshot_hash": "e" * 64,
+        "verification_check_set_hash": "f" * 64,
+    }
+    assert channel._resolve_devpilot_tuple("chat", {}) == {
         **tuple_value,
         "verification_profile": "python-syntax",
         "verification_profile_version": "1",
@@ -189,4 +233,5 @@ def test_gateway_resolves_confirmation_against_current_control_plane(monkeypatch
     }
 
     mismatch = {**tuple_value, "patch_hash": "d" * 64}
-    assert WebSocketChannel._resolve_devpilot_tuple(mismatch) is None
+    assert channel._resolve_devpilot_tuple("chat", mismatch) is None
+    assert channel._resolve_devpilot_tuple("other-chat", None) is None

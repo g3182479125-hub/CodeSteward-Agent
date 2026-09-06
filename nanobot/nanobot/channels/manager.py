@@ -827,7 +827,11 @@ class ChannelManager:
             await ChannelManager._send_stream_event(channel, msg, event)
         elif isinstance(event, StreamEndEvent):
             await ChannelManager._send_stream_event(channel, msg, event)
-        elif not isinstance(event, StreamedResponseEvent):
+        elif isinstance(event, StreamedResponseEvent):
+            register = getattr(channel, "register_private_outbound_metadata", None)
+            if callable(register):
+                register(msg.chat_id, msg.metadata)
+        else:
             await channel.send(msg)
 
     def _coalesce_stream_deltas(

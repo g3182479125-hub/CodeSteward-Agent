@@ -123,6 +123,33 @@ def test_control_plane_fail_closed_for_non_fake_backend_without_p6_gate(tmp_path
         manager.verify(change_set_id, str(verify_approval["approval_token"]))
 
 
+def test_control_plane_allows_explicitly_available_remote_backend(tmp_path: Path) -> None:
+    class AvailableBackend:
+        name = "remote-test-double"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.delegate = FakeExecutionBackend(stdout="remote verification ok")
+
+        def run(self, request: object) -> object:
+            return self.delegate.run(request)  # type: ignore[arg-type]
+
+    manager, project = make_manager(tmp_path, execution_backend=AvailableBackend())
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    result = manager.verify(change_set_id, str(verify_approval["approval_token"]))
+
+    assert result["status"] == "verified"
+
+
 def test_python_run_rejects_multiple_python_files(tmp_path: Path) -> None:
     manager, project = make_manager(tmp_path, execution_backend=FakeExecutionBackend())
     preview = manager.preview(
@@ -253,13 +280,22 @@ def test_proposal_tool_only_returns_preview(monkeypatch: pytest.MonkeyPatch) -> 
     def fake_urlopen(request: object, timeout: int) -> FakeResponse:
         assert "127.0.0.1:18800/v1/change-sets/preview" in str(getattr(request, "full_url", ""))
         assert timeout == 10
+        request_body = json.loads(bytes(getattr(request, "data", b"")).decode("utf-8"))
+        assert request_body["patches"][0]["expected_sha256"] == "a" * 64
         return FakeResponse()
 
     monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
     result = asyncio.run(
         ProposeChangeSetTool().execute(
             project_path="E:/project",
-            patches=[{"relative_path": "main.py", "operation": "create", "content": "ok\n"}],
+            patches=[
+                {
+                    "relative_path": "main.py",
+                    "operation": "create",
+                    "content": "ok\n",
+                    "expected_sha256": "A" * 64,
+                }
+            ],
         )
     )
 

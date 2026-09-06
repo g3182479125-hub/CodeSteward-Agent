@@ -18,6 +18,7 @@ from nanobot.agent.context_governance import (
     ContextGovernor,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
 from nanobot.providers.base import (
     LLMProvider,
@@ -115,6 +116,7 @@ class AgentRunSpec:
     goal_continue_message: GoalContinueMessage | None = None
     finalize_on_max_iterations: bool = True
     provider_state: ProviderConversationState | None = None
+    request_context: RequestContext | None = None
 
 
 @dataclass(slots=True)
@@ -1408,6 +1410,34 @@ class AgentRunner:
         return results, events, fatal_error
 
     async def _run_tool(
+        self,
+        spec: AgentRunSpec,
+        tool_call: ToolCallRequest,
+        external_lookup_counts: dict[str, int],
+        workspace_violation_counts: dict[str, int],
+        hook: AgentHook | None = None,
+        context: AgentHookContext | None = None,
+    ) -> tuple[Any, dict[str, str], BaseException | None]:
+        """Run one tool with the originating request context explicitly bound."""
+        token = (
+            bind_request_context(spec.request_context)
+            if spec.request_context is not None
+            else None
+        )
+        try:
+            return await self._run_tool_bound(
+                spec,
+                tool_call,
+                external_lookup_counts,
+                workspace_violation_counts,
+                hook,
+                context,
+            )
+        finally:
+            if token is not None:
+                reset_request_context(token)
+
+    async def _run_tool_bound(
         self,
         spec: AgentRunSpec,
         tool_call: ToolCallRequest,

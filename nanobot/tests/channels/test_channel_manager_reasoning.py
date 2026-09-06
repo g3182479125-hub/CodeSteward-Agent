@@ -23,6 +23,7 @@ import pytest
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import (
     ProgressEvent,
+    StreamedResponseEvent,
     outbound_event_from_message,
     outbound_message_for_event,
 )
@@ -42,6 +43,7 @@ class _MockChannel(BaseChannel):
         self._delta_mock = AsyncMock()
         self._end_mock = AsyncMock()
         self._file_edit_mock = AsyncMock()
+        self.private_metadata: list[tuple[str, dict]] = []
 
     async def start(self):  # pragma: no cover - not exercised
         pass
@@ -61,6 +63,9 @@ class _MockChannel(BaseChannel):
     async def send_file_edit_events(self, chat_id, edits, metadata=None):
         return await self._file_edit_mock(chat_id, edits, metadata)
 
+    def register_private_outbound_metadata(self, chat_id, metadata):
+        self.private_metadata.append((chat_id, metadata))
+
 
 @pytest.fixture
 def manager() -> ChannelManager:
@@ -68,6 +73,23 @@ def manager() -> ChannelManager:
     mgr = ChannelManager(config, MessageBus())
     mgr.channels["mock"] = _MockChannel({}, mgr.bus)
     return mgr
+
+
+@pytest.mark.asyncio
+async def test_streamed_completion_forwards_private_metadata_without_sending_empty_message(manager):
+    channel = manager.channels["mock"]
+    message = OutboundMessage(
+        channel="mock",
+        chat_id="chat-1",
+        content="already streamed",
+        metadata={"_devpilot_proposal": {"change_set_id": "cs-1"}},
+        event=StreamedResponseEvent(),
+    )
+
+    await manager._send_once(channel, message)
+
+    assert channel.private_metadata == [("chat-1", message.metadata)]
+    channel._send_mock.assert_not_awaited()
 
 
 def test_websocket_gateway_uses_configured_workspace_restriction(tmp_path, monkeypatch):

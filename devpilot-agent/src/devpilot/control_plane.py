@@ -284,7 +284,15 @@ class ControlPlaneManager:
         with self._mutex:
             self._entries[plan.change_set.id] = entry
         self._event(entry, "changeset.previewed", {"files": len(plan.records)})
-        return plan_payload(entry)
+        payload = plan_payload(entry)
+        # Keep the response stable across an in-process read and a manager
+        # restart.  The verification binding is derived from the immutable
+        # plan, so it belongs in the initial preview as well as in ``get``.
+        try:
+            payload.update(self._verification_binding(entry, payload))
+        except ValueError:
+            payload["verification_available"] = False
+        return payload
 
     def get(self, change_set_id: str) -> dict[str, Any]:
         with self._mutex:
@@ -390,9 +398,13 @@ class ControlPlaneManager:
                 break
         profile = VerificationProfile(profile_name)
         binding = verification_binding(entry.plan, profile)
-        # Real execution intentionally remains unavailable until P6-02 has
-        # authenticated and evidenced the existing FC adapter.
-        return {**binding, "verification_available": False}
+        backend = self.execution_backend
+        return {
+            **binding,
+            "verification_available": bool(
+                backend is not None and getattr(backend, "verification_available", False)
+            ),
+        }
 
     def get_run_id(self, change_set_id: str) -> str | None:
         """Return the server-owned run link without changing the Preview contract."""
@@ -637,7 +649,10 @@ class ControlPlaneManager:
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
                 )
-            if type(self.execution_backend) is not FakeExecutionBackend:
+            if (
+                type(self.execution_backend) is not FakeExecutionBackend
+                and not getattr(self.execution_backend, "verification_available", False)
+            ):
                 self._event(
                     entry,
                     "execution.capability_denied",
@@ -647,7 +662,7 @@ class ControlPlaneManager:
                     self._finish_run(entry, "failed", {"code": "EXECUTION_BACKEND_UNAVAILABLE"})
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE",
-                    "real execution is unavailable before the P6 implementation gate",
+                    "configured execution backend is not available for verification",
                 )
             if entry.plan.change_set.status is not ChangeSetStatus.APPLIED:
                 raise PatchError(
@@ -721,6 +736,7 @@ class ControlPlaneManager:
                 "bundle_bytes": result.bundle_bytes,
                 "region": result.region,
                 "template": result.template,
+                "network_policy": result.network_policy,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
                 "stdout": redact_execution_output(result.stdout[-8000:]),
@@ -747,6 +763,7 @@ class ControlPlaneManager:
                 "bundle_bytes": result.bundle_bytes,
                 "region": result.region,
                 "template": result.template,
+                "network_policy": result.network_policy,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
                 "stdout": redact_execution_output(result.stdout[-8000:]),
@@ -1337,15 +1354,15 @@ def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
             }
         ]
     config = getattr(backend, "config", None)
+    verification_available = bool(getattr(backend, "verification_available", False))
     return [
         {
             "name": backend.name,
-            # Configuration alone is not proof that the backend can execute.
-            # Keep this honest until the explicit sandbox check succeeds.
-            "status": "unavailable",
+            "status": "degraded" if verification_available else "unavailable",
             "verified": False,
             "capability": "verification-only",
             "network_allowed": bool(getattr(config, "allow_network", False)),
+            "network_policy": str(getattr(config, "network_policy_mode", "unknown")),
             "region": str(getattr(config, "region", "")),
             "template": str(getattr(config, "template", "")),
         }
