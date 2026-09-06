@@ -417,7 +417,7 @@ class FCSandboxBackend:
             primary_error = mapped
             with self._lock:
                 state.error_code = mapped.code
-                state.status = "failed"
+                state.status = "cancelled" if mapped.code == "FC_CANCELLED" else "failed"
             raise mapped from exc
         finally:
             with self._lock:
