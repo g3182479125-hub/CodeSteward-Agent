@@ -396,6 +396,53 @@ def test_fc_backend_recovery_marks_unqueryable_sandbox_unknown(
     assert state["error_code"] == "FC_RECOVERY_UNKNOWN"
 
 
+def test_fc_recovered_run_cancel_converges_to_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    class RecoveredSandbox:
+        def is_running(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            return None
+
+    class RecoveryFactory:
+        @classmethod
+        def connect(cls, _sandbox_id: str, **_kwargs: object) -> RecoveredSandbox:
+            return RecoveredSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=RecoveryFactory),
+    )
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    backend.recover("run-after-restart", "remote-sandbox")
+    state = backend.cancel("run-after-restart")
+
+    assert state["status"] == "cancelled"
+
+
+def test_fc_cancel_kill_failure_still_records_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    class UnavailableSandbox:
+        def kill(self) -> None:
+            raise RuntimeError("kill unavailable")
+
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+    state = backend._reserve_run("run-cancel-failure")  # type: ignore[attr-defined]
+    state.handle = UnavailableSandbox()
+    state.sandbox_id = "cancel-failure-sandbox"
+    state.status = "running"
+
+    result = backend.cancel("run-cancel-failure")
+
+    assert result["status"] == "cancelled"
+    assert result["cleanup_error"] == "FC_CLEANUP_FAILED"
+
+
 def test_fc_backend_classifies_unsupported_provider_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

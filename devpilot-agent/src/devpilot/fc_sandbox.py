@@ -266,11 +266,15 @@ class FCSandboxBackend:
             handle.kill()
         except Exception as exc:
             with self._lock:
+                if state.status in {"starting", "running"}:
+                    state.status = "cancelled"
                 state.cleanup_error = _provider_error("cleanup", exc).code
             return self.get_run_state(run_id)
         with self._lock:
             state.cleanup_done = True
             state.cleanup_error = None
+            if state.status in {"starting", "running"}:
+                state.status = "cancelled"
         return self.get_run_state(run_id)
 
     def cleanup(self, run_id: str) -> dict[str, Any]:
