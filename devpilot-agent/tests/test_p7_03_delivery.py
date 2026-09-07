@@ -16,6 +16,8 @@ def test_devpilot_declares_nanobot_tools() -> None:
     assert len(entry_points) == 14
     assert "devpilot_inspect_project" in entry_points
     assert "devpilot_confirmed_action" in entry_points
+    assert "uvicorn>=0.34,<1.0" in project["dependencies"]
+    assert "uvicorn[standard]>=0.34,<1.0" not in project["dependencies"]
 
 
 def test_integrated_runbook_keeps_nanobot_as_the_only_user_entrypoint() -> None:
