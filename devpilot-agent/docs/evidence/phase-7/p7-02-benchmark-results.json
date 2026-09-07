@@ -1,0 +1,243 @@
+{
+  "benchmark": "p7-02-task-profile-contract",
+  "input_contract": [
+    {
+      "fixture": "devpilot-agent/tests/fixtures/python-project",
+      "objective": "explain a project with file-backed facts",
+      "profile": "repo-analysis",
+      "task_id": "project-explanation"
+    },
+    {
+      "fixture": "devpilot-agent/tests/fixtures/python-project",
+      "objective": "propose one bounded feature without applying it",
+      "profile": "feature-delivery",
+      "task_id": "small-feature"
+    },
+    {
+      "fixture": "devpilot-agent/tests/fixtures/react-form-project",
+      "objective": "propose a fix from saved failure evidence without applying it",
+      "profile": "bug-fix",
+      "task_id": "bug-fix"
+    }
+  ],
+  "records": [
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 184,
+      "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 1,
+      "task_id": "project-explanation",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 202,
+      "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 2,
+      "task_id": "project-explanation",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 183,
+      "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 3,
+      "task_id": "project-explanation",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 185,
+      "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 1,
+      "task_id": "small-feature",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 184,
+      "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 2,
+      "task_id": "small-feature",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 176,
+      "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 3,
+      "task_id": "small-feature",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 185,
+      "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 1,
+      "task_id": "bug-fix",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 179,
+      "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 2,
+      "task_id": "bug-fix",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "duration_ms": 196,
+      "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": false,
+      "repetition": 3,
+      "task_id": "bug-fix",
+      "version": "baseline"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 56,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 1,
+      "task_id": "project-explanation",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 57,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 2,
+      "task_id": "project-explanation",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 58,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 3,
+      "task_id": "project-explanation",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 62,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 1,
+      "task_id": "small-feature",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 63,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 2,
+      "task_id": "small-feature",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 65,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 3,
+      "task_id": "small-feature",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 65,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 1,
+      "task_id": "bug-fix",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 64,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 2,
+      "task_id": "bug-fix",
+      "version": "candidate"
+    },
+    {
+      "budget": "no-llm-no-fc",
+      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "duration_ms": 66,
+      "failure_reason": null,
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "passed": true,
+      "repetition": 3,
+      "task_id": "bug-fix",
+      "version": "candidate"
+    }
+  ],
+  "repetitions_per_task_version": 3,
+  "total_runs": 18
+}
