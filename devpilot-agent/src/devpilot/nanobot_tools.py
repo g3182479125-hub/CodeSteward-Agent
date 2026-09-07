@@ -1460,7 +1460,16 @@ class SkillCandidateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
-            candidate = SkillImprovementStore.from_environment(self.workspace).create_candidate(
+            try:
+                from nanobot.agent.tools.context import current_request_context
+
+                request_context = current_request_context()
+            except ImportError:
+                request_context = None
+            request_workspace = (
+                request_context.workspace if request_context is not None else self.workspace
+            )
+            candidate = SkillImprovementStore.from_environment(request_workspace).create_candidate(
                 project_id=str(kwargs["project_id"]),
                 skill_path="skills/bug-fix/SKILL.md",
                 baseline_content=str(kwargs["baseline_content"]),
@@ -1470,7 +1479,7 @@ class SkillCandidateTool(Tool):
                 expected_behavior=str(kwargs["expected_behavior"]),
                 test_set_version=str(kwargs["test_set_version"]),
                 batch_id=kwargs.get("batch_id"),
-                workspace=self.workspace,
+                workspace=request_workspace,
             )
             return json.dumps(
                 {

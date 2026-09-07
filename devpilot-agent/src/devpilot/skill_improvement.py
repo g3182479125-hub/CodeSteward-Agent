@@ -886,6 +886,9 @@ class SkillImprovementStore:
             candidate = self.get_candidate(candidate_id)
             if candidate is None or candidate.status != "active":
                 raise SkillImprovementError("candidate is not active")
+            workspace_value = str(Path(workspace).expanduser().resolve())
+            if candidate.workspace != workspace_value:
+                raise SkillImprovementError("candidate workspace mismatch")
             current = self.read_effective_snapshot(workspace)
             if current.content_hash != candidate.candidate_hash:
                 raise SkillImprovementError(
@@ -894,7 +897,7 @@ class SkillImprovementStore:
             records = [
                 item for item in self._read_jsonl(self.activations_file)
                 if item.get("candidate_id") == candidate_id
-                and item.get("workspace") == str(Path(workspace).expanduser().resolve())
+                and item.get("workspace") == workspace_value
                 and item.get("phase") == "committed"
             ]
             if not records or not isinstance(records[-1].get("previous_content"), str):
