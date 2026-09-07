@@ -13,7 +13,7 @@ def test_devpilot_declares_nanobot_tools() -> None:
         project = tomllib.load(handle)["project"]
 
     entry_points = project["entry-points"]["nanobot.tools"]
-    assert len(entry_points) == 14
+    assert len(entry_points) == 16
     assert "devpilot_inspect_project" in entry_points
     assert "devpilot_confirmed_action" in entry_points
     assert "uvicorn>=0.34,<1.0" in project["dependencies"]
@@ -49,6 +49,6 @@ def test_p7_handoff_contains_source_boundaries_without_credentials() -> None:
     assert "DeepSeek Harness" in handoff
     assert "Codex Harness" in handoff
     assert "DEVPILOT_DATABASE_URL" in handoff
-    assert "14 个 `devpilot_*` entry points" in handoff
+    assert "16 个 `devpilot_*` entry points" in handoff
     assert re.search(r"e2b_[a-f0-9]{20,}", handoff.lower()) is None
     assert "sk-" not in handoff.lower()

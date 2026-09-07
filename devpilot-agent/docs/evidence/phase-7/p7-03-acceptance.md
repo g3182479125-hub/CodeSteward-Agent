@@ -44,7 +44,7 @@ test data and are not part of the repository.
 - nanobot source regression suite: `5733 passed, 50 skipped` (the nanobot test environment;
   the shared runtime environment is verified separately below).
 - P7-02 fixed replay: 18 records; candidate 9/9; baseline 0/9.
-- Integrated package check: 14 DevPilot entry points and both package imports passed.
+- Integrated package check: 16 DevPilot entry points and both package imports passed.
 - Ruff, secret scan, Markdown link check, and `git diff --check`: passed.
 - The P7-02 benchmark and P7-03 delivery-contract tests passed.
 

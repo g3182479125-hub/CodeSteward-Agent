@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integr
 .\nanobot\.venv\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('nanobot-ai')); print(m.version('devpilot-agent')); print(sorted(ep.name for ep in m.entry_points(group='nanobot.tools') if ep.name.startswith('devpilot_')))"
 ```
 
-预期包含 14 个 `devpilot_*` 工具。控制面可以使用自己的 `devpilot-agent/.venv`，
+预期包含 16 个 `devpilot_*` 工具。控制面可以使用自己的 `devpilot-agent/.venv`，
 但 nanobot 进程必须使用上面已经安装 DevPilot 的环境。
 
 配置恢复时复制 `.env.example` 为本机未跟踪的 `.env`，并在 nanobot 本地配置中填写
