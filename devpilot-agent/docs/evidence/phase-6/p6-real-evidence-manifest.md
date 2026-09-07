@@ -1,9 +1,10 @@
 # P6 真实执行证据清单
 
-本清单的实现基线为 `1161722eb369799c44ac8befc30f708806dc5343`，当前最终候选为
-`b939d018dbe085a9982f890644e86f14be4ae062`。代码、证据和复审记录分开提交，避免文档
-自引用 SHA。它记录真实杭州 FC 与本地集成测试的可审计边界。API Key、SQLite、项目源码
-和原始日志不进入仓库。
+本清单的实现基线为 `1161722eb369799c44ac8befc30f708806dc5343`；FC 行为和类型边界的
+实现候选为 `b939d018dbe085a9982f890644e86f14be4ae062`；本轮证据、保留 profile 断言和
+验证记录的最终候选为 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd`。代码、证据和复审
+记录分开提交，避免文档自引用 SHA。它记录真实杭州 FC 与本地集成测试的可审计边界。API
+Key、SQLite、项目源码和原始日志不进入仓库。
 
 ## 固定配置
 
@@ -25,7 +26,7 @@ API Key、allowlist 的实际路径或任何项目内容。
 
 ## 验证版本与最终候选复核
 
-最终候选 `b939d018dbe085a9982f890644e86f14be4ae062` 在 Python `3.13.14`、`e2b 2.31.0`、
+最终候选 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd` 在 Python `3.13.14`、`e2b 2.31.0`、
 `e2b-code-interpreter 2.8.1`、`pytest 8.4.2`、`ruff 0.16.5`、`pyright 1.1.411` 环境中完成
 本地复核。以下命令均以退出码 `0` 完成：
 
@@ -34,7 +35,7 @@ uv run --no-sync pytest tests/test_fc_sandbox_contract.py tests/test_p3_executio
 # 31 passed
 uv run --no-sync ruff check src/devpilot/action_broker.py src/devpilot/control_plane.py src/devpilot/fc_sandbox.py
 uv run --no-sync pyright
-git diff --check
+git diff --check b939d018dbe085a9982f890644e86f14be4ae062...570208b1e4f5dbd656bb80dc8a4a8bc1224949cd
 ```
 
 本复核额外确认：`python-syntax`、`python-run`、`node-syntax` 是唯一可用的 FC profile；
