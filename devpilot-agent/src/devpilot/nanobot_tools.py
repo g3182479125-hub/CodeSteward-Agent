@@ -1393,12 +1393,11 @@ class SkillFeedbackTool(Tool):
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
             source_type = str(kwargs["source_type"])
-            if source_type == "user_feedback" and (
-                not request_context.original_user_text
-                or request_context.channel == "system"
-                or request_context.sender_id == "subagent"
-            ):
-                raise SkillImprovementError("user feedback requires a direct user turn")
+            if source_type == "user_feedback":
+                raise SkillImprovementError(
+                    "user feedback must be recorded by the native user command"
+                )
+            trusted_refs: set[str] = set()
             if source_type == "tool_result":
                 trusted_refs = {
                     value
@@ -1411,9 +1410,14 @@ class SkillFeedbackTool(Tool):
                 if not requested_refs or not requested_refs <= trusted_refs:
                     raise SkillImprovementError("tool result is not trusted evidence")
             correction = (
-                request_context.original_user_text
-                if source_type == "user_feedback"
+                f"Trusted tool result references: {', '.join(sorted(trusted_refs))}"
+                if source_type == "tool_result"
                 else str(kwargs["correction"])
+            )
+            actual_result = (
+                f"Trusted tool result references: {', '.join(sorted(trusted_refs))}"
+                if source_type == "tool_result"
+                else str(kwargs["actual_result"])
             )
             evidence = SkillImprovementStore.from_environment(request_workspace).record_feedback(
                 task_id=str(kwargs["task_id"]),
@@ -1425,7 +1429,7 @@ class SkillFeedbackTool(Tool):
                 skill_id="bug-fix",
                 skill_hash=str(kwargs["skill_hash"]),
                 correction=correction,
-                actual_result=str(kwargs["actual_result"]),
+                actual_result=actual_result,
                 evidence_refs=kwargs.get("evidence_refs", ()),
                 batch_id=kwargs.get("batch_id"),
             )

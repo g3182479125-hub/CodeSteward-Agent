@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import sys
@@ -1059,6 +1060,48 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             lines.extend(f"- `{item.candidate_id}` — {item.status}" for item in candidates)
             lines.append("\nUse `/skill-improvement <candidate-id>` to view a candidate.")
             content = "\n".join(lines)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    if args[0].lower() == "feedback":
+        if not ctx.is_user_turn:
+            content = "Feedback requires a direct user chat turn."
+        else:
+            feedback_text = ctx.args.strip()[len("feedback"):].strip()
+            task_context = (ctx.session.metadata or {}).get("task_context")
+            if not feedback_text:
+                content = "Usage: /skill-improvement feedback <what went wrong>"
+            elif (
+                not isinstance(task_context, dict)
+                or not isinstance(task_context.get("task_id"), str)
+                or not str(task_context.get("profile_binding", "")).startswith("bug-fix@")
+            ):
+                content = "Feedback requires an active bug-fix task profile."
+            else:
+                try:
+                    project_id = "local-" + hashlib.sha256(
+                        str(workspace.resolve()).encode()
+                    ).hexdigest()[:16]
+                    skill = store.read_effective_snapshot(workspace)
+                    evidence = store.record_feedback(
+                        task_id=task_context["task_id"],
+                        project_id=project_id,
+                        workspace=workspace,
+                        user_id=user_id,
+                        session_id=ctx.key,
+                        source_type="user_feedback",
+                        skill_id="bug-fix",
+                        skill_hash=skill.content_hash,
+                        correction=feedback_text,
+                        actual_result=feedback_text,
+                    )
+                    content = f"Feedback recorded as verified evidence: `{evidence.evidence_id}`."
+                except (ValueError, OSError) as exc:
+                    content = f"Feedback rejected: {type(exc).__name__}."
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
