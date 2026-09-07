@@ -67,11 +67,13 @@ The following checks were executed on Windows from the repository checkout:
   failure).
 - The three-task, three-repetition integrated replay command using
   `p7_02_benchmark.py --baseline e8369151cba046007cc05621756ab702a1ec99f8
-  --candidate HEAD --repetitions 3` — exit 0; 18 records, baseline 0/9,
+  --candidate 6d8560da96a18321ed7a62e077f961b3c4fb71cc --repetitions 3` — exit 0; 18 records, baseline 0/9,
   candidate 9/9; task IDs `project-explanation`, `small-feature`, `bug-fix`.
 - `nanobot\.venv\Scripts\python.exe -m pytest -q -rA devpilot-agent\tests` — exit 0;
-  236 passed, 3 skipped. The nanobot source test run — exit 0; 5733 passed,
-  50 skipped.
+  236 passed, 3 skipped.
+- From the `nanobot` directory, `uv run --no-sync pytest -q -rA` — exit 0;
+  5733 passed, 50 skipped. This is the nanobot source test environment;
+  test-only dependencies are separate from the shared runtime installation.
 
 ## Boundaries
 
