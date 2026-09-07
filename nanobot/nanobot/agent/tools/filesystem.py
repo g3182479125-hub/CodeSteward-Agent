@@ -55,6 +55,8 @@ class _FsTool(Tool):
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
         extra_read_allowed_files: list[Path] | None = None,
+        blocked_write_dirs: list[Path] | None = None,
+        blocked_write_files: list[Path] | None = None,
     ):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
@@ -67,6 +69,12 @@ class _FsTool(Tool):
         self._extra_read_allowed_files = list(extra_read_allowed_files or [])
         self._extra_write_allowed_dirs = list(extra_write_allowed_dirs or [])
         self._extra_write_allowed_files = list(extra_write_allowed_files or [])
+        self._blocked_write_dirs = [
+            Path(path).expanduser().resolve(strict=False) for path in (blocked_write_dirs or [])
+        ]
+        self._blocked_write_files = [
+            Path(path).expanduser().resolve(strict=False) for path in (blocked_write_files or [])
+        ]
         self._restrict_to_workspace = (
             bool(restrict_to_workspace)
             if restrict_to_workspace is not None
@@ -157,12 +165,20 @@ class _FsTool(Tool):
         )
 
     def _resolve_write(self, path: str) -> Path:
-        return self._resolve_with_extra(
+        resolved = self._resolve_with_extra(
             path,
             self._extra_write_allowed_dirs,
             self._extra_write_allowed_files,
             include_media_dir=False,
         )
+        if any(resolved == blocked for blocked in self._blocked_write_files):
+            raise PermissionError(f"write is blocked for protected file: {path}")
+        if any(
+            resolved == blocked or blocked in resolved.parents
+            for blocked in self._blocked_write_dirs
+        ):
+            raise PermissionError(f"write is blocked for protected directory: {path}")
+        return resolved
 
     def _resolve(self, path: str) -> Path:
         return self._resolve_read(path)

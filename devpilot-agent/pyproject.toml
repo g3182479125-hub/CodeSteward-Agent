@@ -31,6 +31,8 @@ devpilot_get_delivery_report = "devpilot.nanobot_tools:GetDeliveryReportTool"
 devpilot_get_run_state = "devpilot.nanobot_tools:GetRunStateTool"
 devpilot_watch_run = "devpilot.nanobot_tools:WatchRunTool"
 devpilot_confirmed_action = "devpilot.nanobot_tools:ConfirmedActionTool"
+devpilot_skill_feedback = "devpilot.nanobot_tools:SkillFeedbackTool"
+devpilot_skill_candidate = "devpilot.nanobot_tools:SkillCandidateTool"
 
 [project.optional-dependencies]
 fc-sandbox = [

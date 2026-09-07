@@ -68,6 +68,7 @@ from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
 from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
+from .skill_improvement import SkillImprovementError, SkillImprovementStore
 from .storage import ProjectStore
 
 _CONTROL_PLANE_ERROR_CODES = frozenset(
@@ -1313,6 +1314,153 @@ class ConfirmedActionTool(Tool):
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
         except (KeyError, TypeError, ValueError, OSError) as exc:
             return ToolResult.error(f"P5 action rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "source_type": {
+                "type": "string",
+                "enum": ["user_feedback", "tool_result", "model_inference", "external_content"],
+            },
+            "skill_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+            "correction": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "actual_result": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "evidence_refs": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+        },
+        "required": [
+            "task_id", "project_id", "source_type", "skill_hash", "correction", "actual_result",
+        ],
+        "additionalProperties": False,
+    }
+)
+class SkillFeedbackTool(Tool):
+    """Record bounded, redacted feedback for the single P8 trial Skill."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_skill_feedback"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Record explicit feedback or a tool result for the bug-fix Skill. "
+            "This creates evidence only; it never changes a Skill or grants authority."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            evidence = SkillImprovementStore.from_environment().record_feedback(
+                task_id=str(kwargs["task_id"]),
+                project_id=str(kwargs["project_id"]),
+                source_type=str(kwargs["source_type"]),
+                skill_id="bug-fix",
+                skill_hash=str(kwargs["skill_hash"]),
+                correction=str(kwargs["correction"]),
+                actual_result=str(kwargs["actual_result"]),
+                evidence_refs=kwargs.get("evidence_refs", ()),
+            )
+            return json.dumps(
+                {
+                    "status": "recorded",
+                    "evidence": evidence.to_dict(),
+                    "next_step": (
+                        "Only verified evidence can form a candidate; model inference and external "
+                        "content remain pending verification."
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except (KeyError, TypeError, ValueError, OSError, SkillImprovementError) as exc:
+            return ToolResult.error(f"P8 feedback rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "baseline_content": {"type": "string", "minLength": 1},
+            "candidate_content": {"type": "string", "minLength": 1},
+            "evidence_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {"type": "string"},
+            },
+            "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "expected_behavior": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "test_set_version": {"type": "string", "minLength": 1, "maxLength": 128},
+            "batch_id": {"type": ["string", "null"], "maxLength": 128},
+        },
+        "required": [
+            "project_id", "baseline_content", "candidate_content", "evidence_ids",
+            "reason", "expected_behavior", "test_set_version",
+        ],
+        "additionalProperties": False,
+    }
+)
+class SkillCandidateTool(Tool):
+    """Create an inactive bug-fix Skill candidate in private storage."""
+
+    _scopes = {"core", "memory"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_skill_candidate"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a pending candidate for the bug-fix Skill from verified evidence. "
+            "The candidate is private, is not loaded by nanobot, and cannot activate itself."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return False
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            candidate = SkillImprovementStore.from_environment().create_candidate(
+                project_id=str(kwargs["project_id"]),
+                skill_path="skills/bug-fix/SKILL.md",
+                baseline_content=str(kwargs["baseline_content"]),
+                candidate_content=str(kwargs["candidate_content"]),
+                evidence_ids=kwargs["evidence_ids"],
+                reason=str(kwargs["reason"]),
+                expected_behavior=str(kwargs["expected_behavior"]),
+                test_set_version=str(kwargs["test_set_version"]),
+                batch_id=kwargs.get("batch_id"),
+            )
+            return json.dumps(
+                {
+                    "status": candidate.status,
+                    "candidate_id": candidate.candidate_id,
+                    "skill_id": candidate.skill_id,
+                    "base_version_hash": candidate.base_version_hash,
+                    "candidate_hash": candidate.candidate_hash,
+                    "evidence_ids": list(candidate.evidence_ids),
+                    "next_step": (
+                        "Run the fixed P8-02 comparison; do not load or activate "
+                        "this candidate yet."
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except (KeyError, TypeError, ValueError, OSError, SkillImprovementError) as exc:
+            return ToolResult.error(f"P8 candidate rejected: {type(exc).__name__}")
 
 
 @tool_parameters(

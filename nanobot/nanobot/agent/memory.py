@@ -652,6 +652,11 @@ class MemoryStore:
         workspace = self.workspace
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
+        # P8 has one deliberately narrow trial: Dream may continue to update
+        # ordinary workspace Skills, but it must not mutate the effective
+        # bug-fix Skill.  Candidate creation goes through DevPilot's private
+        # evidence store; this directory is not a SkillsLoader root.
+        protected_skill_dir = skills_dir / "bug-fix"
 
         extra_read = [BUILTIN_SKILLS_DIR] if BUILTIN_SKILLS_DIR.exists() else None
         editable_files = [self.memory_file, self.soul_file, self.user_file]
@@ -666,18 +671,21 @@ class MemoryStore:
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
+            blocked_write_dirs=[protected_skill_dir],
             file_states=file_states,
         ))
         tools.register(ApplyPatchTool(
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
+            blocked_write_dirs=[protected_skill_dir],
             file_states=file_states,
         ))
         tools.register(WriteFileTool(
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
+            blocked_write_dirs=[protected_skill_dir],
             file_states=file_states,
         ))
         return tools
