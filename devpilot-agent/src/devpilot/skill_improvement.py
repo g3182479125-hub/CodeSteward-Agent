@@ -1599,68 +1599,74 @@ def _run_fixed_skill_trial(
         fixture_path = Path(isolated_root) / scenario.fixture_id
         fixture_path.parent.mkdir(parents=True, exist_ok=True)
         fixture_path.write_text(scenario.source_text, encoding="utf-8")
-        source_hash = content_sha256(fixture_path.read_text(encoding="utf-8"))
-    if source_hash != content_sha256(scenario.source_text):
-        raise SkillImprovementError("fixed fixture changed during trial setup")
-    if category == "original_failure":
-        expected = "read_current_file_before_proposing_patch"
-        has_guidance = "Re-read the current file before proposing a patch." in content
-        trace = (
-            "fixture:discount.py",
-            "tool:read_file",
-            f"tool:file_hash:{source_hash}",
-            "agent:propose_patch",
-        ) if has_guidance else ("agent:propose_patch",)
-        success = (
-            has_guidance
-            and scenario.failure_evidence.startswith("10 percent")
-            and source_hash == content_sha256(scenario.source_text)
-            and expected == scenario.expected_action
-        )
-        return (
-            success,
-            trace,
-            fixture,
-            "fixed assertion: read current fixture before proposal",
-            environment_id,
-        )
-    if category == "nearby_holdout":
-        expected = "read_failure_evidence"
-        has_guidance = "Read the failure evidence." in content
-        trace = (
-            "fixture:parser.py",
-            "tool:read_failure_evidence",
-            "agent:propose_patch",
-        ) if has_guidance else ("agent:propose_patch",)
-        success = has_guidance and scenario.failure_evidence.startswith("The parser")
-        return (
-            success,
-            trace,
-            fixture,
-            "fixed assertion: failure evidence is read before proposal",
-            environment_id,
-        )
-    if category == "regression":
-        expected = "preserve_regression_contract"
-        has_guidance = "# Bug fix" in content and "Read the failure evidence." in content
-        trace = (
-            "fixture:bug-fix-contract.md",
-            "tool:read_failure_evidence",
-            "agent:preserve_regression_contract",
-            "agent:propose_patch",
-        ) if has_guidance else ("agent:propose_patch",)
-        success = (
-            has_guidance
-            and scenario.source_text.startswith("# Bug fix")
-            and expected == scenario.expected_action
-        )
-        return (
-            success,
-            trace,
-            fixture,
-            "fixed assertion: protected bug-fix contract is preserved",
-            environment_id,
-        )
+        fixture_content = fixture_path.read_text(encoding="utf-8")
+        source_hash = content_sha256(fixture_content)
+        if source_hash != content_sha256(scenario.source_text):
+            raise SkillImprovementError("fixed fixture changed during trial setup")
+        if category == "original_failure":
+            expected = "read_current_file_before_proposing_patch"
+            has_guidance = "Re-read the current file before proposing a patch." in content
+            trace = (
+                f"fixture:{fixture_path.name}",
+                "tool:read_file",
+                f"tool:file_hash:{source_hash}",
+                "agent:propose_patch",
+            ) if has_guidance else ("agent:propose_patch",)
+            success = (
+                has_guidance
+                and fixture_content.startswith("def discount")
+                and scenario.failure_evidence.startswith("10 percent")
+                and source_hash == content_sha256(scenario.source_text)
+                and expected == scenario.expected_action
+            )
+            return (
+                success,
+                trace,
+                fixture,
+                "fixed assertion: read current fixture before proposal",
+                environment_id,
+            )
+        if category == "nearby_holdout":
+            expected = "read_failure_evidence"
+            has_guidance = "Read the failure evidence." in content
+            trace = (
+                f"fixture:{fixture_path.name}",
+                "tool:read_failure_evidence",
+                "agent:propose_patch",
+            ) if has_guidance else ("agent:propose_patch",)
+            success = (
+                has_guidance
+                and fixture_content.startswith("def parse")
+                and scenario.failure_evidence.startswith("The parser")
+            )
+            return (
+                success,
+                trace,
+                fixture,
+                "fixed assertion: failure evidence is read before proposal",
+                environment_id,
+            )
+        if category == "regression":
+            expected = "preserve_regression_contract"
+            has_guidance = "# Bug fix" in content and "Read the failure evidence." in content
+            trace = (
+                f"fixture:{fixture_path.name}",
+                "tool:read_failure_evidence",
+                "agent:preserve_regression_contract",
+                "agent:propose_patch",
+            ) if has_guidance else ("agent:propose_patch",)
+            success = (
+                has_guidance
+                and fixture_content.startswith("# Bug fix")
+                and expected == scenario.expected_action
+            )
+            return (
+                success,
+                trace,
+                fixture,
+                "fixed assertion: protected bug-fix contract is preserved",
+                environment_id,
+            )
     raise SkillImprovementError("unknown fixed evaluation category")
 
 
