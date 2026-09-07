@@ -86,6 +86,7 @@ class ContextBuilder:
         task_profile_name: str | None = None,
         task_profile_skill_names: Sequence[str] | None = None,
         task_profile_output_contract: Sequence[str] | None = None,
+        task_context: str | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
         workspace: Path | None = None,
@@ -133,6 +134,8 @@ class ContextBuilder:
                 "Use only the profile's visible tools. A profile does not grant approval, "
                 "execution, or rollback authority."
             )
+        if task_context:
+            parts.append("# Task Context\n\n" + task_context)
 
         if include_memory_recent_history:
             entries = self.memory.read_recent_history_for_prompt(
@@ -239,6 +242,7 @@ class ContextBuilder:
         task_profile_name: str | None = None,
         task_profile_skill_names: Sequence[str] | None = None,
         task_profile_output_contract: Sequence[str] | None = None,
+        task_context: str | None = None,
         channel: str | None = None,
         current_role: str = "user",
         session_summary: str | None = None,
@@ -264,6 +268,7 @@ class ContextBuilder:
                     task_profile_name=task_profile_name,
                     task_profile_skill_names=task_profile_skill_names,
                     task_profile_output_contract=task_profile_output_contract,
+                    task_context=task_context,
                     channel=channel,
                     session_summary=session_summary,
                     workspace=root,

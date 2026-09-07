@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import os
 import time
@@ -32,11 +33,15 @@ from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.task_profiles import (
+    TASK_CONTEXT_METADATA_KEY,
+    TASK_LOOP_GUARD_METADATA_KEY,
     TASK_PROFILE_METADATA_KEY,
     TASK_PROFILE_VERSION_METADATA_KEY,
+    TaskContextState,
     TaskLoopGuard,
     TaskProfile,
     TaskProfileCatalog,
+    TaskProfileError,
 )
 from nanobot.agent.tools.context import (
     RequestContext,
@@ -729,6 +734,16 @@ class AgentLoop:
         assert ctx.session is not None
         scope = self.workspace_scopes.for_message(ctx.msg, ctx.session.metadata)
         profile = self.task_profile_for_session(ctx.session)
+        task_context = (
+            self._ensure_task_context(
+                ctx.session,
+                profile,
+                ctx.msg.content,
+                scope.project_path,
+            )
+            if profile
+            else None
+        )
         return self.context.build_messages(
             history=ctx.history,
             current_message=ctx.msg.content,
@@ -736,6 +751,7 @@ class AgentLoop:
             task_profile_name=(f"{profile.name}@{profile.version}" if profile else None),
             task_profile_skill_names=profile.skill_names if profile else None,
             task_profile_output_contract=profile.output_contract if profile else None,
+            task_context=task_context.prompt_text() if task_context else None,
             channel=ctx.delivery.route.channel,
             session_summary=ctx.pending_summary,
             workspace=scope.project_path,
@@ -755,20 +771,27 @@ class AgentLoop:
         if name is None:
             return None
         if not isinstance(name, str) or not name:
-            raise ValueError("session task profile metadata is invalid")
+            raise TaskProfileError("session task profile metadata is invalid")
         return self.task_profiles.get(name)
 
     def set_session_task_profile(self, session_key: str, name: str) -> TaskProfile:
         """Select a validated profile for future turns in one session."""
+        session = self.sessions.get_or_create(session_key)
         profile = self.task_profiles.get(name)
+        existing_name = session.metadata.get(TASK_PROFILE_METADATA_KEY)
+        if existing_name and existing_name != profile.name and (session.messages or self._RUNTIME_CHECKPOINT_KEY in session.metadata):
+            raise TaskProfileError(
+                f"task profile '{existing_name}' is bound to this unfinished session; use /new before switching"
+            )
         skills = {
             item["name"]
             for item in self.context.skills.list_skills(filter_unavailable=True)
         }
         self.task_profiles.validate_runtime(profile, set(self.tools.tool_names), skills)
-        session = self.sessions.get_or_create(session_key)
         session.metadata[TASK_PROFILE_METADATA_KEY] = profile.name
         session.metadata[TASK_PROFILE_VERSION_METADATA_KEY] = profile.version
+        session.metadata.pop(TASK_LOOP_GUARD_METADATA_KEY, None)
+        session.metadata.pop(TASK_CONTEXT_METADATA_KEY, None)
         session.policy = dataclasses.replace(
             session.policy,
             allowed_tools=profile.allowed_tools,
@@ -780,8 +803,14 @@ class AgentLoop:
     def clear_session_task_profile(self, session_key: str) -> None:
         """Return one session to nanobot's ordinary configured tool set."""
         session = self.sessions.get_or_create(session_key)
+        if session.metadata.get(TASK_PROFILE_METADATA_KEY) and (
+            session.messages or self._RUNTIME_CHECKPOINT_KEY in session.metadata
+        ):
+            raise ValueError("an active task profile cannot be cleared for an unfinished session; use /new")
         session.metadata.pop(TASK_PROFILE_METADATA_KEY, None)
         session.metadata.pop(TASK_PROFILE_VERSION_METADATA_KEY, None)
+        session.metadata.pop(TASK_LOOP_GUARD_METADATA_KEY, None)
+        session.metadata.pop(TASK_CONTEXT_METADATA_KEY, None)
         session.policy = dataclasses.replace(
             session.policy,
             allowed_tools=None,
@@ -826,6 +855,111 @@ class AgentLoop:
                 task_profile=profile.name,
             )
         return profile
+
+    def _ensure_task_context(
+        self,
+        session: Session,
+        profile: TaskProfile,
+        goal: str,
+        project_path: Path,
+    ) -> TaskContextState:
+        """Create or refresh a bounded, project-bound context record."""
+        binding = f"{profile.name}@{profile.version}"
+        project_ref = hashlib.sha256(str(project_path.resolve()).encode()).hexdigest()[:16]
+        session_ref = hashlib.sha256(session.key.encode()).hexdigest()[:16]
+        previous = TaskContextState.from_metadata(session.metadata.get(TASK_CONTEXT_METADATA_KEY))
+        if previous is not None and previous.profile_binding == binding and previous.project_ref == project_ref:
+            changed_files = self._changed_context_files(previous, project_path)
+            if previous.goal and not changed_files:
+                return previous
+            constraints = list(previous.constraints)
+            if changed_files:
+                constraints.append("external file change detected; re-inspect before proposing or writing")
+            state = dataclasses.replace(
+                previous,
+                constraints=tuple(dict.fromkeys(constraints)),
+                next_step="Re-inspect changed files and refresh evidence before proposing or applying changes.",
+            )
+            session.metadata[TASK_CONTEXT_METADATA_KEY] = state.to_metadata()
+            self.sessions.save(session)
+            return state
+        state = TaskContextState(
+            session_ref=session_ref,
+            project_ref=project_ref,
+            profile_binding=binding,
+            goal=goal,
+            constraints=(
+                f"profile={binding}",
+                "recheck current Run/ChangeSet state and project hashes before any write",
+            ),
+            completed=previous.completed if previous is not None else (),
+            next_step="Re-read current status and file hashes before proposing or applying changes.",
+            task_id=previous.task_id if previous is not None else None,
+            run_id=previous.run_id if previous is not None else None,
+            change_set_id=previous.change_set_id if previous is not None else None,
+            evidence_refs=previous.evidence_refs if previous is not None else (),
+            file_hashes=previous.file_hashes if previous is not None else (),
+        )
+        session.metadata[TASK_CONTEXT_METADATA_KEY] = state.to_metadata()
+        self.sessions.save(session)
+        return state
+
+    @staticmethod
+    def _changed_context_files(state: TaskContextState, project_path: Path) -> tuple[str, ...]:
+        changed: list[str] = []
+        root = project_path.resolve()
+        for path, expected in state.file_hashes:
+            candidate = (root / path).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                changed.append(path)
+                continue
+            if not candidate.is_file():
+                changed.append(path)
+                continue
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if digest != expected:
+                changed.append(path)
+        return tuple(changed)
+
+    def update_task_context_evidence(
+        self,
+        session_key: str,
+        *,
+        evidence_refs: tuple[str, ...] = (),
+        file_hashes: tuple[tuple[str, str], ...] = (),
+        run_id: str | None = None,
+        change_set_id: str | None = None,
+    ) -> TaskContextState | None:
+        """Record bounded DevPilot evidence without granting execution authority."""
+        session = self.sessions.get_or_create(session_key)
+        state = TaskContextState.from_metadata(session.metadata.get(TASK_CONTEXT_METADATA_KEY))
+        if state is None:
+            return None
+        validated_hashes = tuple(
+            (path, digest.lower())
+            for path, digest in file_hashes
+            if path and len(digest) == 64 and all(char in "0123456789abcdefABCDEF" for char in digest)
+        )[:20]
+        updated = dataclasses.replace(
+            state,
+            evidence_refs=tuple(dict.fromkeys((*state.evidence_refs, *evidence_refs)))[:20],
+            file_hashes=validated_hashes or state.file_hashes,
+            run_id=run_id or state.run_id,
+            change_set_id=change_set_id or state.change_set_id,
+        )
+        session.metadata[TASK_CONTEXT_METADATA_KEY] = updated.to_metadata()
+        self.sessions.save(session)
+        return updated
+
+    @staticmethod
+    def _task_loop_guard(session: Session, profile: TaskProfile) -> TaskLoopGuard:
+        binding = f"{profile.name}@{profile.version}"
+        return TaskLoopGuard.from_state(
+            session.metadata.get(TASK_LOOP_GUARD_METADATA_KEY),
+            binding,
+        )
 
     def _request_context_for_turn(self, ctx: TurnContext) -> RequestContext:
         assert ctx.session is not None
@@ -1145,6 +1279,8 @@ class AgentLoop:
             )
 
         session_metadata = session.metadata if session is not None else None
+        profile = self.task_profile_for_session(session) if session is not None else None
+        loop_guard = self._task_loop_guard(session, profile) if session is not None and profile else None
         try:
             for scope in turn_scopes or ():
                 turn_scope_stack.enter_context(scope)
@@ -1203,17 +1339,20 @@ class AgentLoop:
                     message_metadata=metadata,
                 ),
                 provider_state=provider_state,
-                loop_guard=(
-                    TaskLoopGuard()
-                    if session is not None and session.policy.task_profile
-                    else None
-                ),
+                loop_guard=loop_guard,
              ))
         finally:
             turn_scope_stack.close()
             reset_workspace_scope(workspace_token)
             reset_request_context(request_token)
             reset_file_states(file_state_token)
+        if session is not None and loop_guard is not None and profile is not None:
+            if result.stop_reason == "completed" and result.error is None:
+                session.metadata.pop(TASK_LOOP_GUARD_METADATA_KEY, None)
+            else:
+                session.metadata[TASK_LOOP_GUARD_METADATA_KEY] = loop_guard.to_state(
+                    f"{profile.name}@{profile.version}"
+                )
         self._last_usage = result.usage
         if session is not None and not ephemeral:
             session.provider_state = result.provider_state
@@ -1424,6 +1563,22 @@ class AgentLoop:
                             exc_info=True,
                         )
                     raise
+                except TaskProfileError as exc:
+                    logger.warning("Task profile unavailable for session {}: {}", session_key, exc)
+                    response = OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=f"Task profile unavailable: {exc}",
+                        metadata={**dict(msg.metadata or {}), "render_as": "text"},
+                    )
+                    await delivery.complete(
+                        response,
+                        publish_completion=not turn_continuation.internal_continuation_pending(
+                            msg.metadata
+                        ),
+                    )
+                    for _, coordinator in self._automation_turn_coordinators:
+                        coordinator.complete(msg, response=response)
                 except Exception as exc:
                     logger.exception("Error processing message for session {}", session_key)
                     await delivery.fail(

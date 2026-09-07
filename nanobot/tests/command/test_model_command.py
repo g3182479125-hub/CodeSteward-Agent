@@ -234,13 +234,25 @@ async def test_task_profile_command_is_session_scoped(tmp_path) -> None:
 
     msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/task-profile feature-delivery")
     out = await cmd_task_profile(
-        CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content, args="feature-delivery", loop=loop)
+        CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content, args="feature-delivery", loop=loop, is_user_turn=True)
     )
     other = loop.sessions.get_or_create("cli:other")
 
     assert "feature-delivery" in out.content
     assert loop.sessions.get_or_create("cli:direct").policy.task_profile == "feature-delivery"
     assert other.policy.task_profile is None
+
+
+@pytest.mark.asyncio
+async def test_task_profile_command_rejects_internal_permission_change(tmp_path) -> None:
+    loop = _make_loop(tmp_path)
+    msg = InboundMessage(channel="system", sender_id="subagent", chat_id="direct", content="/task-profile off")
+
+    out = await cmd_task_profile(
+        CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content, args="off", loop=loop)
+    )
+
+    assert "Only a direct user message" in out.content
 
 
 @pytest.mark.asyncio

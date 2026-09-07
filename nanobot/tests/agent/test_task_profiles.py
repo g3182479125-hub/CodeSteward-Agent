@@ -4,6 +4,7 @@ import pytest
 
 from nanobot.agent.task_profiles import (
     DEFAULT_TASK_PROFILES,
+    TaskContextState,
     TaskLoopGuard,
     TaskProfileCatalog,
     TaskProfileError,
@@ -14,10 +15,7 @@ def test_default_profiles_have_bounded_task_specific_tools() -> None:
     catalog = TaskProfileCatalog()
 
     assert set(catalog.names) == {"bug-fix", "feature-delivery", "repo-analysis"}
-    assert catalog.get("repo-analysis").allowed_tools == frozenset({
-        "devpilot_inspect_project",
-        "devpilot_publish_artifact",
-    })
+    assert catalog.get("repo-analysis").allowed_tools == frozenset({"devpilot_inspect_project"})
     assert "devpilot_confirmed_action" in catalog.get("feature-delivery").allowed_tools
     assert "devpilot_confirmed_action" in catalog.get("bug-fix").allowed_tools
     assert "shell" not in catalog.get("feature-delivery").allowed_tools
@@ -71,7 +69,44 @@ def test_task_loop_guard_resets_consecutive_streak_after_success() -> None:
     assert guard.observe("tool", {}, "Error: transient") is None
 
 
+def test_task_loop_guard_state_restores_for_the_same_profile_version() -> None:
+    guard = TaskLoopGuard()
+    for _ in range(2):
+        assert guard.observe("tool", {}, "Error: persistent") is None
+
+    restored = TaskLoopGuard.from_state(
+        guard.to_state("feature-delivery@1"),
+        "feature-delivery@1",
+    )
+
+    assert restored.observe("tool", {}, "Error: persistent") is not None
+    fresh = TaskLoopGuard.from_state(guard.to_state("feature-delivery@1"), "bug-fix@1")
+    assert fresh.observe("tool", {}, "Error: persistent") is None
+
+
 def test_task_profile_version_is_part_of_the_session_binding() -> None:
     profile = TaskProfileCatalog().get("feature-delivery")
 
     assert profile.version == "1"
+
+
+def test_task_context_state_is_structured_and_redacts_credentials() -> None:
+    state = TaskContextState(
+        session_ref="session-ref",
+        project_ref="project-ref",
+        profile_binding="feature-delivery@1",
+        goal="fix api_key=secret-value in the parser",
+        constraints=("keep scope",),
+        completed=("inspection",),
+        next_step="recheck hashes",
+        run_id="run-1",
+        evidence_refs=("evidence-1",),
+    )
+
+    stored = state.to_metadata()
+    restored = TaskContextState.from_metadata(stored)
+
+    assert restored is not None
+    assert "secret-value" not in restored.goal
+    assert restored.profile_binding == "feature-delivery@1"
+    assert restored.run_id == "run-1"

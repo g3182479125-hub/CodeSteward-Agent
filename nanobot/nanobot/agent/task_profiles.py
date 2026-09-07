@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 TASK_PROFILE_METADATA_KEY = "task_profile"
 TASK_PROFILE_VERSION_METADATA_KEY = "task_profile_version"
+TASK_CONTEXT_METADATA_KEY = "task_context"
+TASK_LOOP_GUARD_METADATA_KEY = "task_loop_guard"
+
+_SENSITIVE_CONTEXT_RE = re.compile(
+    r"(?i)(?:api[_ -]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+"
+)
 
 
 class TaskProfileError(ValueError):
@@ -38,7 +45,6 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
         skill_names=("repo-analysis",),
         allowed_tools=frozenset({
             "devpilot_inspect_project",
-            "devpilot_publish_artifact",
         }),
         output_contract=(
             "technical_stack",
@@ -146,6 +152,104 @@ class TaskProfileCatalog:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class TaskContextState:
+    """Small, non-authoritative context record carried by one profiled session."""
+
+    session_ref: str
+    project_ref: str
+    profile_binding: str
+    goal: str = ""
+    constraints: tuple[str, ...] = ()
+    completed: tuple[str, ...] = ()
+    next_step: str = ""
+    task_id: str | None = None
+    run_id: str | None = None
+    change_set_id: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    file_hashes: tuple[tuple[str, str], ...] = ()
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return a JSON-safe copy; this record never contains credentials."""
+        return {
+            "session_ref": self.session_ref,
+            "project_ref": self.project_ref,
+            "profile_binding": self.profile_binding,
+            "goal": _safe_context_text(self.goal),
+            "constraints": [_safe_context_text(item) for item in self.constraints],
+            "completed": [_safe_context_text(item) for item in self.completed],
+            "next_step": _safe_context_text(self.next_step),
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "change_set_id": self.change_set_id,
+            "evidence_refs": list(self.evidence_refs),
+            "file_hashes": [
+                {"path": path, "sha256": digest}
+                for path, digest in self.file_hashes
+            ],
+        }
+
+    def prompt_text(self) -> str:
+        """Render only bounded facts and references for the model context."""
+        fields = self.to_metadata()
+        return "\n".join(f"- {key}: {value}" for key, value in fields.items() if value not in (None, "", []))
+
+    @classmethod
+    def from_metadata(cls, value: Any) -> TaskContextState | None:
+        if not isinstance(value, dict):
+            return None
+        required = ("session_ref", "project_ref", "profile_binding")
+        if any(not isinstance(value.get(key), str) or not value[key] for key in required):
+            return None
+        return cls(
+            session_ref=value["session_ref"],
+            project_ref=value["project_ref"],
+            profile_binding=value["profile_binding"],
+            goal=_safe_context_text(value.get("goal", "")),
+            constraints=_context_strings(value.get("constraints")),
+            completed=_context_strings(value.get("completed")),
+            next_step=_safe_context_text(value.get("next_step", "")),
+            task_id=_optional_context_string(value.get("task_id")),
+            run_id=_optional_context_string(value.get("run_id")),
+            change_set_id=_optional_context_string(value.get("change_set_id")),
+            evidence_refs=_context_strings(value.get("evidence_refs")),
+            file_hashes=_context_file_hashes(value.get("file_hashes")),
+        )
+
+
+def _safe_context_text(value: Any) -> str:
+    text = str(value or "").strip()[:512]
+    return _SENSITIVE_CONTEXT_RE.sub(lambda match: match.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]", text)
+
+
+def _context_strings(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(_safe_context_text(item) for item in value if isinstance(item, str))[:20]
+
+
+def _optional_context_string(value: Any) -> str | None:
+    return _safe_context_text(value) if isinstance(value, str) and value else None
+
+
+def _context_file_hashes(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, list):
+        return ()
+    refs: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path, digest = item.get("path"), item.get("sha256")
+        if (
+            isinstance(path, str)
+            and isinstance(digest, str)
+            and len(digest) == 64
+            and all(char in "0123456789abcdefABCDEF" for char in digest)
+        ):
+            refs.append((_safe_context_text(path), digest.lower()))
+    return tuple(refs[:20])
+
+
 def _stable_json(value: Any) -> str:
     """Serialize only for hashing; raw parameters never leave this process."""
 
@@ -198,3 +302,33 @@ class TaskLoopGuard:
 
         self._last_fingerprint = None
         self._consecutive = 0
+
+    def to_state(self, profile_binding: str) -> dict[str, Any]:
+        """Serialize bounded counters and hashes for the current profile version."""
+        return {
+            "profile_binding": profile_binding,
+            "same_error_limit": self.same_error_limit,
+            "max_diagnostic_branches": self.max_diagnostic_branches,
+            "last_fingerprint": self._last_fingerprint,
+            "consecutive": self._consecutive,
+            "seen_errors": sorted(self._seen_errors)[:20],
+            "branches": self._branches,
+        }
+
+    @classmethod
+    def from_state(cls, value: Any, profile_binding: str) -> TaskLoopGuard:
+        """Restore a guard only when its state belongs to the active profile version."""
+        guard = cls()
+        if not isinstance(value, dict) or value.get("profile_binding") != profile_binding:
+            return guard
+        last = value.get("last_fingerprint")
+        seen = value.get("seen_errors")
+        if isinstance(last, str) and len(last) == 64:
+            guard._last_fingerprint = last
+        if isinstance(value.get("consecutive"), int) and value["consecutive"] >= 0:
+            guard._consecutive = min(value["consecutive"], guard.same_error_limit)
+        if isinstance(seen, list):
+            guard._seen_errors = {item for item in seen if isinstance(item, str) and len(item) == 64}
+        if isinstance(value.get("branches"), int) and value["branches"] >= 0:
+            guard._branches = min(value["branches"], guard.max_diagnostic_branches + 1)
+        return guard

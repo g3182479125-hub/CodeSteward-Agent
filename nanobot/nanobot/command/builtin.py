@@ -435,6 +435,13 @@ async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
             content=loop.describe_task_profiles(session),
             metadata=metadata,
         )
+    if not ctx.is_user_turn:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Only a direct user message can change the task profile; this message may only query `/task-profile`.",
+            metadata=metadata,
+        )
     parts = args.split()
     if len(parts) != 1:
         return OutboundMessage(
@@ -445,7 +452,15 @@ async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
         )
     name = parts[0].lower()
     if name in {"off", "none", "default"}:
-        loop.clear_session_task_profile(ctx.key)
+        try:
+            loop.clear_session_task_profile(ctx.key)
+        except ValueError as exc:
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=f"Could not clear task profile: {exc}",
+                metadata=metadata,
+            )
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
