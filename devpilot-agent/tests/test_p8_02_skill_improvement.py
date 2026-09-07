@@ -105,6 +105,7 @@ def test_fixed_comparison_has_18_cases_and_real_improvement(tmp_path: Path) -> N
         for item in report.cases
     )
     assert all(item["fixture"].startswith("p8-fixed/") for item in report.cases)
+    assert len({item["environment_id"] for item in report.cases}) == 18
     assert store.get_candidate(candidate_id).status == "pending_confirmation"
 
 

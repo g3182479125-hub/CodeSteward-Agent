@@ -925,8 +925,18 @@ class SkillImprovementStore:
         for category in EVALUATION_CATEGORIES:
             for version in EVALUATION_VERSIONS:
                 content = baseline.content if version == "baseline" else candidate.candidate_content
-                success, agent_trace, fixture, assertion = _run_fixed_skill_trial(category, content)
                 for repeat in range(1, EVALUATION_REPEATS + 1):
+                    (
+                        success,
+                        agent_trace,
+                        fixture,
+                        assertion,
+                        environment_id,
+                    ) = _run_fixed_skill_trial(
+                        category,
+                        content,
+                        trial_id=f"{category}:{version}:{repeat}",
+                    )
                     cases.append(
                         {
                             "case_id": f"{category}:{version}:{repeat}",
@@ -942,6 +952,7 @@ class SkillImprovementStore:
                             "agent_trace": list(agent_trace),
                             "fixture": fixture,
                             "assertion": assertion,
+                            "environment_id": environment_id,
                             "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                             "usage": {
                                 "input_tokens": "unavailable",
@@ -1567,8 +1578,8 @@ class SkillImprovementStore:
 
 
 def _run_fixed_skill_trial(
-    category: str, content: str
-) -> tuple[bool, tuple[str, ...], str, str]:
+    category: str, content: str, *, trial_id: str
+) -> tuple[bool, tuple[str, ...], str, str, str]:
     """Run a trusted Skill protocol against an immutable fixture and assertion.
 
     This is intentionally offline and protocol-level: it executes fixed fixture
@@ -1583,7 +1594,14 @@ def _run_fixed_skill_trial(
     if scenario is None:
         raise SkillImprovementError("unknown fixed evaluation category")
     fixture = f"p8-fixed/{scenario.fixture_id}"
-    source_hash = content_sha256(scenario.source_text)
+    environment_id = f"p8-isolated:{trial_id}"
+    with tempfile.TemporaryDirectory(prefix="devpilot-p8-trial-") as isolated_root:
+        fixture_path = Path(isolated_root) / scenario.fixture_id
+        fixture_path.parent.mkdir(parents=True, exist_ok=True)
+        fixture_path.write_text(scenario.source_text, encoding="utf-8")
+        source_hash = content_sha256(fixture_path.read_text(encoding="utf-8"))
+    if source_hash != content_sha256(scenario.source_text):
+        raise SkillImprovementError("fixed fixture changed during trial setup")
     if category == "original_failure":
         expected = "read_current_file_before_proposing_patch"
         has_guidance = "Re-read the current file before proposing a patch." in content
@@ -1599,7 +1617,13 @@ def _run_fixed_skill_trial(
             and source_hash == content_sha256(scenario.source_text)
             and expected == scenario.expected_action
         )
-        return success, trace, fixture, "fixed assertion: read current fixture before proposal"
+        return (
+            success,
+            trace,
+            fixture,
+            "fixed assertion: read current fixture before proposal",
+            environment_id,
+        )
     if category == "nearby_holdout":
         expected = "read_failure_evidence"
         has_guidance = "Read the failure evidence." in content
@@ -1609,7 +1633,13 @@ def _run_fixed_skill_trial(
             "agent:propose_patch",
         ) if has_guidance else ("agent:propose_patch",)
         success = has_guidance and scenario.failure_evidence.startswith("The parser")
-        return success, trace, fixture, "fixed assertion: failure evidence is read before proposal"
+        return (
+            success,
+            trace,
+            fixture,
+            "fixed assertion: failure evidence is read before proposal",
+            environment_id,
+        )
     if category == "regression":
         expected = "preserve_regression_contract"
         has_guidance = "# Bug fix" in content and "Read the failure evidence." in content
@@ -1624,7 +1654,13 @@ def _run_fixed_skill_trial(
             and scenario.source_text.startswith("# Bug fix")
             and expected == scenario.expected_action
         )
-        return success, trace, fixture, "fixed assertion: protected bug-fix contract is preserved"
+        return (
+            success,
+            trace,
+            fixture,
+            "fixed assertion: protected bug-fix contract is preserved",
+            environment_id,
+        )
     raise SkillImprovementError("unknown fixed evaluation category")
 
 
