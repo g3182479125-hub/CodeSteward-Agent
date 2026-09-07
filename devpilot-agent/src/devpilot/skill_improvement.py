@@ -269,7 +269,7 @@ class ConfirmationRecord:
 
 
 class SkillImprovementStore:
-    """Private, atomic JSON storage for P8 evidence and inactive candidates."""
+    """Private, integrity-protected SQLite storage for P8 evidence and candidates."""
 
     def __init__(self, data_dir: str | Path, *, workspace: str | Path | None = None):
         data_root = Path(data_dir).expanduser().resolve()
