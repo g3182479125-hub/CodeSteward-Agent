@@ -34,8 +34,8 @@
 已通过：
 
 - `uv run --no-sync ruff check nanobot tests`；
-- nanobot 全量：`5862 passed, 42 skipped`；
-- P7 专项与受影响回归：`101 passed`；
+- nanobot 全量：`5864 passed, 42 skipped`；
+- P7 专项与受影响回归：`44 passed`（实现修复后的专项集合）；
 - 使用同仓库 `devpilot-agent/src` 加入 `PYTHONPATH` 后，两个跨包 DevPilot 集成测试
   通过；这只是测试环境拼接，不改变运行时架构；
 - `compileall`/Ruff 作为实现检查通过。
