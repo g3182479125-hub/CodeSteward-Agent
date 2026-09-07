@@ -688,6 +688,15 @@ class MemoryStore:
             blocked_write_dirs=[protected_skill_dir],
             file_states=file_states,
         ))
+        # Candidate creation is a private, inactive DevPilot operation rather
+        # than a filesystem write and is explicitly bounded to bug-fix.
+        try:
+            from devpilot.nanobot_tools import SkillCandidateTool
+
+            tools.register(SkillCandidateTool(workspace=workspace))
+        except ImportError:
+            # Keep the ordinary nanobot installation independent from DevPilot.
+            pass
         return tools
 
     @staticmethod
