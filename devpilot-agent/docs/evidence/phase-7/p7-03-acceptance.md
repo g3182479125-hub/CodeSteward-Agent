@@ -41,7 +41,7 @@ test data and are not part of the repository.
 ## Regression and safety checks
 
 - DevPilot full suite in the integrated nanobot environment: `236 passed, 3 skipped`.
-- nanobot source regression suite: `5866 passed, 42 skipped` (the nanobot test environment;
+- nanobot source regression suite: `5733 passed, 50 skipped` (the nanobot test environment;
   the shared runtime environment is verified separately below).
 - P7-02 fixed replay: 18 records; candidate 9/9; baseline 0/9.
 - Integrated package check: 14 DevPilot entry points and both package imports passed.
@@ -52,6 +52,26 @@ The nanobot source regression suite was run in nanobot's test environment with
 its development-only test dependencies. The runtime integration check is
 separate and verifies the actual shared environment used to start nanobot and
 load DevPilot tools; test-only extras are not required for normal user startup.
+
+## Reproducible command log
+
+The following checks were executed on Windows from the repository checkout:
+
+- `powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1` — exit 0.
+- In `devpilot-agent`, `uv run --no-sync alembic upgrade head` against the isolated
+  `local-data/p7-03-start-check` database — exit 0; final revision
+  `0010_p5_persist_idempotency_key`.
+- The integrated `nanobot\.venv\Scripts\devpilot.exe serve --host 127.0.0.1 --port 18809`
+  started successfully; `GET /healthz` returned HTTP 200; Ctrl+C stopped the
+  process normally (the terminal reports the interrupt exit, not an application
+  failure).
+- The three-task, three-repetition integrated replay command using
+  `p7_02_benchmark.py --baseline e8369151cba046007cc05621756ab702a1ec99f8
+  --candidate HEAD --repetitions 3` — exit 0; 18 records, baseline 0/9,
+  candidate 9/9; task IDs `project-explanation`, `small-feature`, `bug-fix`.
+- `nanobot\.venv\Scripts\python.exe -m pytest -q -rA devpilot-agent\tests` — exit 0;
+  236 passed, 3 skipped. The nanobot source test run — exit 0; 5733 passed,
+  50 skipped.
 
 ## Boundaries
 

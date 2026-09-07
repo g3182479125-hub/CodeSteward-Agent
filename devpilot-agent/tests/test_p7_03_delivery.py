@@ -28,6 +28,7 @@ def test_integrated_runbook_keeps_nanobot_as_the_only_user_entrypoint() -> None:
     assert "uv export --project $devpilotRoot --locked" in installer
     assert "nanobot 自带 WebUI 是唯一用户入口" in runbook
     assert "不要启动 `web/`、Vite 或 18801 端口" in runbook
+    assert "DEVPILOT_DATABASE_URL" in runbook
     assert "E2B_API_KEY" in runbook
     assert "local-data" in runbook and "删除" in runbook
 
@@ -45,6 +46,7 @@ def test_p7_handoff_contains_source_boundaries_without_credentials() -> None:
     assert "P7-01、P7-02、P7-03 已完成" in handoff
     assert "DeepSeek Harness" in handoff
     assert "Codex Harness" in handoff
+    assert "DEVPILOT_DATABASE_URL" in handoff
     assert "14 个 `devpilot_*` entry points" in handoff
     assert re.search(r"e2b_[a-f0-9]{20,}", handoff.lower()) is None
     assert "sk-" not in handoff.lower()
