@@ -6,6 +6,7 @@ import re
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from difflib import get_close_matches
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from nanobot.bus.events import OutboundMessage
@@ -52,6 +53,9 @@ class CommandContext:
     runtime: LLMRuntime | None = None
     is_user_turn: bool = False
     turn_scopes: list[AbstractContextManager[Any]] = field(default_factory=list)
+    # Effective project root resolved for this turn. Commands that persist
+    # project-scoped data must use this value instead of the loop default.
+    workspace: Path | None = None
 
 
 class CommandRouter:

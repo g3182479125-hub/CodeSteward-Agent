@@ -291,7 +291,6 @@ class SkillImprovementStore:
         data_dir: str | Path,
         *,
         workspace: str | Path | None = None,
-        allow_unmigrated: bool = False,
     ):
         data_root = Path(data_dir).expanduser().resolve()
         if workspace is not None:
@@ -332,13 +331,13 @@ class SkillImprovementStore:
         self.activations_file = self.root / "activations.jsonl"
         self.process_lock_file = self.root / "skill-improvement.lock"
         self.root.mkdir(parents=True, exist_ok=True)
-        self._initialize_sqlite_table(allow_unmigrated=allow_unmigrated)
+        self._initialize_sqlite_table()
         self._integrity_key = self._load_integrity_key()
         self._lock = threading.RLock()
         self._recovery_blocked = False
         self._recover_activation_journal()
 
-    def _initialize_sqlite_table(self, *, allow_unmigrated: bool) -> None:
+    def _initialize_sqlite_table(self) -> None:
         with sqlite3.connect(self.database_path, timeout=30) as connection:
             has_alembic = connection.execute(
                 "select 1 from sqlite_master where type = 'table' and name = 'alembic_version'"
@@ -350,7 +349,7 @@ class SkillImprovementStore:
             )
             if has_alembic and version is None:
                 raise SkillImprovementError("database schema version is unavailable")
-            if not has_alembic and not allow_unmigrated:
+            if not has_alembic:
                 raise SkillImprovementError(
                     "database schema must be initialized by Alembic before P8 use"
                 )
@@ -368,21 +367,6 @@ class SkillImprovementStore:
                         "database schema is incomplete; rerun Alembic migration 0011"
                     )
                 return
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS skill_improvement_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    record_key TEXT NOT NULL UNIQUE,
-                    record_type TEXT NOT NULL,
-                    record_id TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    record_mac TEXT NOT NULL,
-                    workspace TEXT,
-                    project_id TEXT,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
 
     def _record_rows(self, record_type: str, record_id: str | None = None) -> list[dict[str, Any]]:
         query = (

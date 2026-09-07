@@ -1043,7 +1043,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
     try:
         from devpilot.skill_improvement import SkillImprovementStore
 
-        workspace = ctx.loop.context.memory.workspace
+        workspace = ctx.workspace or ctx.loop.context.memory.workspace
         store = SkillImprovementStore.from_environment(workspace)
     except (ImportError, ValueError, OSError) as exc:
         content = f"Skill improvement is unavailable: {type(exc).__name__}."

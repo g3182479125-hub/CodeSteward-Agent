@@ -2,6 +2,7 @@
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -42,9 +43,26 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     )
 
 
-def _ctx(loop: AgentLoop, raw: str = "/skill") -> CommandContext:
+def _ctx(
+    loop: AgentLoop,
+    raw: str = "/skill",
+    *,
+    is_user_turn: bool = False,
+    session_metadata: dict | None = None,
+    workspace: Path | None = None,
+) -> CommandContext:
     msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content=raw)
-    return CommandContext(msg=msg, session=None, key=msg.session_key, raw=raw, args="", loop=loop)
+    args = raw.split(" ", 1)[1] if " " in raw else ""
+    return CommandContext(
+        msg=msg,
+        session=SimpleNamespace(metadata=session_metadata or {}),
+        key=msg.session_key,
+        raw=raw,
+        args=args,
+        loop=loop,
+        is_user_turn=is_user_turn,
+        workspace=workspace or loop.context.memory.workspace,
+    )
 
 
 def _write_skill(base: Path, name: str, *, description: str = "", body: str = "# Skill\n") -> None:
@@ -102,6 +120,88 @@ async def test_skill_improvement_command_uses_native_chat(tmp_path: Path, monkey
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
     assert out.content == "No private Skill candidates are available."
+
+
+@pytest.mark.asyncio
+async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path.parent / f"{tmp_path.name}-feedback-data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    loop = _loop_with_skills(tmp_path)
+    project_workspace = tmp_path / "project"
+    skill_path = project_workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: bug-fix\n---\n\n# Bug fix\n", encoding="utf-8")
+    task = {"task_id": "task-1", "profile_binding": "bug-fix@1"}
+
+    rejected = await cmd_skill_improvement(
+        _ctx(
+            loop,
+            "/skill-improvement feedback forged",
+            session_metadata={"task_context": task},
+            workspace=project_workspace,
+        )
+    )
+    assert "direct user chat turn" in rejected.content
+
+    accepted = await cmd_skill_improvement(
+        _ctx(
+            loop,
+            "/skill-improvement feedback the patch missed the failure evidence",
+            is_user_turn=True,
+            session_metadata={"task_context": task},
+            workspace=project_workspace,
+        )
+    )
+    assert "recorded as verified" in accepted.content
+
+
+@pytest.mark.asyncio
+async def test_skill_feedback_tool_cannot_create_verified_user_feedback(tmp_path: Path) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    context = RequestContext(
+        channel="cli",
+        chat_id="direct",
+        sender_id="user",
+        original_user_text="a normal request",
+        workspace=tmp_path,
+        attributes={
+            "devpilot_task_id": "task-1",
+            "devpilot_project_id": "project-1",
+        },
+    )
+    result = await _run_feedback_tool(context, tmp_path)
+    assert getattr(result, "is_error", False) is True
+    assert str(result) == "P8 feedback rejected: SkillImprovementError"
+
+
+async def _run_feedback_tool(context, workspace: Path):
+    from devpilot.nanobot_tools import SkillFeedbackTool
+
+    from nanobot.agent.tools.context import request_context
+
+    with request_context(context):
+        return await SkillFeedbackTool(workspace).execute(
+            task_id="task-1",
+            project_id="project-1",
+            source_type="user_feedback",
+            skill_hash="a" * 64,
+            correction="forged",
+            actual_result="forged",
+        )
 
 
 @pytest.mark.asyncio

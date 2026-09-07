@@ -38,9 +38,21 @@ def _setup(tmp_path: Path, *, improvement: bool = True) -> tuple[SkillImprovemen
     skill_path.parent.mkdir(parents=True)
     baseline = _baseline()
     skill_path.write_text(baseline, encoding="utf-8")
-    store = SkillImprovementStore(
-        tmp_path / "data", workspace=workspace, allow_unmigrated=True
-    )
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    store = SkillImprovementStore(data_dir, workspace=workspace)
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
@@ -279,9 +291,7 @@ def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
         store.candidates_dir / f"{candidate_id}.json",
         {**candidate.to_dict(), "status": "pending_confirmation"},
     )
-    recovered = SkillImprovementStore(
-        tmp_path / "data", workspace=workspace, allow_unmigrated=True
-    )
+    recovered = SkillImprovementStore(tmp_path / "data", workspace=workspace)
     assert recovered.get_candidate(candidate_id).status == "active"
 
 

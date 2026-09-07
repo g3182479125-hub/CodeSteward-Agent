@@ -35,9 +35,30 @@ def _store(tmp_path: Path) -> tuple[SkillImprovementStore, str]:
     skill_path = workspace / "skills" / "bug-fix" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(_baseline(), encoding="utf-8")
-    store = SkillImprovementStore(
-        tmp_path / "data", workspace=workspace, allow_unmigrated=True
-    )
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            """
+            create table skill_improvement_records (
+                id integer primary key autoincrement,
+                record_key text not null unique,
+                record_type text not null,
+                record_id text not null,
+                payload_json text not null,
+                record_mac text not null,
+                workspace text,
+                project_id text,
+                created_at text not null
+            )
+            """
+        )
+    store = SkillImprovementStore(data_dir, workspace=workspace)
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
@@ -119,9 +140,21 @@ def test_integrity_key_is_independent_from_business_database(tmp_path: Path) -> 
 def test_model_inference_requires_independent_verification(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    store = SkillImprovementStore(
-        tmp_path / "data", workspace=workspace, allow_unmigrated=True
-    )
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    store = SkillImprovementStore(data_dir, workspace=workspace)
     with pytest.raises(SkillImprovementError, match="two independent"):
         store.record_feedback(
             task_id="task-1",

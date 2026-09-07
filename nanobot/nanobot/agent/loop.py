@@ -2106,6 +2106,7 @@ class AgentLoop:
             runtime=ctx.runtime,
             is_user_turn=is_user_turn,
             turn_scopes=ctx.turn_scopes,
+            workspace=self.workspace_scopes.for_message(ctx.msg, session.metadata).project_path,
         )
         result = await self.commands.dispatch(cmd_ctx)
         if result is not None:
