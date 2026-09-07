@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import subprocess
 import sys
@@ -17,6 +16,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from devpilot.action_broker import (
@@ -27,21 +27,9 @@ from devpilot.action_broker import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-NANOBOT_ROOT = REPO_ROOT / "nanobot"
 DEFAULT_BASELINE = "e8369151cba046007cc05621756ab702a1ec99f8"
 DEFAULT_CANDIDATE = "HEAD"
 DEFAULT_REPETITIONS = 3
-
-_TASK_PROFILE_SPEC = importlib.util.spec_from_file_location(
-    "nanobot.agent.task_profiles", NANOBOT_ROOT / "nanobot" / "agent" / "task_profiles.py"
-)
-if _TASK_PROFILE_SPEC is None or _TASK_PROFILE_SPEC.loader is None:
-    raise RuntimeError("nanobot task profile module is unavailable")
-_TASK_PROFILE_MODULE = importlib.util.module_from_spec(_TASK_PROFILE_SPEC)
-sys.modules[_TASK_PROFILE_SPEC.name] = _TASK_PROFILE_MODULE
-_TASK_PROFILE_SPEC.loader.exec_module(_TASK_PROFILE_MODULE)
-TaskProfileCatalog = _TASK_PROFILE_MODULE.TaskProfileCatalog
-TaskProfileError = _TASK_PROFILE_MODULE.TaskProfileError
 
 
 @dataclass(frozen=True)
@@ -122,6 +110,17 @@ def _git_rev_parse(ref: str) -> str:
     if result.returncode != 0:
         raise ValueError(f"unknown git ref: {ref}")
     return result.stdout.strip()
+
+
+def _load_task_profile_catalog(commit: str) -> tuple[type[Any], type[ValueError]]:
+    source = _git_show(commit, "nanobot/nanobot/agent/task_profiles.py")
+    if not source:
+        raise ValueError(f"task profile module is missing at {commit}")
+    module = ModuleType(f"nanobot.agent.task_profiles@{commit[:12]}")
+    module.__file__ = f"{commit}:nanobot/nanobot/agent/task_profiles.py"
+    sys.modules[module.__name__] = module
+    exec(compile(source, module.__file__, "exec"), module.__dict__)
+    return module.TaskProfileCatalog, module.TaskProfileError
 
 
 def _fixture_manifest(task: BenchmarkTask) -> tuple[tuple[str, str], ...]:
@@ -274,15 +273,14 @@ def _candidate_contract(
     task_passed, task_failure, refs, boundary = _run_fixed_task(task)
     if not task_passed:
         return False, task_failure, refs, boundary
-    if commit != _git_rev_parse("HEAD"):
-        return False, "candidate must match the checked-out worktree", refs, boundary
-    catalog = TaskProfileCatalog()
+    catalog_type, profile_error = _load_task_profile_catalog(commit)
+    catalog = catalog_type()
     profile = catalog.get(task.profile)
     registered = set(profile.allowed_tools)
     skills = set(profile.skill_names)
     try:
         catalog.validate_runtime(profile, registered, skills)
-    except TaskProfileError as exc:
+    except profile_error as exc:
         return False, str(exc), refs, boundary
     if task.profile == "repo-analysis":
         if profile.allowed_tools != frozenset({"devpilot_inspect_project"}):
