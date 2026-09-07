@@ -94,6 +94,7 @@ class ContextBuilder:
         include_memory_recent_history: bool = True,
         session_key: str | None = None,
         unified_session: bool = False,
+        task_skill_snapshots: Mapping[str, str] | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
@@ -117,7 +118,10 @@ class ContextBuilder:
             if name not in active_skills
         )
         if active_skills:
-            active_content = self.skills.load_skills_for_context(active_skills)
+            active_content = self.skills.load_skills_for_context(
+                active_skills,
+                skill_snapshots=task_skill_snapshots,
+            )
             if active_content:
                 parts.append(f"# Active Skills\n\n{active_content}")
 
@@ -252,6 +256,7 @@ class ContextBuilder:
         include_memory_recent_history: bool = True,
         session_key: str | None = None,
         unified_session: bool = False,
+        task_skill_snapshots: Mapping[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         root = workspace or self.workspace
@@ -276,6 +281,7 @@ class ContextBuilder:
                     include_memory_recent_history=include_memory_recent_history,
                     session_key=session_key,
                     unified_session=unified_session,
+                    task_skill_snapshots=task_skill_snapshots,
                 ),
             },
             *history,

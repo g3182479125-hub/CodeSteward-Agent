@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import time
+import uuid
 import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
@@ -121,6 +122,7 @@ if TYPE_CHECKING:
         ToolsConfig,
     )
     from nanobot.cron.service import CronService
+    from nanobot.session.manager import Session
     from nanobot.triggers.local_store import LocalTriggerStore
 
 _T = TypeVar("_T")
@@ -745,6 +747,12 @@ class AgentLoop:
             if profile
             else None
         )
+        task_skill_snapshots = self._load_task_skill_snapshots(
+            ctx.session,
+            profile,
+            task_context,
+            scope.project_path,
+        )
         return self.context.build_messages(
             history=ctx.history,
             current_message=ctx.msg.content,
@@ -761,7 +769,38 @@ class AgentLoop:
             include_memory_recent_history=not ctx.ephemeral,
             session_key=ctx.session.key,
             unified_session=self._unified_session,
+            task_skill_snapshots=task_skill_snapshots,
         )
+
+    @staticmethod
+    def _load_task_skill_snapshots(
+        session: Session,
+        profile: TaskProfile | None,
+        task_context: TaskContextState | None,
+        project_path: Path,
+    ) -> Mapping[str, str]:
+        """Load a pinned DevPilot Skill snapshot without replacing permissions."""
+        if (
+            profile is None
+            or profile.name != "bug-fix"
+            or task_context is None
+            or not task_context.task_id
+        ):
+            return {}
+        try:
+            from devpilot.skill_improvement import SkillImprovementStore
+
+            snapshot = SkillImprovementStore.from_environment(project_path).capture_task_snapshot(
+                task_id=task_context.task_id,
+                workspace=project_path,
+                session_id=session.key,
+                project_id=task_context.project_ref,
+            )
+            return {snapshot.skill_id: snapshot.content}
+        except (ImportError, OSError, ValueError):
+            # Existing nanobot installations and projects without the trial
+            # Skill continue using the ordinary SkillsLoader path.
+            return {}
 
     def task_profile_for_session(self, session: Session) -> TaskProfile | None:
         """Resolve the server-owned profile persisted for a session."""
@@ -900,7 +939,11 @@ class AgentLoop:
             ),
             completed=previous.completed if previous is not None else (),
             next_step="Re-read current status and file hashes before proposing or applying changes.",
-            task_id=previous.task_id if previous is not None else None,
+            task_id=(
+                previous.task_id
+                if previous is not None and previous.task_id
+                else f"task-{uuid.uuid4()}"
+            ),
             run_id=previous.run_id if previous is not None else None,
             change_set_id=previous.change_set_id if previous is not None else None,
             evidence_refs=previous.evidence_refs if previous is not None else (),

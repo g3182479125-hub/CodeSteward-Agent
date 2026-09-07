@@ -28,6 +28,26 @@ def test_task_profile_prompt_binds_skill_output_and_authority(tmp_path: Path) ->
     assert "does not grant approval, execution, or rollback authority" in prompt
 
 
+def test_task_skill_snapshot_overrides_live_skill_for_prompt(tmp_path: Path) -> None:
+    skill_path = tmp_path / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: bug-fix\ndescription: test\n---\n\nlive-version\n",
+        encoding="utf-8",
+    )
+    snapshot = "---\nname: bug-fix\ndescription: test\n---\n\npinned-version\n"
+
+    prompt = _builder(tmp_path).build_system_prompt(
+        task_profile_name="bug-fix@1",
+        task_profile_skill_names=("bug-fix",),
+        task_skill_snapshots={"bug-fix": snapshot},
+        include_memory_recent_history=False,
+    )
+
+    assert "pinned-version" in prompt
+    assert "live-version" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # _merge_message_content (static)
 # ---------------------------------------------------------------------------

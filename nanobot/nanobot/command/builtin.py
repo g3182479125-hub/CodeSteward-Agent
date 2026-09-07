@@ -324,6 +324,10 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     if snapshot:
         runtime = ctx.runtime or loop.runtime_for_session(session)
     session.clear()
+    # A fresh chat must receive a fresh Skill snapshot; the selected trusted
+    # profile itself remains active for the next task.
+    session.metadata.pop("task_context", None)
+    session.metadata.pop("task_loop_guard", None)
     loop.sessions.save(session)
     loop.sessions.invalidate(session.key)
     if snapshot and runtime is not None:

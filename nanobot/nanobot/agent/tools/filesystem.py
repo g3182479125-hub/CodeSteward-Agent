@@ -55,6 +55,7 @@ class _FsTool(Tool):
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
         extra_read_allowed_files: list[Path] | None = None,
+        blocked_read_files: list[Path] | None = None,
         blocked_write_dirs: list[Path] | None = None,
         blocked_write_files: list[Path] | None = None,
     ):
@@ -67,6 +68,9 @@ class _FsTool(Tool):
             *(extra_read_allowed_dirs or []),
         ]
         self._extra_read_allowed_files = list(extra_read_allowed_files or [])
+        self._blocked_read_files = [
+            Path(path).expanduser().resolve(strict=False) for path in (blocked_read_files or [])
+        ]
         self._extra_write_allowed_dirs = list(extra_write_allowed_dirs or [])
         self._extra_write_allowed_files = list(extra_write_allowed_files or [])
         self._blocked_write_dirs = [
@@ -106,6 +110,7 @@ class _FsTool(Tool):
             allowed_dir=allowed_dir,
             extra_read_allowed_dirs=[BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills"],
             extra_read_allowed_files=[resolved_agent_workspace / "memory" / "history.jsonl"],
+            blocked_read_files=[resolved_agent_workspace / "skills" / "bug-fix" / "SKILL.md"],
             # The trial Skill is server-owned.  Every filesystem write tool
             # shares this guard; Dream adds the same guard to its private registry.
             blocked_write_dirs=[resolved_agent_workspace / "skills" / "bug-fix"],
@@ -159,13 +164,16 @@ class _FsTool(Tool):
         )
 
     def _resolve_read(self, path: str) -> Path:
-        return self._resolve_with_extra(
+        resolved = self._resolve_with_extra(
             path,
             self._extra_read_allowed_dirs,
             self._extra_read_allowed_files,
             include_media_dir=True,
             extra_files_require_allowed_root=True,
         )
+        if any(resolved == blocked for blocked in self._blocked_read_files):
+            raise PermissionError(f"read is blocked for protected Skill snapshot: {path}")
+        return resolved
 
     def _resolve_write(self, path: str) -> Path:
         resolved = self._resolve_with_extra(

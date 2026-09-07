@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Mapping, cast
 
 import yaml
 
@@ -93,7 +93,12 @@ class SkillsLoader:
                 return path.read_text(encoding="utf-8")
         return None
 
-    def load_skills_for_context(self, skill_names: list[str]) -> str:
+    def load_skills_for_context(
+        self,
+        skill_names: list[str],
+        *,
+        skill_snapshots: Mapping[str, str] | None = None,
+    ) -> str:
         """
         Load specific skills for inclusion in agent context.
 
@@ -103,11 +108,15 @@ class SkillsLoader:
         Returns:
             Formatted skills content.
         """
-        parts = [
-            f"### Skill: {name}\n\n{self._strip_frontmatter(markdown)}"
-            for name in skill_names
-            if (markdown := self.load_skill(name))
-        ]
+        parts: list[str] = []
+        for name in skill_names:
+            markdown = (
+                skill_snapshots.get(name)
+                if skill_snapshots is not None and name in skill_snapshots
+                else self.load_skill(name)
+            )
+            if markdown:
+                parts.append(f"### Skill: {name}\n\n{self._strip_frontmatter(markdown)}")
         return "\n\n---\n\n".join(parts)
 
     def get_explicitly_invoked_skills(self, text: str) -> list[str]:

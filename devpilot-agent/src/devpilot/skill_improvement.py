@@ -9,9 +9,11 @@ confirmation.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -172,6 +174,10 @@ class SkillSnapshot:
     content: str
     content_hash: str
     captured_at: str
+    task_id: str | None = None
+    session_id: str | None = None
+    project_id: str | None = None
+    workspace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,12 +275,15 @@ class SkillImprovementStore:
         self.confirmations_dir = self.root / "confirmations"
         self.snapshots_dir = self.root / "task-snapshots"
         self.activations_file = self.root / "activations.jsonl"
+        self.integrity_key_file = self.root / "integrity.key"
         self.root.mkdir(parents=True, exist_ok=True)
         self.candidates_dir.mkdir(parents=True, exist_ok=True)
         self.evaluations_dir.mkdir(parents=True, exist_ok=True)
         self.confirmations_dir.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        self._integrity_key = self._load_integrity_key()
         self._lock = threading.RLock()
+        self._recover_activation_journal()
 
     @classmethod
     def from_environment(cls, workspace: str | Path | None = None) -> SkillImprovementStore:
@@ -459,6 +468,8 @@ class SkillImprovementStore:
             return candidate
 
     def get_candidate(self, candidate_id: str) -> SkillCandidate | None:
+        if not _record_id_matches(candidate_id, "candidate"):
+            return None
         path = self.candidates_dir / f"{candidate_id}.json"
         if not path.is_file():
             return None
@@ -468,7 +479,7 @@ class SkillImprovementStore:
             raise SkillImprovementError("candidate record is unreadable") from exc
         if not isinstance(raw, dict):
             raise SkillImprovementError("candidate record is invalid")
-        return SkillCandidate(
+        candidate = SkillCandidate(
             candidate_id=str(raw["candidate_id"]),
             skill_id=str(raw["skill_id"]),
             project_id=str(raw["project_id"]),
@@ -486,6 +497,9 @@ class SkillImprovementStore:
             created_at=str(raw["created_at"]),
             batch_id=str(raw["batch_id"]),
         )
+        if content_sha256(candidate.candidate_content) != candidate.candidate_hash:
+            raise SkillImprovementError("candidate content hash mismatch")
+        return candidate
 
     def list_candidates(self, *, batch_id: str | None = None) -> list[SkillCandidate]:
         candidates: list[SkillCandidate] = []
@@ -499,8 +513,11 @@ class SkillImprovementStore:
     def read_effective_snapshot(self, workspace: str | Path) -> SkillSnapshot:
         """Read the only trusted on-disk version of the trial Skill."""
         root = Path(workspace).expanduser().resolve()
-        path = (root / TRIAL_SKILL_RELATIVE_PATH).resolve()
-        expected = (root / TRIAL_SKILL_RELATIVE_PATH).resolve()
+        lexical_path = root / TRIAL_SKILL_RELATIVE_PATH
+        if lexical_path.parent.is_symlink() or lexical_path.is_symlink():
+            raise SkillImprovementError("effective bug-fix Skill cannot be a symlink")
+        path = lexical_path.resolve()
+        expected = root / TRIAL_SKILL_RELATIVE_PATH
         if path != expected or not path.is_file():
             raise SkillImprovementError("effective bug-fix Skill is unavailable")
         try:
@@ -527,17 +544,35 @@ class SkillImprovementStore:
         task_key = content_sha256(_bounded_text(task_id, field="task_id", limit=128))
         path = self.snapshots_dir / f"{task_key}.json"
         with self._lock:
+            task_value = _bounded_text(task_id, field="task_id", limit=128)
+            session_value = _bounded_text(session_id, field="session_id", limit=128)
+            project_value = _bounded_text(project_id, field="project_id", limit=128)
+            workspace_value = str(Path(workspace).expanduser().resolve())
             if path.is_file():
                 raw = self._read_object(path, "task snapshot")
+                if (
+                    raw.get("task_id") != task_value
+                    or raw.get("session_id") != session_value
+                    or raw.get("project_id") != project_value
+                    or raw.get("workspace") != workspace_value
+                ):
+                    raise SkillImprovementError("task snapshot binding mismatch")
                 return self._snapshot_from_dict(raw)
-            snapshot = self.read_effective_snapshot(workspace)
+            effective = self.read_effective_snapshot(workspace)
+            snapshot = SkillSnapshot(
+                **self._snapshot_to_dict(effective),
+                task_id=task_value,
+                session_id=session_value,
+                project_id=project_value,
+                workspace=workspace_value,
+            )
             self._atomic_write(
                 path,
                 {
-                    "task_id": _bounded_text(task_id, field="task_id", limit=128),
-                    "session_id": _bounded_text(session_id, field="session_id", limit=128),
-                    "project_id": _bounded_text(project_id, field="project_id", limit=128),
-                    "workspace": str(Path(workspace).expanduser().resolve()),
+                    "task_id": task_value,
+                    "session_id": session_value,
+                    "project_id": project_value,
+                    "workspace": workspace_value,
                     **self._snapshot_to_dict(snapshot),
                 },
             )
@@ -641,11 +676,13 @@ class SkillImprovementStore:
         return report
 
     def get_evaluation(self, evaluation_id: str) -> EvaluationReport | None:
+        if not _record_id_matches(evaluation_id, "evaluation"):
+            return None
         path = self.evaluations_dir / f"{evaluation_id}.json"
         if not path.is_file():
             return None
         raw = self._read_object(path, "evaluation")
-        return EvaluationReport(
+        report = EvaluationReport(
             evaluation_id=str(raw["evaluation_id"]),
             candidate_id=str(raw["candidate_id"]),
             test_set_version=str(raw["test_set_version"]),
@@ -662,6 +699,15 @@ class SkillImprovementStore:
             status=str(raw["status"]),
             created_at=str(raw["created_at"]),
         )
+        expected_ids = {
+            f"{category}:{version}:{repeat}"
+            for category in EVALUATION_CATEGORIES
+            for version in EVALUATION_VERSIONS
+            for repeat in range(1, EVALUATION_REPEATS + 1)
+        }
+        if {str(item.get("case_id")) for item in report.cases} != expected_ids:
+            raise SkillImprovementError("evaluation case set was changed")
+        return report
 
     def issue_confirmation(
         self,
@@ -712,33 +758,44 @@ class SkillImprovementStore:
         project_id: str,
     ) -> SkillSnapshot:
         """Consume a bound confirmation and atomically replace the trusted Skill."""
+        if not _record_id_matches(confirmation_id, "confirmation"):
+            raise SkillImprovementError("confirmation not found")
         path = self.confirmations_dir / f"{confirmation_id}.json"
         with self._lock:
             confirmation = self._confirmation_from_dict(self._read_object(path, "confirmation"))
             self._check_confirmation(confirmation, user_id, session_id, workspace, project_id)
             candidate = self.get_candidate(confirmation.candidate_id)
-            if candidate is None or candidate.candidate_hash != confirmation.candidate_hash:
+            if (
+                candidate is None
+                or candidate.status != "pending_confirmation"
+                or candidate.candidate_hash != confirmation.candidate_hash
+            ):
                 raise SkillImprovementError("candidate changed after confirmation")
             current = self.read_effective_snapshot(workspace)
             if current.content_hash != confirmation.base_version_hash:
                 self._set_candidate_status(candidate, "stale")
                 raise SkillImprovementError("effective Skill changed after confirmation")
             skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
+            journal = {
+                "phase": "prepared",
+                "confirmation_id": confirmation.confirmation_id,
+                "candidate_id": candidate.candidate_id,
+                "workspace": str(Path(workspace).expanduser().resolve()),
+                "previous_content": current.content,
+                "previous_hash": current.content_hash,
+                "active_hash": candidate.candidate_hash,
+                "activated_at": _now(),
+            }
+            self._append_jsonl(self.activations_file, journal)
             self._atomic_replace_text(skill_path, candidate.candidate_content)
             updated = ConfirmationRecord(**{**confirmation.to_dict(), "consumed_at": _now()})
             self._atomic_write(path, updated.to_dict())
             active = self.read_effective_snapshot(workspace)
-            self._append_jsonl(
-                self.activations_file,
-                {
-                    "candidate_id": candidate.candidate_id,
-                    "workspace": str(Path(workspace).expanduser().resolve()),
-                    "previous_content": current.content,
-                    "previous_hash": current.content_hash,
-                    "active_hash": active.content_hash,
-                    "activated_at": active.captured_at,
-                },
-            )
+            self._append_jsonl(self.activations_file, {
+                **journal,
+                "phase": "committed",
+                "active_hash": active.content_hash,
+            })
             self._set_candidate_status(candidate, "active")
             return active
 
@@ -765,6 +822,7 @@ class SkillImprovementStore:
             item for item in self._read_jsonl(self.activations_file)
             if item.get("candidate_id") == candidate_id
             and item.get("workspace") == str(Path(workspace).expanduser().resolve())
+            and item.get("phase") == "committed"
         ]
         if not records or not isinstance(records[-1].get("previous_content"), str):
             raise SkillImprovementError("stable version for restore is unavailable")
@@ -773,6 +831,38 @@ class SkillImprovementStore:
         restored = self.read_effective_snapshot(workspace)
         self._set_candidate_status(candidate, "stale")
         return restored
+
+    def _recover_activation_journal(self) -> None:
+        """Reconcile a crash between the file swap and metadata persistence."""
+        if not self.activations_file.exists():
+            return
+        try:
+            records = self._read_jsonl(self.activations_file)
+        except SkillImprovementError:
+            return
+        latest: dict[tuple[str, str], dict[str, Any]] = {}
+        for record in records:
+            candidate_id = record.get("candidate_id")
+            workspace = record.get("workspace")
+            if isinstance(candidate_id, str) and isinstance(workspace, str):
+                latest[(candidate_id, workspace)] = record
+        for (candidate_id, workspace), record in latest.items():
+            if record.get("phase") != "prepared":
+                continue
+            candidate = self.get_candidate(candidate_id)
+            if candidate is None:
+                continue
+            try:
+                current = self.read_effective_snapshot(workspace)
+            except SkillImprovementError:
+                continue
+            if current.content_hash == record.get("active_hash"):
+                self._append_jsonl(self.activations_file, {**record, "phase": "committed"})
+                self._set_candidate_status(candidate, "active")
+            elif current.content_hash == record.get("previous_hash"):
+                self._append_jsonl(self.activations_file, {**record, "phase": "aborted"})
+            else:
+                self._set_candidate_status(candidate, "stale")
 
     def _set_candidate_status(
         self,
@@ -815,17 +905,54 @@ class SkillImprovementStore:
             content=content,
             content_hash=str(raw["content_hash"]),
             captured_at=str(raw["captured_at"]),
+            task_id=raw.get("task_id") if isinstance(raw.get("task_id"), str) else None,
+            session_id=raw.get("session_id") if isinstance(raw.get("session_id"), str) else None,
+            project_id=raw.get("project_id") if isinstance(raw.get("project_id"), str) else None,
+            workspace=raw.get("workspace") if isinstance(raw.get("workspace"), str) else None,
         )
 
-    @staticmethod
-    def _read_object(path: Path, label: str) -> dict[str, Any]:
+    def _read_object(self, path: Path, label: str) -> dict[str, Any]:
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise SkillImprovementError(f"{label} is unreadable") from exc
         if not isinstance(value, dict):
             raise SkillImprovementError(f"{label} is invalid")
+        supplied_mac = value.pop("record_mac", None)
+        if not isinstance(supplied_mac, str) or not hmac.compare_digest(
+            supplied_mac, self._record_mac(value)
+        ):
+            raise SkillImprovementError(f"{label} integrity check failed")
         return value
+
+    def _load_integrity_key(self) -> bytes:
+        try:
+            if self.integrity_key_file.is_file():
+                key = self.integrity_key_file.read_bytes()
+                if len(key) >= 32:
+                    return key
+            key = secrets.token_bytes(32)
+            with self.integrity_key_file.open("xb") as handle:
+                handle.write(key)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return key
+        except FileExistsError:
+            key = self.integrity_key_file.read_bytes()
+            if len(key) < 32:
+                raise SkillImprovementError("integrity key is invalid") from None
+            return key
+        except OSError as exc:
+            raise SkillImprovementError("integrity key is unavailable") from exc
+
+    def _record_mac(self, value: Mapping[str, Any]) -> str:
+        payload = json.dumps(
+            {key: value[key] for key in sorted(value) if key != "record_mac"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hmac.new(self._integrity_key, payload, hashlib.sha256).hexdigest()
 
     @staticmethod
     def _confirmation_from_dict(raw: Mapping[str, Any]) -> ConfirmationRecord:
@@ -891,8 +1018,7 @@ class SkillImprovementStore:
             temporary.unlink(missing_ok=True)
             raise
 
-    @staticmethod
-    def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -904,27 +1030,27 @@ class SkillImprovementStore:
             except ValueError as exc:
                 raise SkillImprovementError("feedback storage contains invalid JSON") from exc
             if isinstance(value, dict):
-                result.append(value)
+                result.append(self._read_object_value(value, "JSONL record"))
         return result
 
-    @staticmethod
-    def _append_jsonl(path: Path, value: Mapping[str, Any]) -> None:
+    def _append_jsonl(self, path: Path, value: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        safe = _json_safe(value)
+        safe["record_mac"] = self._record_mac(safe)
         with path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(_json_safe(value), ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(json.dumps(safe, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
 
-    @staticmethod
-    def _atomic_write(path: Path, value: Mapping[str, Any]) -> None:
+    def _atomic_write(self, path: Path, value: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        safe = _json_safe(value)
+        safe["record_mac"] = self._record_mac(safe)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", newline="\n", dir=path.parent, delete=False
         ) as handle:
             temporary = Path(handle.name)
-            handle.write(
-                json.dumps(_json_safe(value), ensure_ascii=False, indent=2, sort_keys=True)
-            )
+            handle.write(json.dumps(safe, ensure_ascii=False, indent=2, sort_keys=True))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -933,6 +1059,14 @@ class SkillImprovementStore:
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
+
+    def _read_object_value(self, value: dict[str, Any], label: str) -> dict[str, Any]:
+        supplied_mac = value.pop("record_mac", None)
+        if not isinstance(supplied_mac, str) or not hmac.compare_digest(
+            supplied_mac, self._record_mac(value)
+        ):
+            raise SkillImprovementError(f"{label} integrity check failed")
+        return value
 
 
 def _synthetic_case_success(category: str, content: str) -> bool:
@@ -957,6 +1091,10 @@ def _category_successes(cases: list[dict[str, Any]], version: str) -> dict[str, 
         )
         for category in EVALUATION_CATEGORIES
     }
+
+
+def _record_id_matches(value: str, prefix: str) -> bool:
+    return bool(re.fullmatch(rf"{re.escape(prefix)}-[0-9a-f-]+", value or ""))
 
 
 def _frontmatter(content: str) -> str:
