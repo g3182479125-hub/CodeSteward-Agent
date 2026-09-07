@@ -22,11 +22,10 @@ def test_integrated_runbook_keeps_nanobot_as_the_only_user_entrypoint() -> None:
     runbook = (ROOT / "docs" / "runbooks" / "local-nanobot-devpilot.md").read_text(
         encoding="utf-8"
     )
-    assert "uv sync --project .\\nanobot --locked" in runbook
-    assert (
-        "uv pip install --python .\\nanobot\\.venv\\Scripts\\python.exe -e .\\devpilot-agent"
-        in runbook
-    )
+    assert "install-integrated.ps1" in runbook
+    installer = (ROOT / "scripts" / "install-integrated.ps1").read_text(encoding="utf-8")
+    assert "uv sync --project $nanobotRoot --locked" in installer
+    assert "uv export --project $devpilotRoot --locked" in installer
     assert "nanobot 自带 WebUI 是唯一用户入口" in runbook
     assert "不要启动 `web/`、Vite 或 18801 端口" in runbook
     assert "E2B_API_KEY" in runbook
@@ -35,7 +34,7 @@ def test_integrated_runbook_keeps_nanobot_as_the_only_user_entrypoint() -> None:
 
 def test_root_readme_points_to_the_integrated_environment() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "uv sync --project .\\nanobot --locked" in readme
+    assert "scripts\\install-integrated.ps1" in readme
     assert "devpilot-agent/docs/runbooks/local-nanobot-devpilot.md" in readme
 
 

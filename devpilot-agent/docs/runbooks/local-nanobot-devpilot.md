@@ -10,8 +10,7 @@ FastAPI 只作为 nanobot Tool Adapter 和本地 Action Broker 使用的 loopbac
 
 ```powershell
 cd D:\path\to\nanobot-devpilot-agent
-uv sync --project .\nanobot --locked
-uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1
 ```
 
 若当前网络不可用，先在独立的 `devpilot-agent` 环境执行
@@ -19,7 +18,7 @@ uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
 不要用未锁定的 `pip install -U` 替代。验证两个包和全部 DevPilot Tool entry points：
 
 ```powershell
-\.\nanobot\.venv\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('nanobot-ai')); print(m.version('devpilot-agent')); print(sorted(ep.name for ep in m.entry_points(group='nanobot.tools') if ep.name.startswith('devpilot_')))"
+.\nanobot\.venv\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('nanobot-ai')); print(m.version('devpilot-agent')); print(sorted(ep.name for ep in m.entry_points(group='nanobot.tools') if ep.name.startswith('devpilot_')))"
 ```
 
 预期包含 14 个 `devpilot_*` 工具。控制面可以使用自己的 `devpilot-agent/.venv`，
@@ -27,9 +26,9 @@ uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
 
 配置恢复时复制 `.env.example` 为本机未跟踪的 `.env`，并在 nanobot 本地配置中填写
 模型、Base URL 和 API key；FC 的 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN` 只放在
-本机环境变量。迁移前备份 `local-data/devpilot.db`，恢复到新的隔离 `local-data` 后
-先执行迁移，再启动服务；不覆盖旧目录。缺 key、端口占用、旧库版本分别按启动日志、
-端口检查和 `alembic upgrade head` 输出定位。
+本机环境变量。迁移前备份 `local-data/devpilot.db`，恢复到新的隔离 `local-data` 后，
+设置正确的 `DEVPILOT_DATABASE_URL` 并先执行迁移，再启动服务；不覆盖旧目录。缺 key、
+端口占用、旧库版本分别按启动日志、端口检查和 `alembic upgrade head` 输出定位。
 
 依赖、密钥和运行数据检查完成后，再按下文启动控制面和 nanobot。停止时先停止
 nanobot，再停止 DevPilot；仅删除本次新建的隔离数据目录，不删除已有运行数据。
@@ -43,6 +42,7 @@ $env:DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE = "1"
 $env:DEVPILOT_ENABLE_FC_SANDBOX = "0"
 $env:DEVPILOT_ALLOWED_ROOTS = "D:\path\to\allowed-projects"
 $env:DEVPILOT_DATA_DIR = "D:\path\to\devpilot-agent\local-data"
+$env:DEVPILOT_DATABASE_URL = "sqlite:///local-data/devpilot.db"
 uv run alembic upgrade head
 uv run devpilot serve --host 127.0.0.1 --port 18800
 ```

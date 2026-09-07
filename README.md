@@ -18,8 +18,7 @@ AG-UI 不属于本项目。API key、运行时配置、数据库、虚拟环境�
 在仓库根目录执行：
 
 ```powershell
-uv sync --project .\nanobot --locked
-uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1
 
 cd .\nanobot\webui
 npm install
@@ -30,7 +29,7 @@ cd ..\..
 然后准备 nanobot 配置文件，填写自己的 OpenAI-compatible API key、base URL 和模型名，再启动：
 
 ```powershell
-\.\nanobot\.venv\Scripts\nanobot.exe webui --config .\nanobot-config.json --workspace .\workspace
+.\nanobot\.venv\Scripts\nanobot.exe webui --config .\nanobot-config.json --workspace .\workspace
 ```
 
 默认页面是 `http://127.0.0.1:8765`，网关健康检查地址是 `http://127.0.0.1:18790/health`。
