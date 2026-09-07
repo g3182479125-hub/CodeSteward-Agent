@@ -1381,16 +1381,50 @@ class SkillFeedbackTool(Tool):
             if request_context is None or not request_context.sender_id:
                 raise SkillImprovementError("feedback requires a trusted request context")
             request_workspace = request_context.workspace or self.workspace
+            trusted_attributes = request_context.attributes
+            trusted_task_id = trusted_attributes.get("devpilot_task_id")
+            trusted_project_id = trusted_attributes.get("devpilot_project_id")
+            if not isinstance(trusted_task_id, str) or not isinstance(
+                trusted_project_id, str
+            ):
+                raise SkillImprovementError("feedback is outside a trusted bug-fix task")
+            if str(kwargs["task_id"]) != trusted_task_id:
+                raise SkillImprovementError("task_id does not match the trusted task")
+            if str(kwargs["project_id"]) != trusted_project_id:
+                raise SkillImprovementError("project_id does not match the trusted project")
+            source_type = str(kwargs["source_type"])
+            if source_type == "user_feedback" and (
+                not request_context.original_user_text
+                or request_context.channel == "system"
+                or request_context.sender_id == "subagent"
+            ):
+                raise SkillImprovementError("user feedback requires a direct user turn")
+            if source_type == "tool_result":
+                trusted_refs = {
+                    value
+                    for value in trusted_attributes.get("devpilot_evidence_refs", [])
+                    if isinstance(value, str)
+                }
+                requested_refs = {
+                    value for value in kwargs.get("evidence_refs", []) if isinstance(value, str)
+                }
+                if not requested_refs or not requested_refs <= trusted_refs:
+                    raise SkillImprovementError("tool result is not trusted evidence")
+            correction = (
+                request_context.original_user_text
+                if source_type == "user_feedback"
+                else str(kwargs["correction"])
+            )
             evidence = SkillImprovementStore.from_environment(request_workspace).record_feedback(
                 task_id=str(kwargs["task_id"]),
                 project_id=str(kwargs["project_id"]),
                 workspace=request_workspace,
                 user_id=request_context.sender_id,
                 session_id=request_context.session_key or request_context.chat_id,
-                source_type=str(kwargs["source_type"]),
+                source_type=source_type,
                 skill_id="bug-fix",
                 skill_hash=str(kwargs["skill_hash"]),
-                correction=str(kwargs["correction"]),
+                correction=correction,
                 actual_result=str(kwargs["actual_result"]),
                 evidence_refs=kwargs.get("evidence_refs", ()),
                 batch_id=kwargs.get("batch_id"),
@@ -1476,6 +1510,14 @@ class SkillCandidateTool(Tool):
             request_workspace = (
                 request_context.workspace if request_context is not None else self.workspace
             )
+            trusted_project_id = request_context.attributes.get("devpilot_project_id")
+            trusted_task_id = request_context.attributes.get("devpilot_task_id")
+            if not isinstance(trusted_project_id, str) or not isinstance(
+                trusted_task_id, str
+            ):
+                raise SkillImprovementError("candidate is outside a trusted bug-fix task")
+            if str(kwargs["project_id"]) != trusted_project_id:
+                raise SkillImprovementError("project_id does not match the trusted project")
             candidate = SkillImprovementStore.from_environment(request_workspace).create_candidate(
                 project_id=str(kwargs["project_id"]),
                 skill_path="skills/bug-fix/SKILL.md",

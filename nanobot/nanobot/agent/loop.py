@@ -48,6 +48,7 @@ from nanobot.agent.task_profiles import (
 from nanobot.agent.tools.context import (
     RequestContext,
     bind_request_context,
+    current_request_context,
     replace_request_context_attributes,
     reset_request_context,
 )
@@ -1076,6 +1077,15 @@ class AgentLoop:
                 change_set_id if isinstance(change_set_id, str) and change_set_id else None
             ),
         )
+        request_context = current_request_context()
+        if request_context is not None:
+            latest = TaskContextState.from_metadata(
+                session.metadata.get(TASK_CONTEXT_METADATA_KEY)
+            )
+            if latest is not None:
+                request_context.attributes["devpilot_evidence_refs"] = list(
+                    latest.evidence_refs
+                )
 
     @staticmethod
     def _task_loop_guard(session: Session, profile: TaskProfile) -> TaskLoopGuard:
@@ -1092,6 +1102,22 @@ class AgentLoop:
             message_metadata=ctx.msg.metadata,
             session_metadata=ctx.session.metadata,
         )
+        attributes = dict(ctx.attributes)
+        task_context = TaskContextState.from_metadata(
+            ctx.session.metadata.get(TASK_CONTEXT_METADATA_KEY)
+        )
+        if task_context is not None and task_context.profile_binding.startswith("bug-fix@"):
+            project_id = "local-" + hashlib.sha256(
+                str(scope.project_path.resolve()).encode()
+            ).hexdigest()[:16]
+            attributes.update(
+                {
+                    "devpilot_task_id": task_context.task_id,
+                    "devpilot_project_id": project_id,
+                    "devpilot_skill_id": "bug-fix",
+                    "devpilot_evidence_refs": list(task_context.evidence_refs),
+                }
+            )
         return RequestContext(
             channel=ctx.delivery.route.channel,
             chat_id=ctx.delivery.route.chat_id,
@@ -1100,7 +1126,7 @@ class AgentLoop:
             original_user_text=ctx.original_user_text,
             runtime=ctx.runtime,
             metadata=dict(ctx.msg.metadata or {}),
-            attributes=dict(ctx.attributes),
+            attributes=attributes,
             sender_id=ctx.msg.sender_id,
             turn_id=ctx.turn_id,
             workspace=scope.project_path,

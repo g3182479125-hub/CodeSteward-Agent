@@ -358,6 +358,16 @@ class SkillImprovementStore:
                 raise SkillImprovementError(
                     "database schema must be upgraded to 0011_p8_skill_improvement_records"
                 )
+            if version is not None:
+                has_records_table = connection.execute(
+                    "select 1 from sqlite_master "
+                    "where type = 'table' and name = 'skill_improvement_records'"
+                ).fetchone()
+                if has_records_table is None:
+                    raise SkillImprovementError(
+                        "database schema is incomplete; rerun Alembic migration 0011"
+                    )
+                return
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS skill_improvement_records (
