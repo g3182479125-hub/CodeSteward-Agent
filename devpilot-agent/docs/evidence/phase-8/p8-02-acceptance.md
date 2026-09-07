@@ -1,6 +1,6 @@
 # P8-02 Acceptance Evidence
 
-Date: 2026-09-07  
+Date: 2026-09-07
 Scope: fixed comparison, native-chat confirmation, activation, task snapshots, and restore
 
 ## Delivered behavior

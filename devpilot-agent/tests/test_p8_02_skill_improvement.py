@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,8 @@ def test_fixed_comparison_has_18_cases_and_real_improvement(tmp_path: Path) -> N
     assert report.baseline_successes == 6
     assert report.candidate_successes == 9
     assert report.eligible is True
+    assert all("agent_trace" in item for item in report.cases)
+    assert any("read_file" in item["agent_trace"] for item in report.cases)
     assert store.get_candidate(candidate_id).status == "pending_confirmation"
 
 
@@ -127,6 +130,38 @@ def test_confirmation_is_bound_one_time_and_restore_checks_conflict(tmp_path: Pa
     skill_path.write_text(active.content, encoding="utf-8")
     restored = store.restore_candidate(candidate_id, workspace=workspace)
     assert restored.content_hash == old_task.content_hash
+
+
+def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    store.evaluate_candidate(candidate_id, workspace=workspace)
+    confirmation = store.issue_confirmation(
+        candidate_id,
+        user_id="user-1",
+        session_id="session-1",
+        workspace=workspace,
+        project_id="project-1",
+    )
+    store.activate_candidate(
+        confirmation.confirmation_id,
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        project_id="project-1",
+    )
+    candidate_path = store.candidates_dir / f"{candidate_id}.json"
+    candidate = store.get_candidate(candidate_id)
+    raw = json.loads(candidate_path.read_text(encoding="utf-8"))
+    raw["status"] = "pending_confirmation"
+    candidate_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(SkillImprovementError, match="integrity"):
+        store.get_candidate(candidate_id)
+
+    # A clean committed journal repairs a stale in-memory state on restart.
+    candidate_path.unlink()
+    store._atomic_write(candidate_path, {**candidate.to_dict(), "status": "pending_confirmation"})
+    recovered = SkillImprovementStore(tmp_path / "data", workspace=workspace)
+    assert recovered.get_candidate(candidate_id).status == "active"
 
 
 def test_no_improvement_is_not_eligible(tmp_path: Path) -> None:

@@ -476,12 +476,7 @@ class SkillImprovementStore:
         path = self.candidates_dir / f"{candidate_id}.json"
         if not path.is_file():
             return None
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise SkillImprovementError("candidate record is unreadable") from exc
-        if not isinstance(raw, dict):
-            raise SkillImprovementError("candidate record is invalid")
+        raw = self._read_object(path, "candidate record")
         candidate = SkillCandidate(
             candidate_id=str(raw["candidate_id"]),
             skill_id=str(raw["skill_id"]),
