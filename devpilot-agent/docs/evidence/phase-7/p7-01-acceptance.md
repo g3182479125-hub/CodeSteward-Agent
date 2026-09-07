@@ -23,11 +23,17 @@
 基线：P6 结项提交 `e8369151cba046007cc05621756ab702a1ec99f8`。实现候选固定前，保留
 用户已有的两个 Node fixture 未提交修改，不将其当作 P7 实现文件。
 
+实现候选：`bf773e09d97c94b0e88cd98c6d00f5d6d3eb30f8`（基线：
+`e8369151cba046007cc05621756ab702a1ec99f8`）。该候选已吸收首轮双轴 review 的有效
+边界问题：项目分析 Profile 移除 Artifact 发布能力；任务上下文、文件哈希和错误守卫
+按 `profile@version` 绑定并持久化；仅直接用户消息可以切换 Profile；陈旧配置/依赖
+返回明确的 Profile 错误；未结束会话不能覆盖 Profile。
+
 已通过：
 
 - `uv run --no-sync ruff check nanobot tests`；
-- nanobot 全量：`5856 passed, 42 skipped`；
-- P7 专项与受影响回归：`95 passed`，另补充全量回归通过；
+- nanobot 全量：`5862 passed, 42 skipped`；
+- P7 专项与受影响回归：`101 passed`；
 - 使用同仓库 `devpilot-agent/src` 加入 `PYTHONPATH` 后，两个跨包 DevPilot 集成测试
   通过；这只是测试环境拼接，不改变运行时架构；
 - `compileall`/Ruff 作为实现检查通过。
@@ -44,7 +50,8 @@
 - 同一 Profile 只绑定一个 Session，另一个 Session 不继承；
 - Profile 版本变化或元数据陈旧时停止；
 - 连续相同工具错误第三次暂停；成功证据会清除连续错误计数；
-- 上下文中保留 Profile、输出字段和权限边界，不产生独立前端页面。
+- 上下文中保留 Profile、输出字段、任务状态、文件哈希和权限边界，不产生独立前端页面；
+- 外部文件变更、陈旧 Profile 版本、跨会话恢复和错误守卫恢复均有回归覆盖。
 
 ## 未做与不做
 
