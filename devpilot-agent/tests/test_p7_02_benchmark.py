@@ -30,7 +30,7 @@ def test_benchmark_is_fixed_to_three_task_families() -> None:
 def test_benchmark_runs_three_repetitions_for_both_versions() -> None:
     result = benchmark.run_benchmark(
         baseline="e8369151cba046007cc05621756ab702a1ec99f8",
-        candidate="HEAD",
+        candidate="7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
         repetitions=3,
     )
 

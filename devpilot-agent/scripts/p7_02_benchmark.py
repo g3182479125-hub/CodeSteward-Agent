@@ -28,7 +28,7 @@ from devpilot.action_broker import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BASELINE = "e8369151cba046007cc05621756ab702a1ec99f8"
-DEFAULT_CANDIDATE = "HEAD"
+DEFAULT_CANDIDATE = "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce"
 DEFAULT_REPETITIONS = 3
 
 

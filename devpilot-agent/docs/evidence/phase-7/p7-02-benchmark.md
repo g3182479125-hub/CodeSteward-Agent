@@ -6,11 +6,11 @@ Baseline: `e8369151cba046007cc05621756ab702a1ec99f8`
 
 ## Scope
 
-This is a deterministic workflow benchmark for the P7-01 task-profile runtime.
-It does not claim that the candidate produces better natural-language answers.
-It verifies that the same three bounded task intents consume the fixture,
-produce the expected bounded proposal/evidence shape, route through the expected
-profile, and enforce the safety boundary.
+This is a deterministic task-profile contract benchmark for the P7-01 runtime,
+not an end-to-end LLM quality benchmark. It does not claim that the candidate
+produces better natural-language answers. It verifies that the same three bounded
+task intents consume the fixture, produce the expected bounded proposal/evidence
+shape, route through the expected profile, and enforce the safety boundary.
 
 The benchmark uses the same fixed input contract for both versions:
 
@@ -58,5 +58,5 @@ provider or FC cost.
 
 P7-02 passes its bounded acceptance scope: P7-01's routing and safety contracts
 are reproducible at 9/9 candidate probes versus 0/9 on the selected pre-P7
-baseline. No general claim is made about model quality, production latency, or
-real sandbox execution from this offline benchmark.
+baseline. The actual model-driven answer quality, production latency, and real
+sandbox execution are outside this offline node and are not claimed here.
