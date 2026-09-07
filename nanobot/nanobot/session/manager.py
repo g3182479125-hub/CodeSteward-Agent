@@ -57,6 +57,12 @@ _FORK_VOLATILE_METADATA_KEYS = {
     "title",
     "title_user_edited",
 }
+_FORK_TASK_METADATA_KEYS = {
+    "task_profile",
+    "task_profile_version",
+    "task_context",
+    "task_loop_guard",
+}
 
 
 def _json_object(value: object) -> dict[str, Any]:
@@ -1197,7 +1203,7 @@ class SessionManager:
             return None
 
         metadata = deepcopy(source.metadata)
-        for key in _FORK_VOLATILE_METADATA_KEYS:
+        for key in _FORK_VOLATILE_METADATA_KEYS | _FORK_TASK_METADATA_KEYS:
             metadata.pop(key, None)
 
         last_consolidated = min(source.last_consolidated, len(copied))

@@ -841,7 +841,7 @@ class AgentLoop:
         }
         stored_version = session.metadata.get(TASK_PROFILE_VERSION_METADATA_KEY)
         if stored_version != profile.version:
-            raise ValueError(
+            raise TaskProfileError(
                 f"task profile '{profile.name}' is stale; stored version={stored_version!r}, "
                 f"current version={profile.version!r}"
             )
@@ -869,7 +869,12 @@ class AgentLoop:
         project_ref = hashlib.sha256(str(project_path.resolve()).encode()).hexdigest()[:16]
         session_ref = hashlib.sha256(session.key.encode()).hexdigest()[:16]
         previous = TaskContextState.from_metadata(session.metadata.get(TASK_CONTEXT_METADATA_KEY))
-        if previous is not None and previous.profile_binding == binding and previous.project_ref == project_ref:
+        if (
+            previous is not None
+            and previous.session_ref == session_ref
+            and previous.profile_binding == binding
+            and previous.project_ref == project_ref
+        ):
             changed_files = self._changed_context_files(previous, project_path)
             if previous.goal and not changed_files:
                 return previous
@@ -1003,7 +1008,18 @@ class AgentLoop:
             ):
                 file_hashes.append((path, digest))
         if not evidence_refs and not file_hashes and not isinstance(change_set_id, str):
-            return
+            if tool_name not in {
+                "devpilot_inspect_project",
+                "devpilot_search_code",
+                "devpilot_read_code",
+                "devpilot_propose_changeset",
+                "devpilot_feature_delivery_propose",
+                "devpilot_bug_fix_propose",
+            }:
+                return
+            evidence_refs.append(
+                f"local:{tool_name}:{hashlib.sha256(result.encode('utf-8')).hexdigest()[:16]}"
+            )
         self.update_task_context_evidence(
             session.key,
             evidence_refs=tuple(dict.fromkeys(evidence_refs))[:20],

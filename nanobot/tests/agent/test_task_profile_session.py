@@ -52,6 +52,19 @@ def test_task_profile_version_mismatch_is_rejected(tmp_path) -> None:
         raise AssertionError("a stale task-profile binding must be rejected")
 
 
+def test_task_context_state_redacts_bearer_credentials_in_references() -> None:
+    from nanobot.agent.task_profiles import TaskContextState
+
+    state = TaskContextState(
+        session_ref="session-ref",
+        project_ref="project-ref",
+        profile_binding="feature-delivery@1",
+        evidence_refs=("Authorization: Bearer secret-value",),
+    )
+
+    assert "secret-value" not in state.to_metadata()["evidence_refs"][0]
+
+
 def test_task_profile_cannot_be_replaced_in_an_unfinished_session(tmp_path) -> None:
     loop = _loop(tmp_path)
     loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
@@ -139,3 +152,21 @@ def test_task_context_records_proposal_change_set_and_evidence(tmp_path) -> None
     stored = session.metadata["task_context"]
     assert stored["evidence_refs"] == ["analysis-1"]
     assert stored["change_set_id"] == "changeset-1"
+
+
+def test_task_context_records_local_reference_for_search_without_run_id(tmp_path) -> None:
+    loop = _loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    profile = loop.set_session_task_profile("cli:one", "feature-delivery")
+    session = loop.sessions.get_or_create("cli:one")
+    loop._ensure_task_context(session, profile, "find parser", tmp_path)
+
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_search_code",
+        {"project_id": "project-1", "query": "parser"},
+        '{"matches":[],"files_scanned":1,"truncated":false}',
+    )
+
+    assert session.metadata["task_context"]["evidence_refs"][0].startswith("local:devpilot_search_code:")

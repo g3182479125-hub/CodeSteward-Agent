@@ -14,7 +14,8 @@ TASK_CONTEXT_METADATA_KEY = "task_context"
 TASK_LOOP_GUARD_METADATA_KEY = "task_loop_guard"
 
 _SENSITIVE_CONTEXT_RE = re.compile(
-    r"(?i)(?:api[_ -]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+"
+    r"(?i)(?:authorization\s*[:=]\s*bearer\s+[^\s,;]+|"
+    r"(?:api[_ -]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+)"
 )
 
 
@@ -219,7 +220,11 @@ class TaskContextState:
 
 def _safe_context_text(value: Any) -> str:
     text = str(value or "").strip()[:512]
-    return _SENSITIVE_CONTEXT_RE.sub(lambda match: match.group(0).split("=", 1)[0].split(":", 1)[0] + "=[REDACTED]", text)
+    return _SENSITIVE_CONTEXT_RE.sub(
+        lambda match: re.split(r"[:=]", match.group(0), maxsplit=1)[0].strip()
+        + "=[REDACTED]",
+        text,
+    )
 
 
 def _context_strings(value: Any) -> tuple[str, ...]:
