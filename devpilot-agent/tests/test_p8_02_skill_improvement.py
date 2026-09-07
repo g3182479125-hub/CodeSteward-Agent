@@ -96,8 +96,15 @@ def test_fixed_comparison_has_18_cases_and_real_improvement(tmp_path: Path) -> N
     assert report.baseline_successes == 6
     assert report.candidate_successes == 9
     assert report.eligible is True
-    assert all("agent_trace" in item for item in report.cases)
-    assert any("read_file" in item["agent_trace"] for item in report.cases)
+    assert all(
+        "agent_trace" in item and "fixture" in item and "assertion" in item
+        for item in report.cases
+    )
+    assert any(
+        any(entry.startswith("tool:file_hash:") for entry in item["agent_trace"])
+        for item in report.cases
+    )
+    assert all(item["fixture"].startswith("p8-fixed/") for item in report.cases)
     assert store.get_candidate(candidate_id).status == "pending_confirmation"
 
 
@@ -149,6 +156,42 @@ def test_confirmation_is_bound_one_time_and_restore_checks_conflict(tmp_path: Pa
     skill_path.write_text(active.content, encoding="utf-8")
     restored = store.restore_candidate(candidate_id, workspace=workspace)
     assert restored.content_hash == old_task.content_hash
+
+
+def test_restore_recovers_after_file_swap_before_status_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    store.evaluate_candidate(candidate_id, workspace=workspace)
+    confirmation = store.issue_confirmation(
+        candidate_id,
+        user_id="user-1",
+        session_id="session-1",
+        workspace=workspace,
+        project_id="project-1",
+    )
+    store.activate_candidate(
+        confirmation.confirmation_id,
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        project_id="project-1",
+    )
+
+    original_append = store._append_jsonl
+
+    def fail_after_restore_swap(path: Path, value: dict[str, object]) -> None:
+        if value.get("phase") == "restore_committed":
+            raise RuntimeError("simulated crash")
+        original_append(path, value)
+
+    monkeypatch.setattr(store, "_append_jsonl", fail_after_restore_swap)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        store.restore_candidate(candidate_id, workspace=workspace)
+
+    recovered = SkillImprovementStore(store.root, workspace=workspace)
+    assert recovered.get_candidate(candidate_id).status == "stale"
+    assert recovered.read_effective_snapshot(workspace).content_hash == content_sha256(_baseline())
 
 
 def test_evaluation_and_confirmation_keep_workspace_and_project_binding(tmp_path: Path) -> None:

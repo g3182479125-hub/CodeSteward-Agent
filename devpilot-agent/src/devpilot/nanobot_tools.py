@@ -229,6 +229,11 @@ def _data_dir() -> Path:
     ).expanduser().resolve()
 
 
+def _skill_improvement_enabled() -> bool:
+    """Return whether the opt-in P8 Skill trial is enabled for this process."""
+    return os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") == "1"
+
+
 def _durable_store() -> ProjectStore:
     """Open only an Alembic-initialized store; never create production tables implicitly."""
     store = ProjectStore(_data_dir() / "devpilot.db")
@@ -1348,6 +1353,10 @@ class SkillFeedbackTool(Tool):
 
     _scopes = {"core"}
 
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return _skill_improvement_enabled()
+
     def __init__(self, workspace: Path | None = None) -> None:
         self.workspace = workspace or Path.cwd()
 
@@ -1372,6 +1381,8 @@ class SkillFeedbackTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            if not _skill_improvement_enabled():
+                raise SkillImprovementError("P8 Skill improvement is disabled")
             try:
                 from nanobot.agent.tools.context import current_request_context
 
@@ -1479,6 +1490,10 @@ class SkillCandidateTool(Tool):
 
     _scopes = {"core", "memory"}
 
+    @classmethod
+    def enabled(cls, ctx: ToolContext) -> bool:
+        return _skill_improvement_enabled()
+
     def __init__(self, workspace: Path | None = None) -> None:
         self.workspace = workspace or Path.cwd()
 
@@ -1503,6 +1518,8 @@ class SkillCandidateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            if not _skill_improvement_enabled():
+                raise SkillImprovementError("P8 Skill improvement is disabled")
             try:
                 from nanobot.agent.tools.context import current_request_context
 

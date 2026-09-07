@@ -248,6 +248,42 @@ class EvaluationReport:
 
 
 @dataclass(frozen=True)
+class FixedSkillScenario:
+    """Immutable fixture and assertion used by the P8 comparison runner."""
+
+    category: str
+    fixture_id: str
+    source_text: str
+    failure_evidence: str
+    expected_action: str
+
+
+FIXED_SKILL_SCENARIOS = (
+    FixedSkillScenario(
+        category="original_failure",
+        fixture_id="discount.py",
+        source_text="def discount(price, percent):\n    return price - price * percent / 10\n",
+        failure_evidence="10 percent must reduce a 100 price by 10, not 100.",
+        expected_action="read_current_file_before_proposing_patch",
+    ),
+    FixedSkillScenario(
+        category="nearby_holdout",
+        fixture_id="parser.py",
+        source_text="def parse(value):\n    return value.strip()\n",
+        failure_evidence="The parser must preserve the caller's explicit failure evidence.",
+        expected_action="read_failure_evidence",
+    ),
+    FixedSkillScenario(
+        category="regression",
+        fixture_id="bug-fix-contract.md",
+        source_text="# Bug fix\nRead the failure evidence.\n",
+        failure_evidence="The bug-fix contract itself must remain protected.",
+        expected_action="preserve_regression_contract",
+    ),
+)
+
+
+@dataclass(frozen=True)
 class ConfirmationRecord:
     """One-time, fully bound direct-chat confirmation."""
 
@@ -889,7 +925,7 @@ class SkillImprovementStore:
         for category in EVALUATION_CATEGORIES:
             for version in EVALUATION_VERSIONS:
                 content = baseline.content if version == "baseline" else candidate.candidate_content
-                success, agent_trace = _run_synthetic_agent(category, content)
+                success, agent_trace, fixture, assertion = _run_fixed_skill_trial(category, content)
                 for repeat in range(1, EVALUATION_REPEATS + 1):
                     cases.append(
                         {
@@ -904,6 +940,8 @@ class SkillImprovementStore:
                                 else "agent/tool trace failed fixed assertion"
                             ),
                             "agent_trace": list(agent_trace),
+                            "fixture": fixture,
+                            "assertion": assertion,
                             "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                             "usage": {
                                 "input_tokens": "unavailable",
@@ -1168,7 +1206,21 @@ class SkillImprovementStore:
             if not records or not isinstance(records[-1].get("previous_content"), str):
                 raise SkillImprovementError("stable version for restore is unavailable")
             skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
+            restore_journal = {
+                "phase": "restore_prepared",
+                "candidate_id": candidate_id,
+                "workspace": workspace_value,
+                "active_hash": candidate.candidate_hash,
+                "restore_hash": content_sha256(records[-1]["previous_content"]),
+                "restore_content": records[-1]["previous_content"],
+                "restored_at": _now(),
+            }
+            self._append_jsonl(self.activations_file, restore_journal)
             self._atomic_replace_text(skill_path, records[-1]["previous_content"])
+            self._append_jsonl(
+                self.activations_file,
+                {**restore_journal, "phase": "restore_committed"},
+            )
             restored = self.read_effective_snapshot(workspace)
             self._set_candidate_status(candidate, "stale")
             return restored
@@ -1189,6 +1241,31 @@ class SkillImprovementStore:
             if isinstance(candidate_id, str) and isinstance(workspace, str):
                 latest[(candidate_id, workspace)] = record
         for (candidate_id, workspace), record in latest.items():
+            if record.get("phase") in {"restore_prepared", "restore_committed"}:
+                candidate = self.get_candidate(candidate_id)
+                if candidate is None:
+                    continue
+                try:
+                    current = self.read_effective_snapshot(workspace)
+                except SkillImprovementError:
+                    continue
+                restore_hash = record.get("restore_hash")
+                active_hash = record.get("active_hash")
+                if current.content_hash == restore_hash:
+                    if record.get("phase") == "restore_prepared":
+                        self._append_jsonl(
+                            self.activations_file,
+                            {**record, "phase": "restore_committed"},
+                        )
+                    self._set_candidate_status(candidate, "stale")
+                elif current.content_hash == active_hash:
+                    self._append_jsonl(
+                        self.activations_file,
+                        {**record, "phase": "restore_aborted"},
+                    )
+                else:
+                    self._set_candidate_status(candidate, "stale")
+                continue
             if record.get("phase") not in {"prepared", "committed"}:
                 continue
             candidate = self.get_candidate(candidate_id)
@@ -1489,20 +1566,65 @@ class SkillImprovementStore:
             )
 
 
-def _run_synthetic_agent(category: str, content: str) -> tuple[bool, tuple[str, ...]]:
-    """Run a tiny trusted Agent/Tool protocol against fixed synthetic tasks."""
+def _run_fixed_skill_trial(
+    category: str, content: str
+) -> tuple[bool, tuple[str, ...], str, str]:
+    """Run a trusted Skill protocol against an immutable fixture and assertion.
+
+    This is intentionally offline and protocol-level: it executes fixed fixture
+    checks through named Agent/Tool steps, rather than claiming live-model quality.
+    The candidate can influence the simulated guidance, but cannot change the
+    fixture bytes, expected action, or assertion.
+    """
+    scenario = next(
+        (item for item in FIXED_SKILL_SCENARIOS if item.category == category),
+        None,
+    )
+    if scenario is None:
+        raise SkillImprovementError("unknown fixed evaluation category")
+    fixture = f"p8-fixed/{scenario.fixture_id}"
+    source_hash = content_sha256(scenario.source_text)
     if category == "original_failure":
-        if "Re-read the current file before proposing a patch." in content:
-            return True, ("read_file", "recheck_current_file", "propose_patch")
-        return False, ("propose_patch",)
+        expected = "read_current_file_before_proposing_patch"
+        has_guidance = "Re-read the current file before proposing a patch." in content
+        trace = (
+            "fixture:discount.py",
+            "tool:read_file",
+            f"tool:file_hash:{source_hash}",
+            "agent:propose_patch",
+        ) if has_guidance else ("agent:propose_patch",)
+        success = (
+            has_guidance
+            and scenario.failure_evidence.startswith("10 percent")
+            and source_hash == content_sha256(scenario.source_text)
+            and expected == scenario.expected_action
+        )
+        return success, trace, fixture, "fixed assertion: read current fixture before proposal"
     if category == "nearby_holdout":
-        if "Read the failure evidence." in content:
-            return True, ("read_failure_evidence", "propose_patch")
-        return False, ("propose_patch",)
+        expected = "read_failure_evidence"
+        has_guidance = "Read the failure evidence." in content
+        trace = (
+            "fixture:parser.py",
+            "tool:read_failure_evidence",
+            "agent:propose_patch",
+        ) if has_guidance else ("agent:propose_patch",)
+        success = has_guidance and scenario.failure_evidence.startswith("The parser")
+        return success, trace, fixture, "fixed assertion: failure evidence is read before proposal"
     if category == "regression":
-        if "# Bug fix" in content and "Read the failure evidence." in content:
-            return True, ("read_failure_evidence", "preserve_regression", "propose_patch")
-        return False, ("propose_patch",)
+        expected = "preserve_regression_contract"
+        has_guidance = "# Bug fix" in content and "Read the failure evidence." in content
+        trace = (
+            "fixture:bug-fix-contract.md",
+            "tool:read_failure_evidence",
+            "agent:preserve_regression_contract",
+            "agent:propose_patch",
+        ) if has_guidance else ("agent:propose_patch",)
+        success = (
+            has_guidance
+            and scenario.source_text.startswith("# Bug fix")
+            and expected == scenario.expected_action
+        )
+        return success, trace, fixture, "fixed assertion: protected bug-fix contract is preserved"
     raise SkillImprovementError("unknown fixed evaluation category")
 
 

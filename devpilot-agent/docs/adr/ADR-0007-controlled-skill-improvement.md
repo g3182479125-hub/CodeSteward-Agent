@@ -15,5 +15,11 @@ CURRENT_PLAN 3.3 继承 ADR-0006 的 nanobot 单 Runtime 路线，在 P7 补上�
 闭环满足个人项目的可维护性与可验证性。必须限制现有 Dream 直写等实际可达入口，
 不能只在新界面审批而保留绕过路径。不得靠提示词执行权限限制。
 
+确认边界：项目补丁继续复用 DevPilot `ActionBroker`；Skill 激活不是 ChangeSet
+动作，不能伪装成 Apply/Verify/Rollback，因此只在同一私有持久化与原生 nanobot
+聊天入口中使用最小 `ConfirmationRecord`。它绑定用户、会话、工作区、项目、Skill
+及基础/候选哈希、固定测试集和过期时间，仅能消费一次以激活对应候选，不产生项目
+变更能力，也不允许模型提供确认凭据。
+
 本次交付为计划文档；不创建实际定时任务、不启用云服务、不修改运行配置。
 详细规格为 CURRENT_PLAN 与 SKILL_IMPROVEMENT，后续模型按节点读取并验收。

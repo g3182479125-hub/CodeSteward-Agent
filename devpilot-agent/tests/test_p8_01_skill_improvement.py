@@ -211,7 +211,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),
-            candidate_content=_baseline() + "\napi_key=sk-12345678901234567890\n",
+            candidate_content=_baseline() + "\napi_key=sk-abcdefghijkl\n",
             evidence_ids=[evidence_id],
             reason="reason",
             expected_behavior="behavior",

@@ -121,3 +121,33 @@ def test_main_filesystem_guard_hides_private_skill_improvement_data(tmp_path) ->
     )
     assert getattr(write_result, "is_error", False) is True
     assert not (private_dir / "devpilot.db").exists()
+
+
+def test_dream_hides_configured_private_root_and_integrity_key(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "workspace"
+    private_dir = workspace / "private-data"
+    private_key = workspace / "private.key"
+    private_dir.mkdir(parents=True)
+    private_key.write_text("secret", encoding="utf-8")
+    (private_dir / "candidate.json").write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(private_dir))
+    monkeypatch.setenv("DEVPILOT_INTEGRITY_KEY_FILE", str(private_key))
+
+    tools = MemoryStore(workspace).build_dream_tools()
+    for name, params in (
+        ("read_file", {"path": "private-data/candidate.json"}),
+        ("write_file", {"path": "private-data/new.json", "content": "no"}),
+        ("write_file", {"path": "private.key", "content": "no"}),
+    ):
+        result = asyncio.run(tools.execute(name, params))
+        assert getattr(result, "is_error", False) is True
+        assert "private" in str(result).lower()
+
+
+def test_p8_tools_are_not_available_without_controlled_opt_in(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", raising=False)
+    from devpilot.nanobot_tools import SkillCandidateTool, SkillFeedbackTool
+
+    assert SkillCandidateTool.enabled(SimpleNamespace()) is False
+    assert SkillFeedbackTool.enabled(SimpleNamespace()) is False
+    assert not MemoryStore(tmp_path).build_dream_tools().has("devpilot_skill_candidate")

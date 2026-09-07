@@ -1110,7 +1110,11 @@ class AgentLoop:
         task_context = TaskContextState.from_metadata(
             ctx.session.metadata.get(TASK_CONTEXT_METADATA_KEY)
         )
-        if task_context is not None and task_context.profile_binding.startswith("bug-fix@"):
+        if (
+            os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") == "1"
+            and task_context is not None
+            and task_context.profile_binding.startswith("bug-fix@")
+        ):
             project_id = "local-" + hashlib.sha256(
                 str(scope.project_path.resolve()).encode()
             ).hexdigest()[:16]

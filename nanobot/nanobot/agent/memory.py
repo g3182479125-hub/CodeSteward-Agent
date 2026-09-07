@@ -657,6 +657,21 @@ class MemoryStore:
         # bug-fix Skill.  Candidate creation goes through DevPilot's private
         # evidence store; this directory is not a SkillsLoader root.
         protected_skill_dir = skills_dir / "bug-fix"
+        private_improvement_dir = Path(
+            os.environ.get(
+                "DEVPILOT_DATA_DIR",
+                str(Path.home() / ".nanobot-skill-improvement"),
+            )
+        ).expanduser().resolve(strict=False)
+        private_improvement_key = Path(
+            os.environ.get(
+                "DEVPILOT_INTEGRITY_KEY_FILE",
+                str(
+                    private_improvement_dir.parent
+                    / f".{private_improvement_dir.name}.integrity.key"
+                ),
+            )
+        ).expanduser().resolve(strict=False)
 
         extra_read = [BUILTIN_SKILLS_DIR] if BUILTIN_SKILLS_DIR.exists() else None
         editable_files = [self.memory_file, self.soul_file, self.user_file]
@@ -665,20 +680,24 @@ class MemoryStore:
             workspace=workspace,
             allowed_dir=workspace,
             extra_read_allowed_dirs=extra_read,
+            blocked_read_files=[private_improvement_key],
+            blocked_read_dirs=[private_improvement_dir],
             file_states=file_states,
         ))
         tools.register(EditFileTool(
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
-            blocked_write_dirs=[protected_skill_dir],
+            blocked_write_dirs=[protected_skill_dir, private_improvement_dir],
+            blocked_write_files=[private_improvement_key],
             file_states=file_states,
         ))
         tools.register(ApplyPatchTool(
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
-            blocked_write_dirs=[protected_skill_dir],
+            blocked_write_dirs=[protected_skill_dir, private_improvement_dir],
+            blocked_write_files=[private_improvement_key],
             file_states=file_states,
         ))
         tools.register(WriteFileTool(
@@ -693,7 +712,8 @@ class MemoryStore:
         try:
             from devpilot.nanobot_tools import SkillCandidateTool
 
-            tools.register(SkillCandidateTool(workspace=workspace))
+            if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") == "1":
+                tools.register(SkillCandidateTool(workspace=workspace))
         except ImportError:
             # Keep the ordinary nanobot installation independent from DevPilot.
             pass
