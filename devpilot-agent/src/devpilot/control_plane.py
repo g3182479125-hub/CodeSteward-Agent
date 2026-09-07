@@ -384,7 +384,7 @@ class ControlPlaneManager:
         profile_name = self._bound_profile_name(entry, payload)
         check_ids = payload.get("check_ids")
         if profile_name == "python-syntax" and isinstance(check_ids, list):
-            for candidate in check_ids:
+            for candidate in cast(list[object], check_ids):
                 if isinstance(candidate, str):
                     try:
                         profile_name = VerificationProfile(candidate).value
@@ -418,8 +418,11 @@ class ControlPlaneManager:
 
         for key in ("bug_fix_contract", "test_repair_contract"):
             contract = payload.get(key)
-            if isinstance(contract, dict) and isinstance(contract.get("verification_profile"), str):
-                return str(contract["verification_profile"])
+            if isinstance(contract, dict):
+                safe_contract = cast(dict[str, object], contract)
+                profile = safe_contract.get("verification_profile")
+                if isinstance(profile, str):
+                    return profile
         if self.store is not None and entry.run_id is not None:
             for event in reversed(self.store.list_run_events(entry.run_id)):
                 if event["event_type"] in {
@@ -447,7 +450,7 @@ class ControlPlaneManager:
             cleanup = getattr(backend, "cleanup", None) if backend is not None else None
             if run_id is None or not callable(cleanup):
                 raise PatchError("FC_CLEANUP_UNAVAILABLE", "verification cleanup is unavailable")
-            state = cleanup(run_id)
+            state = cast(dict[str, Any], cleanup(run_id))
             self._event(entry, "execution.cleanup_retried", state)
             return {"change_set_id": change_set_id, "run_id": run_id, "cleanup": state}
 

@@ -558,7 +558,8 @@ class ActionBroker:
         if not isinstance(value, Mapping) or not value:
             raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
         result: dict[str, str] = {}
-        for key, item in value.items():
+        component = cast(Mapping[str, object], value)
+        for key, item in component.items():
             if key not in {"status", "run_id", "error_code", "result_ref"}:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
             safe = ActionBroker._safe_result_identifier(item)

@@ -296,7 +296,7 @@ class FCSandboxBackend:
             connector = getattr(sandbox_cls, "connect", None)
             if not callable(connector):
                 raise RuntimeError("FC SDK does not expose Sandbox.connect")
-            handle = connector(
+            handle: Any = connector(
                 sandbox_id,
                 api_key=self.config.api_key,
                 api_url=self.config.api_url,
