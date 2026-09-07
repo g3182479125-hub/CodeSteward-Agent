@@ -130,6 +130,7 @@ class SkillCandidate:
     candidate_id: str
     skill_id: str
     project_id: str
+    workspace: str
     skill_path: str
     base_version_hash: str
     candidate_content: str
@@ -149,6 +150,7 @@ class SkillCandidate:
             "candidate_id": self.candidate_id,
             "skill_id": self.skill_id,
             "project_id": self.project_id,
+            "workspace": self.workspace,
             "skill_path": self.skill_path,
             "base_version_hash": self.base_version_hash,
             "candidate_content": self.candidate_content,
@@ -405,7 +407,7 @@ class SkillImprovementStore:
         test_set_version: str,
         batch_id: str | None = None,
         budget: Mapping[str, Any] | None = None,
-        workspace: str | Path | None = None,
+        workspace: str | Path,
     ) -> SkillCandidate:
         if skill_path.replace("\\", "/") != TRIAL_SKILL_RELATIVE_PATH:
             raise SkillImprovementError("candidate path must be the bug-fix Skill")
@@ -415,15 +417,15 @@ class SkillImprovementStore:
         evidence = [self.get_feedback(item) for item in ids]
         if any(item is None or item.processing_state != "verified" for item in evidence):
             raise SkillImprovementError("all candidate evidence must be verified")
-        if workspace is not None:
-            effective = self.read_effective_snapshot(workspace)
-            if content_sha256(baseline_content) != effective.content_hash:
-                raise SkillImprovementError("candidate baseline does not match effective Skill")
-            if any(
-                item is not None and item.skill_hash != effective.content_hash
-                for item in evidence
-            ):
-                raise SkillImprovementError("candidate evidence does not match effective Skill")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        effective = self.read_effective_snapshot(workspace)
+        if content_sha256(baseline_content) != effective.content_hash:
+            raise SkillImprovementError("candidate baseline does not match effective Skill")
+        if any(
+            item is not None and item.skill_hash != effective.content_hash
+            for item in evidence
+        ):
+            raise SkillImprovementError("candidate evidence does not match effective Skill")
         projects = {item.project_id for item in evidence if item is not None}
         if projects != {project_id}:
             raise SkillImprovementError("candidate evidence must belong to one project")
@@ -446,6 +448,7 @@ class SkillImprovementStore:
                 candidate_id=f"candidate-{uuid.uuid4()}",
                 skill_id=TRIAL_SKILL_ID,
                 project_id=_bounded_text(project_id, field="project_id", limit=128),
+                workspace=workspace_value,
                 skill_path=TRIAL_SKILL_RELATIVE_PATH,
                 base_version_hash=content_sha256(baseline_content),
                 candidate_content=candidate_content,
@@ -483,6 +486,7 @@ class SkillImprovementStore:
             candidate_id=str(raw["candidate_id"]),
             skill_id=str(raw["skill_id"]),
             project_id=str(raw["project_id"]),
+            workspace=str(raw["workspace"]),
             skill_path=str(raw["skill_path"]),
             base_version_hash=str(raw["base_version_hash"]),
             candidate_content=str(raw["candidate_content"]),
@@ -722,6 +726,8 @@ class SkillImprovementStore:
         candidate = self.get_candidate(candidate_id)
         if candidate is None or candidate.status != "pending_confirmation":
             raise SkillImprovementError("candidate is not eligible for confirmation")
+        if candidate.workspace != str(Path(workspace).expanduser().resolve()):
+            raise SkillImprovementError("candidate workspace mismatch")
         evaluation = (
             self.get_evaluation(candidate.result_refs[-1])
             if candidate.result_refs
@@ -769,6 +775,7 @@ class SkillImprovementStore:
             if (
                 candidate is None
                 or candidate.status != "pending_confirmation"
+                or candidate.workspace != confirmation.workspace
                 or candidate.candidate_hash != confirmation.candidate_hash
             ):
                 raise SkillImprovementError("candidate changed after confirmation")
@@ -848,7 +855,7 @@ class SkillImprovementStore:
             if isinstance(candidate_id, str) and isinstance(workspace, str):
                 latest[(candidate_id, workspace)] = record
         for (candidate_id, workspace), record in latest.items():
-            if record.get("phase") != "prepared":
+            if record.get("phase") not in {"prepared", "committed"}:
                 continue
             candidate = self.get_candidate(candidate_id)
             if candidate is None:
@@ -858,7 +865,10 @@ class SkillImprovementStore:
             except SkillImprovementError:
                 continue
             if current.content_hash == record.get("active_hash"):
-                self._append_jsonl(self.activations_file, {**record, "phase": "committed"})
+                if record.get("phase") == "prepared":
+                    self._append_jsonl(
+                        self.activations_file, {**record, "phase": "committed"}
+                    )
                 confirmation_id = record.get("confirmation_id")
                 if isinstance(confirmation_id, str) and _record_id_matches(
                     confirmation_id, "confirmation"
