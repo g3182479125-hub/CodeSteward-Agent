@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,24 @@ def test_evaluation_and_confirmation_keep_workspace_and_project_binding(tmp_path
         )
 
 
+def test_deleted_feedback_invalidates_linked_candidate(tmp_path: Path) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    feedback = store.get_feedback(store.get_candidate(candidate_id).evidence_ids[0])
+    assert feedback is not None
+    deleted = store.delete_feedback(
+        feedback.evidence_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+    assert deleted.processing_state == "deleted"
+    candidate = store.get_candidate(candidate_id)
+    assert candidate.status == "stale"
+    assert candidate.candidate_content == "[deleted candidate content]"
+    with pytest.raises(SkillImprovementError, match="deleted"):
+        store.verify_feedback(feedback.evidence_id)
+
+
 def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
     store, workspace, candidate_id = _setup(tmp_path)
     store.evaluate_candidate(candidate_id, workspace=workspace)
@@ -173,17 +192,22 @@ def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
         session_id="session-1",
         project_id="project-1",
     )
-    candidate_path = store.candidates_dir / f"{candidate_id}.json"
     candidate = store.get_candidate(candidate_id)
-    raw = json.loads(candidate_path.read_text(encoding="utf-8"))
-    raw["status"] = "pending_confirmation"
-    candidate_path.write_text(json.dumps(raw), encoding="utf-8")
+    raw = {**candidate.to_dict(), "status": "pending_confirmation"}
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "update skill_improvement_records set payload_json = ? "
+            "where record_key = ?",
+            (json.dumps(raw), f"candidate:{candidate_id}"),
+        )
     with pytest.raises(SkillImprovementError, match="integrity"):
         store.get_candidate(candidate_id)
 
     # A clean committed journal repairs a stale in-memory state on restart.
-    candidate_path.unlink()
-    store._atomic_write(candidate_path, {**candidate.to_dict(), "status": "pending_confirmation"})
+    store._atomic_write(
+        store.candidates_dir / f"{candidate_id}.json",
+        {**candidate.to_dict(), "status": "pending_confirmation"},
+    )
     recovered = SkillImprovementStore(tmp_path / "data", workspace=workspace)
     assert recovered.get_candidate(candidate_id).status == "active"
 

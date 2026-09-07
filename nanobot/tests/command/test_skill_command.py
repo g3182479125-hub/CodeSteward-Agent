@@ -73,7 +73,8 @@ async def test_skill_command_no_skills(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_skill_improvement_command_uses_native_chat(tmp_path: Path) -> None:
+async def test_skill_improvement_command_uses_native_chat(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path.parent / f"{tmp_path.name}-devpilot-data"))
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
     assert out.content == "No private Skill candidates are available."

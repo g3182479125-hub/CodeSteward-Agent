@@ -10,6 +10,7 @@ Scope: fixed comparison, native-chat confirmation, activation, task snapshots, a
 - `/skill-improvement` is the only user-facing control. It lists/views candidates, runs evaluation, and supports `enable`, `ignore`, and `restore` in the existing nanobot chat; no new page or agent loop is added.
 - Enablement creates a five-minute, one-time confirmation bound to user, session, workspace, project, Skill, base/candidate hashes, test set, and evaluation result. Activation rechecks the live base hash, atomically replaces only `skills/bug-fix/SKILL.md`, and records the previous content.
 - Task snapshots are immutable per task ID: an existing task continues to read its captured version, while a new task captures the current effective version. Restore is explicit, serialized under the store lock, and stops on external edits instead of overwriting them. Activation journal recovery fails closed on integrity errors and reconciles a committed file swap after restart.
+- `/skill-improvement delete-evidence <evidence-id>` tombstones authorized feedback, removes its text/reference payload, and invalidates linked candidates; deletion requires a direct user turn and matching workspace/user/project scope.
 - The effective Skill remains protected from Dream and normal filesystem writes; host shell is disabled when `DEVPILOT_ENABLE_SKILL_IMPROVEMENT=1`. DevPilot execution remains the separate approved backend.
 
 ## Verification commands
@@ -32,4 +33,4 @@ The P8-02 service suite verifies 18-case improvement, no-improvement refusal, on
 
 ## Non-goals and evidence boundary
 
-This is a deterministic synthetic acceptance harness, not a claim that every real task improves. It does not evaluate user repositories, change test standards, call a model, silently roll back, or implement P8-03 scheduled batching. P8-03 is recorded as “optional, not selected”; no automatic activation or production Skill update is enabled by default.
+This is a deterministic synthetic acceptance harness, not a claim that every real task improves. It does not evaluate user repositories, change test standards, call a model, silently roll back, or implement P8-03 scheduled batching. P8-03 is recorded as “optional, not selected”; no automatic activation or production Skill update is enabled by default. Service-owned P8 records are persisted privately and are not part of the workspace or Git handoff.

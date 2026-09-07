@@ -14,11 +14,13 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +33,9 @@ TRIAL_SKILL_RELATIVE_PATH = "skills/bug-fix/SKILL.md"
 FEEDBACK_SOURCE_TYPES = frozenset(
     {"user_feedback", "tool_result", "model_inference", "external_content"}
 )
-FEEDBACK_STATES = frozenset({"verified", "pending_verification", "rejected"})
+FEEDBACK_STATES = frozenset(
+    {"verified", "pending_verification", "rejected", "deleted"}
+)
 CANDIDATE_STATES = frozenset(
     {
         "pending_evaluation",
@@ -276,7 +280,10 @@ class SkillImprovementStore:
                 raise SkillImprovementError(
                     "private data directory cannot be under workspace skills"
                 )
-        self.root = data_root / "skill-improvement"
+        # P8 uses the existing DevPilot SQLite data root. Candidate records
+        # live in a dedicated table, not a second JSON database.
+        self.root = data_root
+        self.database_path = data_root / "devpilot.db"
         self.workspace = (
             Path(workspace).expanduser().resolve() if workspace is not None else None
         )
@@ -286,6 +293,8 @@ class SkillImprovementStore:
             raise SkillImprovementError(
                 "private Skill improvement data cannot be stored inside the workspace"
             )
+        # These paths are logical record namespaces retained for diagnostics;
+        # no P8 payload is written to them.
         self.feedback_file = self.root / "feedback.jsonl"
         self.candidates_dir = self.root / "candidates"
         self.evaluations_dir = self.root / "evaluations"
@@ -293,15 +302,87 @@ class SkillImprovementStore:
         self.snapshots_dir = self.root / "task-snapshots"
         self.activations_file = self.root / "activations.jsonl"
         self.integrity_key_file = self.root / "integrity.key"
+        self.process_lock_file = self.root / "skill-improvement.lock"
         self.root.mkdir(parents=True, exist_ok=True)
-        self.candidates_dir.mkdir(parents=True, exist_ok=True)
-        self.evaluations_dir.mkdir(parents=True, exist_ok=True)
-        self.confirmations_dir.mkdir(parents=True, exist_ok=True)
-        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        self._initialize_sqlite_table()
         self._integrity_key = self._load_integrity_key()
         self._lock = threading.RLock()
         self._recovery_blocked = False
         self._recover_activation_journal()
+
+    def _initialize_sqlite_table(self) -> None:
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            has_alembic = connection.execute(
+                "select 1 from sqlite_master where type = 'table' and name = 'alembic_version'"
+            ).fetchone()
+            version = (
+                connection.execute("select version_num from alembic_version limit 1").fetchone()
+                if has_alembic
+                else None
+            )
+            if version is not None and version[0] != "0011_p8_skill_improvement_records":
+                raise SkillImprovementError(
+                    "database schema must be upgraded to 0011_p8_skill_improvement_records"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS skill_improvement_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_key TEXT NOT NULL UNIQUE,
+                    record_type TEXT NOT NULL,
+                    record_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    record_mac TEXT NOT NULL,
+                    workspace TEXT,
+                    project_id TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def _record_rows(self, record_type: str, record_id: str | None = None) -> list[dict[str, Any]]:
+        query = (
+            "select record_id, payload_json, record_mac from skill_improvement_records "
+            "where record_type = ?"
+        )
+        params: list[str] = [record_type]
+        if record_id is not None:
+            query += " and record_id = ?"
+            params.append(record_id)
+        query += " order by id"
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            rows = connection.execute(query, params).fetchall()
+        result: list[dict[str, Any]] = []
+        for _row_id, payload_json, record_mac in rows:
+            value = json.loads(payload_json)
+            if not isinstance(value, dict) or not hmac.compare_digest(
+                str(record_mac), self._record_mac(value)
+            ):
+                raise SkillImprovementError(f"{record_type} integrity check failed")
+            result.append(value)
+        return result
+
+    def _record_exists(self, record_type: str, record_id: str) -> bool:
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            return connection.execute(
+                "select 1 from skill_improvement_records "
+                "where record_type = ? and record_id = ? limit 1",
+                (record_type, record_id),
+            ).fetchone() is not None
+
+    @staticmethod
+    def _namespace(path: Path) -> tuple[str, str | None]:
+        if path.name == "feedback.jsonl":
+            return "feedback", None
+        if path.name == "activations.jsonl":
+            return "activation", None
+        namespace = path.parent.name
+        return {
+            "candidates": "candidate",
+            "evaluations": "evaluation",
+            "confirmations": "confirmation",
+            "task-snapshots": "snapshot",
+        }.get(namespace, "generic"), path.stem
 
     @classmethod
     def from_environment(cls, workspace: str | Path | None = None) -> SkillImprovementStore:
@@ -381,6 +462,8 @@ class SkillImprovementStore:
         evidence = self.get_feedback(evidence_id)
         if evidence is None:
             raise SkillImprovementError("feedback evidence not found")
+        if evidence.processing_state == "deleted":
+            raise SkillImprovementError("deleted feedback cannot be verified")
         refs = tuple(dict.fromkeys((*evidence.evidence_refs, *_refs(independent_refs))))
         if evidence.source_type in {"model_inference", "external_content"} and len(refs) < 2:
             raise SkillImprovementError("independent verification evidence is required")
@@ -398,10 +481,56 @@ class SkillImprovementStore:
         self._append_jsonl(self.feedback_file, updated.to_dict())
         return updated
 
+    def delete_feedback(
+        self,
+        evidence_id: str,
+        *,
+        workspace: str | Path,
+        user_id: str,
+        project_id: str,
+    ) -> FeedbackEvidence:
+        """Tombstone feedback and invalidate candidates that used it."""
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        with self._lock, self._process_lock():
+            evidence = self.get_feedback(evidence_id)
+            if evidence is None:
+                raise SkillImprovementError("feedback evidence not found")
+            if (
+                evidence.workspace != workspace_value
+                or evidence.user_id != _bounded_text(user_id, field="user_id", limit=128)
+                or evidence.project_id != _bounded_text(project_id, field="project_id", limit=128)
+            ):
+                raise SkillImprovementError("feedback deletion scope mismatch")
+            deleted = FeedbackEvidence(
+                **{
+                    **evidence.to_dict(),
+                    "correction": "[deleted]",
+                    "actual_result": "[deleted]",
+                    "evidence_refs": (),
+                    "processing_state": "deleted",
+                }
+            )
+            self._append_jsonl(self.feedback_file, deleted.to_dict())
+            for candidate in self.list_candidates(workspace=workspace):
+                if evidence_id not in candidate.evidence_ids:
+                    continue
+                invalidated_content = "[deleted candidate content]"
+                self._atomic_write(
+                    self.candidates_dir / f"{candidate.candidate_id}.json",
+                    {
+                        **candidate.to_dict(),
+                        "candidate_content": invalidated_content,
+                        "candidate_hash": content_sha256(invalidated_content),
+                        "reason": "[deleted evidence]",
+                        "expected_behavior": "[deleted evidence]",
+                        "status": "stale",
+                        "result_refs": (),
+                    },
+                )
+            return deleted
+
     def get_feedback(self, evidence_id: str) -> FeedbackEvidence | None:
         latest: dict[str, Any] | None = None
-        if not self.feedback_file.exists():
-            return None
         for record in self._read_jsonl(self.feedback_file):
             if record.get("evidence_id") == evidence_id:
                 latest = record
@@ -515,7 +644,7 @@ class SkillImprovementStore:
         if not _record_id_matches(candidate_id, "candidate"):
             return None
         path = self.candidates_dir / f"{candidate_id}.json"
-        if not path.is_file():
+        if not self._record_exists("candidate", candidate_id):
             return None
         raw = self._read_object(path, "candidate record")
         candidate = SkillCandidate(
@@ -555,8 +684,12 @@ class SkillImprovementStore:
             str(Path(workspace).expanduser().resolve()) if workspace is not None else None
         )
         candidates: list[SkillCandidate] = []
-        for path in sorted(self.candidates_dir.glob("candidate-*.json")):
-            candidate_id = path.stem
+        candidate_ids = {
+            value["candidate_id"]
+            for value in self._record_rows("candidate")
+            if isinstance(value.get("candidate_id"), str)
+        }
+        for candidate_id in sorted(candidate_ids):
             candidate = self.get_candidate(candidate_id)
             if (
                 candidate is not None
@@ -604,7 +737,7 @@ class SkillImprovementStore:
             session_value = _bounded_text(session_id, field="session_id", limit=128)
             project_value = _bounded_text(project_id, field="project_id", limit=128)
             workspace_value = str(Path(workspace).expanduser().resolve())
-            if path.is_file():
+            if self._record_exists("snapshot", task_key):
                 raw = self._read_object(path, "task snapshot")
                 if (
                     raw.get("task_id") != task_value
@@ -739,7 +872,7 @@ class SkillImprovementStore:
         if not _record_id_matches(evaluation_id, "evaluation"):
             return None
         path = self.evaluations_dir / f"{evaluation_id}.json"
-        if not path.is_file():
+        if not self._record_exists("evaluation", evaluation_id):
             return None
         raw = self._read_object(path, "evaluation")
         report = EvaluationReport(
@@ -829,7 +962,7 @@ class SkillImprovementStore:
         if not _record_id_matches(confirmation_id, "confirmation"):
             raise SkillImprovementError("confirmation not found")
         path = self.confirmations_dir / f"{confirmation_id}.json"
-        with self._lock:
+        with self._lock, self._process_lock():
             confirmation = self._confirmation_from_dict(self._read_object(path, "confirmation"))
             self._check_confirmation(confirmation, user_id, session_id, workspace, project_id)
             candidate = self.get_candidate(confirmation.candidate_id)
@@ -882,7 +1015,7 @@ class SkillImprovementStore:
         workspace: str | Path,
     ) -> SkillSnapshot:
         """Restore the saved stable content only if the active file is untouched."""
-        with self._lock:
+        with self._lock, self._process_lock():
             candidate = self.get_candidate(candidate_id)
             if candidate is None or candidate.status != "active":
                 raise SkillImprovementError("candidate is not active")
@@ -910,7 +1043,7 @@ class SkillImprovementStore:
 
     def _recover_activation_journal(self) -> None:
         """Reconcile a crash between the file swap and metadata persistence."""
-        if not self.activations_file.exists():
+        if not self._record_rows("activation"):
             return
         try:
             records = self._read_jsonl(self.activations_file)
@@ -943,7 +1076,7 @@ class SkillImprovementStore:
                     confirmation_id, "confirmation"
                 ):
                     confirmation_path = self.confirmations_dir / f"{confirmation_id}.json"
-                    if confirmation_path.is_file():
+                    if self._record_exists("confirmation", confirmation_id):
                         confirmation = self._confirmation_from_dict(
                             self._read_object(confirmation_path, "confirmation")
                         )
@@ -1008,38 +1141,42 @@ class SkillImprovementStore:
         )
 
     def _read_object(self, path: Path, label: str) -> dict[str, Any]:
+        record_type, record_id = self._namespace(path)
+        if record_id is None:
+            raise SkillImprovementError(f"{label} is not a single record")
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            rows = self._record_rows(record_type, record_id)
+        except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
             raise SkillImprovementError(f"{label} is unreadable") from exc
-        if not isinstance(value, dict):
-            raise SkillImprovementError(f"{label} is invalid")
-        supplied_mac = value.pop("record_mac", None)
-        if not isinstance(supplied_mac, str) or not hmac.compare_digest(
-            supplied_mac, self._record_mac(value)
-        ):
-            raise SkillImprovementError(f"{label} integrity check failed")
-        return value
+        if not rows:
+            raise SkillImprovementError(f"{label} is unavailable")
+        return rows[-1]
 
     def _load_integrity_key(self) -> bytes:
-        try:
-            if self.integrity_key_file.is_file():
-                key = self.integrity_key_file.read_bytes()
-                if len(key) >= 32:
-                    return key
-            key = secrets.token_bytes(32)
-            with self.integrity_key_file.open("xb") as handle:
-                handle.write(key)
-                handle.flush()
-                os.fsync(handle.fileno())
-            return key
-        except FileExistsError:
-            key = self.integrity_key_file.read_bytes()
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            row = connection.execute(
+                "select payload_json from skill_improvement_records "
+                "where record_key = 'integrity:key'"
+            ).fetchone()
+            if row is None:
+                key = secrets.token_bytes(32)
+                connection.execute(
+                    "insert or ignore into skill_improvement_records "
+                    "(record_key, record_type, record_id, payload_json, record_mac, created_at) "
+                    "values ('integrity:key', 'integrity', 'key', ?, 'internal', ?)" ,
+                    (json.dumps({"key": key.hex()}), _now()),
+                )
+                row = connection.execute(
+                    "select payload_json from skill_improvement_records "
+                    "where record_key = 'integrity:key'"
+                ).fetchone()
+            try:
+                key = bytes.fromhex(str(json.loads(row[0])["key"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SkillImprovementError("integrity key is invalid") from exc
             if len(key) < 32:
-                raise SkillImprovementError("integrity key is invalid") from None
+                raise SkillImprovementError("integrity key is invalid")
             return key
-        except OSError as exc:
-            raise SkillImprovementError("integrity key is unavailable") from exc
 
     def _record_mac(self, value: Mapping[str, Any]) -> str:
         payload = json.dumps(
@@ -1098,6 +1235,31 @@ class SkillImprovementStore:
     def _atomic_replace_text(self, path: Path, content: str) -> None:
         self._atomic_write_text(path, content)
 
+    @contextmanager
+    def _process_lock(self):
+        """Serialize confirmation consumption across nanobot processes."""
+        self.process_lock_file.parent.mkdir(parents=True, exist_ok=True)
+        with self.process_lock_file.open("a+b") as handle:
+            handle.seek(0)
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:  # pragma: no cover - exercised on POSIX CI
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:  # pragma: no cover - exercised on POSIX CI
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1115,54 +1277,57 @@ class SkillImprovementStore:
             raise
 
     def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
-            raise SkillImprovementError("feedback storage is unreadable") from exc
-        for line in lines:
-            try:
-                value = json.loads(line)
-            except ValueError as exc:
-                raise SkillImprovementError("feedback storage contains invalid JSON") from exc
-            if isinstance(value, dict):
-                result.append(self._read_object_value(value, "JSONL record"))
-        return result
+        record_type, record_id = self._namespace(path)
+        if record_id is not None:
+            raise SkillImprovementError("append-only storage namespace is invalid")
+        return self._record_rows(record_type)
 
     def _append_jsonl(self, path: Path, value: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
         safe = _json_safe(value)
-        safe["record_mac"] = self._record_mac(safe)
-        with path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(safe, ensure_ascii=False, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        record_type, _record_id = self._namespace(path)
+        record_id = str(safe.get("evidence_id") or safe.get("candidate_id") or uuid.uuid4())
+        self._write_record(record_type, f"{record_id}:{uuid.uuid4()}", safe, replace=False)
 
     def _atomic_write(self, path: Path, value: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
         safe = _json_safe(value)
-        safe["record_mac"] = self._record_mac(safe)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="\n", dir=path.parent, delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(json.dumps(safe, ensure_ascii=False, indent=2, sort_keys=True))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.replace(temporary, path)
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
+        record_type, record_id = self._namespace(path)
+        if record_id is None:
+            raise SkillImprovementError("single-record storage namespace is invalid")
+        self._write_record(record_type, record_id, safe, replace=True)
 
-    def _read_object_value(self, value: dict[str, Any], label: str) -> dict[str, Any]:
-        supplied_mac = value.pop("record_mac", None)
-        if not isinstance(supplied_mac, str) or not hmac.compare_digest(
-            supplied_mac, self._record_mac(value)
-        ):
-            raise SkillImprovementError(f"{label} integrity check failed")
-        return value
+    def _write_record(
+        self,
+        record_type: str,
+        record_id: str,
+        value: Mapping[str, Any],
+        *,
+        replace: bool,
+    ) -> None:
+        safe = _json_safe(value)
+        payload = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        record_key = f"{record_type}:{record_id}"
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            if replace:
+                connection.execute(
+                    "delete from skill_improvement_records where record_key = ?",
+                    (record_key,),
+                )
+            connection.execute(
+                "insert into skill_improvement_records "
+                "(record_key, record_type, record_id, payload_json, record_mac, "
+                "workspace, project_id, created_at) "
+                "values (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record_key,
+                    record_type,
+                    record_id,
+                    payload,
+                    self._record_mac(safe),
+                    safe.get("workspace"),
+                    safe.get("project_id"),
+                    _now(),
+                ),
+            )
 
 
 def _run_synthetic_agent(category: str, content: str) -> tuple[bool, tuple[str, ...]]:

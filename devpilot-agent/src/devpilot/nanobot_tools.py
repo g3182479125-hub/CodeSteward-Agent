@@ -233,7 +233,7 @@ def _durable_store() -> ProjectStore:
         ).scalar_one_or_none()
     if not has_version:
         raise RuntimeError("database schema is not initialized by Alembic")
-    store.require_schema_head("0010_p5_persist_idempotency_key")
+    store.require_schema_head("0011_p8_skill_improvement_records")
     return store
 
 
@@ -254,7 +254,7 @@ def _read_only_code_access_store() -> ProjectStore:
         }
         has_version = "alembic_version" in tables
     if has_version:
-        store.require_schema_head("0010_p5_persist_idempotency_key")
+        store.require_schema_head("0011_p8_skill_improvement_records")
     elif "projects" not in tables:
         raise RuntimeError("database schema is not initialized")
     return store

@@ -175,7 +175,7 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Review Skill improvement",
         "View, enable, ignore, or restore a reviewed Skill candidate in chat.",
         "wrench",
-        "[candidate-id [view|enable|ignore|restore]]",
+        "[candidate-id [view|enable|ignore|restore]|delete-evidence evidence-id]",
         accepts_args=True,
     ),
     BuiltinCommandSpec(
@@ -1065,6 +1065,35 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
+    if args[0].lower() == "delete-evidence":
+        if len(args) != 2:
+            content = "Usage: /skill-improvement delete-evidence <evidence-id>"
+        elif not ctx.is_user_turn:
+            content = "Evidence deletion requires a direct user chat turn."
+        else:
+            try:
+                user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
+                evidence = store.get_feedback(args[1])
+                if evidence is None:
+                    raise ValueError("evidence not found")
+                deleted = store.delete_feedback(
+                    args[1],
+                    workspace=workspace,
+                    user_id=user_id,
+                    project_id=evidence.project_id,
+                )
+                content = (
+                    f"Evidence `{deleted.evidence_id}` deleted; associated candidates were invalidated."
+                )
+            except (ValueError, OSError) as exc:
+                content = f"Evidence deletion rejected: {type(exc).__name__}."
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
     candidate = store.get_candidate(args[0], workspace=workspace)
     if candidate is None:
         content = f"Candidate `{args[0]}` was not found."
@@ -1140,7 +1169,10 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             except (ValueError, OSError) as exc:
                 content = f"Restore rejected: {type(exc).__name__}."
     else:
-        content = "Usage: /skill-improvement <candidate-id> [view|enable|ignore|restore]"
+        content = (
+            "Usage: /skill-improvement <candidate-id> [view|enable|ignore|restore] "
+            "or delete-evidence <evidence-id>"
+        )
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
