@@ -57,6 +57,15 @@ _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(r"^(run|tool|trace|session|test)-[A-Za-z0-9_.:-]{1,127}$")
 
 
+def integrity_key_path_for_data_dir(data_dir: str | Path) -> Path:
+    """Return the independent user-owned integrity-key path for a data root."""
+    data_root = Path(data_dir).expanduser().resolve()
+    configured = os.environ.get("DEVPILOT_INTEGRITY_KEY_FILE")
+    return Path(configured).expanduser().resolve() if configured else (
+        data_root.parent / f".{data_root.name}.integrity.key"
+    )
+
+
 class SkillImprovementError(ValueError):
     """Raised when feedback or a Skill candidate violates the P8 contract."""
 
@@ -154,6 +163,9 @@ class SkillCandidate:
     result_refs: tuple[str, ...]
     created_at: str
     batch_id: str
+    user_id: str = ""
+    session_ids: tuple[str, ...] = ()
+    task_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -174,6 +186,9 @@ class SkillCandidate:
             "result_refs": list(self.result_refs),
             "created_at": self.created_at,
             "batch_id": self.batch_id,
+            "user_id": self.user_id,
+            "session_ids": list(self.session_ids),
+            "task_ids": list(self.task_ids),
         }
 
 
@@ -271,7 +286,13 @@ class ConfirmationRecord:
 class SkillImprovementStore:
     """Private, integrity-protected SQLite storage for P8 evidence and candidates."""
 
-    def __init__(self, data_dir: str | Path, *, workspace: str | Path | None = None):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        workspace: str | Path | None = None,
+        allow_unmigrated: bool = False,
+    ):
         data_root = Path(data_dir).expanduser().resolve()
         if workspace is not None:
             workspace_root = Path(workspace).expanduser().resolve()
@@ -293,6 +314,14 @@ class SkillImprovementStore:
             raise SkillImprovementError(
                 "private Skill improvement data cannot be stored inside the workspace"
             )
+        self.integrity_key_file = integrity_key_path_for_data_dir(data_root)
+        if self.integrity_key_file == data_root or data_root in self.integrity_key_file.parents:
+            raise SkillImprovementError("integrity key must be outside the private data root")
+        if self.workspace is not None and (
+            self.integrity_key_file == self.workspace
+            or self.workspace in self.integrity_key_file.parents
+        ):
+            raise SkillImprovementError("integrity key cannot be stored inside the workspace")
         # These paths are logical record namespaces retained for diagnostics;
         # no P8 payload is written to them.
         self.feedback_file = self.root / "feedback.jsonl"
@@ -301,16 +330,15 @@ class SkillImprovementStore:
         self.confirmations_dir = self.root / "confirmations"
         self.snapshots_dir = self.root / "task-snapshots"
         self.activations_file = self.root / "activations.jsonl"
-        self.integrity_key_file = self.root / "integrity.key"
         self.process_lock_file = self.root / "skill-improvement.lock"
         self.root.mkdir(parents=True, exist_ok=True)
-        self._initialize_sqlite_table()
+        self._initialize_sqlite_table(allow_unmigrated=allow_unmigrated)
         self._integrity_key = self._load_integrity_key()
         self._lock = threading.RLock()
         self._recovery_blocked = False
         self._recover_activation_journal()
 
-    def _initialize_sqlite_table(self) -> None:
+    def _initialize_sqlite_table(self, *, allow_unmigrated: bool) -> None:
         with sqlite3.connect(self.database_path, timeout=30) as connection:
             has_alembic = connection.execute(
                 "select 1 from sqlite_master where type = 'table' and name = 'alembic_version'"
@@ -320,6 +348,12 @@ class SkillImprovementStore:
                 if has_alembic
                 else None
             )
+            if has_alembic and version is None:
+                raise SkillImprovementError("database schema version is unavailable")
+            if not has_alembic and not allow_unmigrated:
+                raise SkillImprovementError(
+                    "database schema must be initialized by Alembic before P8 use"
+                )
             if version is not None and version[0] != "0011_p8_skill_improvement_records":
                 raise SkillImprovementError(
                     "database schema must be upgraded to 0011_p8_skill_improvement_records"
@@ -510,6 +544,11 @@ class SkillImprovementStore:
                     "processing_state": "deleted",
                 }
             )
+            # Remove every historical payload before retaining a minimal,
+            # redacted tombstone.  A logical append-only tombstone alone
+            # would leave the user's original correction/result/reference in
+            # the SQLite file.
+            self._delete_record_history("feedback", evidence_id)
             self._append_jsonl(self.feedback_file, deleted.to_dict())
             for candidate in self.list_candidates(workspace=workspace):
                 if evidence_id not in candidate.evidence_ids:
@@ -529,14 +568,21 @@ class SkillImprovementStore:
                 )
             return deleted
 
-    def get_feedback(self, evidence_id: str) -> FeedbackEvidence | None:
+    def get_feedback(
+        self,
+        evidence_id: str,
+        *,
+        workspace: str | Path | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+    ) -> FeedbackEvidence | None:
         latest: dict[str, Any] | None = None
         for record in self._read_jsonl(self.feedback_file):
             if record.get("evidence_id") == evidence_id:
                 latest = record
         if latest is None:
             return None
-        return FeedbackEvidence(
+        evidence = FeedbackEvidence(
             evidence_id=str(latest["evidence_id"]),
             task_id=str(latest["task_id"]),
             project_id=str(latest["project_id"]),
@@ -553,6 +599,19 @@ class SkillImprovementStore:
             processing_state=str(latest["processing_state"]),
             batch_id=latest.get("batch_id") if isinstance(latest.get("batch_id"), str) else None,
         )
+        if workspace is not None and evidence.workspace != str(
+            Path(workspace).expanduser().resolve()
+        ):
+            return None
+        if user_id is not None and evidence.user_id != _bounded_text(
+            user_id, field="user_id", limit=128
+        ):
+            return None
+        if project_id is not None and evidence.project_id != _bounded_text(
+            project_id, field="project_id", limit=128
+        ):
+            return None
+        return evidence
 
     def create_candidate(
         self,
@@ -591,6 +650,9 @@ class SkillImprovementStore:
             for item in evidence
         ):
             raise SkillImprovementError("candidate evidence workspace mismatch")
+        users = {item.user_id for item in evidence if item is not None}
+        if len(users) != 1:
+            raise SkillImprovementError("candidate evidence must belong to one user")
         projects = {item.project_id for item in evidence if item is not None}
         if projects != {project_id}:
             raise SkillImprovementError("candidate evidence must belong to one project")
@@ -629,6 +691,13 @@ class SkillImprovementStore:
                 result_refs=(),
                 created_at=_now(),
                 batch_id=current_batch,
+                user_id=next(iter(users)),
+                session_ids=tuple(
+                    sorted({item.session_id for item in evidence if item is not None})
+                ),
+                task_ids=tuple(
+                    sorted({item.task_id for item in evidence if item is not None})
+                ),
             )
             self._atomic_write(
                 self.candidates_dir / f"{candidate.candidate_id}.json", candidate.to_dict()
@@ -640,6 +709,8 @@ class SkillImprovementStore:
         candidate_id: str,
         *,
         workspace: str | Path | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
     ) -> SkillCandidate | None:
         if not _record_id_matches(candidate_id, "candidate"):
             return None
@@ -665,6 +736,9 @@ class SkillImprovementStore:
             result_refs=_refs(raw.get("result_refs")),
             created_at=str(raw["created_at"]),
             batch_id=str(raw["batch_id"]),
+            user_id=str(raw.get("user_id") or ""),
+            session_ids=_refs(raw.get("session_ids")),
+            task_ids=_refs(raw.get("task_ids")),
         )
         if content_sha256(candidate.candidate_content) != candidate.candidate_hash:
             raise SkillImprovementError("candidate content hash mismatch")
@@ -672,6 +746,14 @@ class SkillImprovementStore:
             workspace_value = str(Path(workspace).expanduser().resolve())
             if candidate.workspace != workspace_value:
                 return None
+        if user_id is not None and candidate.user_id != _bounded_text(
+            user_id, field="user_id", limit=128
+        ):
+            return None
+        if project_id is not None and candidate.project_id != _bounded_text(
+            project_id, field="project_id", limit=128
+        ):
+            return None
         return candidate
 
     def list_candidates(
@@ -679,6 +761,8 @@ class SkillImprovementStore:
         *,
         batch_id: str | None = None,
         workspace: str | Path | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
     ) -> list[SkillCandidate]:
         workspace_value = (
             str(Path(workspace).expanduser().resolve()) if workspace is not None else None
@@ -690,7 +774,9 @@ class SkillImprovementStore:
             if isinstance(value.get("candidate_id"), str)
         }
         for candidate_id in sorted(candidate_ids):
-            candidate = self.get_candidate(candidate_id)
+            candidate = self.get_candidate(
+                candidate_id, user_id=user_id, project_id=project_id
+            )
             if (
                 candidate is not None
                 and (batch_id is None or candidate.batch_id == batch_id)
@@ -772,6 +858,8 @@ class SkillImprovementStore:
         candidate_id: str,
         *,
         workspace: str | Path,
+        user_id: str | None = None,
+        project_id: str | None = None,
         model_id: str = "deterministic-synthetic",
         parameters: Mapping[str, Any] | None = None,
         budget: Mapping[str, Any] | None = None,
@@ -782,7 +870,11 @@ class SkillImprovementStore:
         text can affect only the candidate's behavior, never the test set or
         its pass criteria.  No model call is made by this deterministic runner.
         """
-        candidate = self.get_candidate(candidate_id)
+        candidate = self.get_candidate(
+            candidate_id,
+            user_id=user_id,
+            project_id=project_id,
+        )
         if candidate is None:
             raise SkillImprovementError("candidate not found")
         if candidate.test_set_version != EVALUATION_TEST_SET_VERSION:
@@ -913,19 +1005,30 @@ class SkillImprovementStore:
         workspace: str | Path,
         project_id: str,
     ) -> ConfirmationRecord:
-        candidate = self.get_candidate(candidate_id)
-        if candidate is None or candidate.status != "pending_confirmation":
+        candidate = self.get_candidate(
+            candidate_id,
+            workspace=workspace,
+            user_id=user_id,
+        )
+        if candidate is None:
             raise SkillImprovementError("candidate is not eligible for confirmation")
         if candidate.workspace != str(Path(workspace).expanduser().resolve()):
             raise SkillImprovementError("candidate workspace mismatch")
         if candidate.project_id != _bounded_text(project_id, field="project_id", limit=128):
             raise SkillImprovementError("candidate project mismatch")
+        if candidate.status != "pending_confirmation":
+            raise SkillImprovementError("candidate is not eligible for confirmation")
         evaluation = (
             self.get_evaluation(candidate.result_refs[-1])
             if candidate.result_refs
             else None
         )
-        if evaluation is None or not evaluation.eligible:
+        if (
+            evaluation is None
+            or evaluation.candidate_id != candidate.candidate_id
+            or evaluation.test_set_version != candidate.test_set_version
+            or not evaluation.eligible
+        ):
             raise SkillImprovementError("eligible evaluation is required")
         confirmation = ConfirmationRecord(
             confirmation_id=f"confirmation-{uuid.uuid4()}",
@@ -965,15 +1068,28 @@ class SkillImprovementStore:
         with self._lock, self._process_lock():
             confirmation = self._confirmation_from_dict(self._read_object(path, "confirmation"))
             self._check_confirmation(confirmation, user_id, session_id, workspace, project_id)
-            candidate = self.get_candidate(confirmation.candidate_id)
+            candidate = self.get_candidate(
+                confirmation.candidate_id,
+                workspace=confirmation.workspace,
+                user_id=confirmation.user_id,
+                project_id=confirmation.project_id,
+            )
             if (
                 candidate is None
                 or candidate.status != "pending_confirmation"
-                or candidate.workspace != confirmation.workspace
-                or candidate.project_id != confirmation.project_id
+                or candidate.skill_id != confirmation.skill_id
+                or candidate.test_set_version != confirmation.test_set_version
                 or candidate.candidate_hash != confirmation.candidate_hash
             ):
                 raise SkillImprovementError("candidate changed after confirmation")
+            evaluation = self.get_evaluation(confirmation.evaluation_id)
+            if (
+                evaluation is None
+                or evaluation.candidate_id != candidate.candidate_id
+                or evaluation.test_set_version != confirmation.test_set_version
+                or not evaluation.eligible
+            ):
+                raise SkillImprovementError("evaluation changed after confirmation")
             current = self.read_effective_snapshot(workspace)
             if current.content_hash != confirmation.base_version_hash:
                 self._set_candidate_status(candidate, "stale")
@@ -1013,10 +1129,17 @@ class SkillImprovementStore:
         candidate_id: str,
         *,
         workspace: str | Path,
+        user_id: str | None = None,
+        project_id: str | None = None,
     ) -> SkillSnapshot:
         """Restore the saved stable content only if the active file is untouched."""
         with self._lock, self._process_lock():
-            candidate = self.get_candidate(candidate_id)
+            candidate = self.get_candidate(
+                candidate_id,
+                workspace=workspace,
+                user_id=user_id,
+                project_id=project_id,
+            )
             if candidate is None or candidate.status != "active":
                 raise SkillImprovementError("candidate is not active")
             workspace_value = str(Path(workspace).expanduser().resolve())
@@ -1153,30 +1276,57 @@ class SkillImprovementStore:
         return rows[-1]
 
     def _load_integrity_key(self) -> bytes:
+        legacy_key: bytes | None = None
         with sqlite3.connect(self.database_path, timeout=30) as connection:
             row = connection.execute(
                 "select payload_json from skill_improvement_records "
                 "where record_key = 'integrity:key'"
             ).fetchone()
-            if row is None:
-                key = secrets.token_bytes(32)
-                connection.execute(
-                    "insert or ignore into skill_improvement_records "
-                    "(record_key, record_type, record_id, payload_json, record_mac, created_at) "
-                    "values ('integrity:key', 'integrity', 'key', ?, 'internal', ?)" ,
-                    (json.dumps({"key": key.hex()}), _now()),
-                )
-                row = connection.execute(
-                    "select payload_json from skill_improvement_records "
-                    "where record_key = 'integrity:key'"
-                ).fetchone()
+            if row is not None:
+                try:
+                    legacy_key = bytes.fromhex(str(json.loads(row[0])["key"]))
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise SkillImprovementError("integrity key is invalid") from exc
+                if len(legacy_key) != 32:
+                    raise SkillImprovementError("integrity key is invalid")
+
+        self.integrity_key_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            key = self.integrity_key_file.read_bytes()
+        except FileNotFoundError:
+            key = legacy_key or secrets.token_bytes(32)
             try:
-                key = bytes.fromhex(str(json.loads(row[0])["key"]))
-            except (KeyError, TypeError, ValueError) as exc:
-                raise SkillImprovementError("integrity key is invalid") from exc
-            if len(key) < 32:
-                raise SkillImprovementError("integrity key is invalid")
-            return key
+                descriptor = os.open(
+                    self.integrity_key_file,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                key = self.integrity_key_file.read_bytes()
+            else:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        except OSError as exc:
+            raise SkillImprovementError("integrity key is unreadable") from exc
+        if len(key) != 32:
+            raise SkillImprovementError("integrity key is invalid")
+        # Migrate the pre-P8-02 key out of the business table.  New records
+        # never store the integrity root alongside data it authenticates.
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            connection.execute(
+                "delete from skill_improvement_records where record_key = 'integrity:key'"
+            )
+        return key
+
+    def _delete_record_history(self, record_type: str, record_id: str) -> None:
+        with sqlite3.connect(self.database_path, timeout=30) as connection:
+            connection.execute(
+                "delete from skill_improvement_records "
+                "where record_type = ? and (record_id = ? or record_id like ?)" ,
+                (record_type, record_id, f"{record_id}:%"),
+            )
 
     def _record_mac(self, value: Mapping[str, Any]) -> str:
         payload = json.dumps(

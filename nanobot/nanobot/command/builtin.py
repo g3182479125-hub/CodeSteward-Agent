@@ -1049,8 +1049,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         return OutboundMessage(channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=content)
 
     args = ctx.args.strip().split()
+    user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
     if not args:
-        candidates = store.list_candidates(workspace=workspace)
+        candidates = store.list_candidates(workspace=workspace, user_id=user_id)
         if not candidates:
             content = "No private Skill candidates are available."
         else:
@@ -1072,8 +1073,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content = "Evidence deletion requires a direct user chat turn."
         else:
             try:
-                user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
-                evidence = store.get_feedback(args[1])
+                evidence = store.get_feedback(
+                    args[1], workspace=workspace, user_id=user_id
+                )
                 if evidence is None:
                     raise ValueError("evidence not found")
                 deleted = store.delete_feedback(
@@ -1094,7 +1096,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
-    candidate = store.get_candidate(args[0], workspace=workspace)
+    candidate = store.get_candidate(args[0], workspace=workspace, user_id=user_id)
     if candidate is None:
         content = f"Candidate `{args[0]}` was not found."
     elif len(args) == 1 or args[1].lower() == "view":
@@ -1122,7 +1124,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         content = "\n".join(lines)
     elif args[1].lower() == "evaluate":
         try:
-            report = store.evaluate_candidate(candidate.candidate_id, workspace=workspace)
+            report = store.evaluate_candidate(
+                candidate.candidate_id,
+                workspace=workspace,
+                user_id=user_id,
+                project_id=candidate.project_id,
+            )
             content = (
                 f"Fixed P8-02 comparison completed: baseline "
                 f"{report.baseline_successes}/9, candidate {report.candidate_successes}/9; "
@@ -1141,7 +1148,6 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content = "Enable requires a direct user chat turn."
         else:
             try:
-                user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
                 confirmation = store.issue_confirmation(
                     candidate.candidate_id,
                     user_id=user_id,
@@ -1164,7 +1170,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content = "Restore requires a direct user chat turn."
         else:
             try:
-                restored = store.restore_candidate(candidate.candidate_id, workspace=workspace)
+                restored = store.restore_candidate(
+                    candidate.candidate_id,
+                    workspace=workspace,
+                    user_id=user_id,
+                    project_id=candidate.project_id,
+                )
                 content = f"Stable Skill restored. Current hash: `{restored.content_hash}`."
             except (ValueError, OSError) as exc:
                 content = f"Restore rejected: {type(exc).__name__}."

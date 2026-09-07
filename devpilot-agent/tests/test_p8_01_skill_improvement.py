@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -34,7 +35,9 @@ def _store(tmp_path: Path) -> tuple[SkillImprovementStore, str]:
     skill_path = workspace / "skills" / "bug-fix" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(_baseline(), encoding="utf-8")
-    store = SkillImprovementStore(tmp_path / "data", workspace=workspace)
+    store = SkillImprovementStore(
+        tmp_path / "data", workspace=workspace, allow_unmigrated=True
+    )
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
@@ -85,10 +88,22 @@ def test_private_storage_cannot_live_inside_workspace(tmp_path: Path) -> None:
         )
 
 
+def test_integrity_key_is_independent_from_business_database(tmp_path: Path) -> None:
+    store, _evidence_id = _store(tmp_path)
+    assert store.integrity_key_file != store.database_path
+    assert store.integrity_key_file.exists()
+    with sqlite3.connect(store.database_path) as connection:
+        assert connection.execute(
+            "select 1 from skill_improvement_records where record_key = 'integrity:key'"
+        ).fetchone() is None
+
+
 def test_model_inference_requires_independent_verification(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    store = SkillImprovementStore(tmp_path / "data", workspace=workspace)
+    store = SkillImprovementStore(
+        tmp_path / "data", workspace=workspace, allow_unmigrated=True
+    )
     with pytest.raises(SkillImprovementError, match="two independent"):
         store.record_feedback(
             task_id="task-1",

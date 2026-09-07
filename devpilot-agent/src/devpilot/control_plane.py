@@ -178,7 +178,12 @@ def _configured_roots() -> AllowedRoots:
 
 
 def _configured_data_dir() -> Path:
-    return Path(os.environ.get("DEVPILOT_DATA_DIR", "./local-data")).expanduser().resolve()
+    return Path(
+        os.environ.get(
+            "DEVPILOT_DATA_DIR",
+            str(Path.home() / ".nanobot-skill-improvement"),
+        )
+    ).expanduser().resolve()
 
 
 def _project_id(project: Path, requested: str | None) -> str:

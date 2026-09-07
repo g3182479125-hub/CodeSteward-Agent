@@ -17,7 +17,9 @@ class DevPilotConfig(BaseModel):
     environment: str = Field(pattern=r"^(inspect|develop|sandboxed-demo)$")
     bind_host: str = "127.0.0.1"
     bind_port: int = Field(default=18800, ge=1024, le=65535)
-    data_dir: Path = Path("./local-data")
+    # Keep the service database and P8 private records outside the agent
+    # workspace unless the operator explicitly supplies DEVPILOT_DATA_DIR.
+    data_dir: Path = Field(default_factory=lambda: Path.home() / ".nanobot-skill-improvement")
     allowed_roots: list[Path] = Field(default_factory=_empty_paths)
     restrict_to_workspace: bool = True
     sandbox_backend: str = Field(default="auto", pattern=r"^(auto|none|bwrap|docker|fc-agent)$")

@@ -221,7 +221,12 @@ def _configured_roots(workspace: Path) -> AllowedRoots:
 
 
 def _data_dir() -> Path:
-    return Path(os.environ.get("DEVPILOT_DATA_DIR", "./local-data")).expanduser().resolve()
+    return Path(
+        os.environ.get(
+            "DEVPILOT_DATA_DIR",
+            str(Path.home() / ".nanobot-skill-improvement"),
+        )
+    ).expanduser().resolve()
 
 
 def _durable_store() -> ProjectStore:
@@ -1466,6 +1471,8 @@ class SkillCandidateTool(Tool):
                 request_context = current_request_context()
             except ImportError:
                 request_context = None
+            if request_context is None or not request_context.sender_id:
+                raise SkillImprovementError("candidate requires a trusted request context")
             request_workspace = (
                 request_context.workspace if request_context is not None else self.workspace
             )

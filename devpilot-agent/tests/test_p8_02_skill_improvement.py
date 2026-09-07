@@ -38,7 +38,9 @@ def _setup(tmp_path: Path, *, improvement: bool = True) -> tuple[SkillImprovemen
     skill_path.parent.mkdir(parents=True)
     baseline = _baseline()
     skill_path.write_text(baseline, encoding="utf-8")
-    store = SkillImprovementStore(tmp_path / "data", workspace=workspace)
+    store = SkillImprovementStore(
+        tmp_path / "data", workspace=workspace, allow_unmigrated=True
+    )
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
@@ -157,6 +159,41 @@ def test_evaluation_and_confirmation_keep_workspace_and_project_binding(tmp_path
         )
 
 
+def test_candidate_is_bound_to_one_user_and_hidden_from_other_users(tmp_path: Path) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    original = store.get_candidate(candidate_id)
+    assert original is not None
+    assert store.get_candidate(candidate_id, workspace=workspace, user_id="user-1") is not None
+    assert store.get_candidate(candidate_id, workspace=workspace, user_id="user-2") is None
+    assert store.list_candidates(workspace=workspace, user_id="user-2") == []
+
+    feedback = store.record_feedback(
+        task_id="task-2",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-2",
+        session_id="session-2",
+        source_type="user_feedback",
+        skill_id="bug-fix",
+        skill_hash=content_sha256(_baseline()),
+        correction="另一个用户的反馈。",
+        actual_result="不能混入同一候选。",
+        evidence_refs=["run-2"],
+    )
+    with pytest.raises(SkillImprovementError, match="one user"):
+        store.create_candidate(
+            project_id="project-1",
+            skill_path="skills/bug-fix/SKILL.md",
+            baseline_content=_baseline(),
+            candidate_content=_baseline() + "\n- Keep user scope isolated.\n",
+            evidence_ids=[original.evidence_ids[0], feedback.evidence_id],
+            reason="mixed users",
+            expected_behavior="reject mixed ownership",
+            test_set_version="p8-02-v1",
+            workspace=workspace,
+        )
+
+
 def test_deleted_feedback_invalidates_linked_candidate(tmp_path: Path) -> None:
     store, workspace, candidate_id = _setup(tmp_path)
     feedback = store.get_feedback(store.get_candidate(candidate_id).evidence_ids[0])
@@ -171,8 +208,42 @@ def test_deleted_feedback_invalidates_linked_candidate(tmp_path: Path) -> None:
     candidate = store.get_candidate(candidate_id)
     assert candidate.status == "stale"
     assert candidate.candidate_content == "[deleted candidate content]"
+    with sqlite3.connect(store.database_path) as connection:
+        payloads = [
+            str(row[0])
+            for row in connection.execute(
+                "select payload_json from skill_improvement_records where record_type = 'feedback'"
+            )
+        ]
+    assert len(payloads) == 1
+    assert "先重新读取当前文件" not in payloads[0]
+    assert "原任务漏掉了文件复核" not in payloads[0]
+    assert "run-1" not in payloads[0]
     with pytest.raises(SkillImprovementError, match="deleted"):
         store.verify_feedback(feedback.evidence_id)
+
+
+def test_confirmation_expiry_is_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    store.evaluate_candidate(candidate_id, workspace=workspace)
+    confirmation = store.issue_confirmation(
+        candidate_id,
+        user_id="user-1",
+        session_id="session-1",
+        workspace=workspace,
+        project_id="project-1",
+    )
+    monkeypatch.setattr(
+        "devpilot.skill_improvement.time.time", lambda: confirmation.expires_at + 1
+    )
+    with pytest.raises(SkillImprovementError, match="expired"):
+        store.activate_candidate(
+            confirmation.confirmation_id,
+            workspace=workspace,
+            user_id="user-1",
+            session_id="session-1",
+            project_id="project-1",
+        )
 
 
 def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
@@ -208,7 +279,9 @@ def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
         store.candidates_dir / f"{candidate_id}.json",
         {**candidate.to_dict(), "status": "pending_confirmation"},
     )
-    recovered = SkillImprovementStore(tmp_path / "data", workspace=workspace)
+    recovered = SkillImprovementStore(
+        tmp_path / "data", workspace=workspace, allow_unmigrated=True
+    )
     assert recovered.get_candidate(candidate_id).status == "active"
 
 

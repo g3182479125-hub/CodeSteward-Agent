@@ -1,5 +1,6 @@
 """Tests for the /skill built-in command."""
 
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -74,7 +75,30 @@ async def test_skill_command_no_skills(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_skill_improvement_command_uses_native_chat(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path.parent / f"{tmp_path.name}-devpilot-data"))
+    data_dir = tmp_path.parent / f"{tmp_path.name}-devpilot-data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            """
+            create table skill_improvement_records (
+                id integer primary key autoincrement,
+                record_key text not null unique,
+                record_type text not null,
+                record_id text not null,
+                payload_json text not null,
+                record_mac text not null,
+                workspace text,
+                project_id text,
+                created_at text not null
+            )
+            """
+        )
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
     assert out.content == "No private Skill candidates are available."

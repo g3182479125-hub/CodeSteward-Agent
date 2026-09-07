@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 DEFAULT_DATABASE_URL = "sqlite:///local-data/devpilot.db"
+
+
+def _default_database_url() -> str:
+    return f"sqlite:///{(Path.home() / '.nanobot-skill-improvement' / 'devpilot.db').as_posix()}"
 
 
 def resolve_database_url(
@@ -14,5 +19,5 @@ def resolve_database_url(
     """Use the process override only when Alembic still has its placeholder URL."""
     environment = os.environ if environ is None else environ
     if configured_url in {None, DEFAULT_DATABASE_URL}:
-        return environment.get("DEVPILOT_DATABASE_URL", configured_url)
+        return environment.get("DEVPILOT_DATABASE_URL", _default_database_url())
     return configured_url

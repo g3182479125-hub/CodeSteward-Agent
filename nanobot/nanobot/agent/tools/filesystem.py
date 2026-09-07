@@ -113,6 +113,12 @@ class _FsTool(Tool):
                 str(Path.home() / ".nanobot-skill-improvement"),
             )
         ).expanduser().resolve(strict=False)
+        private_improvement_key = Path(
+            os.environ.get(
+                "DEVPILOT_INTEGRITY_KEY_FILE",
+                str(private_improvement_dir.parent / f".{private_improvement_dir.name}.integrity.key"),
+            )
+        ).expanduser().resolve(strict=False)
         # Agent-owned skills stay available from project scopes. History is a narrower
         # capability: expose only the append-only log, not the surrounding memory directory.
         return cls(
@@ -120,7 +126,10 @@ class _FsTool(Tool):
             allowed_dir=allowed_dir,
             extra_read_allowed_dirs=[BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills"],
             extra_read_allowed_files=[resolved_agent_workspace / "memory" / "history.jsonl"],
-            blocked_read_files=[resolved_agent_workspace / "skills" / "bug-fix" / "SKILL.md"],
+            blocked_read_files=[
+                resolved_agent_workspace / "skills" / "bug-fix" / "SKILL.md",
+                private_improvement_key,
+            ],
             blocked_read_dirs=[private_improvement_dir],
             # The trial Skill is server-owned.  Every filesystem write tool
             # shares this guard; Dream adds the same guard to its private registry.
@@ -128,6 +137,7 @@ class _FsTool(Tool):
                 resolved_agent_workspace / "skills" / "bug-fix",
                 private_improvement_dir,
             ],
+            blocked_write_files=[private_improvement_key],
             file_states=ctx.file_state_store,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts,
