@@ -22,219 +22,849 @@
   ],
   "records": [
     {
+      "action_boundary": "read-only",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 184,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 199,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
+      "profile_version": "1",
       "repetition": 1,
       "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "read-only",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 202,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 198,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
+      "profile_version": "1",
       "repetition": 2,
       "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "read-only",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 192,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
+      "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": false,
+      "profile_version": "1",
+      "repetition": 3,
+      "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "baseline"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 187,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
+      "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": false,
+      "profile_version": "1",
+      "repetition": 1,
+      "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "baseline"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
+      "config_version": "p7-01-task-profile-v1",
       "duration_ms": 183,
-      "failure_reason": "pre-P7 baseline has no trusted repo-analysis task contract",
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": false,
-      "repetition": 3,
-      "task_id": "project-explanation",
-      "version": "baseline"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 185,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
-      "repetition": 1,
+      "profile_version": "1",
+      "repetition": 2,
       "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "unconfirmed-write-rejected",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 184,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 186,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
-      "repetition": 2,
-      "task_id": "small-feature",
-      "version": "baseline"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 176,
-      "failure_reason": "pre-P7 baseline has no trusted feature-delivery task contract",
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": false,
+      "profile_version": "1",
       "repetition": 3,
       "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "unconfirmed-write-rejected",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 185,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 190,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
+      "profile_version": "1",
       "repetition": 1,
       "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "unconfirmed-write-rejected",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 179,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 202,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
+      "profile_version": "1",
       "repetition": 2,
       "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "unconfirmed-write-rejected",
       "budget": "no-llm-no-fc",
       "commit": "e8369151cba046007cc05621756ab702a1ec99f8",
-      "duration_ms": 196,
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 192,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
       "failure_reason": "pre-P7 baseline has no trusted bug-fix task contract",
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": false,
+      "profile_version": "1",
       "repetition": 3,
       "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "baseline"
     },
     {
+      "action_boundary": "read-only",
       "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 56,
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 70,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
       "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": true,
+      "profile_version": "1",
       "repetition": 1,
       "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "candidate"
     },
     {
+      "action_boundary": "read-only",
       "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 57,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 2,
-      "task_id": "project-explanation",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 58,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 3,
-      "task_id": "project-explanation",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 62,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 1,
-      "task_id": "small-feature",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 63,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 2,
-      "task_id": "small-feature",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 65,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 3,
-      "task_id": "small-feature",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 65,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 1,
-      "task_id": "bug-fix",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
-      "duration_ms": 64,
-      "failure_reason": null,
-      "manual_interventions": 0,
-      "model_id": "not-invoked:deterministic-contract",
-      "passed": true,
-      "repetition": 2,
-      "task_id": "bug-fix",
-      "version": "candidate"
-    },
-    {
-      "budget": "no-llm-no-fc",
-      "commit": "58f893d331746ae512e29bde566768eceecf07fb",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
       "duration_ms": 66,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
       "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
       "manual_interventions": 0,
       "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
       "passed": true,
+      "profile_version": "1",
+      "repetition": 2,
+      "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "read-only",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 67,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "output:technical_stack/evidence_files"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 3,
+      "task_id": "project-explanation",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 65,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 1,
+      "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 68,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 2,
+      "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 70,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/python-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+        "fixture:devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+        "proposal:src/demo/main.py",
+        "proposal:tests/sample_checks.py"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/python-project/pyproject.toml",
+          "e3978fc29c9351e36d11068147cd9b685476c7151cf8c9f2400fa7768898f9b7"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/README.md",
+          "bec35eb34b3405d24e356191fce0bedef3ae18e78dd26ca78624032c9b971f4e"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/__init__.py",
+          "cad88e79619388119555cb4474859ff2ac21243dd406c83d96f23532e4995b85"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/src/demo/main.py",
+          "0e1af8160585d394caa9f29ef1bde81666d238f01fad734d0911bb176990fcc9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/python-project/tests/sample_checks.py",
+          "8ed1a585c549b9dc2de1e2e13e92fd826d45b96e29badef5ddaccd872b0276d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 3,
+      "task_id": "small-feature",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 66,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 1,
+      "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 65,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
+      "repetition": 2,
+      "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
+      "version": "candidate"
+    },
+    {
+      "action_boundary": "unconfirmed-write-rejected",
+      "budget": "no-llm-no-fc",
+      "commit": "7465dacfa8c0a35a341b248e7564eb3e2b9ef1ce",
+      "config_version": "p7-01-task-profile-v1",
+      "duration_ms": 68,
+      "evidence_refs": [
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/README.md",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/package.json",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+        "fixture:devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+        "failure:src/App.jsx",
+        "proposal:src/App.jsx"
+      ],
+      "failure_reason": null,
+      "fixture_hashes": [
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/package.json",
+          "6c0205d97a317483dc1e90e78cd3c922c2d5017b5226e198660f1431e091dbdd"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/README.md",
+          "274511ab62d3c7e2dc48bcfaaa57e39b5ed123895e960453403afb432545f09f"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/src/App.jsx",
+          "ebd3b8550800b283d8d873e728e21aa9ca12c76b681a828fe244bb9f7c2f23c9"
+        ],
+        [
+          "devpilot-agent/tests/fixtures/react-form-project/test/App.test.jsx",
+          "179205bc063a8f6587bf18d9a9badd15a60aab0432bd39010e9ad45c658ef6d7"
+        ]
+      ],
+      "manual_interventions": 0,
+      "model_id": "not-invoked:deterministic-contract",
+      "model_parameters": {},
+      "passed": true,
+      "profile_version": "1",
       "repetition": 3,
       "task_id": "bug-fix",
+      "task_source": "synthetic-fixed-fixture",
+      "template": "not-applicable:offline",
       "version": "candidate"
     }
   ],
