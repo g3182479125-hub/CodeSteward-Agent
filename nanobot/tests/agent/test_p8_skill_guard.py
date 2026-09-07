@@ -4,6 +4,11 @@ from types import SimpleNamespace
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.agent.tools.shell import ExecTool
+from nanobot.security.workspace_access import (
+    bind_workspace_scope,
+    build_workspace_scope,
+    reset_workspace_scope,
+)
 
 
 def test_dream_cannot_write_trial_bug_fix_skill_through_any_file_writer(tmp_path) -> None:
@@ -72,6 +77,25 @@ def test_main_filesystem_guard_and_controlled_shell_boundary(tmp_path, monkeypat
     assert ExecTool.enabled(SimpleNamespace(config=config)) is True
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     assert ExecTool.enabled(SimpleNamespace(config=config)) is False
+
+
+def test_main_filesystem_guard_follows_selected_project_scope(tmp_path) -> None:
+    selected_project = tmp_path / "selected-project"
+    selected_project.mkdir()
+    writer = WriteFileTool(workspace=tmp_path, allowed_dir=tmp_path)
+    scope = build_workspace_scope(selected_project, "full", source_channel="websocket")
+    token = bind_workspace_scope(scope)
+    try:
+        result = asyncio.run(
+            writer.execute(
+                path="skills/bug-fix/SKILL.md",
+                content="attempt",
+            )
+        )
+    finally:
+        reset_workspace_scope(token)
+    assert getattr(result, "is_error", False) is True
+    assert not (selected_project / "skills" / "bug-fix" / "SKILL.md").exists()
 
 
 def test_main_filesystem_guard_hides_private_skill_improvement_data(tmp_path) -> None:

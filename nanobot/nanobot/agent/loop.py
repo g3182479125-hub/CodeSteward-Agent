@@ -788,6 +788,10 @@ class AgentLoop:
             or not task_context.task_id
         ):
             return {}
+        # P8 is opt-in.  When the controlled trial is disabled, keep the
+        # ordinary nanobot SkillLoader path independent of the DevPilot store.
+        if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") != "1":
+            return {}
         try:
             from devpilot.skill_improvement import SkillImprovementStore
 

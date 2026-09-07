@@ -195,7 +195,10 @@ class _FsTool(Tool):
             include_media_dir=True,
             extra_files_require_allowed_root=True,
         )
-        if any(resolved == blocked for blocked in self._blocked_read_files):
+        protected_skill = self._current_trial_skill_file()
+        if any(resolved == blocked for blocked in self._blocked_read_files) or (
+            protected_skill is not None and resolved == protected_skill
+        ):
             raise PermissionError(f"read is blocked for protected Skill snapshot: {path}")
         if any(resolved == blocked or blocked in resolved.parents for blocked in self._blocked_read_dirs):
             raise PermissionError(f"read is blocked for protected private data: {path}")
@@ -210,12 +213,27 @@ class _FsTool(Tool):
         )
         if any(resolved == blocked for blocked in self._blocked_write_files):
             raise PermissionError(f"write is blocked for protected file: {path}")
+        protected_skill_dir = self._current_trial_skill_dir()
         if any(
             resolved == blocked or blocked in resolved.parents
             for blocked in self._blocked_write_dirs
+        ) or (
+            protected_skill_dir is not None
+            and (resolved == protected_skill_dir or protected_skill_dir in resolved.parents)
         ):
             raise PermissionError(f"write is blocked for protected directory: {path}")
         return resolved
+
+    def _current_trial_skill_dir(self) -> Path | None:
+        """Return the protected trial Skill directory for the effective turn."""
+        access = current_tool_workspace(self._workspace)
+        if access.project_path is None:
+            return None
+        return access.project_path / "skills" / "bug-fix"
+
+    def _current_trial_skill_file(self) -> Path | None:
+        protected_dir = self._current_trial_skill_dir()
+        return protected_dir / "SKILL.md" if protected_dir is not None else None
 
     def _resolve(self, path: str) -> Path:
         return self._resolve_read(path)
