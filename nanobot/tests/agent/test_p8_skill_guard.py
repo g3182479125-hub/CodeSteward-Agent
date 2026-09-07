@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from nanobot.agent.memory import MemoryStore
-from nanobot.agent.tools.filesystem import WriteFileTool
+from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.agent.tools.shell import ExecTool
 
 
@@ -72,3 +72,17 @@ def test_main_filesystem_guard_and_controlled_shell_boundary(tmp_path, monkeypat
     assert ExecTool.enabled(SimpleNamespace(config=config)) is True
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     assert ExecTool.enabled(SimpleNamespace(config=config)) is False
+
+
+def test_main_filesystem_guard_hides_private_skill_improvement_data(tmp_path) -> None:
+    private_dir = tmp_path / "private-data"
+    private_dir.mkdir()
+    (private_dir / "candidate.json").write_text("secret", encoding="utf-8")
+    reader = ReadFileTool(
+        workspace=tmp_path,
+        allowed_dir=tmp_path,
+        blocked_read_dirs=[private_dir],
+    )
+    result = asyncio.run(reader.execute(path="private-data/candidate.json"))
+    assert getattr(result, "is_error", False) is True
+    assert "private data" in str(result).lower()

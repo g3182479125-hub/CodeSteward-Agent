@@ -98,6 +98,9 @@ class FeedbackEvidence:
     evidence_id: str
     task_id: str
     project_id: str
+    workspace: str
+    user_id: str
+    session_id: str
     source_type: str
     occurred_at: str
     skill_id: str
@@ -113,6 +116,9 @@ class FeedbackEvidence:
             "evidence_id": self.evidence_id,
             "task_id": self.task_id,
             "project_id": self.project_id,
+            "workspace": self.workspace,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
             "source_type": self.source_type,
             "occurred_at": self.occurred_at,
             "skill_id": self.skill_id,
@@ -271,6 +277,15 @@ class SkillImprovementStore:
                     "private data directory cannot be under workspace skills"
                 )
         self.root = data_root / "skill-improvement"
+        self.workspace = (
+            Path(workspace).expanduser().resolve() if workspace is not None else None
+        )
+        if self.workspace is not None and (
+            data_root == self.workspace or self.workspace in data_root.parents
+        ):
+            raise SkillImprovementError(
+                "private Skill improvement data cannot be stored inside the workspace"
+            )
         self.feedback_file = self.root / "feedback.jsonl"
         self.candidates_dir = self.root / "candidates"
         self.evaluations_dir = self.root / "evaluations"
@@ -285,11 +300,15 @@ class SkillImprovementStore:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self._integrity_key = self._load_integrity_key()
         self._lock = threading.RLock()
+        self._recovery_blocked = False
         self._recover_activation_journal()
 
     @classmethod
     def from_environment(cls, workspace: str | Path | None = None) -> SkillImprovementStore:
-        default = Path(workspace or ".") / ".nanobot-data"
+        # Keep the service-owned records outside the agent-visible workspace.
+        # An explicit DEVPILOT_DATA_DIR is still accepted only when it passes
+        # the constructor's workspace-boundary check.
+        default = Path.home() / ".nanobot"
         return cls(os.environ.get("DEVPILOT_DATA_DIR", str(default)), workspace=workspace)
 
     @property
@@ -302,6 +321,9 @@ class SkillImprovementStore:
         *,
         task_id: str,
         project_id: str,
+        workspace: str | Path,
+        user_id: str,
+        session_id: str,
         source_type: str,
         skill_id: str,
         skill_hash: str,
@@ -312,6 +334,9 @@ class SkillImprovementStore:
     ) -> FeedbackEvidence:
         if source_type not in FEEDBACK_SOURCE_TYPES:
             raise SkillImprovementError("unsupported feedback source type")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        if self.workspace is not None and workspace_value != str(self.workspace):
+            raise SkillImprovementError("feedback workspace does not match the store")
         if skill_id != TRIAL_SKILL_ID:
             raise SkillImprovementError("P8 trial only accepts the bug-fix Skill")
         if len(skill_hash) != 64 or any(c not in "0123456789abcdef" for c in skill_hash.lower()):
@@ -334,6 +359,9 @@ class SkillImprovementStore:
             evidence_id=f"feedback-{uuid.uuid4()}",
             task_id=_bounded_text(task_id, field="task_id", limit=128),
             project_id=_bounded_text(project_id, field="project_id", limit=128),
+            workspace=workspace_value,
+            user_id=_bounded_text(user_id, field="user_id", limit=128),
+            session_id=_bounded_text(session_id, field="session_id", limit=128),
             source_type=source_type,
             occurred_at=_now(),
             skill_id=skill_id,
@@ -383,6 +411,9 @@ class SkillImprovementStore:
             evidence_id=str(latest["evidence_id"]),
             task_id=str(latest["task_id"]),
             project_id=str(latest["project_id"]),
+            workspace=str(latest["workspace"]),
+            user_id=str(latest["user_id"]),
+            session_id=str(latest["session_id"]),
             source_type=str(latest["source_type"]),
             occurred_at=str(latest["occurred_at"]),
             skill_id=str(latest["skill_id"]),
@@ -426,6 +457,11 @@ class SkillImprovementStore:
             for item in evidence
         ):
             raise SkillImprovementError("candidate evidence does not match effective Skill")
+        if any(
+            item is not None and item.workspace != workspace_value
+            for item in evidence
+        ):
+            raise SkillImprovementError("candidate evidence workspace mismatch")
         projects = {item.project_id for item in evidence if item is not None}
         if projects != {project_id}:
             raise SkillImprovementError("candidate evidence must belong to one project")
@@ -470,7 +506,12 @@ class SkillImprovementStore:
             )
             return candidate
 
-    def get_candidate(self, candidate_id: str) -> SkillCandidate | None:
+    def get_candidate(
+        self,
+        candidate_id: str,
+        *,
+        workspace: str | Path | None = None,
+    ) -> SkillCandidate | None:
         if not _record_id_matches(candidate_id, "candidate"):
             return None
         path = self.candidates_dir / f"{candidate_id}.json"
@@ -498,14 +539,30 @@ class SkillImprovementStore:
         )
         if content_sha256(candidate.candidate_content) != candidate.candidate_hash:
             raise SkillImprovementError("candidate content hash mismatch")
+        if workspace is not None:
+            workspace_value = str(Path(workspace).expanduser().resolve())
+            if candidate.workspace != workspace_value:
+                return None
         return candidate
 
-    def list_candidates(self, *, batch_id: str | None = None) -> list[SkillCandidate]:
+    def list_candidates(
+        self,
+        *,
+        batch_id: str | None = None,
+        workspace: str | Path | None = None,
+    ) -> list[SkillCandidate]:
+        workspace_value = (
+            str(Path(workspace).expanduser().resolve()) if workspace is not None else None
+        )
         candidates: list[SkillCandidate] = []
         for path in sorted(self.candidates_dir.glob("candidate-*.json")):
             candidate_id = path.stem
             candidate = self.get_candidate(candidate_id)
-            if candidate is not None and (batch_id is None or candidate.batch_id == batch_id):
+            if (
+                candidate is not None
+                and (batch_id is None or candidate.batch_id == batch_id)
+                and (workspace_value is None or candidate.workspace == workspace_value)
+            ):
                 candidates.append(candidate)
         return candidates
 
@@ -597,6 +654,9 @@ class SkillImprovementStore:
             raise SkillImprovementError("candidate not found")
         if candidate.test_set_version != EVALUATION_TEST_SET_VERSION:
             raise SkillImprovementError("candidate uses an unsupported test set")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        if candidate.workspace != workspace_value:
+            raise SkillImprovementError("candidate workspace mismatch")
         baseline = self.read_effective_snapshot(workspace)
         if baseline.content_hash != candidate.base_version_hash:
             self._set_candidate_status(candidate, "stale")
@@ -705,7 +765,9 @@ class SkillImprovementStore:
             for version in EVALUATION_VERSIONS
             for repeat in range(1, EVALUATION_REPEATS + 1)
         }
-        if {str(item.get("case_id")) for item in report.cases} != expected_ids:
+        if len(report.cases) != len(expected_ids) or {
+            str(item.get("case_id")) for item in report.cases
+        } != expected_ids:
             raise SkillImprovementError("evaluation case set was changed")
         return report
 
@@ -723,6 +785,8 @@ class SkillImprovementStore:
             raise SkillImprovementError("candidate is not eligible for confirmation")
         if candidate.workspace != str(Path(workspace).expanduser().resolve()):
             raise SkillImprovementError("candidate workspace mismatch")
+        if candidate.project_id != _bounded_text(project_id, field="project_id", limit=128):
+            raise SkillImprovementError("candidate project mismatch")
         evaluation = (
             self.get_evaluation(candidate.result_refs[-1])
             if candidate.result_refs
@@ -760,6 +824,8 @@ class SkillImprovementStore:
         project_id: str,
     ) -> SkillSnapshot:
         """Consume a bound confirmation and atomically replace the trusted Skill."""
+        if self._recovery_blocked:
+            raise SkillImprovementError("activation recovery is unavailable")
         if not _record_id_matches(confirmation_id, "confirmation"):
             raise SkillImprovementError("confirmation not found")
         path = self.confirmations_dir / f"{confirmation_id}.json"
@@ -771,6 +837,7 @@ class SkillImprovementStore:
                 candidate is None
                 or candidate.status != "pending_confirmation"
                 or candidate.workspace != confirmation.workspace
+                or candidate.project_id != confirmation.project_id
                 or candidate.candidate_hash != confirmation.candidate_hash
             ):
                 raise SkillImprovementError("candidate changed after confirmation")
@@ -815,25 +882,28 @@ class SkillImprovementStore:
         workspace: str | Path,
     ) -> SkillSnapshot:
         """Restore the saved stable content only if the active file is untouched."""
-        candidate = self.get_candidate(candidate_id)
-        if candidate is None or candidate.status != "active":
-            raise SkillImprovementError("candidate is not active")
-        current = self.read_effective_snapshot(workspace)
-        if current.content_hash != candidate.candidate_hash:
-            raise SkillImprovementError("restore stopped: effective Skill was externally modified")
-        records = [
-            item for item in self._read_jsonl(self.activations_file)
-            if item.get("candidate_id") == candidate_id
-            and item.get("workspace") == str(Path(workspace).expanduser().resolve())
-            and item.get("phase") == "committed"
-        ]
-        if not records or not isinstance(records[-1].get("previous_content"), str):
-            raise SkillImprovementError("stable version for restore is unavailable")
-        skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
-        self._atomic_replace_text(skill_path, records[-1]["previous_content"])
-        restored = self.read_effective_snapshot(workspace)
-        self._set_candidate_status(candidate, "stale")
-        return restored
+        with self._lock:
+            candidate = self.get_candidate(candidate_id)
+            if candidate is None or candidate.status != "active":
+                raise SkillImprovementError("candidate is not active")
+            current = self.read_effective_snapshot(workspace)
+            if current.content_hash != candidate.candidate_hash:
+                raise SkillImprovementError(
+                    "restore stopped: effective Skill was externally modified"
+                )
+            records = [
+                item for item in self._read_jsonl(self.activations_file)
+                if item.get("candidate_id") == candidate_id
+                and item.get("workspace") == str(Path(workspace).expanduser().resolve())
+                and item.get("phase") == "committed"
+            ]
+            if not records or not isinstance(records[-1].get("previous_content"), str):
+                raise SkillImprovementError("stable version for restore is unavailable")
+            skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
+            self._atomic_replace_text(skill_path, records[-1]["previous_content"])
+            restored = self.read_effective_snapshot(workspace)
+            self._set_candidate_status(candidate, "stale")
+            return restored
 
     def _recover_activation_journal(self) -> None:
         """Reconcile a crash between the file swap and metadata persistence."""
@@ -842,6 +912,7 @@ class SkillImprovementStore:
         try:
             records = self._read_jsonl(self.activations_file)
         except SkillImprovementError:
+            self._recovery_blocked = True
             return
         latest: dict[tuple[str, str], dict[str, Any]] = {}
         for record in records:

@@ -30,13 +30,17 @@ def _baseline() -> str:
 
 
 def _store(tmp_path: Path) -> tuple[SkillImprovementStore, str]:
-    skill_path = tmp_path / "skills" / "bug-fix" / "SKILL.md"
+    workspace = tmp_path / "workspace"
+    skill_path = workspace / "skills" / "bug-fix" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(_baseline(), encoding="utf-8")
-    store = SkillImprovementStore(tmp_path / "data", workspace=tmp_path)
+    store = SkillImprovementStore(tmp_path / "data", workspace=workspace)
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
         source_type="user_feedback",
         skill_id="bug-fix",
         skill_hash=content_sha256(_baseline()),
@@ -52,6 +56,9 @@ def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path:
     feedback = store.get_feedback(evidence_id)
     assert feedback is not None
     assert feedback.processing_state == "verified"
+    assert feedback.workspace == str((tmp_path / "workspace").resolve())
+    assert feedback.user_id == "user-1"
+    assert feedback.session_id == "session-1"
 
     candidate = store.create_candidate(
         project_id="project-1",
@@ -62,7 +69,7 @@ def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path:
         reason="The failed task did not re-check the source file.",
         expected_behavior="The proposal cites fresh file evidence.",
         test_set_version="p8-01-v1",
-        workspace=tmp_path,
+        workspace=tmp_path / "workspace",
     )
     assert candidate.status == "pending_evaluation"
     assert candidate.candidate_hash != candidate.base_version_hash
@@ -70,12 +77,25 @@ def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path:
     assert not (tmp_path / "data" / "skills" / "bug-fix" / "SKILL.md").exists()
 
 
+def test_private_storage_cannot_live_inside_workspace(tmp_path: Path) -> None:
+    with pytest.raises(SkillImprovementError, match="inside the workspace"):
+        SkillImprovementStore(
+            tmp_path / "workspace" / "private-data",
+            workspace=tmp_path / "workspace",
+        )
+
+
 def test_model_inference_requires_independent_verification(tmp_path: Path) -> None:
-    store = SkillImprovementStore(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = SkillImprovementStore(tmp_path / "data", workspace=workspace)
     with pytest.raises(SkillImprovementError, match="two independent"):
         store.record_feedback(
             task_id="task-1",
             project_id="project-1",
+            workspace=workspace,
+            user_id="user-1",
+            session_id="session-1",
             source_type="model_inference",
             skill_id="bug-fix",
             skill_hash="a" * 64,
@@ -97,7 +117,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
             reason="reason",
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
-            workspace=tmp_path,
+            workspace=tmp_path / "workspace",
         )
 
     with pytest.raises(SkillImprovementError, match="sensitive"):
@@ -110,7 +130,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
             reason="reason",
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
-            workspace=tmp_path,
+            workspace=tmp_path / "workspace",
         )
 
 
@@ -128,7 +148,7 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
             batch_id=batch,
-            workspace=tmp_path,
+        workspace=tmp_path / "workspace",
         )
     with pytest.raises(SkillImprovementError, match="limit is three"):
         store.create_candidate(
@@ -141,5 +161,5 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
             batch_id=batch,
-            workspace=tmp_path,
+        workspace=tmp_path / "workspace",
         )

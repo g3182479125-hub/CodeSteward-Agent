@@ -1050,7 +1050,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
 
     args = ctx.args.strip().split()
     if not args:
-        candidates = store.list_candidates()
+        candidates = store.list_candidates(workspace=workspace)
         if not candidates:
             content = "No private Skill candidates are available."
         else:
@@ -1065,7 +1065,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
-    candidate = store.get_candidate(args[0])
+    candidate = store.get_candidate(args[0], workspace=workspace)
     if candidate is None:
         content = f"Candidate `{args[0]}` was not found."
     elif len(args) == 1 or args[1].lower() == "view":

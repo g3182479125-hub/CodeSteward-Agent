@@ -56,6 +56,7 @@ class _FsTool(Tool):
         sandbox_restricts_workspace: bool = False,
         extra_read_allowed_files: list[Path] | None = None,
         blocked_read_files: list[Path] | None = None,
+        blocked_read_dirs: list[Path] | None = None,
         blocked_write_dirs: list[Path] | None = None,
         blocked_write_files: list[Path] | None = None,
     ):
@@ -70,6 +71,9 @@ class _FsTool(Tool):
         self._extra_read_allowed_files = list(extra_read_allowed_files or [])
         self._blocked_read_files = [
             Path(path).expanduser().resolve(strict=False) for path in (blocked_read_files or [])
+        ]
+        self._blocked_read_dirs = [
+            Path(path).expanduser().resolve(strict=False) for path in (blocked_read_dirs or [])
         ]
         self._extra_write_allowed_dirs = list(extra_write_allowed_dirs or [])
         self._extra_write_allowed_files = list(extra_write_allowed_files or [])
@@ -111,6 +115,14 @@ class _FsTool(Tool):
             extra_read_allowed_dirs=[BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills"],
             extra_read_allowed_files=[resolved_agent_workspace / "memory" / "history.jsonl"],
             blocked_read_files=[resolved_agent_workspace / "skills" / "bug-fix" / "SKILL.md"],
+            blocked_read_dirs=[
+                Path(
+                    os.environ.get(
+                        "DEVPILOT_DATA_DIR",
+                        str(Path.home() / ".nanobot"),
+                    )
+                ).expanduser().resolve(strict=False) / "skill-improvement"
+            ],
             # The trial Skill is server-owned.  Every filesystem write tool
             # shares this guard; Dream adds the same guard to its private registry.
             blocked_write_dirs=[resolved_agent_workspace / "skills" / "bug-fix"],
@@ -173,6 +185,8 @@ class _FsTool(Tool):
         )
         if any(resolved == blocked for blocked in self._blocked_read_files):
             raise PermissionError(f"read is blocked for protected Skill snapshot: {path}")
+        if any(resolved == blocked or blocked in resolved.parents for blocked in self._blocked_read_dirs):
+            raise PermissionError(f"read is blocked for protected private data: {path}")
         return resolved
 
     def _resolve_write(self, path: str) -> Path:

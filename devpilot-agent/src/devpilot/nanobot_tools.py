@@ -1367,9 +1367,21 @@ class SkillFeedbackTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            try:
+                from nanobot.agent.tools.context import current_request_context
+
+                request_context = current_request_context()
+            except ImportError:
+                request_context = None
+            if request_context is None or not request_context.sender_id:
+                raise SkillImprovementError("feedback requires a trusted request context")
+            request_workspace = request_context.workspace or self.workspace
             evidence = SkillImprovementStore.from_environment(self.workspace).record_feedback(
                 task_id=str(kwargs["task_id"]),
                 project_id=str(kwargs["project_id"]),
+                workspace=request_workspace,
+                user_id=request_context.sender_id,
+                session_id=request_context.session_key or request_context.chat_id,
                 source_type=str(kwargs["source_type"]),
                 skill_id="bug-fix",
                 skill_hash=str(kwargs["skill_hash"]),

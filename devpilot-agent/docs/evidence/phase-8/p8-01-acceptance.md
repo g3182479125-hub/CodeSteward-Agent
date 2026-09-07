@@ -1,16 +1,16 @@
 # P8-01 Acceptance Evidence
 
-Date: 2026-09-07  
+Date: 2026-09-07
 Scope: bounded Skill-improvement evidence collection and inactive candidate storage
 
 ## Delivered behavior
 
 - The first trial Skill is fixed to `skills/bug-fix/SKILL.md`.
-- User feedback and tool-result evidence is recorded as `verified`; model inference and external content remain `pending_verification` until two independent references are present.
-- Candidate content is stored under the private `skill-improvement/candidates/` data directory, not under the nanobot workspace `skills/` directory, so `SkillsLoader` cannot discover it.
+- User feedback and tool-result evidence is recorded as `verified`; model inference and external content remain `pending_verification` until two independent references are present. Every record carries user, session, workspace, project, task, Skill, and hash attribution.
+- Candidate content is stored under the private `skill-improvement/candidates/` data directory outside the nanobot workspace by default, not under the workspace `skills/` directory, so `SkillsLoader` and normal file tools cannot discover or modify it. Explicit data roots inside the workspace are rejected.
 - Candidate creation rejects path traversal, unsupported Skill IDs, unverified evidence, cross-project evidence, changed frontmatter/trust metadata, sensitive material, oversized content, and more than three candidates in one batch.
 - The effective `bug-fix` Skill is protected on all Dream write paths: `edit_file`, `apply_patch`, and `write_file`. Ordinary workspace Skills remain writable for Dream memory maintenance.
-- No model call, Skill activation, publishing, or autonomous write to the effective Skill is performed by P8-01.
+- Records use integrity-protected atomic JSON/JSONL persistence; tampered records fail closed. No model call, Skill activation, publishing, or autonomous write to the effective Skill is performed by P8-01.
 
 ## Verification commands
 

@@ -41,6 +41,9 @@ def _setup(tmp_path: Path, *, improvement: bool = True) -> tuple[SkillImprovemen
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
         source_type="user_feedback",
         skill_id="bug-fix",
         skill_hash=content_sha256(baseline),
@@ -130,6 +133,27 @@ def test_confirmation_is_bound_one_time_and_restore_checks_conflict(tmp_path: Pa
     skill_path.write_text(active.content, encoding="utf-8")
     restored = store.restore_candidate(candidate_id, workspace=workspace)
     assert restored.content_hash == old_task.content_hash
+
+
+def test_evaluation_and_confirmation_keep_workspace_and_project_binding(tmp_path: Path) -> None:
+    store, workspace, candidate_id = _setup(tmp_path)
+    other_workspace = tmp_path / "other-workspace"
+    skill_path = other_workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(_baseline(), encoding="utf-8")
+
+    with pytest.raises(SkillImprovementError, match="workspace mismatch"):
+        store.evaluate_candidate(candidate_id, workspace=other_workspace)
+
+    store.evaluate_candidate(candidate_id, workspace=workspace)
+    with pytest.raises(SkillImprovementError, match="project mismatch"):
+        store.issue_confirmation(
+            candidate_id,
+            user_id="user-1",
+            session_id="session-1",
+            workspace=workspace,
+            project_id="other-project",
+        )
 
 
 def test_integrity_and_committed_journal_recovery(tmp_path: Path) -> None:
