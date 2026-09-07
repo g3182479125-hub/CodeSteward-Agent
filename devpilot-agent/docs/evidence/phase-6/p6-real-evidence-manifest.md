@@ -1,9 +1,9 @@
 # P6 真实执行证据清单
 
-本清单的实现基线为 `1161722eb369799c44ac8befc30f708806dc5343`；FC 行为和类型边界的
-实现候选为 `b939d018dbe085a9982f890644e86f14be4ae062`；本轮证据、保留 profile 断言和
-验证记录的最终候选为 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd`。代码、证据和复审
-记录分开提交，避免文档自引用 SHA。它记录真实杭州 FC 与本地集成测试的可审计边界。API
+本清单保留早期候选 `1161722eb369799c44ac8befc30f708806dc5343`、
+`b939d018dbe085a9982f890644e86f14be4ae062` 与 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd`
+的历史证据。本轮实现候选的不可变版本将在收口提交后写入交接文档；本清单不预先宣称当前
+工作区已通过 Standards/Spec 复审。它记录真实杭州 FC 与本地集成测试的可审计边界。API
 Key、SQLite、项目源码和原始日志不进入仓库。
 
 ## 固定配置
@@ -26,9 +26,9 @@ API Key、allowlist 的实际路径或任何项目内容。
 
 ## 验证版本与最终候选复核
 
-最终候选 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd` 在 Python `3.13.14`、`e2b 2.31.0`、
+历史候选 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd` 曾在 Python `3.13.14`、`e2b 2.31.0`、
 `e2b-code-interpreter 2.8.1`、`pytest 8.4.2`、`ruff 0.16.5`、`pyright 1.1.411` 环境中完成
-本地复核。以下命令均以退出码 `0` 完成：
+本地复核。以下命令是该历史候选的记录，不代表本轮工作区的最终审查结论：
 
 ```powershell
 uv run --no-sync pytest tests/test_fc_sandbox_contract.py tests/test_p3_execution_boundary.py tests/test_p2a_migration.py -q
@@ -63,8 +63,9 @@ git diff --check b939d018dbe085a9982f890644e86f14be4ae062...570208b1e4f5dbd656bb
 - `ruff`、`secret_scan.py`、`check_markdown.py`：通过。
 - Fake 合同测试与真实 FC 记录分列；Fake 不用于证明网络隔离。
 
-## 不能从本清单推出的结论
+## 当前范围与未交付增强
 
-`provider-default` 只证明适配器没有发送杭州不支持的 `SessionNetworkPolicy`，不证明 FC
-供应商侧断网。真实 React 静态执行、跨进程供应商状态查询/清理仍关闭或未证明；普通项目
-只有在服务端显式 `DEVPILOT_FC_ALLOWED_PROJECTS` allowlist 命中后才能发往 FC。
+本项目接受 `provider-default` 作为 FC 验证执行模式，不把它描述为断网沙箱，也不以网络
+隔离证明作为当前退出条件。真实 React 静态执行属于后续增强；跨进程供应商状态查询和清理
+已支持显式恢复动作；普通项目只有在服务端显式 `DEVPILOT_FC_ALLOWED_PROJECTS` allowlist 命中后才能
+发往 FC。

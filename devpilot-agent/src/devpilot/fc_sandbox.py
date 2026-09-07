@@ -8,10 +8,14 @@ does not mutate the local project directory.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from threading import RLock
 from typing import Any
 
@@ -68,6 +72,7 @@ class FCSandboxConfig:
     region: str = ""
     network_policy_mode: str = "required"
     allowed_project_paths: tuple[str, ...] = ()
+    state_dir: str | None = None
 
     @classmethod
     def from_environment(cls) -> FCSandboxConfig:
@@ -110,6 +115,16 @@ class FCSandboxConfig:
             region=os.environ.get("DEVPILOT_FC_REGION", domain.split(".", 1)[0]).strip(),
             network_policy_mode=network_policy_mode,
             allowed_project_paths=allowed_project_paths,
+            state_dir=os.environ.get("DEVPILOT_FC_STATE_DIR")
+            or str(
+                Path(
+                    os.environ.get(
+                        "DEVPILOT_DATA_DIR",
+                        str(Path.home() / ".nanobot-skill-improvement"),
+                    )
+                )
+                / "fc-runs"
+            ),
         )
 
 
@@ -187,6 +202,7 @@ class FCSandboxBackend:
                 raise ExecutionError("FC_RUN_DUPLICATE", "FC run ID has already been used")
             state = _FCSandboxRun(run_id=run_id)
             self._runs[run_id] = state
+            self._persist_state(state)
             return state
 
     def _state_payload(self, state: _FCSandboxRun) -> dict[str, Any]:
@@ -222,11 +238,88 @@ class FCSandboxBackend:
             }
         return payload
 
+    def _state_path(self, run_id: str) -> Path | None:
+        if not self.config.state_dir:
+            return None
+        digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+        return Path(self.config.state_dir).expanduser().resolve() / f"{digest}.json"
+
+    def _persist_state(self, state: _FCSandboxRun) -> None:
+        """Persist restart-safe provider metadata without credentials or handles."""
+
+        path = self._state_path(state.run_id)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
+        ) as temporary:
+            json.dump(self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+
+    def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
+        path = self._state_path(run_id)
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("run_id") != run_id:
+            return None
+        result_payload = payload.get("result")
+        result = None
+        if isinstance(result_payload, dict):
+            try:
+                result = ExecutionResult(
+                    backend=str(result_payload["backend"]),
+                    sandbox_id=str(result_payload["sandbox_id"]),
+                    exit_code=int(result_payload["exit_code"]),
+                    stdout=str(result_payload.get("stdout", "")),
+                    stderr=str(result_payload.get("stderr", "")),
+                    duration_ms=int(result_payload.get("duration_ms", 0)),
+                    command_profile=str(result_payload.get("command_profile", "")),
+                    bundle_bytes=int(result_payload.get("bundle_bytes", 0)),
+                    region=str(result_payload.get("region", "")),
+                    template=str(result_payload.get("template", "")),
+                    network_policy=str(result_payload.get("network_policy", "")),
+                )
+            except (KeyError, TypeError, ValueError):
+                result = None
+        try:
+            cleanup_attempts = int(payload.get("cleanup_attempts", 0))
+        except (TypeError, ValueError):
+            cleanup_attempts = 0
+        return _FCSandboxRun(
+            run_id=run_id,
+            sandbox_id=str(payload["sandbox_id"]) if payload.get("sandbox_id") else None,
+            status=str(payload.get("status", "unknown")),
+            result=result,
+            error_code=str(payload["error_code"]) if payload.get("error_code") else None,
+            cleanup_error=(
+                str(payload["cleanup_error"]) if payload.get("cleanup_error") else None
+            ),
+            cleanup_attempts=cleanup_attempts,
+            cleanup_done=payload.get("cleanup_status") == "cleaned",
+        )
+
+    def _get_or_load_state(self, run_id: str) -> _FCSandboxRun | None:
+        state = self._runs.get(run_id)
+        if state is not None:
+            return state
+        state = self._load_persisted_state(run_id)
+        if state is not None:
+            self._runs[run_id] = state
+        return state
+
     def get_run_state(self, run_id: str) -> dict[str, Any]:
-        """Return a bounded lifecycle receipt, or unknown after a restart."""
+        """Return a bounded lifecycle receipt, including a durable restart snapshot."""
 
         with self._lock:
-            state = self._runs.get(run_id)
+            state = self._get_or_load_state(run_id)
             if state is None:
                 return {
                     "run_id": run_id,
@@ -249,7 +342,7 @@ class FCSandboxBackend:
         """Cancel one active run; repeated cancellation is idempotent."""
 
         with self._lock:
-            state = self._runs.get(run_id)
+            state = self._get_or_load_state(run_id)
             if state is None:
                 return self.get_run_state(run_id)
             if state.status not in {"starting", "running"} and not state.cleanup_error:
@@ -269,12 +362,14 @@ class FCSandboxBackend:
                 if state.status in {"starting", "running"}:
                     state.status = "cancelled"
                 state.cleanup_error = _provider_error("cleanup", exc).code
+                self._persist_state(state)
             return self.get_run_state(run_id)
         with self._lock:
             state.cleanup_done = True
             state.cleanup_error = None
             if state.status in {"starting", "running"}:
                 state.status = "cancelled"
+            self._persist_state(state)
         return self.get_run_state(run_id)
 
     def cleanup(self, run_id: str) -> dict[str, Any]:
@@ -282,15 +377,29 @@ class FCSandboxBackend:
 
         return self.cancel(run_id)
 
-    def recover(self, run_id: str, sandbox_id: str) -> dict[str, Any]:
-        """Reconnect to a provider sandbox, or persist an explicit unknown state."""
+    def recover(self, run_id: str, sandbox_id: str | None = None) -> dict[str, Any]:
+        """Reconnect to a provider sandbox after a process restart.
 
-        if not run_id or not sandbox_id:
-            raise ExecutionError("FC_RECOVERY_INVALID", "run_id and sandbox_id are required")
+        Recovery only uses the persisted sandbox identifier or an explicitly
+        supplied one. It never creates a sandbox or replays the command.
+        """
+
+        if not run_id:
+            raise ExecutionError("FC_RECOVERY_INVALID", "run_id is required")
         with self._lock:
-            existing = self._runs.get(run_id)
+            existing = self._get_or_load_state(run_id)
             if existing is not None and existing.handle is not None:
                 return self._state_payload(existing)
+            if sandbox_id is None and existing is not None:
+                sandbox_id = existing.sandbox_id
+            if (
+                existing is not None
+                and existing.status in {"completed", "failed", "cancelled"}
+                and existing.result is not None
+            ):
+                return self._state_payload(existing)
+        if not sandbox_id:
+            raise ExecutionError("FC_RECOVERY_INVALID", "sandbox_id is required")
         try:
             sandbox_cls = _sandbox_class()
             connector = getattr(sandbox_cls, "connect", None)
@@ -309,6 +418,7 @@ class FCSandboxBackend:
                 state.sandbox_id = sandbox_id
                 state.status = "unknown"
                 state.error_code = "FC_RECOVERY_UNKNOWN"
+                self._persist_state(state)
                 return self._state_payload(state)
         with self._lock:
             state = self._runs.setdefault(run_id, _FCSandboxRun(run_id=run_id))
@@ -320,6 +430,7 @@ class FCSandboxBackend:
             else:
                 state.status = "unknown"
                 state.error_code = "FC_RESULT_UNAVAILABLE"
+            self._persist_state(state)
             return self._state_payload(state)
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:
@@ -359,6 +470,7 @@ class FCSandboxBackend:
                 state.handle = sandbox_handle
                 state.sandbox_id = _sandbox_id(sandbox_handle)
                 state.status = "running"
+                self._persist_state(state)
                 if state.cancel_requested:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
             stage = "upload"
@@ -399,12 +511,14 @@ class FCSandboxBackend:
             with self._lock:
                 state.result = receipt
                 state.status = "completed" if receipt.exit_code == 0 else "failed"
+                self._persist_state(state)
             return receipt
         except ExecutionError as exc:
             primary_error = exc
             with self._lock:
                 state.error_code = exc.code
                 state.status = "cancelled" if exc.code == "FC_CANCELLED" else "failed"
+                self._persist_state(state)
             raise
         except Exception as exc:
             with self._lock:
@@ -418,6 +532,7 @@ class FCSandboxBackend:
             with self._lock:
                 state.error_code = mapped.code
                 state.status = "cancelled" if mapped.code == "FC_CANCELLED" else "failed"
+                self._persist_state(state)
             raise mapped from exc
         finally:
             with self._lock:
@@ -430,6 +545,7 @@ class FCSandboxBackend:
                     with self._lock:
                         state.cleanup_done = True
                         state.cleanup_error = None
+                        self._persist_state(state)
                 except Exception as exc:
                     cleanup_error = _provider_error("cleanup", exc)
                     with self._lock:
@@ -450,11 +566,13 @@ class FCSandboxBackend:
                         if primary_error is None:
                             state.status = "cleanup_failed"
                             state.error_code = cleanup_error.code
+                        self._persist_state(state)
                     if primary_error is None:
                         raise cleanup_error from exc
             with self._lock:
                 if state.cleanup_done:
                     state.handle = None
+                self._persist_state(state)
 
 
 def build_fc_backend_from_environment() -> ExecutionBackend:

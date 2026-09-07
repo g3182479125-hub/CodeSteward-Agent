@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from devpilot.execution import (
     ExecutionError,
     ExecutionFile,
     ExecutionRequest,
+    ExecutionResult,
     FakeExecutionBackend,
     request_from_mapping,
 )
@@ -218,6 +220,73 @@ def test_fc_provider_default_mode_omits_unsupported_network_policy(
     assert backend.verification_available is True
     assert result.exit_code == 0
     assert "allow_internet_access" not in events[0]
+
+
+def test_fc_backend_recovers_active_run_after_backend_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    started = Event()
+    released = Event()
+    connected: list[str] = []
+
+    class BlockingCommands:
+        def run(self, command: str, *, timeout: int) -> SimpleNamespace:
+            started.set()
+            assert released.wait(2)
+            return SimpleNamespace(exit_code=0, stdout="recovered", stderr="")
+
+    class SandboxHandle:
+        def __init__(self, sandbox_id: str) -> None:
+            self.sandbox_id = sandbox_id
+            self.files = SimpleNamespace(
+                make_dir=lambda _path: None, write=lambda _path, _data: None
+            )
+            self.commands = BlockingCommands()
+
+        def is_running(self) -> bool:
+            return not released.is_set()
+
+        def kill(self) -> None:
+            released.set()
+
+    class RestartableFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> SandboxHandle:
+            return SandboxHandle("restartable-sandbox")
+
+        @classmethod
+        def connect(cls, sandbox_id: str, **kwargs: object) -> SandboxHandle:
+            connected.append(sandbox_id)
+            return SandboxHandle(sandbox_id)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=RestartableFactory),
+    )
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="example.invalid",
+        state_dir=str(tmp_path),
+    )
+    first_backend = FCSandboxBackend(config)
+    outcome: list[ExecutionResult] = []
+    thread = Thread(target=lambda: outcome.append(first_backend.run(valid_request())))
+    thread.start()
+    assert started.wait(1)
+
+    restarted_backend = FCSandboxBackend(config)
+    state = restarted_backend.recover("run-1")
+
+    assert state["status"] == "running"
+    assert state["sandbox_id"] == "restartable-sandbox"
+    assert connected == ["restartable-sandbox"]
+    restarted_backend.cancel("run-1")
+    released.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert outcome and outcome[0].exit_code == 0
 
 
 def test_fc_config_reads_explicit_project_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:

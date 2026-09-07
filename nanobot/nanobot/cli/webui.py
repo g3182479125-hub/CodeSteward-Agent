@@ -130,7 +130,7 @@ def webui(
     settings_setup_error = provider_error if provider_error and created_config else None
     if settings_setup_error:
         console.print(f"[yellow]Model setup is incomplete: {provider_error}[/yellow]")
-        console.print("Configure a provider and model in WebUI Settings → Models.")
+        typer.echo("Configure a provider and model in WebUI Settings → Models.")
         if background:
             console.print(
                 "[red]First-time WebUI setup must run in the foreground. "

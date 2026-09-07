@@ -459,6 +459,23 @@ class ControlPlaneManager:
             self._event(entry, "execution.cleanup_retried", state)
             return {"change_set_id": change_set_id, "run_id": run_id, "cleanup": state}
 
+    def recover_verification(self, change_set_id: str) -> dict[str, Any]:
+        """Reconnect to a persisted FC sandbox without replaying verification."""
+
+        with self._mutex:
+            entry = self._require(change_set_id)
+            backend = self.execution_backend
+            run_id = entry.run_id
+            recover = getattr(backend, "recover", None) if backend is not None else None
+            if run_id is None or not callable(recover):
+                raise PatchError("FC_RECOVERY_UNAVAILABLE", "verification recovery is unavailable")
+            try:
+                state = cast(dict[str, Any], recover(run_id))
+            except ExecutionError as exc:
+                raise PatchError(exc.code, exc.message) from exc
+            self._event(entry, "execution.recovered", state)
+            return {"change_set_id": change_set_id, "run_id": run_id, "recovery": state}
+
     def deny_execution(self, change_set_id: str, code: str) -> None:
         """Persist a server-side execution denial without consuming approval."""
         with self._mutex:
@@ -1885,6 +1902,11 @@ def create_app(
     @app.post("/v1/change-sets/{change_set_id}/verification-cleanup")
     def verification_cleanup(request: Request, change_set_id: str) -> dict[str, Any]:
         return _contract_payload(request, manager.cleanup_verification(change_set_id))
+
+    @app.post("/api/v1/change-sets/{change_set_id}/verification-recovery")
+    @app.post("/v1/change-sets/{change_set_id}/verification-recovery")
+    def verification_recovery(request: Request, change_set_id: str) -> dict[str, Any]:
+        return _contract_payload(request, manager.recover_verification(change_set_id))
 
     @app.post("/api/v1/change-sets/{change_set_id}/rollback")
     @app.post("/v1/change-sets/{change_set_id}/rollback")

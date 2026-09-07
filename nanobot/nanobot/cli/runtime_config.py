@@ -68,8 +68,8 @@ def _print_runtime_config_validation_error(
         summary=summary,
         issues=issues,
     )
-    console.print(Text(str(diagnostic), style="red"))
-    console.print(f"[dim]Fix the listed setting, then retry: {escape(retry_command)}[/dim]")
+    typer.echo(str(diagnostic))
+    typer.echo(f"Fix the listed setting, then retry: {retry_command}")
 
 
 def _status_command(config_path: Path) -> str:
@@ -79,12 +79,11 @@ def _status_command(config_path: Path) -> str:
 def _print_model_setup_steps(config_path: Path) -> None:
     """Show the shortest setup routes shared by Status and Agent startup."""
     config_arg = f'--config "{config_path}"'
-    console.print(
-        f"  WebUI: run [cyan]nanobot webui {escape(config_arg)}[/cyan], "
-        "then open Settings → Models"
+    typer.echo(
+        f"  WebUI: run nanobot webui {config_arg}, then open Settings → Models"
     )
-    console.print(f"  CLI:   run [cyan]nanobot onboard --wizard {escape(config_arg)}[/cyan]")
-    console.print(f"  Check: [cyan]{escape(_status_command(config_path))}[/cyan]")
+    typer.echo(f"  CLI:   run nanobot onboard --wizard {config_arg}")
+    typer.echo(f"  Check: {_status_command(config_path)}")
 
 
 def _print_agent_start_error(error: ValueError) -> None:

@@ -783,6 +783,9 @@ def test_feature_delivery_nanobot_contract_matches_registered_tools() -> None:
         for line in skill.splitlines()
         if line.strip().startswith("- devpilot_")
     }
+    # Skill improvement tools are platform-level opt-in tools and therefore
+    # are registered outside the three delivery Skill manifests.
+    expected.update({"devpilot_skill_candidate", "devpilot_skill_feedback"})
     actual = {name for name in registered if name.startswith("devpilot_")}
     assert actual == expected
     assert not {
