@@ -5,7 +5,7 @@ Scope: fixed comparison, native-chat confirmation, activation, task snapshots, a
 
 ## Delivered behavior
 
-- The trusted evaluator fixes three categories (`original_failure`, `nearby_holdout`, `regression`), baseline/candidate versions, and three repeats: exactly 18 cases. Candidate text cannot alter the case definitions or assertions.
+- The trusted evaluator runs a fixed synthetic Agent/Tool trace for three categories (`original_failure`, `nearby_holdout`, `regression`), baseline/candidate versions, and three repeats: exactly 18 cases. Candidate text can affect the simulated action trace, but cannot alter the case definitions or assertions.
 - Eligibility requires a real fixed assertion improvement, no category regression, and complete results. The synthetic runner records model/parameter fields, start-file hash, Skill hashes, profile, template, budget, usage availability, duration, and every case result. It performs no model call and does not claim general statistical improvement.
 - `/skill-improvement` is the only user-facing control. It lists/views candidates, runs evaluation, and supports `enable`, `ignore`, and `restore` in the existing nanobot chat; no new page or agent loop is added.
 - Enablement creates a five-minute, one-time confirmation bound to user, session, workspace, project, Skill, base/candidate hashes, test set, and evaluation result. Activation rechecks the live base hash, atomically replaces only `skills/bug-fix/SKILL.md`, and records the previous content.

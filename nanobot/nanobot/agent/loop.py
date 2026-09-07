@@ -797,10 +797,14 @@ class AgentLoop:
                 project_id=task_context.project_ref,
             )
             return {snapshot.skill_id: snapshot.content}
-        except (ImportError, OSError, ValueError):
+        except ImportError:
             # Existing nanobot installations and projects without the trial
             # Skill continue using the ordinary SkillsLoader path.
             return {}
+        except (OSError, ValueError) as exc:
+            # Never fall back to a newer live file for an active task: that
+            # would silently change the task's pinned Skill version.
+            raise TaskProfileError("bug-fix Skill snapshot is unavailable") from exc
 
     def task_profile_for_session(self, session: Session) -> TaskProfile | None:
         """Resolve the server-owned profile persisted for a session."""

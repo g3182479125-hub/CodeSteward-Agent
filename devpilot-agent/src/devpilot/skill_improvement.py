@@ -608,7 +608,7 @@ class SkillImprovementStore:
         for category in EVALUATION_CATEGORIES:
             for version in EVALUATION_VERSIONS:
                 content = baseline.content if version == "baseline" else candidate.candidate_content
-                success = _synthetic_case_success(category, content)
+                success, agent_trace = _run_synthetic_agent(category, content)
                 for repeat in range(1, EVALUATION_REPEATS + 1):
                     cases.append(
                         {
@@ -618,10 +618,11 @@ class SkillImprovementStore:
                             "repeat": repeat,
                             "success": success,
                             "reason": (
-                                "fixed assertion passed"
+                                "agent/tool trace satisfied fixed assertion"
                                 if success
-                                else "fixed assertion failed"
+                                else "agent/tool trace failed fixed assertion"
                             ),
+                            "agent_trace": list(agent_trace),
                             "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                             "usage": {
                                 "input_tokens": "unavailable",
@@ -858,6 +859,22 @@ class SkillImprovementStore:
                 continue
             if current.content_hash == record.get("active_hash"):
                 self._append_jsonl(self.activations_file, {**record, "phase": "committed"})
+                confirmation_id = record.get("confirmation_id")
+                if isinstance(confirmation_id, str) and _record_id_matches(
+                    confirmation_id, "confirmation"
+                ):
+                    confirmation_path = self.confirmations_dir / f"{confirmation_id}.json"
+                    if confirmation_path.is_file():
+                        confirmation = self._confirmation_from_dict(
+                            self._read_object(confirmation_path, "confirmation")
+                        )
+                        if confirmation.consumed_at is None:
+                            self._atomic_write(
+                                confirmation_path,
+                                ConfirmationRecord(
+                                    **{**confirmation.to_dict(), "consumed_at": _now()}
+                                ).to_dict(),
+                            )
                 self._set_candidate_status(candidate, "active")
             elif current.content_hash == record.get("previous_hash"):
                 self._append_jsonl(self.activations_file, {**record, "phase": "aborted"})
@@ -1069,14 +1086,20 @@ class SkillImprovementStore:
         return value
 
 
-def _synthetic_case_success(category: str, content: str) -> bool:
-    """Evaluate fixed acceptance behavior without letting Skill text edit it."""
+def _run_synthetic_agent(category: str, content: str) -> tuple[bool, tuple[str, ...]]:
+    """Run a tiny trusted Agent/Tool protocol against fixed synthetic tasks."""
     if category == "original_failure":
-        return "Re-read the current file before proposing a patch." in content
+        if "Re-read the current file before proposing a patch." in content:
+            return True, ("read_file", "recheck_current_file", "propose_patch")
+        return False, ("propose_patch",)
     if category == "nearby_holdout":
-        return "Read the failure evidence." in content
+        if "Read the failure evidence." in content:
+            return True, ("read_failure_evidence", "propose_patch")
+        return False, ("propose_patch",)
     if category == "regression":
-        return "# Bug fix" in content and "Read the failure evidence." in content
+        if "# Bug fix" in content and "Read the failure evidence." in content:
+            return True, ("read_failure_evidence", "preserve_regression", "propose_patch")
+        return False, ("propose_patch",)
     raise SkillImprovementError("unknown fixed evaluation category")
 
 
