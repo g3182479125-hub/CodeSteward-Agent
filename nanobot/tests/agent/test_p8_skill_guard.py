@@ -86,3 +86,14 @@ def test_main_filesystem_guard_hides_private_skill_improvement_data(tmp_path) ->
     result = asyncio.run(reader.execute(path="private-data/candidate.json"))
     assert getattr(result, "is_error", False) is True
     assert "private data" in str(result).lower()
+
+    writer = WriteFileTool(
+        workspace=tmp_path,
+        allowed_dir=tmp_path,
+        blocked_write_dirs=[private_dir],
+    )
+    write_result = asyncio.run(
+        writer.execute(path="private-data/devpilot.db", content="should not exist")
+    )
+    assert getattr(write_result, "is_error", False) is True
+    assert not (private_dir / "devpilot.db").exists()

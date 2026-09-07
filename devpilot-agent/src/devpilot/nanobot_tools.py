@@ -1376,7 +1376,7 @@ class SkillFeedbackTool(Tool):
             if request_context is None or not request_context.sender_id:
                 raise SkillImprovementError("feedback requires a trusted request context")
             request_workspace = request_context.workspace or self.workspace
-            evidence = SkillImprovementStore.from_environment(self.workspace).record_feedback(
+            evidence = SkillImprovementStore.from_environment(request_workspace).record_feedback(
                 task_id=str(kwargs["task_id"]),
                 project_id=str(kwargs["project_id"]),
                 workspace=request_workspace,

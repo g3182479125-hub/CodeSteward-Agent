@@ -389,7 +389,7 @@ class SkillImprovementStore:
         # Keep the service-owned records outside the agent-visible workspace.
         # An explicit DEVPILOT_DATA_DIR is still accepted only when it passes
         # the constructor's workspace-boundary check.
-        default = Path.home() / ".nanobot"
+        default = Path.home() / ".nanobot-skill-improvement"
         return cls(os.environ.get("DEVPILOT_DATA_DIR", str(default)), workspace=workspace)
 
     @property

@@ -7,7 +7,7 @@ Scope: bounded Skill-improvement evidence collection and inactive candidate stor
 
 - The first trial Skill is fixed to `skills/bug-fix/SKILL.md`.
 - User feedback and tool-result evidence is recorded as `verified`; model inference and external content remain `pending_verification` until two independent references are present. Every record carries user, session, workspace, project, task, Skill, and hash attribution.
-- Candidate content is stored in the existing DevPilot SQLite database under the `skill_improvement_records` table, not under the workspace `skills/` directory, so `SkillsLoader` and normal file tools cannot discover or modify it. Migration `0011_p8_skill_improvement_records` is required; database roots inside the workspace are rejected.
+- Candidate content is stored in the existing DevPilot SQLite database under the `skill_improvement_records` table, not under the workspace `skills/` directory, so `SkillsLoader` and normal file tools cannot discover or modify it. Migration `0011_p8_skill_improvement_records` is required; the whole service data root is blocked from Agent file read/write and roots inside the workspace are rejected.
 - Candidate creation rejects path traversal, unsupported Skill IDs, unverified evidence, cross-project evidence, changed frontmatter/trust metadata, sensitive material, oversized content, and more than three candidates in one batch.
 - The effective `bug-fix` Skill is protected on all Dream write paths: `edit_file`, `apply_patch`, and `write_file`. Ordinary workspace Skills remain writable for Dream memory maintenance.
 - Records use integrity-protected SQLite persistence; tampered records fail closed. No model call, Skill activation, publishing, or autonomous write to the effective Skill is performed by P8-01.

@@ -107,14 +107,12 @@ class _FsTool(Tool):
         )
         sandbox_restricts = bool(ctx.config.exec.sandbox)
         allowed_dir = agent_workspace if restrict else None
-        private_improvement_dir = (
-            Path(
-                os.environ.get(
-                    "DEVPILOT_DATA_DIR",
-                    str(Path.home() / ".nanobot"),
-                )
-            ).expanduser().resolve(strict=False) / "skill-improvement"
-        )
+        private_improvement_dir = Path(
+            os.environ.get(
+                "DEVPILOT_DATA_DIR",
+                str(Path.home() / ".nanobot-skill-improvement"),
+            )
+        ).expanduser().resolve(strict=False)
         # Agent-owned skills stay available from project scopes. History is a narrower
         # capability: expose only the append-only log, not the surrounding memory directory.
         return cls(
