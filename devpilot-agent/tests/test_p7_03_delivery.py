@@ -1,5 +1,6 @@
 """Regression checks for the P7-03 integrated delivery contract."""
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -36,3 +37,15 @@ def test_root_readme_points_to_the_integrated_environment() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "uv sync --project .\\nanobot --locked" in readme
     assert "devpilot-agent/docs/runbooks/local-nanobot-devpilot.md" in readme
+
+
+def test_p7_handoff_contains_source_boundaries_without_credentials() -> None:
+    handoff = (ROOT / "docs" / "handoffs" / "2026-09-07-p7-delivery.md").read_text(
+        encoding="utf-8"
+    )
+    assert "P7-01、P7-02、P7-03 已完成" in handoff
+    assert "DeepSeek Harness" in handoff
+    assert "Codex Harness" in handoff
+    assert "14 个 `devpilot_*` entry points" in handoff
+    assert re.search(r"e2b_[a-f0-9]{20,}", handoff.lower()) is None
+    assert "sk-" not in handoff.lower()
