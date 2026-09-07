@@ -1523,6 +1523,7 @@ class SkillCandidateTool(Tool):
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
             candidate = SkillImprovementStore.from_environment(request_workspace).create_candidate(
+                user_id=request_context.sender_id,
                 project_id=str(kwargs["project_id"]),
                 skill_path="skills/bug-fix/SKILL.md",
                 baseline_content=str(kwargs["baseline_content"]),

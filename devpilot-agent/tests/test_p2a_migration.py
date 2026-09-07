@@ -42,6 +42,7 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             "approvals",
             "file_changes",
             "project_locks",
+            "skill_improvement_records",
         }.issubset(tables)
         with engine.connect() as connection:
             version = connection.execute(

@@ -610,6 +610,7 @@ class SkillImprovementStore:
     def create_candidate(
         self,
         *,
+        user_id: str,
         project_id: str,
         skill_path: str,
         baseline_content: str,
@@ -647,6 +648,8 @@ class SkillImprovementStore:
         users = {item.user_id for item in evidence if item is not None}
         if len(users) != 1:
             raise SkillImprovementError("candidate evidence must belong to one user")
+        if next(iter(users)) != _bounded_text(user_id, field="user_id", limit=128):
+            raise SkillImprovementError("candidate evidence does not belong to the requester")
         projects = {item.project_id for item in evidence if item is not None}
         if projects != {project_id}:
             raise SkillImprovementError("candidate evidence must belong to one project")
@@ -1112,8 +1115,20 @@ class SkillImprovementStore:
             self._set_candidate_status(candidate, "active")
             return active
 
-    def ignore_candidate(self, candidate_id: str) -> SkillCandidate:
-        candidate = self.get_candidate(candidate_id)
+    def ignore_candidate(
+        self,
+        candidate_id: str,
+        *,
+        workspace: str | Path,
+        user_id: str,
+        project_id: str,
+    ) -> SkillCandidate:
+        candidate = self.get_candidate(
+            candidate_id,
+            workspace=workspace,
+            user_id=user_id,
+            project_id=project_id,
+        )
         if candidate is None:
             raise SkillImprovementError("candidate not found")
         return self._set_candidate_status(candidate, "ignored")

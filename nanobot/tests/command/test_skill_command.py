@@ -117,9 +117,19 @@ async def test_skill_improvement_command_uses_native_chat(tmp_path: Path, monkey
             """
         )
     monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
     assert out.content == "No private Skill candidates are available."
+
+
+@pytest.mark.asyncio
+async def test_skill_improvement_is_disabled_without_controlled_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", raising=False)
+    out = await cmd_skill_improvement(_ctx(_make_loop(tmp_path), "/skill-improvement"))
+    assert "disabled" in out.content
 
 
 @pytest.mark.asyncio
@@ -139,6 +149,7 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
             "record_mac text not null, workspace text, project_id text, created_at text not null)"
         )
     monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     loop = _loop_with_skills(tmp_path)
     project_workspace = tmp_path / "project"
     skill_path = project_workspace / "skills" / "bug-fix" / "SKILL.md"
@@ -166,6 +177,36 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
         )
     )
     assert "recorded as verified" in accepted.content
+
+    from devpilot.skill_improvement import SkillImprovementStore
+
+    from nanobot.command.builtin import _devpilot_project_id
+
+    evidence_id = accepted.content.split("`")[1]
+    baseline = skill_path.read_text(encoding="utf-8")
+    store = SkillImprovementStore.from_environment(project_workspace)
+    candidate = store.create_candidate(
+        user_id="user",
+        project_id=_devpilot_project_id(project_workspace),
+        skill_path="skills/bug-fix/SKILL.md",
+        baseline_content=baseline,
+        candidate_content=baseline + "\n- Re-check the failing assertion.\n",
+        evidence_ids=[evidence_id],
+        reason="The failure evidence was not rechecked.",
+        expected_behavior="Re-read the failure before proposing a fix.",
+        test_set_version="p8-02-v1",
+        workspace=project_workspace,
+    )
+    viewed = await cmd_skill_improvement(
+        _ctx(
+            loop,
+            f"/skill-improvement {candidate.candidate_id}",
+            is_user_turn=True,
+            workspace=project_workspace,
+        )
+    )
+    assert "Short candidate Diff preview" in viewed.content
+    assert "Re-check the failing assertion" in viewed.content
 
 
 @pytest.mark.asyncio

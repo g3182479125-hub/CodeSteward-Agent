@@ -73,6 +73,7 @@ def _setup(tmp_path: Path, *, improvement: bool = True) -> tuple[SkillImprovemen
     )
     content = baseline + addition
     candidate = store.create_candidate(
+        user_id="user-1",
         project_id="project-1",
         skill_path="skills/bug-fix/SKILL.md",
         baseline_content=baseline,
@@ -194,6 +195,7 @@ def test_candidate_is_bound_to_one_user_and_hidden_from_other_users(tmp_path: Pa
     )
     with pytest.raises(SkillImprovementError, match="one user"):
         store.create_candidate(
+            user_id="user-1",
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),

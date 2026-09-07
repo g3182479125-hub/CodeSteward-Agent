@@ -85,6 +85,7 @@ def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path:
     assert feedback.session_id == "session-1"
 
     candidate = store.create_candidate(
+        user_id="user-1",
         project_id="project-1",
         skill_path="skills/bug-fix/SKILL.md",
         baseline_content=_baseline(),
@@ -171,10 +172,28 @@ def test_model_inference_requires_independent_verification(tmp_path: Path) -> No
         )
 
 
+def test_candidate_user_binding_is_checked_by_the_store(tmp_path: Path) -> None:
+    store, evidence_id = _store(tmp_path)
+    with pytest.raises(SkillImprovementError, match="requester"):
+        store.create_candidate(
+            user_id="another-user",
+            project_id="project-1",
+            skill_path="skills/bug-fix/SKILL.md",
+            baseline_content=_baseline(),
+            candidate_content=_baseline() + "\n- Extra check.\n",
+            evidence_ids=[evidence_id],
+            reason="test",
+            expected_behavior="test",
+            test_set_version="p8-02-v1",
+            workspace=tmp_path / "workspace",
+        )
+
+
 def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -> None:
     store, evidence_id = _store(tmp_path)
     with pytest.raises(SkillImprovementError, match="protected metadata"):
         store.create_candidate(
+            user_id="user-1",
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),
@@ -188,6 +207,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
 
     with pytest.raises(SkillImprovementError, match="sensitive"):
         store.create_candidate(
+            user_id="user-1",
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),
@@ -205,6 +225,7 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
     batch = "batch-fixed"
     for index in range(3):
         store.create_candidate(
+            user_id="user-1",
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),
@@ -218,6 +239,7 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
         )
     with pytest.raises(SkillImprovementError, match="limit is three"):
         store.create_candidate(
+            user_id="user-1",
             project_id="project-1",
             skill_path="skills/bug-fix/SKILL.md",
             baseline_content=_baseline(),

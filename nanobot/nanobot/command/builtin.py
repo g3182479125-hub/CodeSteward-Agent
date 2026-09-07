@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import os
 import subprocess
@@ -37,6 +38,11 @@ CommandLifecycle = Literal[
     "agent_turn",
     "agent_turn_with_args",
 ]
+
+
+def _devpilot_project_id(workspace: Any) -> str:
+    """Derive the stable local project binding used by P8 commands."""
+    return "local-" + hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -1040,6 +1046,12 @@ async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
 
 async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
     """Expose the P8 candidate lifecycle through nanobot's native chat."""
+    if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") != "1":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Skill improvement is disabled; set DEVPILOT_ENABLE_SKILL_IMPROVEMENT=1 for the controlled trial.",
+        )
     try:
         from devpilot.skill_improvement import SkillImprovementStore
 
@@ -1051,8 +1063,11 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
 
     args = ctx.args.strip().split()
     user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
+    project_id = _devpilot_project_id(workspace)
     if not args:
-        candidates = store.list_candidates(workspace=workspace, user_id=user_id)
+        candidates = store.list_candidates(
+            workspace=workspace, user_id=user_id, project_id=project_id
+        )
         if not candidates:
             content = "No private Skill candidates are available."
         else:
@@ -1083,9 +1098,6 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 content = "Feedback requires an active bug-fix task profile."
             else:
                 try:
-                    project_id = "local-" + hashlib.sha256(
-                        str(workspace.resolve()).encode()
-                    ).hexdigest()[:16]
                     skill = store.read_effective_snapshot(workspace)
                     evidence = store.record_feedback(
                         task_id=task_context["task_id"],
@@ -1125,7 +1137,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     args[1],
                     workspace=workspace,
                     user_id=user_id,
-                    project_id=evidence.project_id,
+                    project_id=project_id,
                 )
                 content = (
                     f"Evidence `{deleted.evidence_id}` deleted; associated candidates were invalidated."
@@ -1139,7 +1151,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
 
-    candidate = store.get_candidate(args[0], workspace=workspace, user_id=user_id)
+    candidate = store.get_candidate(
+        args[0], workspace=workspace, user_id=user_id, project_id=project_id
+    )
     if candidate is None:
         content = f"Candidate `{args[0]}` was not found."
     elif len(args) == 1 or args[1].lower() == "view":
@@ -1153,6 +1167,27 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             f"- Expected behavior: {candidate.expected_behavior}",
             f"- Evidence: {', '.join(candidate.evidence_ids)}",
         ]
+        evidence_summaries = []
+        for evidence_id in candidate.evidence_ids:
+            evidence = store.get_feedback(
+                evidence_id,
+                workspace=workspace,
+                user_id=user_id,
+                project_id=project_id,
+            )
+            if evidence is not None:
+                evidence_summaries.append(f"- Evidence summary: {evidence.correction[:240]}")
+        lines.extend(evidence_summaries)
+        baseline = store.read_effective_snapshot(workspace)
+        diff = "".join(
+            difflib.unified_diff(
+                baseline.content.splitlines(keepends=True),
+                candidate.candidate_content.splitlines(keepends=True),
+                fromfile="active/skills/bug-fix/SKILL.md",
+                tofile=f"candidate/{candidate.candidate_id}/SKILL.md",
+            )
+        )
+        lines.extend(["", "Short candidate Diff preview:", "```diff", diff[:8_000], "```"])
         if evaluation is not None:
             lines.extend([
                 f"- Fixed comparison: baseline {evaluation.baseline_successes}/9, "
@@ -1182,7 +1217,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content = f"Evaluation rejected: {type(exc).__name__}."
     elif args[1].lower() == "ignore":
         try:
-            ignored = store.ignore_candidate(candidate.candidate_id)
+            ignored = store.ignore_candidate(
+                candidate.candidate_id,
+                workspace=workspace,
+                user_id=user_id,
+                project_id=project_id,
+            )
             content = f"Candidate `{ignored.candidate_id}` is now ignored; the active Skill was unchanged."
         except (ValueError, OSError) as exc:
             content = f"Ignore rejected: {type(exc).__name__}."
@@ -1196,14 +1236,14 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     user_id=user_id,
                     session_id=ctx.key,
                     workspace=workspace,
-                    project_id=candidate.project_id,
+                    project_id=project_id,
                 )
                 active = store.activate_candidate(
                     confirmation.confirmation_id,
                     workspace=workspace,
                     user_id=user_id,
                     session_id=ctx.key,
-                    project_id=candidate.project_id,
+                    project_id=project_id,
                 )
                 content = f"Candidate enabled for new tasks. Active Skill hash: `{active.content_hash}`."
             except (ValueError, OSError) as exc:
@@ -1217,7 +1257,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     candidate.candidate_id,
                     workspace=workspace,
                     user_id=user_id,
-                    project_id=candidate.project_id,
+                    project_id=project_id,
                 )
                 content = f"Stable Skill restored. Current hash: `{restored.content_hash}`."
             except (ValueError, OSError) as exc:
