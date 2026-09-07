@@ -8,6 +8,7 @@ from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -23,6 +24,21 @@ config.set_main_option(
     "sqlalchemy.url",
     resolve_database_url(config.get_main_option("sqlalchemy.url")),
 )
+
+
+def _ensure_sqlite_parent() -> None:
+    """Create the parent for a file-backed SQLite migration target."""
+    database_url = make_url(config.get_main_option("sqlalchemy.url"))
+    if database_url.get_backend_name() != "sqlite" or not database_url.database:
+        return
+    if database_url.database == ":memory:":
+        return
+    Path(database_url.database).expanduser().resolve().parent.mkdir(
+        parents=True, exist_ok=True
+    )
+
+
+_ensure_sqlite_parent()
 target_metadata = Base.metadata
 
 
