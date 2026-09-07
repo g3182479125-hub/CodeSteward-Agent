@@ -88,6 +88,24 @@ def test_private_storage_cannot_live_inside_workspace(tmp_path: Path) -> None:
         )
 
 
+def test_production_store_requires_alembic_head(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(SkillImprovementError, match="initialized by Alembic"):
+        SkillImprovementStore(tmp_path / "data", workspace=workspace)
+
+    data_dir = tmp_path / "head-without-table"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+    with pytest.raises(SkillImprovementError, match="schema is incomplete"):
+        SkillImprovementStore(data_dir, workspace=workspace)
+
+
 def test_integrity_key_is_independent_from_business_database(tmp_path: Path) -> None:
     store, _evidence_id = _store(tmp_path)
     assert store.integrity_key_file != store.database_path
