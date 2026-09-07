@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, cast
 
 from nanobot.agent.tools.base import Tool, ToolResult
@@ -36,6 +37,20 @@ class ToolRegistry:
         """Unregister a tool by name."""
         self._tools.pop(name, None)
         self._cached_definitions = None
+
+    def restricted_to(
+        self,
+        allowed_tools: Collection[str] | None = None,
+        disabled_tools: Collection[str] = (),
+    ) -> ToolRegistry:
+        """Return a view that exposes and executes only the allowed tools."""
+        disabled = set(disabled_tools)
+        restricted = ToolRegistry()
+        for name in self.tool_names:
+            tool = self.get(name)
+            if tool is not None and (allowed_tools is None or name in allowed_tools) and name not in disabled:
+                restricted.register(tool)
+        return restricted
 
     def get(self, name: str) -> Tool | None:
         """Get a tool by name."""

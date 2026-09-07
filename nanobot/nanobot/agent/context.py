@@ -83,6 +83,9 @@ class ContextBuilder:
         self,
         *,
         active_skill_names: Sequence[str] | None = None,
+        task_profile_name: str | None = None,
+        task_profile_skill_names: Sequence[str] | None = None,
+        task_profile_output_contract: Sequence[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
         workspace: Path | None = None,
@@ -109,7 +112,7 @@ class ContextBuilder:
         active_skills = self.skills.get_always_skills()
         active_skills.extend(
             name
-            for name in (active_skill_names or ())
+            for name in (*tuple(task_profile_skill_names or ()), *tuple(active_skill_names or ()))
             if name not in active_skills
         )
         if active_skills:
@@ -120,6 +123,16 @@ class ContextBuilder:
         skills_summary = self.skills.build_skills_summary(exclude=set(active_skills))
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
+
+        if task_profile_name:
+            output_contract = ", ".join(task_profile_output_contract or ()) or "not specified"
+            parts.append(
+                "# Task Profile\n\n"
+                f"Active profile: `{task_profile_name}`\n"
+                f"Required output fields: {output_contract}\n"
+                "Use only the profile's visible tools. A profile does not grant approval, "
+                "execution, or rollback authority."
+            )
 
         if include_memory_recent_history:
             entries = self.memory.read_recent_history_for_prompt(
@@ -223,6 +236,9 @@ class ContextBuilder:
         current_message: str,
         *,
         media: list[str] | None = None,
+        task_profile_name: str | None = None,
+        task_profile_skill_names: Sequence[str] | None = None,
+        task_profile_output_contract: Sequence[str] | None = None,
         channel: str | None = None,
         current_role: str = "user",
         session_summary: str | None = None,
@@ -245,6 +261,9 @@ class ContextBuilder:
                 "role": "system",
                 "content": self.build_system_prompt(
                     active_skill_names=active_skill_names,
+                    task_profile_name=task_profile_name,
+                    task_profile_skill_names=task_profile_skill_names,
+                    task_profile_output_contract=task_profile_output_contract,
                     channel=channel,
                     session_summary=session_summary,
                     workspace=root,

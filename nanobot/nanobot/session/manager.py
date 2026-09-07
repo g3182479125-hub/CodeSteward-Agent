@@ -154,6 +154,8 @@ class SessionPolicy:
     persist: bool = True
     log_content: bool = True
     disabled_tools: frozenset[str] = frozenset()
+    allowed_tools: frozenset[str] | None = None
+    task_profile: str | None = None
 
 
 @dataclass

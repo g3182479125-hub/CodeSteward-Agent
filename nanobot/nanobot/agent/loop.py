@@ -31,6 +31,13 @@ from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.task_profiles import (
+    TASK_PROFILE_METADATA_KEY,
+    TASK_PROFILE_VERSION_METADATA_KEY,
+    TaskLoopGuard,
+    TaskProfile,
+    TaskProfileCatalog,
+)
 from nanobot.agent.tools.context import (
     RequestContext,
     bind_request_context,
@@ -295,6 +302,7 @@ class AgentLoop:
         restart_mode: str = "auto",
         local_trigger_store: LocalTriggerStore | None = None,
         idle_compact_check_interval_seconds: int = 0,
+        task_profiles: TaskProfileCatalog | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -449,6 +457,7 @@ class AgentLoop:
             session_ttl_minutes=session_ttl_minutes,
         )
         self._idle_compact_check_interval_s = idle_compact_check_interval_seconds
+        self.task_profiles = task_profiles or TaskProfileCatalog()
         self._next_idle_compact_check_at = time.monotonic()
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
@@ -719,10 +728,14 @@ class AgentLoop:
         """Build the initial message list for the LLM turn."""
         assert ctx.session is not None
         scope = self.workspace_scopes.for_message(ctx.msg, ctx.session.metadata)
+        profile = self.task_profile_for_session(ctx.session)
         return self.context.build_messages(
             history=ctx.history,
             current_message=ctx.msg.content,
             media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
+            task_profile_name=(f"{profile.name}@{profile.version}" if profile else None),
+            task_profile_skill_names=profile.skill_names if profile else None,
+            task_profile_output_contract=profile.output_contract if profile else None,
             channel=ctx.delivery.route.channel,
             session_summary=ctx.pending_summary,
             workspace=scope.project_path,
@@ -732,6 +745,87 @@ class AgentLoop:
             session_key=ctx.session.key,
             unified_session=self._unified_session,
         )
+
+    def task_profile_for_session(self, session: Session) -> TaskProfile | None:
+        """Resolve the server-owned profile persisted for a session."""
+        metadata = session.metadata
+        if not isinstance(metadata, Mapping):
+            return None
+        name = metadata.get(TASK_PROFILE_METADATA_KEY)
+        if name is None:
+            return None
+        if not isinstance(name, str) or not name:
+            raise ValueError("session task profile metadata is invalid")
+        return self.task_profiles.get(name)
+
+    def set_session_task_profile(self, session_key: str, name: str) -> TaskProfile:
+        """Select a validated profile for future turns in one session."""
+        profile = self.task_profiles.get(name)
+        skills = {
+            item["name"]
+            for item in self.context.skills.list_skills(filter_unavailable=True)
+        }
+        self.task_profiles.validate_runtime(profile, set(self.tools.tool_names), skills)
+        session = self.sessions.get_or_create(session_key)
+        session.metadata[TASK_PROFILE_METADATA_KEY] = profile.name
+        session.metadata[TASK_PROFILE_VERSION_METADATA_KEY] = profile.version
+        session.policy = dataclasses.replace(
+            session.policy,
+            allowed_tools=profile.allowed_tools,
+            task_profile=profile.name,
+        )
+        self.sessions.save(session)
+        return profile
+
+    def clear_session_task_profile(self, session_key: str) -> None:
+        """Return one session to nanobot's ordinary configured tool set."""
+        session = self.sessions.get_or_create(session_key)
+        session.metadata.pop(TASK_PROFILE_METADATA_KEY, None)
+        session.metadata.pop(TASK_PROFILE_VERSION_METADATA_KEY, None)
+        session.policy = dataclasses.replace(
+            session.policy,
+            allowed_tools=None,
+            task_profile=None,
+        )
+        self.sessions.save(session)
+
+    def describe_task_profiles(self, session: Session) -> str:
+        current = session.metadata.get(TASK_PROFILE_METADATA_KEY)
+        return self.task_profiles.describe(current if isinstance(current, str) else None)
+
+    def _sync_session_task_profile(self, session: Session) -> TaskProfile | None:
+        if not isinstance(session, Session):
+            return None
+        profile = self.task_profile_for_session(session)
+        if profile is None:
+            if session.policy.allowed_tools is not None or session.policy.task_profile is not None:
+                session.policy = dataclasses.replace(
+                    session.policy,
+                    allowed_tools=None,
+                    task_profile=None,
+                )
+            return None
+        skills = {
+            item["name"]
+            for item in self.context.skills.list_skills(filter_unavailable=True)
+        }
+        stored_version = session.metadata.get(TASK_PROFILE_VERSION_METADATA_KEY)
+        if stored_version != profile.version:
+            raise ValueError(
+                f"task profile '{profile.name}' is stale; stored version={stored_version!r}, "
+                f"current version={profile.version!r}"
+            )
+        self.task_profiles.validate_runtime(profile, set(self.tools.tool_names), skills)
+        if (
+            session.policy.allowed_tools != profile.allowed_tools
+            or session.policy.task_profile != profile.name
+        ):
+            session.policy = dataclasses.replace(
+                session.policy,
+                allowed_tools=profile.allowed_tools,
+                task_profile=profile.name,
+            )
+        return profile
 
     def _request_context_for_turn(self, ctx: TurnContext) -> RequestContext:
         assert ctx.session is not None
@@ -1109,7 +1203,12 @@ class AgentLoop:
                     message_metadata=metadata,
                 ),
                 provider_state=provider_state,
-            ))
+                loop_guard=(
+                    TaskLoopGuard()
+                    if session is not None and session.policy.task_profile
+                    else None
+                ),
+             ))
         finally:
             turn_scope_stack.close()
             reset_workspace_scope(workspace_token)
@@ -1635,15 +1734,11 @@ class AgentLoop:
             else:
                 ctx.session = self.sessions.get_or_create(ctx.session_key)
         session = ctx.session
+        self._sync_session_task_profile(session)
         ctx.ephemeral = ctx.ephemeral or not session.policy.persist
         tools = ctx.tools or self.tools
-        if session.policy.disabled_tools:
-            restricted = ToolRegistry()
-            for name in tools.tool_names:
-                tool = tools.get(name)
-                if name not in session.policy.disabled_tools and tool:
-                    restricted.register(tool)
-            tools = restricted
+        if session.policy.allowed_tools is not None or session.policy.disabled_tools:
+            tools = tools.restricted_to(session.policy.allowed_tools, session.policy.disabled_tools)
         ctx.tools = tools
 
         if ctx.kind is TurnKind.SYSTEM:

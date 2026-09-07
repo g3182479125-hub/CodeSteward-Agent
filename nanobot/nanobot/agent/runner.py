@@ -18,6 +18,7 @@ from nanobot.agent.context_governance import (
     ContextGovernor,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.task_profiles import TaskLoopGuard
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
 from nanobot.providers.base import (
@@ -117,6 +118,7 @@ class AgentRunSpec:
     finalize_on_max_iterations: bool = True
     provider_state: ProviderConversationState | None = None
     request_context: RequestContext | None = None
+    loop_guard: TaskLoopGuard | None = None
 
 
 @dataclass(slots=True)
@@ -1455,11 +1457,18 @@ class AgentRunner:
             external_lookup_counts,
         )
         if lookup_error:
+            pause = (
+                spec.loop_guard.observe(tool_call.name, tool_call.arguments, lookup_error)
+                if spec.loop_guard is not None
+                else None
+            )
             event = {
                 "name": tool_call.name,
                 "status": "error",
-                "detail": "repeated external lookup blocked",
+                "detail": pause or "repeated external lookup blocked",
             }
+            if pause:
+                return pause, event, RuntimeError(pause)
             if spec.fail_on_tool_error:
                 return lookup_error + hint, event, RuntimeError(lookup_error)
             return lookup_error + hint, event, None
@@ -1475,11 +1484,18 @@ class AgentRunner:
                 if len(prepared_tuple) == 3:
                     tool, params, prep_error = cast(tuple[Any, Any, str | None], prepared_tuple)
         if prep_error:
+            pause = (
+                spec.loop_guard.observe(tool_call.name, params, prep_error)
+                if spec.loop_guard is not None
+                else None
+            )
             event = {
                 "name": tool_call.name,
                 "status": "error",
-                "detail": prep_error.split(": ", 1)[-1][:120],
+                "detail": (pause or prep_error.split(": ", 1)[-1])[:120],
             }
+            if pause:
+                return pause, event, RuntimeError(pause)
             handled = self._classify_violation(
                 raw_text=prep_error,
                 soft_payload=prep_error + hint,
@@ -1508,6 +1524,14 @@ class AgentRunner:
                 "detail": str(exc),
             }
             payload = f"Error: {type(exc).__name__}: {exc}"
+            pause = (
+                spec.loop_guard.observe(tool_call.name, params, payload)
+                if spec.loop_guard is not None
+                else None
+            )
+            if pause:
+                event["detail"] = pause[:120]
+                return pause, event, RuntimeError(pause)
             handled = self._classify_violation(
                 raw_text=str(exc),
                 # Preserve legacy exception payloads without the retry hint.
@@ -1529,6 +1553,14 @@ class AgentRunner:
                 "status": "error",
                 "detail": result.replace("\n", " ").strip()[:120],
             }
+            pause = (
+                spec.loop_guard.observe(tool_call.name, params, str(result))
+                if spec.loop_guard is not None
+                else None
+            )
+            if pause:
+                event["detail"] = pause[:120]
+                return pause, event, RuntimeError(pause)
             handled = self._classify_violation(
                 raw_text=result,
                 soft_payload=result + hint,
@@ -1543,6 +1575,9 @@ class AgentRunner:
             return result + hint, event, None
 
         await hook.after_execute_tool(context, tool_call, tool, params, result)
+
+        if spec.loop_guard is not None:
+            spec.loop_guard.observe_success()
 
         detail = "" if result is None else str(result)
         detail = detail.replace("\n", " ").strip()

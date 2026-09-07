@@ -15,6 +15,19 @@ def _builder(tmp_path: Path, **kw) -> ContextBuilder:
     return ContextBuilder(workspace=tmp_path, **kw)
 
 
+def test_task_profile_prompt_binds_skill_output_and_authority(tmp_path: Path) -> None:
+    prompt = _builder(tmp_path).build_system_prompt(
+        task_profile_name="feature-delivery@1",
+        task_profile_skill_names=("feature-delivery",),
+        task_profile_output_contract=("facts_and_evidence", "next_step"),
+        include_memory_recent_history=False,
+    )
+
+    assert "Active profile: `feature-delivery@1`" in prompt
+    assert "Required output fields: facts_and_evidence, next_step" in prompt
+    assert "does not grant approval, execution, or rollback authority" in prompt
+
+
 # ---------------------------------------------------------------------------
 # _merge_message_content (static)
 # ---------------------------------------------------------------------------

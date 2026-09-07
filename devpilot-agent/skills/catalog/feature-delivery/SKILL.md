@@ -25,6 +25,15 @@ metadata:
 
 # Feature delivery
 
+## P7 task profile contract
+
+When selected through nanobot's `feature-delivery@1` task profile, keep the response
+structured as `facts_and_evidence`, `change_summary`, `verification_result`, and
+`next_step`. The profile narrows visible tools for this session; it does not grant
+approval, Apply, verification, rollback, credential, or sandbox authority. If a
+session resumes after a material project change, re-check the relevant evidence
+before proposing a new ChangeSet.
+
 ## 适用场景
 
 用户明确提出一个可交付的新功能，并希望先看到影响范围、风险、Diff 和验证方案，

@@ -96,6 +96,14 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         accepts_args=True,
     ),
     BuiltinCommandSpec(
+        "/task-profile",
+        "Select task profile",
+        "Choose a trusted Skill and tool set for this chat session.",
+        "sliders-horizontal",
+        "[name|off]",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/history",
         "Show conversation history",
         "Print the last N persisted conversation messages.",
@@ -410,6 +418,59 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content="\n".join(lines),
+        metadata=metadata,
+    )
+
+
+async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
+    """Show or select a developer-owned task capability profile."""
+    loop = ctx.loop
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "text"}
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    args = ctx.args.strip()
+    if not args:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=loop.describe_task_profiles(session),
+            metadata=metadata,
+        )
+    parts = args.split()
+    if len(parts) != 1:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Usage: `/task-profile [repo-analysis|feature-delivery|bug-fix|off]`",
+            metadata=metadata,
+        )
+    name = parts[0].lower()
+    if name in {"off", "none", "default"}:
+        loop.clear_session_task_profile(ctx.key)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Task profile cleared; this chat uses nanobot's ordinary configured tools.",
+            metadata=metadata,
+        )
+    try:
+        profile = loop.set_session_task_profile(ctx.key, name)
+    except (KeyError, ValueError) as exc:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=f"Could not select task profile: {exc}",
+            metadata=metadata,
+        )
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=(
+            f"Task profile `{profile.name}` is active for this chat.\n"
+            f"Skills: {', '.join(profile.skill_names)}\n"
+            f"Visible tools: {', '.join(sorted(profile.allowed_tools))}\n"
+            f"Output fields: {', '.join(profile.output_contract)}\n"
+            "This selection does not grant approval, execution, or rollback authority."
+        ),
         metadata=metadata,
     )
 
@@ -1027,6 +1088,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/status", cmd_status)
     router.exact("/model", cmd_model)
     router.prefix("/model ", cmd_model)
+    router.exact("/task-profile", cmd_task_profile)
+    router.prefix("/task-profile ", cmd_task_profile)
     router.exact("/history", cmd_history)
     router.prefix("/history ", cmd_history)
     router.exact("/goal", cmd_goal)

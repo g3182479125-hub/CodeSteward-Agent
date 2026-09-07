@@ -58,6 +58,17 @@ def test_get_definitions_orders_builtins_then_mcp_tools() -> None:
     ]
 
 
+def test_restricted_to_isolated_view_hides_and_rejects_unlisted_tools() -> None:
+    registry = _registry_with_names(["allowed", "blocked"])
+    restricted = registry.restricted_to({"allowed"})
+
+    assert restricted.tool_names == ["allowed"]
+    tool, _, error = restricted.prepare_call("blocked", {})
+    assert tool is None
+    assert error is not None
+    assert "not found" in str(error)
+
+
 def test_prepare_call_rejects_near_miss_tool_name_with_suggestion() -> None:
     registry = ToolRegistry()
     registry.register(_FakeTool("read_file"))

@@ -12,6 +12,7 @@ from nanobot.command.builtin import (
     builtin_command_palette,
     cmd_goal,
     cmd_model,
+    cmd_task_profile,
     register_builtin_commands,
 )
 from nanobot.command.router import CommandContext, CommandRouter
@@ -224,6 +225,22 @@ def test_model_command_in_help_and_palette() -> None:
     assert model["lifecycle"] == "side_channel"
     assert model["accepts_args"] is True
     assert "/model [preset]" in build_help_text()
+
+
+@pytest.mark.asyncio
+async def test_task_profile_command_is_session_scoped(tmp_path) -> None:
+    loop = _make_loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+
+    msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/task-profile feature-delivery")
+    out = await cmd_task_profile(
+        CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content, args="feature-delivery", loop=loop)
+    )
+    other = loop.sessions.get_or_create("cli:other")
+
+    assert "feature-delivery" in out.content
+    assert loop.sessions.get_or_create("cli:direct").policy.task_profile == "feature-delivery"
+    assert other.policy.task_profile is None
 
 
 @pytest.mark.asyncio
