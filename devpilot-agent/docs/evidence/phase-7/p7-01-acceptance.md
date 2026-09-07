@@ -23,11 +23,13 @@
 基线：P6 结项提交 `e8369151cba046007cc05621756ab702a1ec99f8`。实现候选固定前，保留
 用户已有的两个 Node fixture 未提交修改，不将其当作 P7 实现文件。
 
-实现候选：`bf773e09d97c94b0e88cd98c6d00f5d6d3eb30f8`（基线：
+实现候选：`92cd0c3`（基线：
 `e8369151cba046007cc05621756ab702a1ec99f8`）。该候选已吸收首轮双轴 review 的有效
 边界问题：项目分析 Profile 移除 Artifact 发布能力；任务上下文、文件哈希和错误守卫
 按 `profile@version` 绑定并持久化；仅直接用户消息可以切换 Profile；陈旧配置/依赖
-返回明确的 Profile 错误；未结束会话不能覆盖 Profile。
+返回明确的 Profile 错误；未结束会话不能覆盖 Profile。nanobot 的统一工具成功边界
+会自动把 DevPilot inspect/read/search/proposal 结果中的安全证据、文件哈希和 ChangeSet
+引用写入当前 Session，不依赖模型主动调用内部记录接口。
 
 已通过：
 
