@@ -1,6 +1,6 @@
 # P7-01 任务组合与上下文验收
 
-状态：**实现候选已完成；等待本节点 Standards/Spec 双轴 review。**
+状态：**P7-01 已完成；实现、验证及 Standards/Spec 双轴 review 均通过。**
 
 本节点只复用 nanobot 原有 Runtime、Skill、Tool registry、Session 和上下文入口，
 没有新建页面、数据库、插件市场或第二套 Agent Loop。nanobot 原生 WebUI 仍是唯一
@@ -63,5 +63,10 @@
 - 不改写 nanobot Agent Loop，不引入向量数据库或新的记忆服务；
 - 不提前进入 P7-02 的基线对照评测。
 
-双轴 review 通过并记录后，P7-01 才能标记 complete；若 reviewer 发现问题，只批量
-修复本节点范围，再对原候选做增量复核。
+双轴 review 已通过并记录：
+
+- [Standards review](../../reviews/p7-01-standards-review-2026-09-07.md)；
+- [Spec review](../../reviews/p7-01-spec-review-2026-09-07.md)。
+
+本节点不提前进入 P7-02；下一步必须以本验收记录和最终候选为基线，另行执行 P7-02
+的固定任务对照评测。
