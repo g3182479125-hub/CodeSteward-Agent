@@ -28,6 +28,7 @@ from .execution import (
     execution_bundle_bytes,
     validate_request,
 )
+from .redaction import redact_execution_output
 
 SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
@@ -227,8 +228,12 @@ class FCSandboxBackend:
                 "backend": state.result.backend,
                 "sandbox_id": state.result.sandbox_id,
                 "exit_code": state.result.exit_code,
-                "stdout": state.result.stdout,
-                "stderr": state.result.stderr,
+                "stdout": redact_execution_output(
+                    state.result.stdout[-MAX_EXECUTION_OUTPUT_BYTES:]
+                ),
+                "stderr": redact_execution_output(
+                    state.result.stderr[-MAX_EXECUTION_OUTPUT_BYTES:]
+                ),
                 "duration_ms": state.result.duration_ms,
                 "command_profile": state.result.command_profile,
                 "bundle_bytes": state.result.bundle_bytes,

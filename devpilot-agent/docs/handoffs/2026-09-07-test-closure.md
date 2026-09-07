@@ -12,6 +12,8 @@
 - 调整该 Windows 计时回归为平台合理的启动容差；执行行为未改变。
 - 修复 FC 运行记录仅存在内存的问题：新增脱敏本地状态快照；服务重启后可按原
   `sandbox_id` 显式调用 FC `connect` 恢复运行状态；已结束运行复用持久化结果，不创建替代沙箱、不重放命令。
+- 修复恢复快照输出的敏感信息风险：持久化前统一执行敏感信息和绝对路径脱敏，并由契约测试
+  验证类似 `E2B_API_KEY=...` 的内容不会在恢复结果中出现。
 - 新增控制面 `POST /v1/change-sets/{change_set_id}/verification-recovery` 恢复入口，
   恢复失败时返回 `unknown`/稳定错误，不会伪造验证成功。
 - DevPilot、WebUI 74 条 source test、WebUI build、FC sandbox-check 和服务健康检查均通过。

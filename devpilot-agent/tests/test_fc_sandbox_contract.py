@@ -233,7 +233,9 @@ def test_fc_backend_recovers_active_run_after_backend_restart(
         def run(self, command: str, *, timeout: int) -> SimpleNamespace:
             started.set()
             assert released.wait(2)
-            return SimpleNamespace(exit_code=0, stdout="recovered", stderr="")
+            return SimpleNamespace(
+                exit_code=0, stdout="recovered E2B_API_KEY=secret-value", stderr=""
+            )
 
     class SandboxHandle:
         def __init__(self, sandbox_id: str) -> None:
@@ -291,7 +293,8 @@ def test_fc_backend_recovers_active_run_after_backend_restart(
     terminal_backend = FCSandboxBackend(config)
     terminal = terminal_backend.recover("run-1")
     assert terminal["status"] == "completed"
-    assert terminal["result"]["stdout"] == "recovered"
+    assert terminal["result"]["stdout"] == "recovered E2B_API_KEY=[REDACTED]"
+    assert "secret-value" not in terminal["result"]["stdout"]
     assert connected == ["restartable-sandbox"]
 
 
