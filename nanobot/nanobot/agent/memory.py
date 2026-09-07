@@ -704,7 +704,8 @@ class MemoryStore:
             workspace=workspace,
             allowed_dir=skills_dir,
             extra_write_allowed_files=editable_files,
-            blocked_write_dirs=[protected_skill_dir],
+            blocked_write_dirs=[protected_skill_dir, private_improvement_dir],
+            blocked_write_files=[private_improvement_key],
             file_states=file_states,
         ))
         # Candidate creation is a private, inactive DevPilot operation rather
