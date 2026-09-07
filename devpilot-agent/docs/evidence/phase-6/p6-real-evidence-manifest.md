@@ -1,8 +1,9 @@
 # P6 真实执行证据清单
 
-本清单绑定代码候选提交 `1161722eb369799c44ac8befc30f708806dc5343`；本文件随后由
-证据文档提交带入仓库。代码提交与证据提交分开记录，避免文档自引用 SHA。它记录真实
-杭州 FC 与本地集成测试的可审计边界。API Key、SQLite、项目源码和原始日志不进入仓库。
+本清单的实现基线为 `1161722eb369799c44ac8befc30f708806dc5343`，当前最终候选为
+`b939d018dbe085a9982f890644e86f14be4ae062`。代码、证据和复审记录分开提交，避免文档
+自引用 SHA。它记录真实杭州 FC 与本地集成测试的可审计边界。API Key、SQLite、项目源码
+和原始日志不进入仓库。
 
 ## 固定配置
 
@@ -15,6 +16,30 @@
 | policy mode | `provider-default` |
 | request network flag | `network_allowed=False` |
 | isolation conclusion | 未证明；CLI 明确输出 `network_isolation_proven=false` |
+| non-secret configuration fingerprint | `sha256:557aceede17b606575f16aa8f1dd22262331c1cacecd81fb1fcc09c651fd2125` |
+
+配置指纹由下列规范化、非敏感字段按键排序后计算：`region`、`api_url`、`domain`、`template`、
+`network_policy_mode`、`network_allowed=false`、已启用 profile 集合
+`[node-syntax, python-run, python-syntax]` 与 `allowlist_mode=explicit-project-paths`。它不包含
+API Key、allowlist 的实际路径或任何项目内容。
+
+## 验证版本与最终候选复核
+
+最终候选 `b939d018dbe085a9982f890644e86f14be4ae062` 在 Python `3.13.14`、`e2b 2.31.0`、
+`e2b-code-interpreter 2.8.1`、`pytest 8.4.2`、`ruff 0.16.5`、`pyright 1.1.411` 环境中完成
+本地复核。以下命令均以退出码 `0` 完成：
+
+```powershell
+uv run --no-sync pytest tests/test_fc_sandbox_contract.py tests/test_p3_execution_boundary.py tests/test_p2a_migration.py -q
+# 31 passed
+uv run --no-sync ruff check src/devpilot/action_broker.py src/devpilot/control_plane.py src/devpilot/fc_sandbox.py
+uv run --no-sync pyright
+git diff --check
+```
+
+本复核额外确认：`python-syntax`、`python-run`、`node-syntax` 是唯一可用的 FC profile；
+`python-regression` 与 `react-static` 均失败关闭。真实 FC 证据仍仅证明本清单下的降级执行，
+不因为上述本地复核而新增网络隔离或 React 执行结论。
 
 ## 真实 FC 场景
 
