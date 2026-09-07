@@ -7,15 +7,17 @@
 ## 本批次完成
 
 - 真实 nanobot WebUI 主链路已通过：只读检查 → ChangeSet/Diff → 聊天确认 → Apply → 杭州 FC Verify → 网页结果回传。
-- nanobot 全回归：`5878 passed, 42 skipped`；Windows PowerShell 子进程启动计时测试已通过平台合理启动容差处理。
+- nanobot 全回归（2026-09-08 正确环境）：`5878 passed, 42 skipped`，退出码 `0`，用时 `302.63s`；命令详见测试证据，临时目录位于仓库外。
 - 修复 Windows CLI 配置路径/诊断输出被 Rich 终端宽度截断的问题，相关测试 `2 passed`，Ruff 通过。
 - 调整该 Windows 计时回归为平台合理的启动容差；执行行为未改变。
 - 修复 FC 运行记录仅存在内存的问题：新增脱敏本地状态快照；服务重启后可按原
-  `sandbox_id` 显式调用 FC `connect` 恢复运行状态，不创建替代沙箱、不重放命令。
+  `sandbox_id` 显式调用 FC `connect` 恢复运行状态；已结束运行复用持久化结果，不创建替代沙箱、不重放命令。
 - 新增控制面 `POST /v1/change-sets/{change_set_id}/verification-recovery` 恢复入口，
   恢复失败时返回 `unknown`/稳定错误，不会伪造验证成功。
 - DevPilot、WebUI 74 条 source test、WebUI build、FC sandbox-check 和服务健康检查均通过。
 - 测试证据：`docs/evidence/test-full-system-2026-09-07.md`。
+- 当前交接时间点：2026-09-08；P6 的 provider-default 口径和恢复实现已完成，P6-04 双轴
+  复审结果以最终提交后的复审记录为准。
 
 ## 本批次修改文件
 

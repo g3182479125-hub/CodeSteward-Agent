@@ -1,4 +1,4 @@
-# DevPilot 测试方案 v1 执行记录（2026-09-07）
+# DevPilot 测试方案 v1 执行记录（2026-09-07～2026-09-08）
 
 ## 范围与环境
 
@@ -28,8 +28,15 @@
 
 ## 自动化回归
 
-- DevPilot 主测试集：首轮仅因未设置 nanobot 源码/依赖路径导致 2 条跨仓库测试导入失败；在 nanobot 独立测试环境中重跑这 2 条均通过。其余首轮结果无失败。
-- nanobot 全回归：`5878 passed, 42 skipped`，包含 Windows PowerShell 子进程启动计时测试；通过平台合理启动容差修复了环境计时误报。
+- DevPilot 主测试集：在 nanobot 测试环境中设置 `PYTHONPATH` 指向 nanobot 源码和 DevPilot `src` 后，完整测试集退出码 `0`。
+- nanobot 全回归（本轮正确环境）：命令使用仓库外临时目录，且设置跨仓库 `PYTHONPATH`；退出码 `0`，`5878 passed, 42 skipped`，用时 `302.63s`。命令如下：
+
+  ```powershell
+  $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src'
+  E:\codex-local\nanobot-state\nanobot-test.venv\Scripts\python.exe -m pytest -q --basetemp E:\codex-local\test-tmp-nanobot-closure-final2
+  ```
+
+- 另一次错误的全量命令曾因未设置跨仓库 `PYTHONPATH` 报 6 条导入失败；修正环境后 7 条相关测试全部通过，未作为当前回归结果统计。
 - 回归中发现并修复 2 条 Windows CLI 诊断输出契约问题：Rich 终端宽度会截断 `config.json` 和 `Settings → Models`；改为稳定的纯文本诊断后，相关 2 条测试 `2 passed`，Ruff 通过。
 - WebUI：源代码测试 74 条通过，构建和 lint 通过；已重新构建并部署 bundled dist 后执行真实网页测试。
 - 静态类型检查：DevPilot/nanobot 当前仍有历史 optional-dependency 和严格类型告警，不能作为本次功能通过依据。
@@ -48,7 +55,7 @@
 
 ## 明确不在本次范围的增强项
 
-网络隔离保证、真实 React 执行和无人值守自动修复不属于当前交付目标。跨进程供应商运行状态查询已由本轮补齐：运行元数据写入脱敏本地快照，服务重启后按 `sandbox_id` 显式调用 `connect`，不可查询时返回 `unknown`，不创建替代任务、不重放命令。项目仍保留固定 profile、allowlist、显式确认、快照范围和清理失败关闭等边界。
+网络隔离保证、真实 React 执行和无人值守自动修复不属于当前交付目标。跨进程供应商运行状态查询已由本轮补齐：运行元数据写入脱敏本地快照，服务重启后按 `sandbox_id` 显式调用 `connect`，已结束运行复用持久化结果，不可查询时返回 `unknown`，不创建替代任务、不重放命令。项目仍保留固定 profile、allowlist、显式确认、快照范围和清理失败关闭等边界。
 
 ## 重现入口
 

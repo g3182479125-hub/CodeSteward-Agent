@@ -1314,7 +1314,10 @@ def test_settings_payload_includes_token_usage_summary(
 
     from nanobot.webui.token_usage import record_token_usage
 
-    record_token_usage({"prompt_tokens": 10, "completion_tokens": 5})
+    record_token_usage(
+        {"prompt_tokens": 10, "completion_tokens": 5},
+        timezone_name=config.agents.defaults.timezone,
+    )
 
     payload = settings_payload()
 

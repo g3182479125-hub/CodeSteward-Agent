@@ -118,7 +118,13 @@ def test_exec_session_yield_returns_when_process_finishes_early(tmp_path):
         manager = ExecSessionManager()
         tool = ExecTool(working_dir=str(tmp_path), timeout=5, session_manager=manager)
         command = _python_command("import time; time.sleep(0.1); print('done')")
-        return await tool.execute(command=command, yield_time_ms=1200)
+        started = time.perf_counter()
+        result = await tool.execute(command=command, yield_time_ms=1200)
+        elapsed = time.perf_counter() - started
+        # Windows process creation is materially slower on a cold interpreter,
+        # but both platforms must still return the finished process directly.
+        assert elapsed < (3.0 if sys.platform == "win32" else 1.0)
+        return result
 
     result = asyncio.run(asyncio.wait_for(run(), timeout=5))
 

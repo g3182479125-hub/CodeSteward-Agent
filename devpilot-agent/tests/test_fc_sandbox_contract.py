@@ -288,6 +288,12 @@ def test_fc_backend_recovers_active_run_after_backend_restart(
     assert not thread.is_alive()
     assert outcome and outcome[0].exit_code == 0
 
+    terminal_backend = FCSandboxBackend(config)
+    terminal = terminal_backend.recover("run-1")
+    assert terminal["status"] == "completed"
+    assert terminal["result"]["stdout"] == "recovered"
+    assert connected == ["restartable-sandbox"]
+
 
 def test_fc_config_reads_explicit_project_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("E2B_API_KEY", "test-key")
