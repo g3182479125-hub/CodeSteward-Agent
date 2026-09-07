@@ -179,12 +179,12 @@ class TaskContextState:
             "constraints": [_safe_context_text(item) for item in self.constraints],
             "completed": [_safe_context_text(item) for item in self.completed],
             "next_step": _safe_context_text(self.next_step),
-            "task_id": self.task_id,
-            "run_id": self.run_id,
-            "change_set_id": self.change_set_id,
-            "evidence_refs": list(self.evidence_refs),
+            "task_id": _optional_context_string(self.task_id),
+            "run_id": _optional_context_string(self.run_id),
+            "change_set_id": _optional_context_string(self.change_set_id),
+            "evidence_refs": [_safe_context_text(item) for item in self.evidence_refs],
             "file_hashes": [
-                {"path": path, "sha256": digest}
+                {"path": _safe_context_text(path), "sha256": digest}
                 for path, digest in self.file_hashes
             ],
         }

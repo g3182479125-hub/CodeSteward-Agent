@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +65,7 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 RetryWaitCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
+TaskContextEvidenceCallback = Callable[[str, Mapping[str, Any], Any], None]
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
@@ -119,6 +120,7 @@ class AgentRunSpec:
     provider_state: ProviderConversationState | None = None
     request_context: RequestContext | None = None
     loop_guard: TaskLoopGuard | None = None
+    task_context_evidence_callback: TaskContextEvidenceCallback | None = None
 
 
 @dataclass(slots=True)
@@ -1578,6 +1580,20 @@ class AgentRunner:
 
         if spec.loop_guard is not None:
             spec.loop_guard.observe_success()
+
+        if spec.task_context_evidence_callback is not None:
+            try:
+                spec.task_context_evidence_callback(
+                    tool_call.name,
+                    params if isinstance(params, Mapping) else {},
+                    result,
+                )
+            except Exception as exc:  # pragma: no cover - telemetry must not break a turn
+                logger.warning(
+                    "Task context evidence recording failed for {}: {}",
+                    tool_call.name,
+                    type(exc).__name__,
+                )
 
         detail = "" if result is None else str(result)
         detail = detail.replace("\n", " ").strip()

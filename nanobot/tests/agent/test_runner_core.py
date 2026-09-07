@@ -28,6 +28,7 @@ async def test_runner_preserves_reasoning_fields_and_tool_results():
 
     provider = MagicMock(spec=LLMProvider)
     captured_second_call: list[dict] = []
+    evidence: list[tuple[str, dict, object]] = []
     call_count = {"n": 0}
 
     async def chat_with_retry(*, messages, **kwargs):
@@ -58,6 +59,9 @@ async def test_runner_preserves_reasoning_fields_and_tool_results():
         model="test-model",
         max_iterations=3,
         max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        task_context_evidence_callback=lambda name, params, result: evidence.append(
+            (name, params, result)
+        ),
     ))
 
     assert result.final_content == "done"
@@ -65,6 +69,7 @@ async def test_runner_preserves_reasoning_fields_and_tool_results():
     assert result.tool_events == [
         {"name": "list_dir", "status": "ok", "detail": "tool result"}
     ]
+    assert evidence == [("list_dir", {"path": "."}, "tool result")]
 
     assistant_messages = [
         msg for msg in captured_second_call

@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import os
 import time
 import weakref
@@ -953,6 +954,66 @@ class AgentLoop:
         self.sessions.save(session)
         return updated
 
+    def _record_task_context_tool_result(
+        self,
+        session: Session,
+        profile: TaskProfile,
+        tool_name: str,
+        params: Mapping[str, Any],
+        result: Any,
+    ) -> None:
+        """Persist safe evidence emitted by the real DevPilot tool boundary."""
+        if not isinstance(result, str):
+            return
+        state = TaskContextState.from_metadata(
+            session.metadata.get(TASK_CONTEXT_METADATA_KEY)
+        )
+        if state is None or state.profile_binding != f"{profile.name}@{profile.version}":
+            return
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(payload, Mapping):
+            return
+
+        evidence_refs: list[str] = []
+        file_hashes: list[tuple[str, str]] = []
+        run_id = payload.get("run_id")
+        change_set_id = payload.get("change_set_id")
+        if isinstance(run_id, str) and run_id:
+            evidence_refs.append(run_id)
+        for key in ("evidence_run_id", "evidence_ids", "analysis_evidence_ids", "failure_evidence_ids"):
+            value = params.get(key)
+            if isinstance(value, str) and value:
+                evidence_refs.append(value)
+            elif isinstance(value, (list, tuple)):
+                evidence_refs.extend(
+                    item for item in value if isinstance(item, str) and item
+                )
+        if tool_name == "devpilot_read_code":
+            path = payload.get("path")
+            digest = payload.get("sha256")
+            if (
+                isinstance(path, str)
+                and path
+                and isinstance(digest, str)
+                and len(digest) == 64
+                and all(char in "0123456789abcdefABCDEF" for char in digest)
+            ):
+                file_hashes.append((path, digest))
+        if not evidence_refs and not file_hashes and not isinstance(change_set_id, str):
+            return
+        self.update_task_context_evidence(
+            session.key,
+            evidence_refs=tuple(dict.fromkeys(evidence_refs))[:20],
+            file_hashes=tuple(file_hashes),
+            run_id=run_id if isinstance(run_id, str) and run_id else None,
+            change_set_id=(
+                change_set_id if isinstance(change_set_id, str) and change_set_id else None
+            ),
+        )
+
     @staticmethod
     def _task_loop_guard(session: Session, profile: TaskProfile) -> TaskLoopGuard:
         binding = f"{profile.name}@{profile.version}"
@@ -1340,6 +1401,15 @@ class AgentLoop:
                 ),
                 provider_state=provider_state,
                 loop_guard=loop_guard,
+                task_context_evidence_callback=(
+                    partial(
+                        self._record_task_context_tool_result,
+                        session,
+                        profile,
+                    )
+                    if session is not None and profile is not None
+                    else None
+                ),
              ))
         finally:
             turn_scope_stack.close()

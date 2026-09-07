@@ -99,3 +99,43 @@ def test_task_context_marks_external_file_change_before_new_proposal(tmp_path) -
 
     assert "external file change detected" in refreshed.next_step or "external file change detected" in " ".join(refreshed.constraints)
     assert refreshed.project_ref == state.project_ref
+
+
+def test_task_context_records_real_devpilot_evidence_results(tmp_path) -> None:
+    loop = _loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    profile = loop.set_session_task_profile("cli:one", "feature-delivery")
+    session = loop.sessions.get_or_create("cli:one")
+    loop._ensure_task_context(session, profile, "fix src", tmp_path)
+
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_read_code",
+        {"project_id": "project-1", "evidence_run_id": "run-1"},
+        '{"path":"src.py","sha256":"' + "a" * 64 + '"}',
+    )
+
+    stored = session.metadata["task_context"]
+    assert stored["evidence_refs"] == ["run-1"]
+    assert stored["file_hashes"] == [{"path": "src.py", "sha256": "a" * 64}]
+
+
+def test_task_context_records_proposal_change_set_and_evidence(tmp_path) -> None:
+    loop = _loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    profile = loop.set_session_task_profile("cli:one", "feature-delivery")
+    session = loop.sessions.get_or_create("cli:one")
+    loop._ensure_task_context(session, profile, "add feature", tmp_path)
+
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_feature_delivery_propose",
+        {"evidence_ids": ["analysis-1"]},
+        '{"change_set_id":"changeset-1"}',
+    )
+
+    stored = session.metadata["task_context"]
+    assert stored["evidence_refs"] == ["analysis-1"]
+    assert stored["change_set_id"] == "changeset-1"
