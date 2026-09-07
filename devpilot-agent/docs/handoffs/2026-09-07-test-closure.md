@@ -37,5 +37,6 @@
 - P8-03 定时批处理仍未选择、未实现、未启用。
 - API Key、`.env`、SQLite、日志、虚拟环境和 pytest 临时目录不得提交。
 - 当前 WebUI：`http://127.0.0.1:8765`；控制平面：`http://127.0.0.1:18800`；Gateway：`http://127.0.0.1:18790`。
-- 本轮最终实现候选 SHA 需以收口提交后的 `git rev-parse HEAD` 为准；提交前不要把 API Key、
-  `.env`、SQLite、日志、虚拟环境或 pytest 临时目录加入暂存区。
+- 本轮实现候选基线：`8bb31c097694aaf4ac216654a008e014ec0fab13`；本次文档修正提交后的
+  HEAD 是最终复审候选。不要把 API Key、`.env`、SQLite、日志、虚拟环境或 pytest 临时目录
+  加入暂存区。
