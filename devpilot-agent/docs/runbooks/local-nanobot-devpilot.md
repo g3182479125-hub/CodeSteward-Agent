@@ -3,6 +3,37 @@
 nanobot 自带 WebUI 是唯一用户入口。DevPilot 不提供独立审批页面或控制台。
 FastAPI 只作为 nanobot Tool Adapter 和本地 Action Broker 使用的 loopback 内部控制面。
 
+## 换机安装（集成运行时）
+
+从仓库根目录开始。两个项目各自保留锁文件，但集成运行时必须把 DevPilot
+安装到 nanobot 使用的同一个虚拟环境；只安装 nanobot 不算完成部署：
+
+```powershell
+cd D:\path\to\nanobot-devpilot-agent
+uv sync --project .\nanobot --locked
+uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
+```
+
+若当前网络不可用，先在独立的 `devpilot-agent` 环境执行
+`uv sync --project .\devpilot-agent --locked`，再使用本机缓存按锁文件补齐集成环境；
+不要用未锁定的 `pip install -U` 替代。验证两个包和全部 DevPilot Tool entry points：
+
+```powershell
+\.\nanobot\.venv\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('nanobot-ai')); print(m.version('devpilot-agent')); print(sorted(ep.name for ep in m.entry_points(group='nanobot.tools') if ep.name.startswith('devpilot_')))"
+```
+
+预期包含 14 个 `devpilot_*` 工具。控制面可以使用自己的 `devpilot-agent/.venv`，
+但 nanobot 进程必须使用上面已经安装 DevPilot 的环境。
+
+配置恢复时复制 `.env.example` 为本机未跟踪的 `.env`，并在 nanobot 本地配置中填写
+模型、Base URL 和 API key；FC 的 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN` 只放在
+本机环境变量。迁移前备份 `local-data/devpilot.db`，恢复到新的隔离 `local-data` 后
+先执行迁移，再启动服务；不覆盖旧目录。缺 key、端口占用、旧库版本分别按启动日志、
+端口检查和 `alembic upgrade head` 输出定位。
+
+依赖、密钥和运行数据检查完成后，再按下文启动控制面和 nanobot。停止时先停止
+nanobot，再停止 DevPilot；仅删除本次新建的隔离数据目录，不删除已有运行数据。
+
 ## 启动 DevPilot 内部控制面
 
 在 `devpilot-agent` 目录执行：

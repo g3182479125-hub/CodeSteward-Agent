@@ -18,9 +18,8 @@ AG-UI 不属于本项目。API key、运行时配置、数据库、虚拟环境�
 在仓库根目录执行：
 
 ```powershell
-py -3.12 -m venv .venv
-\.venv\Scripts\python.exe -m pip install -e .\nanobot
-\.venv\Scripts\python.exe -m pip install -e .\devpilot-agent
+uv sync --project .\nanobot --locked
+uv pip install --python .\nanobot\.venv\Scripts\python.exe -e .\devpilot-agent
 
 cd .\nanobot\webui
 npm install
@@ -31,7 +30,7 @@ cd ..\..
 然后准备 nanobot 配置文件，填写自己的 OpenAI-compatible API key、base URL 和模型名，再启动：
 
 ```powershell
-\.venv\Scripts\nanobot.exe webui --config .\nanobot-config.json --workspace .\workspace
+\.\nanobot\.venv\Scripts\nanobot.exe webui --config .\nanobot-config.json --workspace .\workspace
 ```
 
 默认页面是 `http://127.0.0.1:8765`，网关健康检查地址是 `http://127.0.0.1:18790/health`。
@@ -44,4 +43,6 @@ DevPilot 的本地控制平面可以单独启动，具体命令和 P2A/P2B 流�
 - `devpilot-agent/docs/runbooks/local-development.md`
 - `devpilot-agent/docs/evidence/phase-2a/p2a-acceptance.md`
 
-nanobot 启动后会通过已安装的 `devpilot-agent` entry points 加载 `devpilot_inspect_project`、`devpilot_propose_changeset` 和 `devpilot_publish_artifact` 工具。
+nanobot 启动后会通过同一环境中已安装的 `devpilot-agent` entry points 加载 DevPilot 工具。
+完整的换机配置、entry point 验证、控制面启动、密钥边界和恢复流程见
+`devpilot-agent/docs/runbooks/local-nanobot-devpilot.md`。
