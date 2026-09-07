@@ -171,6 +171,14 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "wrench",
     ),
     BuiltinCommandSpec(
+        "/skill-improvement",
+        "Review Skill improvement",
+        "View, enable, ignore, or restore a reviewed Skill candidate in chat.",
+        "wrench",
+        "[candidate-id [view|enable|ignore|restore]]",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/help",
         "Show help",
         "List available slash commands.",
@@ -1025,6 +1033,118 @@ async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
+    """Expose the P8 candidate lifecycle through nanobot's native chat."""
+    try:
+        from devpilot.skill_improvement import SkillImprovementStore
+
+        workspace = ctx.loop.context.memory.workspace
+        store = SkillImprovementStore.from_environment(workspace)
+    except (ImportError, ValueError, OSError) as exc:
+        content = f"Skill improvement is unavailable: {type(exc).__name__}."
+        return OutboundMessage(channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=content)
+
+    args = ctx.args.strip().split()
+    if not args:
+        candidates = store.list_candidates()
+        if not candidates:
+            content = "No private Skill candidates are available."
+        else:
+            lines = ["Private Skill candidates:", ""]
+            lines.extend(f"- `{item.candidate_id}` — {item.status}" for item in candidates)
+            lines.append("\nUse `/skill-improvement <candidate-id>` to view a candidate.")
+            content = "\n".join(lines)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    candidate = store.get_candidate(args[0])
+    if candidate is None:
+        content = f"Candidate `{args[0]}` was not found."
+    elif len(args) == 1 or args[1].lower() == "view":
+        evaluation = store.get_evaluation(candidate.result_refs[-1]) if candidate.result_refs else None
+        lines = [
+            f"## Skill candidate `{candidate.candidate_id}`",
+            "",
+            f"- Skill: `{candidate.skill_id}`",
+            f"- Status: `{candidate.status}`",
+            f"- Why: {candidate.reason}",
+            f"- Expected behavior: {candidate.expected_behavior}",
+            f"- Evidence: {', '.join(candidate.evidence_ids)}",
+        ]
+        if evaluation is not None:
+            lines.extend([
+                f"- Fixed comparison: baseline {evaluation.baseline_successes}/9, "
+                f"candidate {evaluation.candidate_successes}/9",
+                f"- Eligibility: `{evaluation.status}`",
+            ])
+        lines.extend([
+            "",
+            "Actions: `/skill-improvement <id> enable|ignore|restore`.",
+            "Enable/restore are direct user confirmations; no page is required.",
+        ])
+        content = "\n".join(lines)
+    elif args[1].lower() == "evaluate":
+        try:
+            report = store.evaluate_candidate(candidate.candidate_id, workspace=workspace)
+            content = (
+                f"Fixed P8-02 comparison completed: baseline "
+                f"{report.baseline_successes}/9, candidate {report.candidate_successes}/9; "
+                f"status `{report.status}`."
+            )
+        except (ValueError, OSError) as exc:
+            content = f"Evaluation rejected: {type(exc).__name__}."
+    elif args[1].lower() == "ignore":
+        try:
+            ignored = store.ignore_candidate(candidate.candidate_id)
+            content = f"Candidate `{ignored.candidate_id}` is now ignored; the active Skill was unchanged."
+        except (ValueError, OSError) as exc:
+            content = f"Ignore rejected: {type(exc).__name__}."
+    elif args[1].lower() == "enable":
+        if not ctx.is_user_turn:
+            content = "Enable requires a direct user chat turn."
+        else:
+            try:
+                user_id = getattr(ctx.msg, "sender_id", None) or ctx.msg.chat_id
+                confirmation = store.issue_confirmation(
+                    candidate.candidate_id,
+                    user_id=user_id,
+                    session_id=ctx.key,
+                    workspace=workspace,
+                    project_id=candidate.project_id,
+                )
+                active = store.activate_candidate(
+                    confirmation.confirmation_id,
+                    workspace=workspace,
+                    user_id=user_id,
+                    session_id=ctx.key,
+                    project_id=candidate.project_id,
+                )
+                content = f"Candidate enabled for new tasks. Active Skill hash: `{active.content_hash}`."
+            except (ValueError, OSError) as exc:
+                content = f"Enable rejected: {type(exc).__name__}."
+    elif args[1].lower() == "restore":
+        if not ctx.is_user_turn:
+            content = "Restore requires a direct user chat turn."
+        else:
+            try:
+                restored = store.restore_candidate(candidate.candidate_id, workspace=workspace)
+                content = f"Stable Skill restored. Current hash: `{restored.content_hash}`."
+            except (ValueError, OSError) as exc:
+                content = f"Restore rejected: {type(exc).__name__}."
+    else:
+        content = "Usage: /skill-improvement <candidate-id> [view|enable|ignore|restore]"
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
 async def cmd_trigger(ctx: CommandContext) -> OutboundMessage:
     """Create a local trigger bound to the current session."""
     name = ctx.args.strip()
@@ -1121,6 +1241,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/evaluator-prompt", cmd_evaluator_prompt)
     router.prefix("/evaluator-prompt ", cmd_evaluator_prompt)
     router.exact("/skill", cmd_skill)
+    router.exact("/skill-improvement", cmd_skill_improvement)
+    router.prefix("/skill-improvement ", cmd_skill_improvement)
     router.exact("/help", cmd_help)
     router.exact("/pairing", cmd_pairing)
     router.prefix("/pairing ", cmd_pairing)

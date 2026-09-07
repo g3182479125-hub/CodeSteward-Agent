@@ -1,6 +1,9 @@
 import asyncio
+from types import SimpleNamespace
 
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.tools.filesystem import WriteFileTool
+from nanobot.agent.tools.shell import ExecTool
 
 
 def test_dream_cannot_write_trial_bug_fix_skill_through_any_file_writer(tmp_path) -> None:
@@ -50,3 +53,22 @@ def test_dream_can_still_write_an_ordinary_workspace_skill(tmp_path) -> None:
     )
     assert getattr(result, "is_error", False) is False
     assert (tmp_path / "skills" / "ordinary" / "SKILL.md").read_text() == "ordinary"
+
+
+def test_main_filesystem_guard_and_controlled_shell_boundary(tmp_path, monkeypatch) -> None:
+    trial_dir = tmp_path / "skills" / "bug-fix"
+    writer = WriteFileTool(
+        workspace=tmp_path,
+        allowed_dir=tmp_path,
+        blocked_write_dirs=[trial_dir],
+    )
+    result = asyncio.run(
+        writer.execute(path="skills/bug-fix/SKILL.md", content="attempt")
+    )
+    assert getattr(result, "is_error", False) is True
+    assert not (trial_dir / "SKILL.md").exists()
+
+    config = SimpleNamespace(exec=SimpleNamespace(enable=True))
+    assert ExecTool.enabled(SimpleNamespace(config=config)) is True
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
+    assert ExecTool.enabled(SimpleNamespace(config=config)) is False

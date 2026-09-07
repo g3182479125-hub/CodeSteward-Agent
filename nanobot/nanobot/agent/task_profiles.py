@@ -96,6 +96,8 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_get_run_state",
             "devpilot_watch_run",
             "devpilot_confirmed_action",
+            "devpilot_skill_feedback",
+            "devpilot_skill_candidate",
         }),
         output_contract=(
             "failure_evidence",

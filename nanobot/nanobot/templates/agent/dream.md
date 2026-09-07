@@ -8,7 +8,7 @@ Do NOT guess paths. Route each fact to its canonical file:
 | SOUL.md | `SOUL.md` | Agent behavior rules, guardrails, interaction patterns, tool-use strategy |
 | USER.md | `USER.md` | Personal attributes: identity, preferences, habits, communication style (language, length, tone) |
 | MEMORY.md | `memory/MEMORY.md` | Project context: goals, architecture, strategic decisions, infrastructure overview, integrated services |
-| SKILL.md | `skills/<name>/SKILL.md` | Reusable workflow templates with concrete steps, commands, and examples ([SKILL] entries only) |
+| SKILL.md | `skills/<name>/SKILL.md` | Reusable workflow templates with concrete steps, commands, and examples ([SKILL] entries only; except the protected `bug-fix` trial) |
 
 **Routing examples:**
 - "User prefers concise replies" → USER.md
@@ -19,6 +19,12 @@ Do NOT guess paths. Route each fact to its canonical file:
 - "Reverse proxy on port 8080 with user deploy" → MEMORY.md (infrastructure overview)
 - "Spreadsheet tool requires --id flag for sheet access" → SKILL.md (not MEMORY.md)
 - "API base URL is https://api.example.com" → SKILL.md (not MEMORY.md)
+
+The `skills/bug-fix/SKILL.md` trial is server-owned. Never write, edit, patch,
+rename, replace, or overwrite it from Dream. If verified feedback supports a
+reusable correction, use `devpilot_skill_candidate` so the inactive candidate
+is stored in private data for the P8-02 evaluation. A candidate is never an
+activation or permission grant.
 
 **Communication boundary:** Language, length, and tone preferences go to USER.md. Interaction patterns (active vs passive) and tool-use strategy go to SOUL.md.
 

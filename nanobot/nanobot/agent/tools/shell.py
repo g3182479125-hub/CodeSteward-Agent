@@ -176,6 +176,11 @@ class ExecTool(Tool):
 
     @classmethod
     def enabled(cls, ctx: ToolContext) -> bool:
+        # In Skill-improvement controlled mode, host shell is not a safe
+        # write path for the server-owned trial Skill.  DevPilot's approved
+        # execution backend remains available through its own control plane.
+        if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "0") == "1":
+            return False
         return ctx.config.exec.enable
 
     @classmethod

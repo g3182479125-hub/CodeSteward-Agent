@@ -190,12 +190,17 @@ class TestDreamTools:
     def test_dream_tools_are_restricted_to_file_edits(self, store):
         tools = store.build_dream_tools()
 
-        assert set(tools.tool_names) == {
+        expected = {
             "apply_patch",
             "edit_file",
             "read_file",
             "write_file",
         }
+        # Integrated nanobot may expose only the bounded private P8 candidate
+        # operation; it must never expose shell/MCP/delegation capabilities.
+        if "devpilot_skill_candidate" in tools.tool_names:
+            expected.add("devpilot_skill_candidate")
+        assert set(tools.tool_names) == expected
 
     @pytest.mark.asyncio
     async def test_dream_can_edit_canonical_memory_files(self, store):

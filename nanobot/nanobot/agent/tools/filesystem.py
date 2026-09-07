@@ -106,6 +106,9 @@ class _FsTool(Tool):
             allowed_dir=allowed_dir,
             extra_read_allowed_dirs=[BUILTIN_SKILLS_DIR, resolved_agent_workspace / "skills"],
             extra_read_allowed_files=[resolved_agent_workspace / "memory" / "history.jsonl"],
+            # The trial Skill is server-owned.  Every filesystem write tool
+            # shares this guard; Dream adds the same guard to its private registry.
+            blocked_write_dirs=[resolved_agent_workspace / "skills" / "bug-fix"],
             file_states=ctx.file_state_store,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts,

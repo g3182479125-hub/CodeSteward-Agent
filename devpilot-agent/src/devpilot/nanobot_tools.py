@@ -1330,6 +1330,7 @@ class ConfirmedActionTool(Tool):
             "correction": {"type": "string", "minLength": 1, "maxLength": 4000},
             "actual_result": {"type": "string", "minLength": 1, "maxLength": 4000},
             "evidence_refs": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+            "batch_id": {"type": ["string", "null"], "maxLength": 128},
         },
         "required": [
             "task_id", "project_id", "source_type", "skill_hash", "correction", "actual_result",
@@ -1341,6 +1342,13 @@ class SkillFeedbackTool(Tool):
     """Record bounded, redacted feedback for the single P8 trial Skill."""
 
     _scopes = {"core"}
+
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> SkillFeedbackTool:
+        return cls(Path(ctx.workspace).expanduser().resolve())
 
     @property
     def name(self) -> str:
@@ -1359,7 +1367,7 @@ class SkillFeedbackTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
-            evidence = SkillImprovementStore.from_environment().record_feedback(
+            evidence = SkillImprovementStore.from_environment(self.workspace).record_feedback(
                 task_id=str(kwargs["task_id"]),
                 project_id=str(kwargs["project_id"]),
                 source_type=str(kwargs["source_type"]),
@@ -1368,6 +1376,7 @@ class SkillFeedbackTool(Tool):
                 correction=str(kwargs["correction"]),
                 actual_result=str(kwargs["actual_result"]),
                 evidence_refs=kwargs.get("evidence_refs", ()),
+                batch_id=kwargs.get("batch_id"),
             )
             return json.dumps(
                 {
@@ -1415,6 +1424,13 @@ class SkillCandidateTool(Tool):
 
     _scopes = {"core", "memory"}
 
+    def __init__(self, workspace: Path | None = None) -> None:
+        self.workspace = workspace or Path.cwd()
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> SkillCandidateTool:
+        return cls(Path(ctx.workspace).expanduser().resolve())
+
     @property
     def name(self) -> str:
         return "devpilot_skill_candidate"
@@ -1432,7 +1448,7 @@ class SkillCandidateTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
-            candidate = SkillImprovementStore.from_environment().create_candidate(
+            candidate = SkillImprovementStore.from_environment(self.workspace).create_candidate(
                 project_id=str(kwargs["project_id"]),
                 skill_path="skills/bug-fix/SKILL.md",
                 baseline_content=str(kwargs["baseline_content"]),
@@ -1442,6 +1458,7 @@ class SkillCandidateTool(Tool):
                 expected_behavior=str(kwargs["expected_behavior"]),
                 test_set_version=str(kwargs["test_set_version"]),
                 batch_id=kwargs.get("batch_id"),
+                workspace=self.workspace,
             )
             return json.dumps(
                 {

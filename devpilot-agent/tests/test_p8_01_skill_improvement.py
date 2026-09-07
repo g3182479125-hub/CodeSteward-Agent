@@ -10,11 +10,30 @@ from devpilot.skill_improvement import (
 
 
 def _baseline() -> str:
-    return """---\nname: bug-fix\ndescription: bounded fix\nmetadata:\n  devpilot:\n    status: active\n    reviewed: true\n---\n\n# Bug fix\n\n## 执行步骤\n\n1. Read the failure evidence.\n"""
+    return "\n".join([
+        "---",
+        "name: bug-fix",
+        "description: bounded fix",
+        "metadata:",
+        "  devpilot:",
+        "    status: active",
+        "    reviewed: true",
+        "---",
+        "",
+        "# Bug fix",
+        "",
+        "## 执行步骤",
+        "",
+        "1. Read the failure evidence.",
+        "",
+    ])
 
 
 def _store(tmp_path: Path) -> tuple[SkillImprovementStore, str]:
-    store = SkillImprovementStore(tmp_path / "data")
+    skill_path = tmp_path / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(_baseline(), encoding="utf-8")
+    store = SkillImprovementStore(tmp_path / "data", workspace=tmp_path)
     feedback = store.record_feedback(
         task_id="task-1",
         project_id="project-1",
@@ -43,6 +62,7 @@ def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path:
         reason="The failed task did not re-check the source file.",
         expected_behavior="The proposal cites fresh file evidence.",
         test_set_version="p8-01-v1",
+        workspace=tmp_path,
     )
     assert candidate.status == "pending_evaluation"
     assert candidate.candidate_hash != candidate.base_version_hash
@@ -77,6 +97,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
             reason="reason",
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
+            workspace=tmp_path,
         )
 
     with pytest.raises(SkillImprovementError, match="sensitive"):
@@ -89,6 +110,7 @@ def test_candidate_cannot_change_frontmatter_or_include_secret(tmp_path: Path) -
             reason="reason",
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
+            workspace=tmp_path,
         )
 
 
@@ -106,6 +128,7 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
             batch_id=batch,
+            workspace=tmp_path,
         )
     with pytest.raises(SkillImprovementError, match="limit is three"):
         store.create_candidate(
@@ -118,4 +141,5 @@ def test_candidate_batch_is_bounded_to_three(tmp_path: Path) -> None:
             expected_behavior="behavior",
             test_set_version="p8-01-v1",
             batch_id=batch,
+            workspace=tmp_path,
         )

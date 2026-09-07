@@ -9,7 +9,7 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.skills import SkillsLoader
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.command.builtin import cmd_skill, register_builtin_commands
+from nanobot.command.builtin import cmd_skill, cmd_skill_improvement, register_builtin_commands
 from nanobot.command.router import CommandContext, CommandRouter
 from nanobot.config.schema import ModelPresetConfig
 
@@ -70,6 +70,13 @@ async def test_skill_command_no_skills(tmp_path: Path) -> None:
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill(_ctx(loop))
     assert out.content == "No skills available."
+
+
+@pytest.mark.asyncio
+async def test_skill_improvement_command_uses_native_chat(tmp_path: Path) -> None:
+    loop = _loop_with_skills(tmp_path)
+    out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
+    assert out.content == "No private Skill candidates are available."
 
 
 @pytest.mark.asyncio
