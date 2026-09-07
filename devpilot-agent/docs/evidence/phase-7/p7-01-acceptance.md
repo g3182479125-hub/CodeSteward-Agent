@@ -23,7 +23,7 @@
 基线：P6 结项提交 `e8369151cba046007cc05621756ab702a1ec99f8`。实现候选固定前，保留
 用户已有的两个 Node fixture 未提交修改，不将其当作 P7 实现文件。
 
-实现候选：`92cd0c3`（基线：
+实现候选：`e1bb058`（基线：
 `e8369151cba046007cc05621756ab702a1ec99f8`）。该候选已吸收首轮双轴 review 的有效
 边界问题：项目分析 Profile 移除 Artifact 发布能力；任务上下文、文件哈希和错误守卫
 按 `profile@version` 绑定并持久化；仅直接用户消息可以切换 Profile；陈旧配置/依赖
@@ -34,8 +34,8 @@
 已通过：
 
 - `uv run --no-sync ruff check nanobot tests`；
-- nanobot 全量：`5864 passed, 42 skipped`；
-- P7 专项与受影响回归：`44 passed`（实现修复后的专项集合）；
+- nanobot 全量：`5866 passed, 42 skipped`；
+- P7 专项：`46 passed`；受影响回归：`95 passed`；
 - 使用同仓库 `devpilot-agent/src` 加入 `PYTHONPATH` 后，两个跨包 DevPilot 集成测试
   通过；这只是测试环境拼接，不改变运行时架构；
 - `compileall`/Ruff 作为实现检查通过。
