@@ -1322,6 +1322,51 @@ describe("NanobotClient", () => {
     expect(client.getRunStartedAt("chat-canonical")).toBeNull();
   });
 
+  it("clears a still-visible run when canonical completion races its websocket frame", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onRunStatus(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "goal_status",
+      chat_id: "chat-canonical-race",
+      status: "running",
+      started_at: 12_345,
+      turn_id: "turn-race",
+    });
+    const requestGeneration = client.getRunGeneration("chat-canonical-race");
+    expect(
+      client.reconcileCanonicalCompletion(
+        "chat-canonical-race",
+        requestGeneration,
+        ["turn-race"],
+      ),
+    ).toBe(true);
+
+    // A delayed running frame may rehydrate the timer after the HTTP snapshot;
+    // the matching fenced completion must still settle that visible run.
+    lastSocket().fakeMessage({
+      event: "goal_status",
+      chat_id: "chat-canonical-race",
+      status: "running",
+      started_at: 12_346,
+      turn_id: "turn-race",
+    });
+    lastSocket().fakeMessage({
+      event: "turn_end",
+      chat_id: "chat-canonical-race",
+      turn_id: "turn-race",
+    });
+
+    expect(client.getRunStartedAt("chat-canonical-race")).toBeNull();
+    expect(handler).toHaveBeenLastCalledWith("chat-canonical-race", null);
+  });
+
   it("notifies run status subscribers and replays running chats", () => {
     const client = new NanobotClient({
       url: "ws://test",

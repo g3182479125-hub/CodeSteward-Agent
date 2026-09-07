@@ -1107,10 +1107,13 @@ export class NanobotClient {
 
     const chatId = (parsed as { chat_id?: string }).chat_id;
     if (chatId) {
-      if (this.isCanonicalCompletedTurnEvent(chatId, parsed)) return;
+      // Reconcile the run strip before applying the completion fence. A
+      // canonical snapshot can race a delayed WebSocket completion frame;
+      // suppressing the duplicate UI event must not leave the timer running.
+      const canonicalCompleted = this.isCanonicalCompletedTurnEvent(chatId, parsed);
       const supersededRunCompletion = this.isSupersededRunCompletion(chatId, parsed);
       this.recordGoalStatusForRunStrip(chatId, parsed);
-      if (supersededRunCompletion) return;
+      if (canonicalCompleted || supersededRunCompletion) return;
       this.recordGoalStateSnapshot(chatId, parsed);
       this.dispatch(chatId, parsed);
     }
