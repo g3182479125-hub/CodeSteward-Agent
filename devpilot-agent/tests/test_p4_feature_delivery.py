@@ -495,6 +495,7 @@ def test_feature_delivery_nanobot_adapter_binds_proposal_to_request_context(
     )
     request_context = SimpleNamespace(attributes={})
     tool = FeatureDeliveryProposeTool()
+    nanobot_tools.take_current_turn_proposal()
 
     tool.set_context(request_context)
     result = asyncio.run(
@@ -511,6 +512,7 @@ def test_feature_delivery_nanobot_adapter_binds_proposal_to_request_context(
         key: proposal[key]
         for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
     }
+    assert nanobot_tools.take_current_turn_proposal() is None
 
 
 def test_feature_delivery_nanobot_adapter_maps_http_error_without_body_leak(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +14,7 @@ from nanobot.agent.tools.context import (
     replace_request_context_attributes,
     reset_request_context,
 )
+from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus.events import InboundMessage, current_inbound_attributes
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
@@ -240,6 +242,92 @@ async def test_prepare_outbound_uses_turn_scoped_proposal_when_context_was_repla
     await loop._prepare_outbound(ctx)
 
     assert ctx.outbound.metadata == {"_devpilot_proposal": proposal}
+
+
+@pytest.mark.asyncio
+async def test_specialized_proposal_reaches_websocket_confirmation_without_token(
+    monkeypatch,
+) -> None:
+    from devpilot import nanobot_tools
+    from devpilot.nanobot_tools import FeatureDeliveryProposeTool
+
+    from nanobot.channels.websocket.runtime import WebSocketChannel
+
+    proposal = {
+        "change_set_id": "cs-specialized",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-specialized",
+    }
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_feature_proposal",
+        lambda _payload: dict(proposal),
+    )
+    request = RequestContext(channel="websocket", chat_id="chat-specialized")
+    registry = ToolRegistry()
+    registry.register(FeatureDeliveryProposeTool())
+
+    token = bind_request_context(request)
+    try:
+        result = await registry.execute(
+            "devpilot_feature_delivery_propose",
+            {
+                "project_path": "E:/project",
+                "patches": [
+                    {"relative_path": "app.py", "operation": "create", "content": "ok\n"}
+                ],
+                "evidence_ids": ["run-1"],
+            },
+        )
+    finally:
+        reset_request_context(token)
+
+    assert json.loads(str(result))["requires_user_confirmation"] is True
+    loop = object.__new__(AgentLoop)
+    loop._assemble_outbound = lambda *_args, **_kwargs: SimpleNamespace(metadata={})
+    ctx = SimpleNamespace(
+        suppress_response=False,
+        kind=TurnKind.USER,
+        msg=SimpleNamespace(),
+        final_content="proposal ready",
+        stop_reason="stop",
+        had_injections=False,
+        streamed_content=False,
+        turn_latency_ms=None,
+        require_session=lambda: SimpleNamespace(policy=SimpleNamespace(log_content=True)),
+        request_context=request,
+        ephemeral=False,
+    )
+    await loop._prepare_outbound(ctx)
+    assert ctx.outbound.metadata == {"_devpilot_proposal": proposal}
+
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
+    channel._devpilot_session_id = "instance"
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    assert channel._register_devpilot_proposal(
+        "chat-specialized", ctx.outbound.metadata["_devpilot_proposal"]
+    )
+    resolved = {
+        **proposal,
+        "verification_profile": "node-syntax",
+        "verification_profile_version": "1",
+        "verification_snapshot_hash": "d" * 64,
+        "verification_check_set_hash": "e" * 64,
+    }
+    attributes = channel._devpilot_confirmation_attributes(
+        "trusted", "chat-specialized", "执行", "turn-1", resolved
+    )
+    assert attributes["devpilot_confirmation"]["action"] == "apply_verify"
+    assert "approval_token" not in json.dumps(attributes, default=str)
+    assert nanobot_tools.take_current_turn_proposal() is None
 
 
 @pytest.mark.asyncio

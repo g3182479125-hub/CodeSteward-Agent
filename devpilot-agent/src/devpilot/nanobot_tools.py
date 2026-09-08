@@ -200,7 +200,8 @@ def _record_current_turn_proposal(
             request_context.attributes["devpilot_proposal"] = dict(proposal)
         except (AttributeError, TypeError, ValueError):
             pass
-    _CURRENT_TURN_PROPOSAL.set(dict(proposal))
+    if request_context is None:
+        _CURRENT_TURN_PROPOSAL.set(dict(proposal))
     try:
         from nanobot.agent.tools.context import current_request_context
 
