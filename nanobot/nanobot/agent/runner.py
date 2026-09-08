@@ -1513,6 +1513,8 @@ class AgentRunner:
         await hook.before_execute_tool(context, tool_call, tool, params)
         try:
             if tool is not None:
+                if spec.request_context is not None and hasattr(tool, "set_context"):
+                    tool.set_context(spec.request_context)
                 result = await tool.execute(**params)
             else:
                 result = await spec.tools.execute(tool_call.name, params)
