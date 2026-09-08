@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from devpilot.action_broker import (
     ActionBroker,
@@ -70,6 +75,172 @@ def test_nanobot_confirmation_does_not_reuse_stale_inbound_envelope() -> None:
         assert _trusted_confirmation_attributes() is None
     finally:
         reset_request_context(token)
+
+
+def test_confirmed_action_tool_applies_and_verifies_real_file_after_websocket_confirmation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trusted WebSocket envelope must reach the real action tool and write once."""
+    from nanobot.agent.tools.context import (
+        RequestContext,
+        bind_request_context,
+        reset_request_context,
+    )
+    from nanobot.channels.websocket.runtime import WebSocketChannel
+
+    from devpilot import nanobot_tools
+    from devpilot.code_access import CodeAccessService
+    from devpilot.control_plane import ControlPlaneManager
+    from devpilot.domain import FileOperation
+    from devpilot.execution import FakeExecutionBackend
+    from devpilot.nanobot_tools import ConfirmedActionTool
+    from devpilot.patches import FilePatch
+    from devpilot.paths import AllowedRoots
+    from devpilot.services import ProjectAnalysisService
+    from devpilot.storage import ProjectStore
+    from devpilot.verification import VerificationProfile
+
+    project = tmp_path / "fixture"
+    project.mkdir()
+    target = project / "app.py"
+    baseline = "value = 'before'\n"
+    updated = "value = 'after'\n"
+    target.write_text(baseline, encoding="utf-8")
+
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    roots = AllowedRoots.from_paths([tmp_path])
+    root_id, fingerprint = roots.binding_for(project)
+    analysis = ProjectAnalysisService(allowed_roots=roots, store=store).inspect(project)
+    store.trust_project(
+        analysis.project_id,
+        repo_fingerprint=fingerprint,
+        allowed_root_id=root_id,
+    )
+    CodeAccessService(allowed_roots=roots, store=store).read(
+        analysis.project_id, "app.py", evidence_run_id=analysis.run_id
+    )
+    backend = FakeExecutionBackend(stdout="verified")
+    backend.verification_available = True
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,
+        artifacts_root=tmp_path / "data",
+    )
+    proposal = manager.preview(
+        project_path=project,
+        project_id=analysis.project_id,
+        patches=[
+            FilePatch(
+                "app.py",
+                FileOperation.UPDATE,
+                updated,
+                hashlib.sha256(target.read_bytes()).hexdigest(),
+            )
+        ],
+    )
+    change_set_id = str(proposal["change_set_id"])
+    project_id = str(proposal["project_id"])
+    resolved_proposal = manager.get(change_set_id)
+    calls: list[str] = []
+
+    def fake_get(path: str) -> dict[str, object]:
+        if path == f"/v1/projects/{project_id}/security":
+            return {"trust_state": "trusted"}
+        assert path == f"/v1/change-sets/{change_set_id}"
+        return manager.get(change_set_id)
+
+    def fake_post(
+        path: str,
+        payload: dict[str, object] | None = None,
+        *,
+        authorization_token: str | None = None,
+        idempotency_key: str | None = None,
+        redact: bool = True,
+    ) -> dict[str, object]:
+        calls.append(path.rsplit("/", 1)[-1])
+        if path.endswith("/approve"):
+            return manager.approve(
+                change_set_id,
+                str((payload or {}).get("capability", "r1.apply")),
+            )
+        assert authorization_token is not None
+        if path.endswith("/apply"):
+            return manager.apply(
+                change_set_id,
+                authorization_token,
+                idempotency_key=idempotency_key,
+            )
+        if path.endswith("/verify"):
+            return manager.verify(
+                change_set_id,
+                authorization_token,
+                profile=VerificationProfile.PYTHON_SYNTAX,
+                idempotency_key=idempotency_key,
+            )
+        raise AssertionError(path)
+
+    monkeypatch.setattr(nanobot_tools, "_durable_store", lambda: store)
+    monkeypatch.setattr(nanobot_tools, "_get_control_plane", fake_get)
+    monkeypatch.setattr(nanobot_tools, "_post_control_plane", fake_post)
+
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_changeset_threads = {}
+    channel._devpilot_pending_proposals = {}
+    channel._devpilot_changeset_chats = {}
+    channel._devpilot_session_id = "instance"
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    proposal_tuple = {
+        key: str(proposal[key])
+        for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
+    }
+    assert channel._register_devpilot_proposal("chat", proposal_tuple)
+    confirmation_tuple = {
+        **proposal_tuple,
+        **{
+            key: str(resolved_proposal[key])
+            for key in (
+                "verification_profile",
+                "verification_profile_version",
+                "verification_snapshot_hash",
+                "verification_check_set_hash",
+            )
+        },
+    }
+    attributes = channel._devpilot_confirmation_attributes(
+        "trusted", "chat", "\u6267\u884c", "turn-1", confirmation_tuple
+    )
+    assert attributes["devpilot_confirmation"]["action"] == "apply_verify"
+    request_context = RequestContext(
+        channel="websocket",
+        chat_id="chat",
+        attributes=attributes,
+    )
+    token = bind_request_context(request_context)
+    try:
+        result = asyncio.run(
+            ConfirmedActionTool().execute(
+                action="apply_verify",
+                change_set_id=change_set_id,
+                plan_hash=str(proposal["plan_hash"]),
+                patch_hash=str(proposal["patch_hash"]),
+                scope_hash=str(proposal["scope_hash"]),
+                project_id=project_id,
+            )
+        )
+    finally:
+        reset_request_context(token)
+
+    payload = json.loads(str(result))
+    assert payload["status"] == "verified"
+    assert payload["application"]["status"] == "applied"
+    assert payload["verification"]["status"] == "verified"
+    assert target.read_text(encoding="utf-8") == updated
+    assert calls == ["approve", "apply", "approve", "verify"]
 
 
 def _request(*, action: str = "apply", sequence: int = 1) -> BrokerActionRequest:
