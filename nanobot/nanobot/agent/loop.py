@@ -2378,14 +2378,16 @@ class AgentLoop:
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.outbound is not None and ctx.request_context is not None:
+            fallback_proposal = None
+            try:
+                from devpilot.nanobot_tools import take_current_turn_proposal
+
+                fallback_proposal = take_current_turn_proposal()
+            except ImportError:
+                pass
             proposal = ctx.request_context.attributes.get("devpilot_proposal")
             if not isinstance(proposal, dict):
-                try:
-                    from devpilot.nanobot_tools import take_current_turn_proposal
-
-                    proposal = take_current_turn_proposal()
-                except ImportError:
-                    proposal = None
+                proposal = fallback_proposal
             if isinstance(proposal, dict):
                 ctx.outbound.metadata["_devpilot_proposal"] = dict(proposal)
         if ctx.ephemeral and ctx.outbound is not None:
