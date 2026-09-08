@@ -15,7 +15,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -469,42 +469,50 @@ class FCSandboxBackend:
 
         if not run_id:
             raise ExecutionError("FC_RECOVERY_INVALID", "run_id is required")
-        with self._lock:
-            existing = self._get_or_load_state(run_id)
+        path = self._state_path(run_id)
+        persistence_lock = _PERSIST_LOCK if path is not None else nullcontext()
+        state_lock = _state_file_lock(path) if path is not None else nullcontext()
+        with self._lock, persistence_lock, state_lock:
+            existing = self._runs.get(run_id)
+            if existing is None and path is not None:
+                existing = self._load_persisted_state_unlocked(run_id)
+                if existing is not None:
+                    self._runs[run_id] = existing
             if existing is not None and existing.handle is not None:
                 return self._state_payload(existing)
-            if sandbox_id is None and existing is not None:
-                sandbox_id = existing.sandbox_id
             if (
                 existing is not None
                 and existing.status in {"completed", "failed", "cancelled"}
-                and existing.result is not None
+                and (existing.result is not None or existing.status == "cancelled")
             ):
                 return self._state_payload(existing)
-        if not sandbox_id:
-            raise ExecutionError("FC_RECOVERY_INVALID", "sandbox_id is required")
-        try:
-            sandbox_cls = _sandbox_class()
-            connector = getattr(sandbox_cls, "connect", None)
-            if not callable(connector):
-                raise RuntimeError("FC SDK does not expose Sandbox.connect")
-            handle: Any = connector(
-                sandbox_id,
-                api_key=self.config.api_key,
-                api_url=self.config.api_url,
-                domain=self.config.domain,
-            )
-            running = bool(handle.is_running())
-        except Exception:
-            with self._lock:
-                state = self._runs.setdefault(run_id, _FCSandboxRun(run_id=run_id))
+            if sandbox_id is None and existing is not None:
+                sandbox_id = existing.sandbox_id
+            if not sandbox_id:
+                raise ExecutionError("FC_RECOVERY_INVALID", "sandbox_id is required")
+            try:
+                sandbox_cls = _sandbox_class()
+                connector = getattr(sandbox_cls, "connect", None)
+                if not callable(connector):
+                    raise RuntimeError("FC SDK does not expose Sandbox.connect")
+                handle: Any = connector(
+                    sandbox_id,
+                    api_key=self.config.api_key,
+                    api_url=self.config.api_url,
+                    domain=self.config.domain,
+                )
+                running = bool(handle.is_running())
+            except Exception:
+                state = existing or _FCSandboxRun(run_id=run_id)
+                self._runs[run_id] = state
                 state.sandbox_id = sandbox_id
                 state.status = "unknown"
                 state.error_code = "FC_RECOVERY_UNKNOWN"
-                self._persist_state(state)
+                if path is not None:
+                    self._persist_state_unlocked(state, path)
                 return self._state_payload(state)
-        with self._lock:
-            state = self._runs.setdefault(run_id, _FCSandboxRun(run_id=run_id))
+            state = existing or _FCSandboxRun(run_id=run_id)
+            self._runs[run_id] = state
             state.sandbox_id = sandbox_id
             if running:
                 state.status = "running"
@@ -513,7 +521,8 @@ class FCSandboxBackend:
             else:
                 state.status = "unknown"
                 state.error_code = "FC_RESULT_UNAVAILABLE"
-            self._persist_state(state)
+            if path is not None:
+                self._persist_state_unlocked(state, path)
             return self._state_payload(state)
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:

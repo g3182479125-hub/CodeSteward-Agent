@@ -222,6 +222,40 @@ def test_fc_state_persistence_removes_temporary_file_on_write_failure(
     assert list(tmp_path.glob(".fc-run-*")) == []
 
 
+def test_fc_recovery_does_not_resurrect_cancelled_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    connect_calls: list[str] = []
+
+    class UnexpectedRecoveryFactory:
+        @classmethod
+        def connect(cls, sandbox_id: str, **kwargs: object) -> object:
+            connect_calls.append(sandbox_id)
+            raise AssertionError("cancelled runs must not reconnect")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=UnexpectedRecoveryFactory),
+    )
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="invalid",
+        state_dir=str(tmp_path),
+    )
+    backend = FCSandboxBackend(config)
+    state = backend._reserve_run("cancelled-recovery")  # type: ignore[attr-defined]
+    state.sandbox_id = "cancelled-sandbox"
+    state.status = "cancelled"
+    backend._persist_state(state)  # type: ignore[attr-defined]
+
+    recovered = FCSandboxBackend(config).recover("cancelled-recovery")
+
+    assert recovered["status"] == "cancelled"
+    assert connect_calls == []
+
+
 def test_fc_backend_rejects_network_before_provider_call() -> None:
     backend = FCSandboxBackend(
         FCSandboxConfig(
