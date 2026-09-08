@@ -1,5 +1,7 @@
 """Public contract tests for trusted task profiles and loop detection."""
 
+import json
+
 import pytest
 
 from nanobot.agent.task_profiles import (
@@ -46,10 +48,17 @@ def test_default_profiles_have_bounded_task_specific_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_feature_delivery_tool_view_blocks_legacy_proposal_entrypoint() -> None:
+async def test_feature_delivery_tool_view_blocks_legacy_and_keeps_contract_proposal(
+    monkeypatch,
+) -> None:
+    from devpilot import nanobot_tools
+    from devpilot.nanobot_tools import FeatureDeliveryProposeTool
+
+    contract = {"change_set_id": "cs-1", "contract_hash": "c" * 64, "check_ids": ["node-syntax"]}
+    monkeypatch.setattr(nanobot_tools, "_post_feature_proposal", lambda _payload: dict(contract))
     registry = ToolRegistry()
     registry.register(_StubTool("devpilot_propose_changeset"))
-    registry.register(_StubTool("devpilot_feature_delivery_propose"))
+    registry.register(FeatureDeliveryProposeTool())
 
     view = registry.restricted_to(DEFAULT_TASK_PROFILES["feature-delivery"].allowed_tools)
 
@@ -57,6 +66,17 @@ async def test_feature_delivery_tool_view_blocks_legacy_proposal_entrypoint() ->
     assert view.get("devpilot_propose_changeset") is None
     blocked = await view.execute("devpilot_propose_changeset", {})
     assert getattr(blocked, "is_error", False) is True
+    result = await view.execute(
+        "devpilot_feature_delivery_propose",
+        {
+            "project_path": "E:/project",
+            "patches": [{"relative_path": "app.py", "operation": "create", "content": "ok\n"}],
+            "evidence_ids": ["evidence-1"],
+        },
+    )
+    payload = json.loads(str(result))
+    assert payload["contract_hash"] == contract["contract_hash"]
+    assert payload["check_ids"] == contract["check_ids"]
 
 
 def test_profile_rejects_missing_tool_or_skill() -> None:

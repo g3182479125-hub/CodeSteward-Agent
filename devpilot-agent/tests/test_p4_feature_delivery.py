@@ -771,6 +771,7 @@ def test_feature_delivery_skill_uses_contract_proposal_as_canonical_entrypoint()
     assert "- devpilot_propose_changeset" not in text
     assert "FeatureDelivery 的 Diff 必须通过" in text
     assert "不会创建本交付流程所需的" in text
+    assert "feature-delivery@2" in text
 
 
 def test_feature_delivery_requires_explicit_project_trust_before_approval(tmp_path: Path) -> None:

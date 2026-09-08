@@ -26,7 +26,7 @@ metadata:
 
 ## P7 task profile contract
 
-When selected through nanobot's `feature-delivery@1` task profile, keep the response
+When selected through nanobot's `feature-delivery@2` task profile, keep the response
 structured as `facts_and_evidence`, `change_summary`, `verification_result`, and
 `next_step`. The profile narrows visible tools for this session; it does not grant
 approval, Apply, verification, rollback, credential, or sandbox authority. If a
