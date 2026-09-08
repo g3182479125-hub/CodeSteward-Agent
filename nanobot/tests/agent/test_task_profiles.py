@@ -9,6 +9,28 @@ from nanobot.agent.task_profiles import (
     TaskProfileCatalog,
     TaskProfileError,
 )
+from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.registry import ToolRegistry
+
+
+class _StubTool(Tool):
+    def __init__(self, tool_name: str) -> None:
+        self._tool_name = tool_name
+
+    @property
+    def name(self) -> str:
+        return self._tool_name
+
+    @property
+    def description(self) -> str:
+        return "test tool"
+
+    @property
+    def parameters(self) -> dict[str, object]:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **_kwargs: object) -> str:
+        return "executed"
 
 
 def test_default_profiles_have_bounded_task_specific_tools() -> None:
@@ -21,6 +43,20 @@ def test_default_profiles_have_bounded_task_specific_tools() -> None:
     assert "devpilot_propose_changeset" not in catalog.get("feature-delivery").allowed_tools
     assert "devpilot_confirmed_action" in catalog.get("bug-fix").allowed_tools
     assert "shell" not in catalog.get("feature-delivery").allowed_tools
+
+
+@pytest.mark.asyncio
+async def test_feature_delivery_tool_view_blocks_legacy_proposal_entrypoint() -> None:
+    registry = ToolRegistry()
+    registry.register(_StubTool("devpilot_propose_changeset"))
+    registry.register(_StubTool("devpilot_feature_delivery_propose"))
+
+    view = registry.restricted_to(DEFAULT_TASK_PROFILES["feature-delivery"].allowed_tools)
+
+    assert view.get("devpilot_feature_delivery_propose") is not None
+    assert view.get("devpilot_propose_changeset") is None
+    blocked = await view.execute("devpilot_propose_changeset", {})
+    assert getattr(blocked, "is_error", False) is True
 
 
 def test_profile_rejects_missing_tool_or_skill() -> None:
@@ -89,7 +125,7 @@ def test_task_loop_guard_state_restores_for_the_same_profile_version() -> None:
 def test_task_profile_version_is_part_of_the_session_binding() -> None:
     profile = TaskProfileCatalog().get("feature-delivery")
 
-    assert profile.version == "1"
+    assert profile.version == "2"
 
 
 def test_task_context_state_is_structured_and_redacts_credentials() -> None:

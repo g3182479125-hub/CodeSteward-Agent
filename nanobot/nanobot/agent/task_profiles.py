@@ -60,6 +60,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
     "feature-delivery": TaskProfile(
         name="feature-delivery",
         skill_names=("feature-delivery",),
+        version="2",
         allowed_tools=frozenset({
             "devpilot_inspect_project",
             "devpilot_search_code",

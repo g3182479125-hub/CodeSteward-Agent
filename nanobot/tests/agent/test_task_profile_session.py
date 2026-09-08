@@ -31,7 +31,7 @@ def test_task_profile_binding_is_scoped_to_one_session(tmp_path) -> None:
 
     assert profile.name == "feature-delivery"
     assert first.metadata["task_profile"] == "feature-delivery"
-    assert first.metadata["task_profile_version"] == "1"
+    assert first.metadata["task_profile_version"] == "2"
     assert first.policy.allowed_tools == profile.allowed_tools
     assert second.metadata.get("task_profile") is None
     assert second.policy.allowed_tools is None
@@ -50,6 +50,21 @@ def test_task_profile_version_mismatch_is_rejected(tmp_path) -> None:
         assert "is stale" in str(exc)
     else:
         raise AssertionError("a stale task-profile binding must be rejected")
+
+
+def test_feature_delivery_tool_change_rejects_old_session_binding(tmp_path) -> None:
+    loop = _loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    loop.set_session_task_profile("cli:one", "feature-delivery")
+    session = loop.sessions.get_or_create("cli:one")
+    session.metadata["task_profile_version"] = "1"
+
+    try:
+        loop._sync_session_task_profile(session)
+    except ValueError as exc:
+        assert "is stale" in str(exc)
+    else:
+        raise AssertionError("an old feature-delivery binding must be rejected")
 
 
 def test_task_context_state_redacts_bearer_credentials_in_references() -> None:
@@ -89,7 +104,7 @@ def test_task_context_is_bound_to_profile_and_project_identity(tmp_path) -> None
 
     state = loop._ensure_task_context(session, profile, "implement the parser", tmp_path)
 
-    assert state.profile_binding == "feature-delivery@1"
+    assert state.profile_binding == "feature-delivery@2"
     assert state.session_ref
     assert state.project_ref
     assert "implement the parser" in state.prompt_text()
