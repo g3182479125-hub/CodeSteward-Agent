@@ -736,6 +736,55 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
 
 
 @pytest.mark.asyncio
+async def test_webui_confirmation_envelope_reaches_bus_with_signed_action_context(
+    bus: MagicMock,
+    monkeypatch,
+) -> None:
+    """The production WebSocket dispatch path must attach trusted confirmation evidence."""
+    channel = _ch(bus)
+    conn = MagicMock()
+    conn.remote_address = ("127.0.0.1", 50124)
+    channel._webui_connections.add(conn)
+    proposal = {
+        "change_set_id": "cs-dispatch",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-dispatch",
+    }
+    resolved = {
+        **proposal,
+        "verification_profile": "python-syntax",
+        "verification_profile_version": "1",
+        "verification_snapshot_hash": "d" * 64,
+        "verification_check_set_hash": "e" * 64,
+    }
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    assert channel._register_devpilot_proposal("chat-dispatch", proposal)
+    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args: resolved)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": "chat-dispatch",
+            "content": "\u6267\u884c",
+            "webui": True,
+            "turn_id": "turn-dispatch",
+        },
+    )
+
+    msg = bus.publish_inbound.await_args.args[0]
+    confirmation = msg.attributes["devpilot_confirmation"]
+    assert confirmation["action"] == "apply_verify"
+    assert confirmation["context"]["verification_profile"] == "python-syntax"
+    assert confirmation["context"]["verification_snapshot_hash"] == "d" * 64
+    assert "approval_token" not in json.dumps(confirmation, default=str)
+    assert callable(confirmation["verifier"])
+
+
+@pytest.mark.asyncio
 async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     bus: MagicMock,
     tmp_path,
