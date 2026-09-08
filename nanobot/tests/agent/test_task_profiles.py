@@ -54,7 +54,10 @@ async def test_feature_delivery_tool_view_blocks_legacy_and_keeps_contract_propo
     from devpilot import nanobot_tools
     from devpilot.nanobot_tools import FeatureDeliveryProposeTool
 
-    contract = {"change_set_id": "cs-1", "contract_hash": "c" * 64, "check_ids": ["node-syntax"]}
+    contract = {
+        "change_set_id": "cs-1",
+        "preview": {"contract_hash": "c" * 64, "check_ids": ["node-syntax"]},
+    }
     monkeypatch.setattr(nanobot_tools, "_post_feature_proposal", lambda _payload: dict(contract))
     registry = ToolRegistry()
     registry.register(_StubTool("devpilot_propose_changeset"))
@@ -75,8 +78,8 @@ async def test_feature_delivery_tool_view_blocks_legacy_and_keeps_contract_propo
         },
     )
     payload = json.loads(str(result))
-    assert payload["contract_hash"] == contract["contract_hash"]
-    assert payload["check_ids"] == contract["check_ids"]
+    assert payload["preview"]["contract_hash"] == contract["preview"]["contract_hash"]
+    assert payload["preview"]["check_ids"] == contract["preview"]["check_ids"]
 
 
 def test_profile_rejects_missing_tool_or_skill() -> None:
