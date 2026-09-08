@@ -10,7 +10,7 @@ import pytest
 from agent.runner_helpers import make_run_spec
 from nanobot.agent.runner import AgentRunner
 from nanobot.agent.tools.base import Tool, ToolResult
-from nanobot.agent.tools.context import ToolContext
+from nanobot.agent.tools.context import RequestContext, ToolContext
 from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import AgentDefaults
@@ -171,6 +171,45 @@ async def test_runner_propagates_tool_preparation_failure():
         )
 
     tools.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runner_injects_request_context_before_direct_tool_execution() -> None:
+    """The runner's resolved-tool path must preserve context-aware plugin state."""
+    tool = _DelayTool(
+        "context_plugin",
+        delay=0,
+        read_only=False,
+        shared_events=[],
+    )
+    received: list[object] = []
+
+    def set_context(context: object) -> None:
+        received.append(context)
+
+    tool.set_context = set_context  # type: ignore[attr-defined]
+    tools = MagicMock()
+    tools.prepare_call.return_value = (tool, {}, None)
+    request_context = RequestContext(channel="websocket", chat_id="chat")
+
+    _, event, error = await AgentRunner()._run_tool(
+        make_run_spec(
+            MagicMock(),
+            initial_messages=[],
+            tools=tools,
+            model="test-model",
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+            request_context=request_context,
+        ),
+        ToolCallRequest(id="call-context", name="context_plugin", arguments={}),
+        {},
+        {},
+    )
+
+    assert error is None
+    assert event["status"] == "ok"
+    assert received == [request_context]
 
 
 @pytest.mark.asyncio
