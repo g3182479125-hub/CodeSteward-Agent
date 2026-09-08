@@ -264,7 +264,7 @@ def test_fc_cleanup_retries_cancelled_run_after_restart(
 
     class RecoveredSandbox:
         def is_running(self) -> bool:
-            return True
+            return False
 
         def kill(self) -> None:
             kill_calls.append("kill")

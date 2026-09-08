@@ -497,10 +497,16 @@ class FCSandboxBackend:
                 and state.sandbox_id
             )
         if needs_recovery:
-            self.recover(run_id)
+            self.recover(run_id, _for_cleanup=True)
         return self.cancel(run_id)
 
-    def recover(self, run_id: str, sandbox_id: str | None = None) -> dict[str, Any]:
+    def recover(
+        self,
+        run_id: str,
+        sandbox_id: str | None = None,
+        *,
+        _for_cleanup: bool = False,
+    ) -> dict[str, Any]:
         """Reconnect to a provider sandbox after a process restart.
 
         Recovery only uses the persisted sandbox identifier or an explicitly
@@ -557,10 +563,13 @@ class FCSandboxBackend:
             state = existing or _FCSandboxRun(run_id=run_id)
             self._runs[run_id] = state
             state.sandbox_id = sandbox_id
-            if running:
+            if running or (_for_cleanup and existing is not None and existing.cleanup_error):
                 state.status = "running"
                 state.handle = handle
-                state.error_code = None
+                if running:
+                    state.error_code = None
+                else:
+                    state.status = "cancelled"
             else:
                 state.status = "unknown"
                 state.error_code = "FC_RESULT_UNAVAILABLE"
