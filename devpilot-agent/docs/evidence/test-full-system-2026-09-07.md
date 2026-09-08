@@ -32,7 +32,7 @@
 - nanobot 全回归（本轮正确环境）：命令使用仓库外临时目录，且设置跨仓库 `PYTHONPATH`；退出码 `0`，`5878 passed, 42 skipped`，用时 `302.63s`。命令如下：
 
   ```powershell
-  $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src'
+  $env:PYTHONPATH='E:\codex-local\devflow-agent\devpilot-agent\src'
   E:\codex-local\nanobot-state\nanobot-test.venv\Scripts\python.exe -m pytest -q --basetemp E:\codex-local\test-tmp-nanobot-closure-final2
   ```
 
@@ -60,7 +60,7 @@
 ## 重现入口
 
 ```powershell
-cd E:\codex-local\nanobot-devpilot-agent\devpilot-agent
+cd E:\codex-local\devflow-agent\devpilot-agent
 uv sync --extra fc-sandbox
 uv run devpilot sandbox-check
 ```

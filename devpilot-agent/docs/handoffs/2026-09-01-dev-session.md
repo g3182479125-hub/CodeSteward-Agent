@@ -4,7 +4,7 @@
 
 今天已完成 DevPilot 控制面与 nanobot 对话执行链路联调。GitHub 仓库为：
 
-`https://github.com/g3182479125-hub/nanobot-devpilot-agent`
+`https://github.com/g3182479125-hub/devflow-agent`
 
 本次提交不会包含 API Key、`.env`、`local-data`、SQLite 数据库、nanobot 会话历史、
 `node_modules`、虚拟环境或运行日志。
@@ -50,7 +50,7 @@
 在 DevPilot 仓库：
 
 ```powershell
-cd <repo>\nanobot-devpilot-agent
+cd <repo>\devflow-agent
 uv sync --dev
 uv run alembic upgrade head
 ```

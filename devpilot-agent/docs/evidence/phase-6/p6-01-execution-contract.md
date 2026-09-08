@@ -19,7 +19,7 @@
 
 ## 验证记录
 
-在 nanobot 集成虚拟环境（`E:/codex-local/nanobot-devpilot-agent/nanobot.venv`）运行：
+在 nanobot 集成虚拟环境（`E:/codex-local/devflow-agent/nanobot.venv`）运行：
 
 ```powershell
 pytest ../devpilot-agent/tests/test_p3_execution_boundary.py `

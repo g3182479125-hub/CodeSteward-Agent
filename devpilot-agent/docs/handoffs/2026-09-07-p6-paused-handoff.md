@@ -19,7 +19,7 @@
 
 - 代码候选：`1161722eb369799c44ac8befc30f708806dc5343`（取消状态最终收敛修复）。
 - 当前本地提交：`5e489de1b16dcd4cdd1dfdde40cb1902c8d092d0`（证据文档提交，祖先包含代码候选）；本次暂停前还会再提交 profile 收紧和本交接文档。
-- 远程仓库：`https://github.com/g3182479125-hub/nanobot-devpilot-agent.git`，分支 `main`。
+- 远程仓库：`https://github.com/g3182479125-hub/devflow-agent.git`，分支 `main`。
 - 证据清单中的真实 CLI 记录：杭州 `code-interpreter-v1`，sandbox `sbx-dc40e18d-87b0-4c57-9847-2621053c04ef`，退出码 0，`status=degraded`，`network_isolation_proven=false`。
 
 ## 已验证
@@ -34,7 +34,7 @@
 
 ## 明天第一步
 
-1. `git clone https://github.com/g3182479125-hub/nanobot-devpilot-agent.git`；已有副本则 `git pull --ff-only origin main`。
+1. `git clone https://github.com/g3182479125-hub/devflow-agent.git`；已有副本则 `git pull --ff-only origin main`。
 2. 读取 `AGENTS.md`、`agent-skills/mattpocock-skills/README.md`、相关 engineering skills、`docs/plans/CURRENT_PLAN.md`、ADR-0004 和本交接文档。
 3. 在新机器本地填写 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN`，设置 `DEVPILOT_FC_NETWORK_POLICY_MODE=provider-default`、`DEVPILOT_FC_TEMPLATE=code-interpreter-v1`，并把 `DEVPILOT_FC_ALLOWED_PROJECTS` 指向明确的脱敏 fixture；不要把 key、`.env`、SQLite 或日志提交。
 4. 用 nanobot 集成环境重跑 DevPilot 全套测试、nanobot 28 项集成测试和真实 `devpilot sandbox-check`。

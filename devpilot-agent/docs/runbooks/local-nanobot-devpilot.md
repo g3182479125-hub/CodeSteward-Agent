@@ -9,7 +9,7 @@ FastAPI 只作为 nanobot Tool Adapter 和本地 Action Broker 使用的 loopbac
 安装到 nanobot 使用的同一个虚拟环境；只安装 nanobot 不算完成部署：
 
 ```powershell
-cd D:\path\to\nanobot-devpilot-agent
+cd D:\path\to\devflow-agent
 powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1
 ```
 

@@ -195,7 +195,7 @@ React 控制台、AG-UI 接入或真实 Sandbox。
 - 先读本文和冻结计划，再改代码；
 - 先检查 `git status` 和当前 commit，不覆盖用户未提交修改；
 - 不向 GitHub、远程 Sandbox 或其他外部服务上传 key、`.env`、SQLite、日志或会话数据；
-- 本项目路径在 `E:\codex-local\nanobot-devpilot-agent`，临时测试目录优先使用
+- 本项目路径在 `E:\codex-local\devflow-agent`，临时测试目录优先使用
   `E:\codex-local\pytest-temp`，不要把依赖或数据安装到 C 盘；
 - 对任何写入、执行、审批、回滚相关修改，都补反向安全测试；
 - 看到旧 Review 的 `blocked` 结论时，先核对它对应的 commit，不能直接当作当前状态；

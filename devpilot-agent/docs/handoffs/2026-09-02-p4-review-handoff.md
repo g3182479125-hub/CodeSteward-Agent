@@ -2,7 +2,7 @@
 
 ## 当前基线
 
-- Git 仓库：`https://github.com/g3182479125-hub/nanobot-devpilot-agent`
+- Git 仓库：`https://github.com/g3182479125-hub/devflow-agent`
 - 当前分支：`handoff-2026-09-01`
 - 当前实现提交：`92ef68a6cb2d52609cee770e788d06eef43dc8f9`
 - 冻结计划：`DEVPILOT_FROZEN_PLAN.md` v2.2.0

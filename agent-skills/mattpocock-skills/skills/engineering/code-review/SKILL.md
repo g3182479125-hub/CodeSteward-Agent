@@ -12,7 +12,7 @@ Both axes run as **parallel sub-agents** so they don't pollute each other's cont
 
 ## Local project policy (required)
 
-In nanobot-devpilot-agent, first read root `AGENTS.md`,
+In DevFlow Agent, first read root `AGENTS.md`,
 `devpilot-agent/docs/plans/CURRENT_PLAN.md` sections 0/6/7 and the relevant node,
 and `devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`.
 These project-specific rules govern review scheduling: one complete batch review,
