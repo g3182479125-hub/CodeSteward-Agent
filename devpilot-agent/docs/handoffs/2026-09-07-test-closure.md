@@ -44,3 +44,19 @@
 - 本轮实现候选基线：`3bab72b78908d5b9d397c78dbaf24bfdc9345c91`；本次文档修正提交后的
   HEAD 是最终复审候选。不要把 API Key、`.env`、SQLite、日志、虚拟环境或 pytest 临时目录
   加入暂存区。
+
+## 2026-09-08 本机接续记录
+
+- 已从 `origin/main` 快进同步至 `fed01d2`，无冲突；当前本地分支为
+  `handoff-2026-09-01`，未推送的本地修复提交为 `8d8196a`、`30a77f8`、
+  `d97e5d0`、`4c6ba7a`、`c13871c`。
+- 本批次修复 FC 状态快照的跨实例持久化竞态：加入跨进程文件锁、revision/CAS
+  防陈旧覆盖、持久 `run_id` 去重、写失败临时文件清理，以及重启后对
+  `cleanup_error`（含已停止沙箱）的有界清理重试；普通停止状态仍返回
+  `unknown/FC_RESULT_UNAVAILABLE`，不伪造恢复成功。
+- 验证：FC 契约测试 `27 passed`；DevPilot 集成全量测试通过；DevPilot Ruff、
+  Secret Scan、`git diff --check` 通过；Node fixture `npm test` 为 `2 passed`。
+  本批次通过同一对 Standards/Spec subagent 做增量复审，最终均为 `PASS`。
+- 当前工作区仍保留用户未提交的 Node fixture 修改：
+  `tests/fixtures/node-project/src/index.js` 和 `test/index.test.js`；它们未纳入
+  本批次提交。上述五个修复提交尚未推送，下一台电脑可先查看本文件后再决定是否推送。
