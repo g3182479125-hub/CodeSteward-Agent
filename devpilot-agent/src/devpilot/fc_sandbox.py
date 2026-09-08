@@ -14,6 +14,8 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -145,6 +147,37 @@ def _sandbox_id(sandbox: Any) -> str:
     return str(value or "unknown-sandbox")
 
 
+@contextmanager
+def _state_file_lock(path: Path) -> Iterator[None]:
+    """Serialize snapshot reads and replacements across backend processes."""
+
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 @dataclass(slots=True)
 class _FCSandboxRun:
     run_id: str
@@ -202,10 +235,26 @@ class FCSandboxBackend:
         with self._lock:
             if run_id in self._runs:
                 raise ExecutionError("FC_RUN_DUPLICATE", "FC run ID has already been used")
-            state = _FCSandboxRun(run_id=run_id)
-            self._runs[run_id] = state
-            self._persist_state(state)
-            return state
+            path = self._state_path(run_id)
+            if path is None:
+                state = _FCSandboxRun(run_id=run_id)
+                self._runs[run_id] = state
+                return state
+            with _PERSIST_LOCK, _state_file_lock(path):
+                if path.is_file():
+                    persisted = self._load_persisted_state_unlocked(run_id)
+                    if persisted is not None:
+                        raise ExecutionError(
+                            "FC_RUN_DUPLICATE", "FC run ID has already been used"
+                        )
+                    raise ExecutionError(
+                        "FC_RUN_STATE_UNAVAILABLE",
+                        "FC run state exists but cannot be read safely",
+                    )
+                state = _FCSandboxRun(run_id=run_id)
+                self._runs[run_id] = state
+                self._persist_state_unlocked(state, path)
+                return state
 
     def _state_payload(self, state: _FCSandboxRun) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -250,6 +299,31 @@ class FCSandboxBackend:
         digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
         return Path(self.config.state_dir).expanduser().resolve() / f"{digest}.json"
 
+    def _persist_state_unlocked(self, state: _FCSandboxRun, path: Path) -> None:
+        """Write one restart-safe provider snapshot while its file lock is held."""
+
+        # Backend instances can overlap briefly during restart recovery.  Keep the
+        # temporary-file/replace pair atomic within the process so Windows does not
+        # reject two concurrent replacements of the same destination.
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(
+                    self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True
+                )
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def _persist_state(self, state: _FCSandboxRun) -> None:
         """Persist restart-safe provider metadata without credentials or handles."""
 
@@ -257,30 +331,12 @@ class FCSandboxBackend:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Backend instances can overlap briefly during restart recovery.  Keep the
-        # temporary-file/replace pair atomic within the process so Windows does not
-        # reject two concurrent replacements of the same destination.
-        with _PERSIST_LOCK:
-            temporary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
-                ) as temporary:
-                    json.dump(
-                        self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True
-                    )
-                    temporary.flush()
-                    os.fsync(temporary.fileno())
-                    temporary_path = Path(temporary.name)
-                os.replace(temporary_path, path)
-            finally:
-                if temporary_path is not None:
-                    try:
-                        temporary_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+        with _PERSIST_LOCK, _state_file_lock(path):
+            self._persist_state_unlocked(state, path)
 
-    def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
+    def _load_persisted_state_unlocked(self, run_id: str) -> _FCSandboxRun | None:
+        """Load a snapshot while its file lock is held."""
+
         path = self._state_path(run_id)
         if path is None or not path.is_file():
             return None
@@ -325,6 +381,13 @@ class FCSandboxBackend:
             cleanup_attempts=cleanup_attempts,
             cleanup_done=payload.get("cleanup_status") == "cleaned",
         )
+
+    def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
+        path = self._state_path(run_id)
+        if path is None or not path.is_file():
+            return None
+        with _PERSIST_LOCK, _state_file_lock(path):
+            return self._load_persisted_state_unlocked(run_id)
 
     def _get_or_load_state(self, run_id: str) -> _FCSandboxRun | None:
         state = self._runs.get(run_id)

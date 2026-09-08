@@ -159,6 +159,69 @@ def test_fc_backend_rejects_duplicate_run_ids(monkeypatch: pytest.MonkeyPatch) -
         backend.run(valid_request())
 
 
+def test_fc_backend_rejects_persisted_duplicate_after_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    create_calls: list[str] = []
+
+    class PersistedSandboxFactory:
+        @classmethod
+        def create(cls, **kwargs: object) -> object:
+            create_calls.append("create")
+            return SimpleNamespace(
+                sandbox_id="persisted-sandbox",
+                files=SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None),
+                commands=SimpleNamespace(
+                    run=lambda _command, timeout: SimpleNamespace(
+                        exit_code=0, stdout="ok", stderr=""
+                    )
+                ),
+                kill=lambda: None,
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=PersistedSandboxFactory),
+    )
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="invalid",
+        state_dir=str(tmp_path),
+    )
+
+    FCSandboxBackend(config).run(valid_request())
+    restarted_backend = FCSandboxBackend(config)
+
+    with pytest.raises(ExecutionError, match="FC_RUN_DUPLICATE"):
+        restarted_backend.run(valid_request())
+    assert create_calls == ["create"]
+
+
+def test_fc_state_persistence_removes_temporary_file_on_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="invalid",
+            state_dir=str(tmp_path),
+        )
+    )
+
+    def fail_dump(*_args: object, **_kwargs: object) -> None:
+        raise OSError("snapshot write failed")
+
+    monkeypatch.setattr("devpilot.fc_sandbox.json.dump", fail_dump)
+
+    with pytest.raises(OSError, match="snapshot write failed"):
+        backend._reserve_run("write-failure")  # type: ignore[attr-defined]
+
+    assert list(tmp_path.glob(".fc-run-*")) == []
+
+
 def test_fc_backend_rejects_network_before_provider_call() -> None:
     backend = FCSandboxBackend(
         FCSandboxConfig(
