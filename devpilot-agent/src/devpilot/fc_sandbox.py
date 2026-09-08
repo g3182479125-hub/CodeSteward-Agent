@@ -32,6 +32,7 @@ from .redaction import redact_execution_output
 
 SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
+_PERSIST_LOCK = RLock()
 FC_VERIFICATION_PROFILES = frozenset(
     {"python-syntax", "python-run", "node-syntax"}
 )
@@ -256,14 +257,28 @@ class FCSandboxBackend:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
-        ) as temporary:
-            json.dump(self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, path)
+        # Backend instances can overlap briefly during restart recovery.  Keep the
+        # temporary-file/replace pair atomic within the process so Windows does not
+        # reject two concurrent replacements of the same destination.
+        with _PERSIST_LOCK:
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
+                ) as temporary:
+                    json.dump(
+                        self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True
+                    )
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                    temporary_path = Path(temporary.name)
+                os.replace(temporary_path, path)
+            finally:
+                if temporary_path is not None:
+                    try:
+                        temporary_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
         path = self._state_path(run_id)
