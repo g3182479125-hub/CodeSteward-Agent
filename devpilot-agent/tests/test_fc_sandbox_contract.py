@@ -256,6 +256,90 @@ def test_fc_recovery_does_not_resurrect_cancelled_run(
     assert connect_calls == []
 
 
+def test_fc_cleanup_retries_cancelled_run_after_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    connect_calls: list[str] = []
+    kill_calls: list[str] = []
+
+    class RecoveredSandbox:
+        def is_running(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            kill_calls.append("kill")
+
+    class RecoveryFactory:
+        @classmethod
+        def connect(cls, sandbox_id: str, **kwargs: object) -> RecoveredSandbox:
+            connect_calls.append(sandbox_id)
+            return RecoveredSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=RecoveryFactory),
+    )
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="invalid",
+        state_dir=str(tmp_path),
+    )
+    backend = FCSandboxBackend(config)
+    state = backend._reserve_run("cleanup-after-restart")  # type: ignore[attr-defined]
+    state.sandbox_id = "cleanup-sandbox"
+    state.status = "cancelled"
+    state.cleanup_error = "FC_CLEANUP_FAILED"
+    state.cleanup_attempts = 1
+    backend._persist_state(state)  # type: ignore[attr-defined]
+
+    cleaned = FCSandboxBackend(config).cleanup("cleanup-after-restart")
+
+    assert cleaned["status"] == "cancelled"
+    assert cleaned["cleanup_status"] == "cleaned"
+    assert connect_calls == ["cleanup-sandbox"]
+    assert kill_calls == ["kill"]
+
+
+def test_fc_stale_writer_cannot_overwrite_newer_recovery_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class RecoveredSandbox:
+        def is_running(self) -> bool:
+            return True
+
+    class RecoveryFactory:
+        @classmethod
+        def connect(cls, _sandbox_id: str, **_kwargs: object) -> RecoveredSandbox:
+            return RecoveredSandbox()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "e2b_code_interpreter",
+        SimpleNamespace(Sandbox=RecoveryFactory),
+    )
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="invalid",
+        state_dir=str(tmp_path),
+    )
+    stale_backend = FCSandboxBackend(config)
+    stale_state = stale_backend._reserve_run("stale-writer")  # type: ignore[attr-defined]
+    stale_state.sandbox_id = "stale-sandbox"
+    stale_state.status = "running"
+    stale_backend._persist_state(stale_state)  # type: ignore[attr-defined]
+
+    current_backend = FCSandboxBackend(config)
+    assert current_backend.recover("stale-writer")["status"] == "running"
+
+    stale_state.status = "completed"
+    stale_backend._persist_state(stale_state)  # type: ignore[attr-defined]
+
+    assert FCSandboxBackend(config).get_run_state("stale-writer")["status"] == "running"
+
+
 def test_fc_backend_rejects_network_before_provider_call() -> None:
     backend = FCSandboxBackend(
         FCSandboxConfig(
@@ -389,9 +473,9 @@ def test_fc_backend_recovers_active_run_after_backend_restart(
 
     terminal_backend = FCSandboxBackend(config)
     terminal = terminal_backend.recover("run-1")
-    assert terminal["status"] == "completed"
-    assert terminal["result"]["stdout"] == "recovered E2B_API_KEY=[REDACTED]"
-    assert "secret-value" not in terminal["result"]["stdout"]
+    assert terminal["status"] == "cancelled"
+    assert terminal["cleanup_status"] == "cleaned"
+    assert "result" not in terminal
     assert connected == ["restartable-sandbox"]
 
 

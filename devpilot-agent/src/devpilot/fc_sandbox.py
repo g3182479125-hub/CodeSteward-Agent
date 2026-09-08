@@ -190,6 +190,7 @@ class _FCSandboxRun:
     cancel_requested: bool = False
     cleanup_done: bool = False
     cleanup_attempts: int = 0
+    revision: int = 0
 
 
 class FCSandboxBackend:
@@ -306,13 +307,19 @@ class FCSandboxBackend:
         # temporary-file/replace pair atomic within the process so Windows does not
         # reject two concurrent replacements of the same destination.
         temporary_path: Path | None = None
+        current_revision = self._snapshot_revision(path)
+        if current_revision is not None and current_revision > state.revision:
+            return
+        state.revision = max(state.revision, current_revision or 0) + 1
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-run-", delete=False
             ) as temporary:
                 temporary_path = Path(temporary.name)
+                payload = self._state_payload(state)
+                payload["revision"] = state.revision
                 json.dump(
-                    self._state_payload(state), temporary, ensure_ascii=False, sort_keys=True
+                    payload, temporary, ensure_ascii=False, sort_keys=True
                 )
                 temporary.flush()
                 os.fsync(temporary.fileno())
@@ -323,6 +330,24 @@ class FCSandboxBackend:
                     temporary_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    @staticmethod
+    def _snapshot_revision(path: Path) -> int | None:
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise OSError("FC run state cannot be read safely") from exc
+        if not isinstance(payload, dict):
+            raise OSError("FC run state cannot be read safely")
+        try:
+            revision = int(payload.get("revision", 0))
+        except (TypeError, ValueError) as exc:
+            raise OSError("FC run state revision is invalid") from exc
+        if revision < 0:
+            raise OSError("FC run state revision is invalid")
+        return revision
 
     def _persist_state(self, state: _FCSandboxRun) -> None:
         """Persist restart-safe provider metadata without credentials or handles."""
@@ -369,6 +394,10 @@ class FCSandboxBackend:
             cleanup_attempts = int(payload.get("cleanup_attempts", 0))
         except (TypeError, ValueError):
             cleanup_attempts = 0
+        try:
+            revision = int(payload.get("revision", 0))
+        except (TypeError, ValueError):
+            revision = 0
         return _FCSandboxRun(
             run_id=run_id,
             sandbox_id=str(payload["sandbox_id"]) if payload.get("sandbox_id") else None,
@@ -380,6 +409,7 @@ class FCSandboxBackend:
             ),
             cleanup_attempts=cleanup_attempts,
             cleanup_done=payload.get("cleanup_status") == "cleaned",
+            revision=max(revision, 0),
         )
 
     def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
@@ -458,6 +488,16 @@ class FCSandboxBackend:
     def cleanup(self, run_id: str) -> dict[str, Any]:
         """Clean up an active sandbox without creating a replacement task."""
 
+        with self._lock:
+            state = self._get_or_load_state(run_id)
+            needs_recovery = bool(
+                state is not None
+                and state.handle is None
+                and state.cleanup_error
+                and state.sandbox_id
+            )
+        if needs_recovery:
+            self.recover(run_id)
         return self.cancel(run_id)
 
     def recover(self, run_id: str, sandbox_id: str | None = None) -> dict[str, Any]:
@@ -483,7 +523,10 @@ class FCSandboxBackend:
             if (
                 existing is not None
                 and existing.status in {"completed", "failed", "cancelled"}
-                and (existing.result is not None or existing.status == "cancelled")
+                and (
+                    existing.result is not None
+                    or (existing.status == "cancelled" and not existing.cleanup_error)
+                )
             ):
                 return self._state_payload(existing)
             if sandbox_id is None and existing is not None:
