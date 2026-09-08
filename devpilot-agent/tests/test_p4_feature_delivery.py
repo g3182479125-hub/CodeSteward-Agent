@@ -763,6 +763,16 @@ def test_feature_delivery_skill_is_enabled_after_review() -> None:
     assert result.valid is True
 
 
+def test_feature_delivery_skill_uses_contract_proposal_as_canonical_entrypoint() -> None:
+    skill = Path(__file__).parent.parent / "skills" / "catalog" / "feature-delivery" / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+
+    assert "- devpilot_feature_delivery_propose" in text
+    assert "- devpilot_propose_changeset" not in text
+    assert "FeatureDelivery 的 Diff 必须通过" in text
+    assert "不会创建本交付流程所需的" in text
+
+
 def test_feature_delivery_requires_explicit_project_trust_before_approval(tmp_path: Path) -> None:
     project = tmp_path / "untrusted"
     project.mkdir()

@@ -17,6 +17,8 @@ def test_default_profiles_have_bounded_task_specific_tools() -> None:
     assert set(catalog.names) == {"bug-fix", "feature-delivery", "repo-analysis"}
     assert catalog.get("repo-analysis").allowed_tools == frozenset({"devpilot_inspect_project"})
     assert "devpilot_confirmed_action" in catalog.get("feature-delivery").allowed_tools
+    assert "devpilot_feature_delivery_propose" in catalog.get("feature-delivery").allowed_tools
+    assert "devpilot_propose_changeset" not in catalog.get("feature-delivery").allowed_tools
     assert "devpilot_confirmed_action" in catalog.get("bug-fix").allowed_tools
     assert "shell" not in catalog.get("feature-delivery").allowed_tools
 

@@ -11,7 +11,6 @@ metadata:
       - devpilot_search_code
       - devpilot_read_code
       - devpilot_feature_delivery_propose
-      - devpilot_propose_changeset
       - devpilot_request_approval
       - devpilot_publish_artifact
       - devpilot_get_changeset
@@ -60,7 +59,6 @@ before proposing a new ChangeSet.
 - `devpilot_read_code`：读取有界源码行并取得前置 SHA-256，R0 只读。
 - `devpilot_feature_delivery_propose`：使用已绑定的 inspect/search/read 证据创建 FeatureDelivery
   Proposal；只能提案，不能请求审批或写项目文件。
-- `devpilot_propose_changeset`：创建不可变 Preview/Diff；只能提案，不能批准或写文件。
 - `devpilot_request_approval`：登记用户对精确 ChangeSet 的审批请求；不签发、不接收或返回 token。
 - `devpilot_publish_artifact`：将已生成的安全项目摘要写入服务端 Artifact 根；不写项目目录。
 - `devpilot_get_changeset`：读取服务端保存的 ChangeSet、Diff、哈希和完整契约；只读。
@@ -69,8 +67,10 @@ before proposing a new ChangeSet.
 - `devpilot_watch_run`：读取脱敏阶段事件，支持断点重放和持久快照降级；只读。
 - `devpilot_confirmed_action`：仅把 Gateway 签名的用户确认交给受信任 Broker；不接受 token。
 
-Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_propose_changeset` 返回，
-之后可用 `devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet
+Skill 只能建议上述已注册 Tool。`devpilot_propose_changeset` 仍作为平台兼容入口保留，
+但不在本 Skill 的 allowlist 中。FeatureDelivery 的 Diff 必须通过
+`devpilot_feature_delivery_propose` 返回；该入口会同时创建验证契约，之后可用
+`devpilot_get_changeset` 或 `devpilot_get_run_state` 查询服务端事实。用户在对话中明确确认精确的 ChangeSet
 后，运行时可以调用 `devpilot_request_approval` 登记审批意图；真正的 Apply/Verification/Rollback
 由控制面用户动作携带 capability token 完成。Skill 不得伪造确认、读取或传播审批令牌。
 
@@ -85,7 +85,9 @@ Skill 只能建议上述已注册 Tool。ChangeSet 的 Diff 通过 `devpilot_pro
 3. 使用 `devpilot_search_code` 和 `devpilot_read_code` 定位最小实现位置，并保存 evidence id、
    文件路径、行号和前置哈希。
 4. 生成 Change Plan：写明需求、非目标、允许文件、风险、验证 profile 和停止条件。
-5. 生成不超过服务端限额的 FilePatch，并调用 `devpilot_propose_changeset`。
+5. 生成不超过服务端限额的 FilePatch，并调用 `devpilot_feature_delivery_propose`。
+   不得用兼容入口 `devpilot_propose_changeset` 替代，因为它不会创建本交付流程所需的
+   verification contract。
 6. 向用户展示 ChangeSet id、patch hash、文件列表、Diff 摘要、风险、验证方式和回滚方式。
 7. 明确停止并等待用户对这一个精确 ChangeSet 回复“执行”或拒绝；在等待期间不得调用 Apply。
 8. 用户确认后，由运行时受控入口完成 Apply 和服务端 allowlist Verification；P4 阶段仅接受 Fake
