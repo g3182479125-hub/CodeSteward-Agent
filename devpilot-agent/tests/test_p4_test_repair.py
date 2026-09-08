@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +15,8 @@ from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import FakeExecutionBackend
-from devpilot.nanobot_tools import TestRepairProposeTool
+from devpilot.nanobot_tools import TestRepairProposeTool as _TestRepairProposeTool
+from devpilot.nanobot_tools import ToolResult
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
 from devpilot.services import ProjectAnalysisService
@@ -392,6 +395,44 @@ def test_test_repair_api_and_nanobot_contract(
     response = client.post("/v1/test-repair/proposals", json=payload)
     assert response.status_code == 201
     assert response.json()["workflow"] == "test-repair"
-    assert TestRepairProposeTool().name == "devpilot_test_repair_propose"
-    assert TestRepairProposeTool().read_only is True
+    assert _TestRepairProposeTool().name == "devpilot_test_repair_propose"
+    assert _TestRepairProposeTool().read_only is True
     assert json.loads(response.text)["attempt"] == 1
+
+
+def test_test_repair_tool_binds_proposal_to_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    proposal = {
+        "change_set_id": "cs-1",
+        "plan_hash": "plan-1",
+        "patch_hash": "patch-1",
+        "scope_hash": "scope-1",
+        "project_id": "project-1",
+    }
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_test_repair_proposal",
+        lambda _payload: dict(proposal),
+    )
+    request_context = SimpleNamespace(attributes={})
+    tool = _TestRepairProposeTool()
+
+    tool.set_context(request_context)
+    result = asyncio.run(
+        tool.execute(
+            project_path="C:/repo",
+            patches=[{"relative_path": "src/demo/main.py", "operation": "update"}],
+            analysis_evidence_ids=["analysis-1"],
+            failure_evidence_ids=["failure-1"],
+            symptom="symptom",
+            expected_behavior="expected",
+            allowed_files=["src/demo/main.py"],
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert tool.exclusive is True
+    assert request_context.attributes["devpilot_proposal"] == proposal

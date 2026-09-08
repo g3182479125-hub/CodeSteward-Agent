@@ -188,21 +188,25 @@ def _record_current_turn_proposal(
     request_context: Any | None = None,
 ) -> None:
     """Expose a safe proposal reference to the WebSocket delivery seam only."""
+    values = {
+        key: result.get(key)
+        for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
+    }
+    if not all(isinstance(value, str) and value for value in values.values()):
+        return
+    proposal = cast(dict[str, str], values)
+    if request_context is not None:
+        try:
+            request_context.attributes["devpilot_proposal"] = dict(proposal)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    _CURRENT_TURN_PROPOSAL.set(dict(proposal))
     try:
         from nanobot.agent.tools.context import current_request_context
 
-        values = {
-            key: result.get(key)
-            for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
-        }
-        if not all(isinstance(value, str) and value for value in values.values()):
-            return
         context = current_request_context()
         if context is not None:
-            context.attributes["devpilot_proposal"] = dict(values)
-        if request_context is not None:
-            request_context.attributes["devpilot_proposal"] = dict(values)
-        _CURRENT_TURN_PROPOSAL.set(cast(dict[str, str], values))
+            context.attributes["devpilot_proposal"] = dict(proposal)
     except (ImportError, TypeError, ValueError):
         return
 
@@ -1707,6 +1711,13 @@ class FeatureDeliveryProposeTool(Tool):
 
     _scopes = {"core"}
 
+    def __init__(self) -> None:
+        self._request_context: Any | None = None
+
+    def set_context(self, context: Any) -> None:
+        """Keep the registry's authoritative request object for this one call."""
+        self._request_context = context
+
     @property
     def name(self) -> str:
         return "devpilot_feature_delivery_propose"
@@ -1722,7 +1733,13 @@ class FeatureDeliveryProposeTool(Tool):
     def read_only(self) -> bool:
         return True
 
+    @property
+    def exclusive(self) -> bool:
+        """Proposal delivery mutates only the current request's private metadata."""
+        return True
+
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        request_context = self._request_context
         try:
             payload = {
                 "project_path": str(kwargs["project_path"]),
@@ -1732,7 +1749,7 @@ class FeatureDeliveryProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_feature_proposal(payload)
-            _record_current_turn_proposal(result)
+            _record_current_turn_proposal(result, request_context=request_context)
             result["requires_user_confirmation"] = True
             result["next_step"] = (
                 "展示精确 Diff 并停止等待用户；执行必须用 action=apply_verify（Apply 后验证）；"
@@ -1744,6 +1761,8 @@ class FeatureDeliveryProposeTool(Tool):
             return ToolResult.error(f"P4 feature proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 feature proposal rejected: {type(exc).__name__}")
+        finally:
+            self._request_context = None
 
 
 @tool_parameters(
@@ -1791,6 +1810,13 @@ class BugFixProposeTool(Tool):
 
     _scopes = {"core"}
 
+    def __init__(self) -> None:
+        self._request_context: Any | None = None
+
+    def set_context(self, context: Any) -> None:
+        """Keep the registry's authoritative request object for this one call."""
+        self._request_context = context
+
     @property
     def name(self) -> str:
         return "devpilot_bug_fix_propose"
@@ -1806,7 +1832,13 @@ class BugFixProposeTool(Tool):
     def read_only(self) -> bool:
         return True
 
+    @property
+    def exclusive(self) -> bool:
+        """Proposal delivery mutates only the current request's private metadata."""
+        return True
+
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        request_context = self._request_context
         try:
             payload: dict[str, Any] = {
                 "project_path": str(kwargs["project_path"]),
@@ -1821,7 +1853,7 @@ class BugFixProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_bug_fix_proposal(payload)
-            _record_current_turn_proposal(result)
+            _record_current_turn_proposal(result, request_context=request_context)
             result["next_step"] = (
                 "展示失败证据、精确 Diff 和 stop conditions，并停止等待用户；"
                 "执行必须用 action=apply_verify（Apply 后验证）；仅应用、验证或撤销后，"
@@ -1833,6 +1865,8 @@ class BugFixProposeTool(Tool):
             return ToolResult.error(f"P4 bug-fix proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 bug-fix proposal rejected: {type(exc).__name__}")
+        finally:
+            self._request_context = None
 
 
 @tool_parameters(
@@ -1874,6 +1908,13 @@ class TestRepairProposeTool(Tool):
 
     _scopes = {"core"}
 
+    def __init__(self) -> None:
+        self._request_context: Any | None = None
+
+    def set_context(self, context: Any) -> None:
+        """Keep the registry's authoritative request object for this one call."""
+        self._request_context = context
+
     @property
     def name(self) -> str:
         return "devpilot_test_repair_propose"
@@ -1889,7 +1930,13 @@ class TestRepairProposeTool(Tool):
     def read_only(self) -> bool:
         return True
 
+    @property
+    def exclusive(self) -> bool:
+        """Proposal delivery mutates only the current request's private metadata."""
+        return True
+
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        request_context = self._request_context
         try:
             payload: dict[str, Any] = {
                 "project_path": str(kwargs["project_path"]),
@@ -1904,7 +1951,7 @@ class TestRepairProposeTool(Tool):
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_test_repair_proposal(payload)
-            _record_current_turn_proposal(result)
+            _record_current_turn_proposal(result, request_context=request_context)
             result["next_step"] = (
                 "展示精确 Diff、当前轮次和剩余预算，并停止等待用户；"
                 "每轮执行必须用 action=apply_verify（Apply 后验证）；仅应用或验证，"
@@ -1916,6 +1963,8 @@ class TestRepairProposeTool(Tool):
             return ToolResult.error(f"P4 test-repair proposal rejected: {_http_error_message(exc)}")
         except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
             return ToolResult.error(f"P4 test-repair proposal rejected: {type(exc).__name__}")
+        finally:
+            self._request_context = None
 
 
 @tool_parameters(

@@ -7,6 +7,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -472,6 +473,44 @@ def test_feature_delivery_nanobot_adapter_is_proposal_only(
     assert json.loads(str(result))["requires_user_confirmation"] is True
     assert json.loads(str(result))["status"] == "awaiting_user_approval"
     assert calls[0]["evidence_ids"] == ["run-1"]
+
+
+def test_feature_delivery_nanobot_adapter_binds_proposal_to_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    proposal = {
+        "change_set_id": "cs-1",
+        "plan_hash": "plan-1",
+        "patch_hash": "patch-1",
+        "scope_hash": "scope-1",
+        "project_id": "project-1",
+        "status": "awaiting_user_approval",
+    }
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_feature_proposal",
+        lambda _payload: dict(proposal),
+    )
+    request_context = SimpleNamespace(attributes={})
+    tool = FeatureDeliveryProposeTool()
+
+    tool.set_context(request_context)
+    result = asyncio.run(
+        tool.execute(
+            project_path="E:/project",
+            patches=[{"relative_path": "app.py", "operation": "create", "content": "ok\n"}],
+            evidence_ids=["run-1"],
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert tool.exclusive is True
+    assert request_context.attributes["devpilot_proposal"] == {
+        key: proposal[key]
+        for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
+    }
 
 
 def test_feature_delivery_nanobot_adapter_maps_http_error_without_body_leak(

@@ -5,6 +5,7 @@ import hashlib
 import io
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -598,6 +599,42 @@ def test_bug_fix_tool_maps_payload_and_redacts_http_errors(
     assert isinstance(rejected, nanobot_tools.ToolResult)
     assert rejected.is_error is True
     assert "BUG_FIX_SCOPE_INVALID" in str(rejected)
+
+
+def test_bug_fix_tool_binds_proposal_to_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = {
+        "change_set_id": "cs-1",
+        "plan_hash": "plan-1",
+        "patch_hash": "patch-1",
+        "scope_hash": "scope-1",
+        "project_id": "project-1",
+    }
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_bug_fix_proposal",
+        lambda _payload: dict(proposal),
+    )
+    request_context = SimpleNamespace(attributes={})
+    tool = BugFixProposeTool()
+
+    tool.set_context(request_context)
+    result = asyncio.run(
+        tool.execute(
+            project_path="C:/repo",
+            patches=[{"relative_path": "src/App.jsx", "operation": "update"}],
+            analysis_evidence_ids=["analysis-1"],
+            failure_evidence_ids=["failure-1"],
+            symptom="symptom",
+            expected_behavior="expected",
+            allowed_files=["src/App.jsx"],
+        )
+    )
+
+    assert not isinstance(result, nanobot_tools.ToolResult) or not result.is_error
+    assert tool.exclusive is True
+    assert request_context.attributes["devpilot_proposal"] == proposal
 
 
 def test_bug_fix_skill_is_publishable_after_review_approval() -> None:
