@@ -90,6 +90,7 @@ class FeatureDeliveryProposal:
     change_set_id: str
     project_id: str
     run_id: str | None
+    plan_hash: str
     patch_hash: str
     scope_hash: str
     verification_profile: VerificationProfile
@@ -103,6 +104,7 @@ class FeatureDeliveryProposal:
             "change_set_id": self.change_set_id,
             "project_id": self.project_id,
             "run_id": self.run_id,
+            "plan_hash": self.plan_hash,
             "patch_hash": self.patch_hash,
             "scope_hash": self.scope_hash,
             "verification_profile": self.verification_profile.value,
@@ -405,6 +407,7 @@ class FeatureDeliveryWorkflow:
             change_set_id=str(preview["change_set_id"]),
             project_id=str(preview["project_id"]),
             run_id=self.manager.get_run_id(str(preview["change_set_id"])),
+            plan_hash=str(preview["plan_hash"]),
             patch_hash=str(preview["patch_hash"]),
             scope_hash=str(preview["scope_hash"]),
             verification_profile=profile,

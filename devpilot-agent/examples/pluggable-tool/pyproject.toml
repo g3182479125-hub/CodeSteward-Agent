@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devflow-greeting-tool"
+version = "0.1.0"
+description = "A tiny read-only nanobot Tool plugin used by the DevFlow Agent demo."
+requires-python = ">=3.11,<3.14"
+dependencies = []
+
+[project.entry-points."nanobot.tools"]
+devflow_greeting = "devflow_greeting_tool:WelcomeTool"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devflow_greeting_tool"]

@@ -104,6 +104,8 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     )
 
     assert proposal.to_dict()["requires_user_confirmation"] is True
+    assert proposal.to_dict()["plan_hash"] == proposal.plan_hash
+    assert proposal.to_dict()["plan_hash"] == proposal.preview["plan_hash"]
     assert proposal.preview["patch_hash"] == proposal.patch_hash
     assert proposal.preview["scope_hash"] == proposal.scope_hash
     assert proposal.preview["workflow"] == "feature-delivery"
