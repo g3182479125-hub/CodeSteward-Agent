@@ -33,8 +33,8 @@ nanobot Agent Loop，也不绕过 DevPilot 的 Apply、Verify、Rollback 和确�
 
 `devpilot-agent/docs/demo/pluggable-tool.md`
 
-当前 Node fixture 中的 `formatFarewell` 和 `formatWelcome` 是本地真实演示通过受控 Apply 写入的结果，
-仅用于再次演示，不是用户 API Key 或真实业务代码。
+本机真实演示曾通过受控 Apply 写入 `formatFarewell` 和 `formatWelcome`；这些演示副作用不纳入仓库，
+换机后 fixture 保持干净，录制流程可以重新生成 Diff。它们不是用户 API Key 或真实业务代码。
 
 ## 3. 已完成的真实链路验证
 
@@ -95,7 +95,7 @@ git pull --ff-only origin main
 
 然后阅读：
 
-- `devpilot-agent/AGENTS.md`
+- `AGENTS.md`
 - `devpilot-agent/docs/plans/CURRENT_PLAN.md`
 - `devpilot-agent/docs/runbooks/local-nanobot-devpilot.md`
 - `devpilot-agent/docs/demo/pluggable-tool.md`
@@ -119,7 +119,7 @@ $env:DEVPILOT_FC_ALLOWED_PROJECTS = "E:\workspace\devflow-agent\devpilot-agent\t
 在 nanobot 新建普通话题，使用以下口语化但可稳定复现的请求：
 
 ```text
-帮我给这个 Node 小项目加一个小功能：在 src/index.js 里加 formatWelcome(name)，返回 Welcome, name!。
+帮我给这个 Node 小项目加一个小功能：在 src/index.js 里加 formatThanks(name)，返回 Thanks, name!。
 先看看项目结构和目标文件，给我简短方案和 Diff，先不要执行。
 ```
 
