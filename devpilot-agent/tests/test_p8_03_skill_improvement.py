@@ -322,6 +322,23 @@ def test_failed_scheduled_retries_preserve_and_exhaust_cumulative_budget(
     assert exhausted is not None and exhausted.status == "budget_exhausted"
 
 
+def test_scheduled_failure_notification_marker_is_idempotent(tmp_path: Path) -> None:
+    store, workspace, _baseline_text, _evidence_id = _store(tmp_path)
+    batch_id = _configure(store, workspace)
+
+    first = store.mark_scheduled_batch_error_notified(
+        batch_id,
+        error="TimeoutError: scheduled batch deadline exceeded",
+    )
+    second = store.mark_scheduled_batch_error_notified(
+        batch_id,
+        error="TimeoutError: scheduled batch deadline exceeded",
+    )
+
+    assert first.last_notified_error == second.last_notified_error
+    assert second.last_notified_error == "TimeoutError: scheduled batch deadline exceeded"
+
+
 def test_scheduled_candidate_attempt_and_token_budgets_are_hard_limits(tmp_path: Path) -> None:
     store, workspace, _baseline_text, _evidence_id = _store(tmp_path)
     batch_id = _configure(store, workspace)

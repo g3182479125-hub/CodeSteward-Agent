@@ -356,6 +356,28 @@ async def _run_scheduled_skill_batch(
             )
         raise CronJobSkippedError("scheduled Skill batch candidate recovered")
     if claim.status != "claimed":
+        if claim.status == "budget_exhausted":
+            error = claim.batch.last_error or "scheduled batch retry budget exhausted"
+            if (
+                claim.batch.last_notified_error != error
+                and origin_channel
+                and origin_chat_id
+                and origin_channel != "cli"
+            ):
+                await deliver(
+                    OutboundMessage(
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                        content=(
+                            "Scheduled Skill improvement stopped: retry budget exhausted. "
+                            "Review the batch before enabling it again."
+                        ),
+                    )
+                )
+                store.mark_scheduled_batch_error_notified(
+                    claim.batch.batch_id,
+                    error=error,
+                )
         raise CronJobSkippedError(
             f"scheduled Skill batch {claim.status.replace('_', ' ')}"
         )
@@ -385,6 +407,13 @@ async def _run_scheduled_skill_batch(
         )
         raise CronJobSkippedError("devpilot_skill_candidate is unavailable")
 
+    session_key = f"devpilot:skill-batch:{claim.batch.batch_id}"
+    active_tasks = getattr(agent, "_active_tasks", None)
+    current_task = asyncio.current_task()
+    active_set = None
+    if isinstance(active_tasks, dict) and current_task is not None:
+        active_set = active_tasks.setdefault(session_key, set())
+        active_set.add(current_task)
     try:
         runtime_factory = getattr(agent, "llm_runtime", None)
         per_call_tokens = max(
@@ -399,7 +428,7 @@ async def _run_scheduled_skill_batch(
             if callable(runtime_factory)
             else None
         )
-        remaining = max(1.0, (claim.deadline_at or time.time()) - time.time())
+        remaining = max(0.01, (claim.deadline_at or time.time()) - time.time())
         response = await asyncio.wait_for(
             run_bound_cron_job(
                 job,
@@ -408,9 +437,7 @@ async def _run_scheduled_skill_batch(
                 message_override=prompt,
                 trusted_attributes=trusted_attributes,
                 tools=restricted_tools,
-                session_key_override=(
-                    f"devpilot:skill-batch:{claim.batch.batch_id}"
-                ),
+                session_key_override=session_key,
                 sender_id_override=claim.batch.user_id,
                 runtime=runtime,
                 max_iterations=claim.batch.max_model_calls,
@@ -444,6 +471,11 @@ async def _run_scheduled_skill_batch(
                 )
             )
         raise
+    finally:
+        if active_set is not None and current_task is not None:
+            active_set.discard(current_task)
+            if not active_set:
+                active_tasks.pop(session_key, None)
 
     current = store.get_scheduled_batch(claim.batch.batch_id)
     if current is None or current.candidate_id is None:

@@ -4,8 +4,10 @@ import re
 import shutil
 import signal
 import sqlite3
+import time
 import urllib.error
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -119,10 +121,13 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
             self.tools = ToolRegistry()
             self.tools.register(SkillCandidateTool(project_workspace))
             self.llm_runtime = lambda: _Runtime()
+            self._active_tasks = {}
 
         async def process_direct(self, prompt, **kwargs):
             seen["prompt"] = prompt
             seen["process_kwargs"] = kwargs
+            active_key = kwargs["session_key"]
+            assert asyncio.current_task() in self._active_tasks[active_key]
             attributes = kwargs["attributes"]
             context = RequestContext(
                 channel=kwargs["channel"],
@@ -266,6 +271,136 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     assert seen["process_kwargs"]["metadata"]["workspace_scope"]["project_path"] == str(  # type: ignore[index]
         project_workspace
     )
+
+    # A second native Cron dispatch with the same evidence must stop in the
+    # persistent preflight and never reach the provider/agent turn.
+    process_calls_before_no_evidence = seen.get("process_calls", 0)
+
+    async def unexpected_process_call(*_args, **_kwargs):
+        seen["process_calls"] = int(seen.get("process_calls", 0)) + 1
+        raise AssertionError("no-evidence scheduled batch must not call the agent")
+
+    original_process_direct = agent.process_direct
+    agent.process_direct = unexpected_process_call
+    try:
+        with pytest.raises(CronJobSkippedError, match="no new evidence"):
+            await cli_gateway_runtime._run_scheduled_skill_batch(
+                job,
+                agent=agent,
+                cron=service,
+                deliver=deliver,
+                gateway_workspace=project_workspace,
+            )
+    finally:
+        agent.process_direct = original_process_direct
+    assert seen.get("process_calls", 0) == process_calls_before_no_evidence
+    assert len(delivered) == 1
+
+    # A provider/agent turn that never returns is stopped by the persisted
+    # batch deadline, not by a test double around asyncio.wait_for.
+    store.record_feedback(
+        task_id="scheduled-timeout-task",
+        project_id=project_id,
+        workspace=project_workspace,
+        user_id="user",
+        session_id="websocket:chat",
+        source_type="user_feedback",
+        skill_id="bug-fix",
+        skill_hash=content_sha256(baseline),
+        correction="超时场景需要保留反馈。",
+        actual_result="批处理未在截止时间内完成。",
+        evidence_refs=["run-timeout"],
+    )
+    timeout_started = asyncio.Event()
+
+    async def hanging_process(*_args, **_kwargs):
+        timeout_started.set()
+        await asyncio.Future()
+
+    agent.process_direct = hanging_process
+    original_claim = SkillImprovementStore.claim_scheduled_batch
+
+    def short_deadline_claim(self, job_id, *, lease_owner):
+        claim = original_claim(self, job_id, lease_owner=lease_owner)
+        if claim is not None and claim.status == "claimed":
+            return replace(claim, deadline_at=time.time() + 0.05)
+        return claim
+
+    with patch.object(
+        SkillImprovementStore,
+        "claim_scheduled_batch",
+        short_deadline_claim,
+    ):
+        timeout_task = asyncio.create_task(
+            cli_gateway_runtime._run_scheduled_skill_batch(
+                job,
+                agent=agent,
+                cron=service,
+                deliver=deliver,
+                gateway_workspace=project_workspace,
+            )
+        )
+        await timeout_started.wait()
+        with pytest.raises(asyncio.TimeoutError):
+            await timeout_task
+
+    timed_out = store.get_scheduled_batch(batch_id)
+    assert timed_out is not None
+    assert timed_out.status == "failed"
+    assert timed_out.last_error is not None
+    assert timed_out.last_error.startswith("TimeoutError")
+    assert len(delivered) == 2
+    assert "failed" in delivered[-1].content
+
+    # The production AgentLoop cancellation path must find and cancel the
+    # scheduled task registered under its dedicated session key.
+    cancel_evidence = store.record_feedback(
+        task_id="scheduled-cancel-task",
+        project_id=project_id,
+        workspace=project_workspace,
+        user_id="user",
+        session_id="websocket:chat",
+        source_type="user_feedback",
+        skill_id="bug-fix",
+        skill_hash=content_sha256(baseline),
+        correction="取消场景需要保留反馈。",
+        actual_result="用户在批处理运行中主动取消。",
+        evidence_refs=["run-cancel"],
+    )
+    cancel_started = asyncio.Event()
+
+    async def cancellable_process(*_args, **_kwargs):
+        cancel_started.set()
+        await asyncio.Future()
+
+    agent.process_direct = cancellable_process
+    from nanobot.agent.loop import AgentLoop
+
+    agent.subagents = SimpleNamespace(cancel_by_session=AsyncMock(return_value=0))
+    agent._exec_session_manager = SimpleNamespace(
+        terminate_by_owner=AsyncMock(return_value=0)
+    )
+    agent._cancel_active_tasks = AgentLoop._cancel_active_tasks.__get__(agent)
+    cancel_task = asyncio.create_task(
+        cli_gateway_runtime._run_scheduled_skill_batch(
+            job,
+            agent=agent,
+            cron=service,
+            deliver=deliver,
+            gateway_workspace=project_workspace,
+        )
+    )
+    await cancel_started.wait()
+    session_key = f"devpilot:skill-batch:{batch_id}"
+    assert session_key in agent._active_tasks
+    assert await agent._cancel_active_tasks(session_key) == 1
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_task
+    cancelled = store.get_scheduled_batch(batch_id)
+    assert cancelled is not None
+    assert cancelled.status == "idle"
+    assert cancelled.claimed_evidence_ids == ()
+    assert cancel_evidence.evidence_id not in cancelled.processed_evidence_ids
 
 
 def _without_rendered_line_breaks(output: str) -> str:
