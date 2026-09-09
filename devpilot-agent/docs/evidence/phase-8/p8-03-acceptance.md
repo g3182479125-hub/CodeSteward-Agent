@@ -1,6 +1,6 @@
 # P8-03 定时 Skill 改进批处理验收记录
 
-状态：实现候选，待本批次 Standards / Spec 双轴 review 及最终实测记录。
+状态：实现候选 `dd7fba5`，自动化验收已完成，待本批次 Standards / Spec 双轴 review。
 范围：只为已有 `bug-fix` Skill 读取已验证反馈并生成私有候选；不自动评测、不启用、不修改用户项目。
 
 ## 用户入口
@@ -40,14 +40,22 @@ P8-03 复用 nanobot 原生 Cron 和原生聊天，不增加管理页面或第�
 
 | 检查项 | 证据 | 结果 |
 |---|---|---|
-| 默认关闭、显式启用、停用 | `tests/command/test_skill_command.py` | 待本批次固定 SHA 后填写 |
-| `every` / 时区 / `cron` 复用原生 Cron | `tests/command/test_skill_command.py`、`tests/cron/test_cron_service.py` | 待本批次固定 SHA 后填写 |
-| 无新证据零模型调用 | `tests/test_p8_03_skill_improvement.py` | 待本批次固定 SHA 后填写 |
-| 租约、重复触发、重启去重 | `tests/test_p8_03_skill_improvement.py` | 待本批次固定 SHA 后填写 |
-| 调用与 token 上限、失败重试、取消 | `tests/test_p8_03_skill_improvement.py` | 待本批次固定 SHA 后填写 |
-| 受信证据/租约绑定候选工具 | `nanobot/tests/command/test_skill_command.py` | 待本批次固定 SHA 后填写 |
-| 实际短间隔原生 Cron 触发 | `nanobot/tests/cron/test_cron_service.py` | 待本批次固定 SHA 后填写 |
-| 候选不自动激活、Dream 旁路拒绝 | P8-01/P8-02 原有回归测试 | 复用既有证据，代码变更后重跑受影响集合 |
+| 默认关闭、显式启用、停用 | `tests/command/test_skill_command.py` | 通过；显式启用后复用 1 个原生 Cron job，停用会取消活动任务 |
+| `every` / 时区 / `cron` 复用原生 Cron | `tests/command/test_skill_command.py`、`tests/cron/test_cron_service.py` | 通过；覆盖 30 秒最小间隔、Asia/Shanghai 和实际定时器回调 |
+| 无新证据零模型调用 | `nanobot/tests/cli/test_commands.py` | 通过；真实 Gateway batch preflight 返回 `no_new_evidence`，spy agent 未被调用 |
+| 租约、重复触发、重启去重 | `tests/test_p8_03_skill_improvement.py` | 通过；覆盖 busy、租约过期、候选恢复、孤儿候选恢复和进程重启后的 evidence 去重 |
+| 调用与 token 上限、失败重试、取消 | `tests/test_p8_03_skill_improvement.py`、`nanobot/tests/cli/test_commands.py` | 通过；覆盖 2 次调用、12,000 token 分摊、累计重试预算、50 ms 验收硬超时和 AgentLoop 原生取消 |
+| 受信证据/租约绑定候选工具 | `nanobot/tests/command/test_skill_command.py`、`nanobot/tests/cli/test_commands.py` | 通过；校验 job、workspace、scope、batch owner 和 evidence IDs 绑定 |
+| 实际短间隔原生 Cron 触发 | `nanobot/tests/cli/test_commands.py`、`tests/cron/test_cron_service.py` | 通过；every 25 ms 任务实际触发 Gateway，走 WebSocketChannel 序列化发送路径 |
+| 候选不自动激活、Dream 旁路拒绝 | P8-01/P8-02 原有回归测试 | 通过；P8-01/P8-02 受影响集合已重跑 |
+
+## 自动化结果
+
+- DevPilot P5/P8 受影响集合：`50 passed`。
+- nanobot 受影响集合：`207 passed, 1 skipped`。
+- nanobot 全量回归：`5884 passed, 45 skipped`。
+- DevPilot 与 nanobot Ruff：均通过。
+- 本批次新增的 WebSocket 集成测试使用真实 `WebSocketChannel.send` 序列化路径；没有调用真实模型、FC 沙箱或公网服务。
 
 ## 换机与清理
 
