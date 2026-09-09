@@ -21,7 +21,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,9 +46,25 @@ CANDIDATE_STATES = frozenset(
         "stale",
     }
 )
+BATCH_STATES = frozenset(
+    {
+        "idle",
+        "running",
+        "no_new_evidence",
+        "candidate_created",
+        "failed",
+        "disabled",
+    }
+)
 _MAX_FEEDBACK_TEXT = 4_000
 _MAX_EVIDENCE_REFS = 20
 _MAX_CANDIDATES_PER_BATCH = 3
+_MAX_SCHEDULED_BATCH_EVIDENCE = 20
+_MAX_SCHEDULED_MODEL_CALLS = 2
+_MAX_SCHEDULED_TOKENS = 20_000
+_MAX_SCHEDULED_DURATION_SECONDS = 600
+_SCHEDULED_LEASE_SECONDS = 660
+_MAX_PROCESSED_EVIDENCE_IDS = 1_024
 EVALUATION_CATEGORIES = ("original_failure", "nearby_holdout", "regression")
 EVALUATION_VERSIONS = ("baseline", "candidate")
 EVALUATION_REPEATS = 3
@@ -74,6 +90,24 @@ def content_sha256(content: str | bytes) -> str:
     """Return the hash of the exact UTF-8/byte content used by the contract."""
     raw = content.encode("utf-8") if isinstance(content, str) else content
     return hashlib.sha256(raw).hexdigest()
+
+
+def scheduled_batch_id(
+    workspace: str | Path,
+    project_id: str,
+    user_id: str,
+    skill_id: str = TRIAL_SKILL_ID,
+) -> str:
+    """Return the stable identity of a user's configured Skill batch."""
+    scope = "\0".join(
+        (
+            str(Path(workspace).expanduser().resolve()),
+            project_id,
+            user_id,
+            skill_id,
+        )
+    )
+    return f"batch-{content_sha256(scope)[:24]}"
 
 
 def _now() -> str:
@@ -319,6 +353,126 @@ class ConfirmationRecord:
         }
 
 
+@dataclass(frozen=True)
+class ScheduledSkillBatch:
+    """Persistent policy and cursor for one native-Cron Skill batch."""
+
+    batch_id: str
+    job_id: str
+    skill_id: str
+    workspace: str
+    project_id: str
+    user_id: str
+    session_key: str
+    enabled: bool
+    read_scope: str
+    max_model_calls: int
+    max_tokens: int
+    max_duration_seconds: int
+    notification_mode: str
+    cursor_at: str | None
+    processed_evidence_ids: tuple[str, ...]
+    claimed_evidence_ids: tuple[str, ...]
+    status: str
+    lease_owner: str | None
+    lease_expires_at: float | None
+    run_count: int
+    candidate_attempts: int
+    token_count: int
+    candidate_id: str | None
+    last_run_at: str | None
+    last_error: str | None
+    last_candidate_ids: tuple[str, ...]
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "batch_id": self.batch_id,
+            "job_id": self.job_id,
+            "skill_id": self.skill_id,
+            "workspace": self.workspace,
+            "project_id": self.project_id,
+            "user_id": self.user_id,
+            "session_key": self.session_key,
+            "enabled": self.enabled,
+            "read_scope": self.read_scope,
+            "max_model_calls": self.max_model_calls,
+            "max_tokens": self.max_tokens,
+            "max_duration_seconds": self.max_duration_seconds,
+            "notification_mode": self.notification_mode,
+            "cursor_at": self.cursor_at,
+            "processed_evidence_ids": list(self.processed_evidence_ids),
+            "claimed_evidence_ids": list(self.claimed_evidence_ids),
+            "status": self.status,
+            "lease_owner": self.lease_owner,
+            "lease_expires_at": self.lease_expires_at,
+            "run_count": self.run_count,
+            "candidate_attempts": self.candidate_attempts,
+            "token_count": self.token_count,
+            "candidate_id": self.candidate_id,
+            "last_run_at": self.last_run_at,
+            "last_error": self.last_error,
+            "last_candidate_ids": list(self.last_candidate_ids),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class ScheduledBatchClaim:
+    """Result of the cross-process preflight claim."""
+
+    status: str
+    batch: ScheduledSkillBatch
+    evidence: tuple[FeedbackEvidence, ...] = ()
+    lease_owner: str | None = None
+    deadline_at: float | None = None
+
+
+def build_scheduled_batch_prompt(
+    claim: ScheduledBatchClaim,
+    *,
+    baseline_content: str,
+) -> str:
+    """Build the bounded, read-only prompt used by a scheduled agent turn."""
+    if claim.status != "claimed" or not claim.lease_owner or not claim.deadline_at:
+        raise SkillImprovementError("scheduled batch prompt requires an active claim")
+    evidence_lines: list[str] = []
+    for item in claim.evidence:
+        evidence_lines.append(
+            "- "
+            + item.evidence_id
+            + ": correction="
+            + item.correction[:1_200]
+            + "; actual_result="
+            + item.actual_result[:1_200]
+        )
+    return "\n".join(
+        [
+            "Run one controlled DevFlow Agent Skill-improvement batch.",
+            "This is analysis and candidate generation only: never edit the project, "
+            "run commands, evaluate, enable, activate, apply, or restore a Skill.",
+            f"Target Skill: {claim.batch.skill_id}",
+            f"Project ID: {claim.batch.project_id}",
+            f"Batch ID: {claim.batch.batch_id}",
+            "Use only the verified evidence below; do not invent additional evidence.",
+            *evidence_lines,
+            "",
+            "Active Skill baseline (copy its protected frontmatter exactly):",
+            "```markdown",
+            baseline_content,
+            "```",
+            "",
+            "Call devpilot_skill_candidate exactly once with all claimed evidence IDs "
+            "and test_set_version='p8-02-v1'. If the tool rejects the candidate for a "
+            "format or contract error, correct it once and retry; then stop.",
+            "The candidate must remain pending_evaluation. Report the candidate ID and "
+            "do not perform any other tool action.",
+        ]
+    )
+
+
 class SkillImprovementStore:
     """Private, integrity-protected SQLite storage for P8 evidence and candidates."""
 
@@ -361,6 +515,7 @@ class SkillImprovementStore:
         # no P8 payload is written to them.
         self.feedback_file = self.root / "feedback.jsonl"
         self.candidates_dir = self.root / "candidates"
+        self.batches_dir = self.root / "batches"
         self.evaluations_dir = self.root / "evaluations"
         self.confirmations_dir = self.root / "confirmations"
         self.snapshots_dir = self.root / "task-snapshots"
@@ -443,6 +598,7 @@ class SkillImprovementStore:
         namespace = path.parent.name
         return {
             "candidates": "candidate",
+            "batches": "batch",
             "evaluations": "evaluation",
             "confirmations": "confirmation",
             "task-snapshots": "snapshot",
@@ -642,6 +798,343 @@ class SkillImprovementStore:
         ):
             return None
         return evidence
+
+    def list_feedback(
+        self,
+        *,
+        workspace: str | Path | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        skill_id: str | None = None,
+        processing_state: str | None = None,
+    ) -> list[FeedbackEvidence]:
+        """Return the latest version of each evidence record in scope."""
+        latest_ids = {
+            value.get("evidence_id")
+            for value in self._read_jsonl(self.feedback_file)
+            if isinstance(value.get("evidence_id"), str)
+        }
+        records: list[FeedbackEvidence] = []
+        for evidence_id in sorted(latest_ids):
+            evidence = self.get_feedback(
+                evidence_id,
+                workspace=workspace,
+                user_id=user_id,
+                project_id=project_id,
+            )
+            if evidence is None:
+                continue
+            if skill_id is not None and evidence.skill_id != skill_id:
+                continue
+            if processing_state is not None and evidence.processing_state != processing_state:
+                continue
+            records.append(evidence)
+        return sorted(records, key=lambda item: (item.occurred_at, item.evidence_id))
+
+    def configure_scheduled_batch(
+        self,
+        *,
+        batch_id: str,
+        job_id: str,
+        workspace: str | Path,
+        project_id: str,
+        user_id: str,
+        session_key: str,
+        enabled: bool = True,
+        max_model_calls: int = 2,
+        max_tokens: int = 12_000,
+        max_duration_seconds: int = 600,
+        notification_mode: str = "new_candidate_and_failure",
+    ) -> ScheduledSkillBatch:
+        """Create or update one explicit, bounded native-Cron batch policy."""
+        if max_model_calls < 1 or max_model_calls > _MAX_SCHEDULED_MODEL_CALLS:
+            raise SkillImprovementError("scheduled batch model-call budget must be 1 or 2")
+        if max_tokens < 512 or max_tokens > _MAX_SCHEDULED_TOKENS:
+            raise SkillImprovementError("scheduled batch token budget is out of bounds")
+        if max_duration_seconds < 30 or max_duration_seconds > _MAX_SCHEDULED_DURATION_SECONDS:
+            raise SkillImprovementError("scheduled batch duration must be 30-600 seconds")
+        if notification_mode != "new_candidate_and_failure":
+            raise SkillImprovementError("unsupported scheduled batch notification mode")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        batch_value = _bounded_text(batch_id, field="batch_id", limit=128)
+        job_value = _bounded_text(job_id, field="job_id", limit=128)
+        project_value = _bounded_text(project_id, field="project_id", limit=128)
+        user_value = _bounded_text(user_id, field="user_id", limit=128)
+        session_value = _bounded_text(session_key, field="session_key", limit=256)
+        if not workspace_value:
+            raise SkillImprovementError("scheduled batch workspace is required")
+        path = self.batches_dir / f"{batch_value}.json"
+        with self._lock, self._process_lock():
+            existing = self.get_scheduled_batch(batch_value)
+            if existing is not None:
+                if (
+                    existing.job_id != job_value
+                    or existing.workspace != workspace_value
+                    or existing.project_id != project_value
+                    or existing.user_id != user_value
+                    or existing.session_key != session_value
+                    or existing.skill_id != TRIAL_SKILL_ID
+                ):
+                    raise SkillImprovementError("scheduled batch scope is immutable")
+                now = _now()
+                batch = replace(
+                    existing,
+                    enabled=enabled,
+                    max_model_calls=max_model_calls,
+                    max_tokens=max_tokens,
+                    max_duration_seconds=max_duration_seconds,
+                    notification_mode=notification_mode,
+                    status=("idle" if enabled and existing.status == "disabled" else (
+                        "disabled" if not enabled else existing.status
+                    )),
+                    lease_owner=None if not enabled else existing.lease_owner,
+                    lease_expires_at=None if not enabled else existing.lease_expires_at,
+                    updated_at=now,
+                )
+            else:
+                now = _now()
+                batch = ScheduledSkillBatch(
+                    batch_id=batch_value,
+                    job_id=job_value,
+                    skill_id=TRIAL_SKILL_ID,
+                    workspace=workspace_value,
+                    project_id=project_value,
+                    user_id=user_value,
+                    session_key=session_value,
+                    enabled=enabled,
+                    read_scope="verified_feedback_only",
+                    max_model_calls=max_model_calls,
+                    max_tokens=max_tokens,
+                    max_duration_seconds=max_duration_seconds,
+                    notification_mode=notification_mode,
+                    cursor_at=None,
+                    processed_evidence_ids=(),
+                    claimed_evidence_ids=(),
+                    status="idle" if enabled else "disabled",
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    run_count=0,
+                    candidate_attempts=0,
+                    token_count=0,
+                    candidate_id=None,
+                    last_run_at=None,
+                    last_error=None,
+                    last_candidate_ids=(),
+                    created_at=now,
+                    updated_at=now,
+                )
+            self._atomic_write(path, batch.to_dict())
+            return batch
+
+    def get_scheduled_batch(self, batch_id: str) -> ScheduledSkillBatch | None:
+        """Read a scheduled batch without exposing private records to SkillsLoader."""
+        batch_value = str(batch_id)
+        if not _record_id_matches(batch_value, "batch"):
+            return None
+        path = self.batches_dir / f"{batch_value}.json"
+        if not self._record_exists("batch", batch_value):
+            return None
+        return self._batch_from_dict(self._read_object(path, "scheduled batch"))
+
+    def get_scheduled_batch_for_job(self, job_id: str) -> ScheduledSkillBatch | None:
+        for raw in self._record_rows("batch"):
+            if raw.get("job_id") == job_id:
+                return self._batch_from_dict(raw)
+        return None
+
+    def set_scheduled_batch_enabled(
+        self,
+        batch_id: str,
+        *,
+        enabled: bool,
+    ) -> ScheduledSkillBatch:
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch(batch_id)
+            if batch is None:
+                raise SkillImprovementError("scheduled batch not found")
+            updated = replace(
+                batch,
+                enabled=enabled,
+                status="idle" if enabled else "disabled",
+                lease_owner=None if not enabled else batch.lease_owner,
+                lease_expires_at=None if not enabled else batch.lease_expires_at,
+                updated_at=_now(),
+            )
+            self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+            return updated
+
+    def claim_scheduled_batch(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+    ) -> ScheduledBatchClaim | None:
+        """Atomically claim new verified evidence before any model invocation."""
+        owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch_for_job(job_id)
+            if batch is None:
+                return None
+            if not batch.enabled:
+                return ScheduledBatchClaim("disabled", batch)
+            now = time.time()
+            if batch.lease_owner and batch.lease_expires_at and batch.lease_expires_at > now:
+                return ScheduledBatchClaim("busy", batch)
+            baseline = self.read_effective_snapshot(batch.workspace)
+            processed = set(batch.processed_evidence_ids)
+            evidence = [
+                item
+                for item in self.list_feedback(
+                    workspace=batch.workspace,
+                    user_id=batch.user_id,
+                    project_id=batch.project_id,
+                    skill_id=batch.skill_id,
+                    processing_state="verified",
+                )
+                if item.skill_hash == baseline.content_hash
+                and item.evidence_id not in processed
+                and (batch.cursor_at is None or item.occurred_at >= batch.cursor_at)
+            ][:_MAX_SCHEDULED_BATCH_EVIDENCE]
+            if not evidence:
+                updated = replace(
+                    batch,
+                    status="no_new_evidence",
+                    last_run_at=_now(),
+                    updated_at=_now(),
+                )
+                self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+                return ScheduledBatchClaim("no_new_evidence", updated)
+            deadline = now + min(batch.max_duration_seconds, _MAX_SCHEDULED_DURATION_SECONDS)
+            updated = replace(
+                batch,
+                status="running",
+                lease_owner=owner,
+                lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
+                run_count=batch.run_count + 1,
+                candidate_attempts=0,
+                token_count=0,
+                candidate_id=None,
+                claimed_evidence_ids=tuple(item.evidence_id for item in evidence),
+                last_run_at=_now(),
+                updated_at=_now(),
+            )
+            self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+            return ScheduledBatchClaim(
+                "claimed",
+                updated,
+                tuple(evidence),
+                lease_owner=owner,
+                deadline_at=deadline,
+            )
+
+    def reserve_scheduled_candidate_attempt(
+        self,
+        batch_id: str,
+        *,
+        lease_owner: str,
+        estimated_tokens: int,
+    ) -> int:
+        """Consume one of the two candidate-generation attempts for a claim."""
+        owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
+        if estimated_tokens < 1:
+            raise SkillImprovementError("scheduled candidate token estimate is invalid")
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch(batch_id)
+            if batch is None or batch.status != "running":
+                raise SkillImprovementError("scheduled batch is not running")
+            if (
+                batch.lease_owner != owner
+                or not batch.lease_expires_at
+                or batch.lease_expires_at <= time.time()
+            ):
+                raise SkillImprovementError("scheduled batch lease is invalid")
+            if batch.candidate_id is not None:
+                raise SkillImprovementError("scheduled batch already saved a candidate")
+            if batch.candidate_attempts >= batch.max_model_calls:
+                raise SkillImprovementError("scheduled batch model-call budget exhausted")
+            if batch.token_count + estimated_tokens > batch.max_tokens:
+                raise SkillImprovementError("scheduled batch token budget exhausted")
+            attempt = batch.candidate_attempts + 1
+            updated = replace(
+                batch,
+                candidate_attempts=attempt,
+                token_count=batch.token_count + estimated_tokens,
+                updated_at=_now(),
+            )
+            self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+            return attempt
+
+    def register_scheduled_candidate(
+        self,
+        batch_id: str,
+        *,
+        lease_owner: str,
+        candidate_id: str,
+    ) -> ScheduledSkillBatch:
+        owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
+        candidate_value = _bounded_text(candidate_id, field="candidate_id", limit=128)
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch(batch_id)
+            if batch is None or batch.status != "running" or batch.lease_owner != owner:
+                raise SkillImprovementError("scheduled batch lease is invalid")
+            if batch.candidate_id is not None:
+                raise SkillImprovementError("scheduled batch already saved a candidate")
+            updated = replace(batch, candidate_id=candidate_value, updated_at=_now())
+            self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+            return updated
+
+    def finish_scheduled_batch(
+        self,
+        batch_id: str,
+        *,
+        lease_owner: str,
+        error: str | None = None,
+        cancelled: bool = False,
+    ) -> ScheduledSkillBatch:
+        """Commit the evidence cursor only after a candidate was durably saved."""
+        owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch(batch_id)
+            if batch is None or batch.status != "running" or batch.lease_owner != owner:
+                raise SkillImprovementError("scheduled batch lease is invalid")
+            if batch.candidate_id is None and not error and not cancelled:
+                error = "scheduled batch produced no candidate"
+            evidence = [self.get_feedback(item) for item in batch.claimed_evidence_ids]
+            valid_evidence = [item for item in evidence if item is not None]
+            processed = list(batch.processed_evidence_ids)
+            cursor_at = batch.cursor_at
+            if batch.candidate_id is not None and not error and not cancelled:
+                processed.extend(item.evidence_id for item in valid_evidence)
+                processed = list(dict.fromkeys(processed))[-_MAX_PROCESSED_EVIDENCE_IDS:]
+                cursor_at = max(
+                    (item.occurred_at for item in valid_evidence),
+                    default=cursor_at,
+                )
+                status = "candidate_created"
+                last_error = None
+                last_candidates = (batch.candidate_id,)
+            else:
+                status = "failed" if not cancelled else "idle"
+                last_error = _bounded_text(
+                    error or "scheduled batch cancelled",
+                    field="last_error",
+                    limit=1_000,
+                )
+                last_candidates = ()
+            updated = replace(
+                batch,
+                cursor_at=cursor_at,
+                processed_evidence_ids=tuple(processed),
+                claimed_evidence_ids=(),
+                status=status,
+                lease_owner=None,
+                lease_expires_at=None,
+                last_error=last_error,
+                last_candidate_ids=last_candidates,
+                updated_at=_now(),
+            )
+            self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
+            return updated
 
     def create_candidate(
         self,
@@ -1332,6 +1825,50 @@ class SkillImprovementStore:
             self.candidates_dir / f"{candidate.candidate_id}.json", updated.to_dict()
         )
         return updated
+
+    @staticmethod
+    def _batch_from_dict(raw: Mapping[str, Any]) -> ScheduledSkillBatch:
+        status = str(raw.get("status", "idle"))
+        if status not in BATCH_STATES:
+            raise SkillImprovementError("scheduled batch has an invalid status")
+        return ScheduledSkillBatch(
+            batch_id=str(raw["batch_id"]),
+            job_id=str(raw["job_id"]),
+            skill_id=str(raw["skill_id"]),
+            workspace=str(raw["workspace"]),
+            project_id=str(raw["project_id"]),
+            user_id=str(raw["user_id"]),
+            session_key=str(raw["session_key"]),
+            enabled=bool(raw["enabled"]),
+            read_scope=str(raw["read_scope"]),
+            max_model_calls=int(raw["max_model_calls"]),
+            max_tokens=int(raw["max_tokens"]),
+            max_duration_seconds=int(raw["max_duration_seconds"]),
+            notification_mode=str(raw["notification_mode"]),
+            cursor_at=raw.get("cursor_at") if isinstance(raw.get("cursor_at"), str) else None,
+            processed_evidence_ids=_refs(raw.get("processed_evidence_ids")),
+            claimed_evidence_ids=_refs(raw.get("claimed_evidence_ids")),
+            status=status,
+            lease_owner=raw.get("lease_owner") if isinstance(raw.get("lease_owner"), str) else None,
+            lease_expires_at=(
+                float(raw["lease_expires_at"])
+                if raw.get("lease_expires_at") is not None
+                else None
+            ),
+            run_count=int(raw.get("run_count", 0)),
+            candidate_attempts=int(raw.get("candidate_attempts", 0)),
+            token_count=int(raw.get("token_count", 0)),
+            candidate_id=(
+                raw.get("candidate_id")
+                if isinstance(raw.get("candidate_id"), str)
+                else None
+            ),
+            last_run_at=raw.get("last_run_at") if isinstance(raw.get("last_run_at"), str) else None,
+            last_error=raw.get("last_error") if isinstance(raw.get("last_error"), str) else None,
+            last_candidate_ids=_refs(raw.get("last_candidate_ids")),
+            created_at=str(raw["created_at"]),
+            updated_at=str(raw["updated_at"]),
+        )
 
     @staticmethod
     def _snapshot_to_dict(snapshot: SkillSnapshot) -> dict[str, Any]:

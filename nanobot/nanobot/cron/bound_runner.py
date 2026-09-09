@@ -67,18 +67,24 @@ async def run_bound_cron_job(
     *,
     agent: BoundCronAgent,
     cron: CronRunRecorder,
+    message_override: str | None = None,
+    trusted_attributes: dict[str, Any] | None = None,
+    tools: ToolRegistry | None = None,
+    session_key_override: str | None = None,
+    ephemeral: bool = False,
 ) -> str | None:
     """Execute a session-bound cron job as a normal agent session turn."""
-    session_key = job.payload.session_key
+    session_key = session_key_override or job.payload.session_key
     if not session_key:
         raise ValueError(f"cron job {job.id} is missing payload.session_key")
 
     prompt = render_template(
         "agent/cron_reminder.md",
         strip=True,
-        message=job.payload.message,
+        message=message_override if message_override is not None else job.payload.message,
     )
     prompt_ref = _cron_prompt_ref(prompt)
+    effective_message = message_override if message_override is not None else job.payload.message
     run_id = f"{job.id}:{int(time.time() * 1000)}:{uuid.uuid4().hex[:8]}"
     channel, chat_id, metadata = _bound_session_delivery_context(
         job,
@@ -100,7 +106,7 @@ async def run_bound_cron_job(
         "job_name": job.name,
         "session_key": session_key,
         "prompt_ref": prompt_ref,
-        "prompt_vars": {"message": job.payload.message},
+        "prompt_vars": {"message": effective_message},
         "rendered_prompt": prompt,
     }
 
@@ -117,16 +123,33 @@ async def run_bound_cron_job(
     if isinstance(cron_tool, CronTool):
         cron_token = cron_tool.set_cron_context(True)
     try:
-        resp = await agent.submit_cron_turn(
-            InboundMessage(
-                channel=channel,
-                sender_id="cron",
-                chat_id=chat_id,
-                content=prompt,
-                metadata=metadata,
-                session_key_override=session_key,
+        if tools is None:
+            resp = await agent.submit_cron_turn(
+                InboundMessage(
+                    channel=channel,
+                    sender_id="cron",
+                    chat_id=chat_id,
+                    content=prompt,
+                    metadata=metadata,
+                    attributes=dict(trusted_attributes or {}),
+                    session_key_override=session_key,
+                )
             )
-        )
+        else:
+            process_direct = getattr(agent, "process_direct", None)
+            if process_direct is None:
+                raise TypeError("restricted cron execution requires process_direct")
+            resp = await process_direct(
+                prompt,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                sender_id="cron",
+                tools=tools,
+                persist_user_message=False,
+                ephemeral=ephemeral,
+                attributes=dict(trusted_attributes or {}),
+            )
     except (Exception, asyncio.CancelledError) as exc:
         error_text = str(exc) or exc.__class__.__name__
         cron.write_run_record(

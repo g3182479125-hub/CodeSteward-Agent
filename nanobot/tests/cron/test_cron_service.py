@@ -17,6 +17,45 @@ async def _wait_until(predicate, *, timeout: float = 1.0, interval: float = 0.01
     assert predicate()
 
 
+@pytest.mark.asyncio
+async def test_native_cron_dispatches_a_devpilot_batch_marker(tmp_path) -> None:
+    triggered: list[str] = []
+
+    async def on_job(job: CronJob) -> str | None:
+        assert job.payload.origin_metadata == {
+            "devpilot_skill_batch": True,
+            "batch_id": "batch-test",
+        }
+        triggered.append(job.id)
+        return "native-cron-triggered"
+
+    service = CronService(
+        tmp_path / "cron" / "jobs.json",
+        on_job=on_job,
+        max_sleep_ms=10,
+    )
+    job = service.add_job(
+        name="DevFlow Skill improvement test",
+        schedule=CronSchedule(kind="every", every_ms=25),
+        message="test-only",
+        session_key="websocket:chat-test",
+        origin_channel="websocket",
+        origin_chat_id="chat-test",
+        origin_metadata={
+            "devpilot_skill_batch": True,
+            "batch_id": "batch-test",
+        },
+    )
+
+    await service.start()
+    try:
+        await _wait_until(lambda: bool(triggered), timeout=1.0)
+    finally:
+        service.stop()
+
+    assert triggered == [job.id]
+
+
 def _bound_chat(chat_id: str = "chat-1") -> dict[str, str]:
     return {
         "session_key": f"websocket:{chat_id}",

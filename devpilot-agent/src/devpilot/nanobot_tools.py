@@ -1543,7 +1543,47 @@ class SkillCandidateTool(Tool):
                 raise SkillImprovementError("candidate is outside a trusted bug-fix task")
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
-            candidate = SkillImprovementStore.from_environment(request_workspace).create_candidate(
+            store = SkillImprovementStore.from_environment(request_workspace)
+            requested_batch_id = kwargs.get("batch_id")
+            scheduled_batch_id = request_context.attributes.get("devpilot_batch_id")
+            if isinstance(scheduled_batch_id, str) and scheduled_batch_id:
+                if requested_batch_id != scheduled_batch_id:
+                    raise SkillImprovementError(
+                        "scheduled candidate must use the trusted batch"
+                    )
+                allowed_evidence = {
+                    value
+                    for value in request_context.attributes.get(
+                        "devpilot_batch_evidence_ids", []
+                    )
+                    if isinstance(value, str)
+                }
+                requested_evidence = {
+                    value for value in kwargs["evidence_ids"] if isinstance(value, str)
+                }
+                if requested_evidence != allowed_evidence:
+                    raise SkillImprovementError(
+                        "scheduled candidate evidence does not match the claimed batch"
+                    )
+                owner = request_context.attributes.get("devpilot_batch_owner")
+                if not isinstance(owner, str) or not owner:
+                    raise SkillImprovementError("scheduled candidate lease owner is missing")
+                estimated_tokens = max(
+                    1,
+                    (
+                        len(str(kwargs["baseline_content"]))
+                        + len(str(kwargs["candidate_content"]))
+                        + len(str(kwargs["reason"]))
+                        + len(str(kwargs["expected_behavior"]))
+                    )
+                    // 4,
+                )
+                store.reserve_scheduled_candidate_attempt(
+                    scheduled_batch_id,
+                    lease_owner=owner,
+                    estimated_tokens=estimated_tokens,
+                )
+            candidate = store.create_candidate(
                 user_id=request_context.sender_id,
                 project_id=str(kwargs["project_id"]),
                 skill_path="skills/bug-fix/SKILL.md",
@@ -1553,9 +1593,15 @@ class SkillCandidateTool(Tool):
                 reason=str(kwargs["reason"]),
                 expected_behavior=str(kwargs["expected_behavior"]),
                 test_set_version=str(kwargs["test_set_version"]),
-                batch_id=kwargs.get("batch_id"),
+                batch_id=requested_batch_id,
                 workspace=request_workspace,
             )
+            if isinstance(scheduled_batch_id, str) and scheduled_batch_id:
+                store.register_scheduled_candidate(
+                    scheduled_batch_id,
+                    lease_owner=str(request_context.attributes["devpilot_batch_owner"]),
+                    candidate_id=candidate.candidate_id,
+                )
             return json.dumps(
                 {
                     "status": candidate.status,

@@ -110,7 +110,14 @@ def redact_sensitive_payload(value: object) -> object:
         result: dict[str, object] = {}
         for key, item in cast(dict[str, object], value).items():
             if is_sensitive_field_name(key):
-                result[key] = "[REDACTED]"
+                # Numeric budgets/counters such as ``max_tokens`` are policy
+                # metadata, not credential material. Secret-bearing fields
+                # remain redacted when their value is text or a compound value.
+                result[key] = (
+                    item
+                    if isinstance(item, (int, float)) and not isinstance(item, bool)
+                    else "[REDACTED]"
+                )
             elif key.casefold() in {"stdout", "stderr"} and isinstance(item, str):
                 result[key] = redact_execution_output(item)
             else:

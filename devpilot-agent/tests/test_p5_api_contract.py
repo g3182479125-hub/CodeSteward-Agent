@@ -154,6 +154,8 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
             "token": "value",
             "api-key": "hyphen-api-key",
             "private-key": "hyphen-private-key",
+            "max_tokens": 12_000,
+            "token_count": 3,
         }
     )
     assert payload == {
@@ -161,6 +163,8 @@ def test_secret_redaction_covers_provider_and_repository_credentials() -> None:
         "token": "[REDACTED]",
         "api-key": "[REDACTED]",
         "private-key": "[REDACTED]",
+        "max_tokens": 12_000,
+        "token_count": 3,
     }
 
 

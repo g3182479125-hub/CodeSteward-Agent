@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import hashlib
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -180,9 +181,9 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
     BuiltinCommandSpec(
         "/skill-improvement",
         "Review Skill improvement",
-        "View, enable, ignore, or restore a reviewed Skill candidate in chat.",
+        "Review Skill candidates or configure the optional native-Cron batch in chat.",
         "wrench",
-        "[candidate-id [view|enable|ignore|restore]|delete-evidence evidence-id]",
+        "[schedule status|run|disable|enable ...|candidate-id ...|delete-evidence evidence-id]",
         accepts_args=True,
     ),
     BuiltinCommandSpec(
@@ -1044,6 +1045,65 @@ async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+def _parse_skill_batch_schedule(
+    values: list[str],
+    *,
+    default_timezone: str = "Asia/Shanghai",
+) -> tuple[Any, dict[str, int], str] | str:
+    """Parse the small, explicit P8-03 schedule grammar."""
+    from nanobot.cron.types import CronSchedule
+
+    if len(values) < 2 or values[0].lower() not in {"every", "cron"}:
+        return (
+            "Usage: /skill-improvement schedule enable every <seconds> [timezone] "
+            "or cron \"<5-field expression>\" [timezone] "
+            "[calls=1|2] [tokens=512-20000] [timeout=30-600]"
+        )
+    schedule_kind = values[0].lower()
+    timezone = default_timezone
+    option_start = 2
+    if schedule_kind == "every":
+        try:
+            seconds = int(values[1])
+        except ValueError:
+            return "Schedule interval must be an integer number of seconds."
+        if seconds < 30:
+            return "Schedule interval must be at least 30 seconds."
+        if len(values) > 2 and "=" not in values[2]:
+            timezone = values[2]
+            option_start = 3
+    else:
+        timezone = values[2] if len(values) > 2 and "=" not in values[2] else default_timezone
+        option_start = 3 if len(values) > 2 and "=" not in values[2] else 2
+    options = {"calls": 2, "tokens": 12_000, "timeout": 600}
+    for value in values[option_start:]:
+        if "=" not in value:
+            return f"Unknown schedule option `{value}`."
+        key, raw = value.split("=", 1)
+        if key not in options:
+            return f"Unknown schedule option `{key}`."
+        try:
+            options[key] = int(raw)
+        except ValueError:
+            return f"Schedule option `{key}` must be an integer."
+    if options["calls"] not in {1, 2}:
+        return "Schedule calls must be 1 or 2."
+    if not 512 <= options["tokens"] <= 20_000:
+        return "Schedule tokens must be between 512 and 20000."
+    if not 30 <= options["timeout"] <= 600:
+        return "Schedule timeout must be between 30 and 600 seconds."
+    try:
+        if schedule_kind == "every":
+            # ``every`` is elapsed-time based in nanobot, so CronSchedule does
+            # not attach a timezone to it.  Use ``cron`` for wall-clock times.
+            schedule = CronSchedule(kind="every", every_ms=seconds * 1000)
+        else:
+            schedule = CronSchedule(kind="cron", expr=values[1], tz=timezone)
+    except (TypeError, ValueError) as exc:
+        return f"Invalid schedule: {type(exc).__name__}."
+    return schedule, options, timezone
+
+
 async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
     """Expose the P8 candidate lifecycle through nanobot's native chat."""
     if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") != "1":
@@ -1053,7 +1113,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content="Skill improvement is disabled; set DEVPILOT_ENABLE_SKILL_IMPROVEMENT=1 for the controlled trial.",
         )
     try:
-        from devpilot.skill_improvement import SkillImprovementStore
+        from devpilot.skill_improvement import SkillImprovementStore, scheduled_batch_id
 
         workspace = ctx.workspace or ctx.loop.context.memory.workspace
         store = SkillImprovementStore.from_environment(workspace)
@@ -1081,7 +1141,146 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             content=content,
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
-
+    if args[0].lower() == "schedule":
+        cron = ctx.loop.cron_service
+        if cron is None:
+            content = "Native Cron is unavailable; scheduled Skill improvement is disabled."
+        else:
+            batch_id = scheduled_batch_id(workspace, project_id, user_id)
+            batch = store.get_scheduled_batch(batch_id)
+            action = args[1].lower() if len(args) > 1 else "status"
+            if action == "status":
+                if batch is None:
+                    content = "No Skill improvement schedule is configured (default: off)."
+                else:
+                    job = cron.get_job(batch.job_id)
+                    job_state = (
+                        f"enabled={job.enabled}, next_run_at_ms={job.state.next_run_at_ms}"
+                        if job is not None
+                        else "cron_job=missing"
+                    )
+                    content = (
+                        f"Skill improvement schedule: enabled={batch.enabled}, "
+                        f"status={batch.status}, {job_state}; "
+                        f"run_count={batch.run_count}, last_error={batch.last_error or 'none'}."
+                    )
+            elif action == "disable":
+                if not ctx.is_user_turn:
+                    content = "Schedule changes require a direct user chat turn."
+                elif batch is None:
+                    content = "No Skill improvement schedule is configured."
+                else:
+                    try:
+                        store.set_scheduled_batch_enabled(batch_id, enabled=False)
+                        cron.enable_job(batch.job_id, enabled=False)
+                        content = "Skill improvement schedule disabled; no new batch will start."
+                    except (ValueError, OSError) as exc:
+                        content = f"Schedule disable rejected: {type(exc).__name__}."
+            elif action == "run":
+                if not ctx.is_user_turn:
+                    content = "Manual schedule runs require a direct user chat turn."
+                elif batch is None:
+                    content = "No Skill improvement schedule is configured; enable it first."
+                else:
+                    try:
+                        ran = await cron.run_job(batch.job_id, force=True)
+                        content = (
+                            "Manual Skill improvement batch queued through native Cron."
+                            if ran
+                            else "Manual Skill improvement batch was skipped; check schedule status."
+                        )
+                    except (ValueError, OSError) as exc:
+                        content = f"Manual schedule run rejected: {type(exc).__name__}."
+            elif action == "enable":
+                if not ctx.is_user_turn:
+                    content = "Schedule changes require a direct user chat turn."
+                else:
+                    try:
+                        schedule_values = shlex.split(ctx.args)[2:]
+                    except ValueError:
+                        schedule_values = []
+                    parsed = _parse_skill_batch_schedule(schedule_values)
+                    if isinstance(parsed, str):
+                        content = parsed
+                    else:
+                        schedule, options, _timezone = parsed
+                        new_job = False
+                        job = cron.get_job(batch.job_id) if batch is not None else None
+                        if job is None:
+                            for candidate_job in cron.list_jobs(include_disabled=True):
+                                marker = candidate_job.payload.origin_metadata.get(
+                                    "devpilot_skill_batch"
+                                )
+                                marker_batch_id = candidate_job.payload.origin_metadata.get(
+                                    "batch_id"
+                                )
+                                if marker is True and marker_batch_id == batch_id:
+                                    job = candidate_job
+                                    break
+                        try:
+                            if job is None:
+                                job = cron.add_job(
+                                    name="DevFlow Skill improvement",
+                                    schedule=schedule,
+                                    message="Run the configured DevFlow Skill improvement batch.",
+                                    session_key=ctx.key,
+                                    origin_channel=ctx.msg.channel,
+                                    origin_chat_id=ctx.msg.chat_id,
+                                    origin_metadata={
+                                        "devpilot_skill_batch": True,
+                                        "batch_id": batch_id,
+                                    },
+                                )
+                                new_job = True
+                            else:
+                                updated_job = cron.update_job(
+                                    job.id,
+                                    schedule=schedule,
+                                    message="Run the configured DevFlow Skill improvement batch.",
+                                )
+                                if isinstance(updated_job, str):
+                                    raise ValueError(f"cron job update failed: {updated_job}")
+                                job = updated_job
+                            configured = store.configure_scheduled_batch(
+                                batch_id=batch_id,
+                                job_id=job.id,
+                                workspace=workspace,
+                                project_id=project_id,
+                                user_id=user_id,
+                                session_key=ctx.key,
+                                enabled=True,
+                                max_model_calls=options["calls"],
+                                max_tokens=options["tokens"],
+                                max_duration_seconds=options["timeout"],
+                            )
+                            cron.enable_job(job.id, enabled=True)
+                            schedule_description = (
+                                f"every {schedule.every_ms // 1000}s"
+                                if schedule.kind == "every" and schedule.every_ms
+                                else f'cron "{schedule.expr}"'
+                            )
+                            content = (
+                                f"Skill improvement schedule enabled: {schedule_description} "
+                                f"(timezone={_timezone}); batch={configured.batch_id}. "
+                                "Only verified evidence is processed; candidates remain pending review."
+                            )
+                        except (ValueError, OSError) as exc:
+                            if new_job and job is not None:
+                                cron.remove_job(job.id)
+                            content = f"Schedule enable rejected: {type(exc).__name__}."
+            else:
+                content = (
+                    "Usage: /skill-improvement schedule status|run|disable|"
+                    "enable every <seconds> [timezone] or cron \"<expr>\" [timezone] "
+                    "[calls=1|2] "
+                    "[tokens=512-20000] [timeout=30-600]"
+                )
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
     if args[0].lower() == "feedback":
         if not ctx.is_user_turn:
             content = "Feedback requires a direct user chat turn."
