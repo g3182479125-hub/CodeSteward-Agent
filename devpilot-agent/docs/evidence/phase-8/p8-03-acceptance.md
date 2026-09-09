@@ -1,6 +1,6 @@
 # P8-03 定时 Skill 改进批处理验收记录
 
-状态：实现候选 `87e61ed`，自动化验收已完成，待本批次 Standards / Spec 双轴 review。
+状态：实现候选 `87e61ed` 已通过 Standards / Spec 双轴 review；`e12eeb5` 为仅收纳证据文档的 docs-only 提交。
 范围：只为已有 `bug-fix` Skill 读取已验证反馈并生成私有候选；不自动评测、不启用、不修改用户项目。
 
 ## 用户入口
