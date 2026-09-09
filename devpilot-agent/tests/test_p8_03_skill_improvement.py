@@ -290,6 +290,9 @@ def test_expired_running_batch_preserves_cumulative_retry_budget(
     store.finish_scheduled_batch(batch_id, lease_owner="owner-2", error="provider timeout")
     exhausted = store.claim_scheduled_batch("cron-1", lease_owner="owner-3")
     assert exhausted is not None and exhausted.status == "budget_exhausted"
+    still_exhausted = store.claim_scheduled_batch("cron-1", lease_owner="owner-4")
+    assert still_exhausted is not None and still_exhausted.status == "budget_exhausted"
+    assert still_exhausted.batch.candidate_attempts == exhausted.batch.candidate_attempts
 
 
 def test_failed_scheduled_retries_preserve_and_exhaust_cumulative_budget(
@@ -326,17 +329,20 @@ def test_scheduled_failure_notification_marker_is_idempotent(tmp_path: Path) -> 
     store, workspace, _baseline_text, _evidence_id = _store(tmp_path)
     batch_id = _configure(store, workspace)
 
-    first = store.mark_scheduled_batch_error_notified(
+    first = store.claim_scheduled_batch_error_notification(
         batch_id,
         error="TimeoutError: scheduled batch deadline exceeded",
     )
-    second = store.mark_scheduled_batch_error_notified(
+    second = store.claim_scheduled_batch_error_notification(
         batch_id,
         error="TimeoutError: scheduled batch deadline exceeded",
     )
 
-    assert first.last_notified_error == second.last_notified_error
-    assert second.last_notified_error == "TimeoutError: scheduled batch deadline exceeded"
+    assert first is True
+    assert second is False
+    marked = store.get_scheduled_batch(batch_id)
+    assert marked is not None
+    assert marked.last_notified_error == "TimeoutError: scheduled batch deadline exceeded"
 
 
 def test_scheduled_candidate_attempt_and_token_budgets_are_hard_limits(tmp_path: Path) -> None:

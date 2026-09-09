@@ -359,10 +359,13 @@ async def _run_scheduled_skill_batch(
         if claim.status == "budget_exhausted":
             error = claim.batch.last_error or "scheduled batch retry budget exhausted"
             if (
-                claim.batch.last_notified_error != error
-                and origin_channel
+                origin_channel
                 and origin_chat_id
                 and origin_channel != "cli"
+                and store.claim_scheduled_batch_error_notification(
+                    claim.batch.batch_id,
+                    error=error,
+                )
             ):
                 await deliver(
                     OutboundMessage(
@@ -373,10 +376,6 @@ async def _run_scheduled_skill_batch(
                             "Review the batch before enabling it again."
                         ),
                     )
-                )
-                store.mark_scheduled_batch_error_notified(
-                    claim.batch.batch_id,
-                    error=error,
                 )
         raise CronJobSkippedError(
             f"scheduled Skill batch {claim.status.replace('_', ' ')}"

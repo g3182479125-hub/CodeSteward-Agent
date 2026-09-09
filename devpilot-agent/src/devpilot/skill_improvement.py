@@ -943,20 +943,20 @@ class SkillImprovementStore:
             return None
         return self._batch_from_dict(self._read_object(path, "scheduled batch"))
 
-    def mark_scheduled_batch_error_notified(
+    def claim_scheduled_batch_error_notification(
         self,
         batch_id: str,
         *,
         error: str,
-    ) -> ScheduledSkillBatch:
-        """Record one actionable failure notification for a batch."""
+    ) -> bool:
+        """Atomically claim one actionable error notification before delivery."""
         error_value = _bounded_text(error, field="last_notified_error", limit=1_000)
         with self._lock, self._process_lock():
             batch = self.get_scheduled_batch(batch_id)
             if batch is None:
                 raise SkillImprovementError("scheduled batch was not found")
             if batch.last_notified_error == error_value:
-                return batch
+                return False
             updated = replace(
                 batch,
                 last_notified_error=error_value,
@@ -965,7 +965,7 @@ class SkillImprovementStore:
             self._atomic_write(
                 self.batches_dir / f"{batch.batch_id}.json", updated.to_dict()
             )
-            return updated
+            return True
 
     def get_scheduled_batch_for_job(self, job_id: str) -> ScheduledSkillBatch | None:
         for raw in self._record_rows("batch"):
@@ -1011,6 +1011,8 @@ class SkillImprovementStore:
             now = time.time()
             if batch.lease_owner and batch.lease_expires_at and batch.lease_expires_at > now:
                 return ScheduledBatchClaim("busy", batch)
+            if batch.status == "budget_exhausted":
+                return ScheduledBatchClaim("budget_exhausted", batch)
             baseline = self.read_effective_snapshot(batch.workspace)
             processed = set(batch.processed_evidence_ids)
             if batch.status in {"running", "failed"}:

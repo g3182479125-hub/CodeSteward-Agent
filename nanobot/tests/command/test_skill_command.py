@@ -194,6 +194,19 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
     assert 'cron "0 9 * * *"' in wall_clock.content
     assert loop.cron_service.get_job(job.id).schedule.tz == "Asia/Shanghai"
 
+    manual_runs: list[str] = []
+
+    async def on_job(manual_job):
+        manual_runs.append(manual_job.id)
+        return "manual-test-result"
+
+    loop.cron_service.on_job = on_job
+    manual = await cmd_skill_improvement(
+        _ctx(loop, "/skill-improvement schedule run", is_user_turn=True)
+    )
+    assert "queued through native Cron" in manual.content
+    assert manual_runs == [job.id]
+
 
 @pytest.mark.asyncio
 async def test_scheduled_candidate_tool_uses_claimed_evidence_and_lease(

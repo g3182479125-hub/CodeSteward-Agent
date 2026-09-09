@@ -1,6 +1,6 @@
 # P8-03 定时 Skill 改进批处理验收记录
 
-状态：实现候选 `dd7fba5`，自动化验收已完成，待本批次 Standards / Spec 双轴 review。
+状态：实现候选 `87e61ed`，自动化验收已完成，待本批次 Standards / Spec 双轴 review。
 范围：只为已有 `bug-fix` Skill 读取已验证反馈并生成私有候选；不自动评测、不启用、不修改用户项目。
 
 ## 用户入口
@@ -48,6 +48,7 @@ P8-03 复用 nanobot 原生 Cron 和原生聊天，不增加管理页面或第�
 | 受信证据/租约绑定候选工具 | `nanobot/tests/command/test_skill_command.py`、`nanobot/tests/cli/test_commands.py` | 通过；校验 job、workspace、scope、batch owner 和 evidence IDs 绑定 |
 | 实际短间隔原生 Cron 触发 | `nanobot/tests/cli/test_commands.py`、`tests/cron/test_cron_service.py` | 通过；every 25 ms 任务实际触发 Gateway，走 WebSocketChannel 序列化发送路径 |
 | 候选不自动激活、Dream 旁路拒绝 | P8-01/P8-02 原有回归测试 | 通过；P8-01/P8-02 受影响集合已重跑 |
+| 手动 `schedule run` | `tests/command/test_skill_command.py` | 通过；命令实际调用原生 Cron `run_job(force=True)`，未引入第二套调度器 |
 
 ## 自动化结果
 
