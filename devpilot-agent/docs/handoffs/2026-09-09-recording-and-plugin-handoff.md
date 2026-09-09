@@ -164,8 +164,33 @@ uv pip uninstall --python E:\workspace\devflow-agent\nanobot\.venv\Scripts\pytho
 
 重启 nanobot 后 `demo_greeting` 消失，而原生聊天和 DevPilot 交付工具继续可用。
 
-## 9. 下一步
+## 9. 本次录制后的最新状态（2026-09-09）
 
-- 先在新机器按本文件完成拉取、安装和真实 WebUI/FC 复现。
-- 录制完成后，再回到冻结计划检查尚未实现的 P8-03 定时批处理；它不能被当前已完成项替代或提前标记完成。
-- 后续任何行为改动仍按 ADR-0004 批量修改、一次性双轴 review、只对 review 触及文件增量复审的规则执行。
+- 中文 WebUI 默认语言、Agent 工作摘要和活动状态修复已在本地提交；WebUI 全量测试为
+  `54` 个测试文件、`961` 个测试通过，构建和 lint 通过。
+- Feature Delivery 已在 nanobot 原生 WebUI 中完成一次真实链路：当前聊天生成新的
+  Changeset，用户回复“执行”，Apply 后由杭州 FC Agent Sandbox 验证，结果为
+  `verified`、`exit_code=0`、`backend=fc-agent-sandbox`。不要复用历史 Changeset。
+- `demo_greeting` 插件演示已完成。拔出插件时必须卸载包并重启 nanobot；仅刷新网页或新建
+  话题不会刷新内存中的 Tool Registry。重启后新话题中调用该工具应明确返回“工具不存在”。
+- P8-03 已按冻结计划完成：原生 Cron 默认关闭；用户启用后可手动触发；无新证据时安全跳过，
+  不调用模型、不生成候选、不自动激活 Skill。系统 `dream` 和 `heartbeat` 不要删除。
+- 录制过程中对 Node fixture 产生的 `formatThanks` 等 Apply 结果只是演示副作用，不属于产品
+  代码，不要作为新功能提交；录制应使用新的 Changeset，结束后保持 fixture 干净。
+
+## 10. 明天换机的最短流程
+
+1. 拉取 `main`，阅读 `AGENTS.md`、`CURRENT_PLAN.md`、ADR-0004、本交接文档和
+   `local-nanobot-devpilot.md`。
+2. 执行集成安装脚本，按第 6 节重新安装 nanobot WebUI 和 DevPilot entry points；API Key、
+   `.env`、数据库、日志、虚拟环境和 `node_modules` 不从本机复制。
+3. 在新机器配置 DeepSeek 和 FC 本地环境变量；FC 使用 `provider-default`，并设置精确的
+   `DEVPILOT_FC_ALLOWED_PROJECTS`，不要宣称严格网络隔离。
+4. 如需使用 P8-03，先把已审核的 `bug-fix` Skill 发布到 nanobot 的实际 workspace，
+   然后在 nanobot 原生聊天中重新执行 `schedule enable`；旧机器的 Cron、确认上下文和
+   私有候选不会迁移。
+5. 先启动 DevPilot 控制面，再启动 nanobot；确认 WebUI 为简体中文、工具 entry point
+   已加载，再开始新的开发任务。
+
+后续任何行为改动仍按 ADR-0004 批量修改、一次性双轴 subagent review、只对 review 触及
+文件增量复审的规则执行；Review 只读，不允许直接修改代码。
