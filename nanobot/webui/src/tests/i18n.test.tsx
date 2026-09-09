@@ -308,7 +308,7 @@ const PREBOOT_SCRIPT = INDEX_HTML.match(
 )?.[1];
 const BOOT_COPY_MARKUP = '<span data-boot-copy>Loading nanobot…</span>';
 
-function runPrebootLocale(storedLocale: string) {
+function runPrebootLocale(storedLocale: string | null) {
   if (!PREBOOT_SCRIPT) throw new Error("Could not find the preboot locale script in index.html");
 
   const documentElement = { lang: "" };
@@ -375,6 +375,7 @@ describe("webui i18n", () => {
     expect(INDEX_HTML.indexOf(PREBOOT_SCRIPT ?? "")).toBeGreaterThan(
       INDEX_HTML.indexOf(BOOT_COPY_MARKUP),
     );
+    expect(INDEX_HTML).toContain('<html lang="zh-CN">');
   });
 
   it("keeps preboot copy aligned with every registered locale", () => {
@@ -401,6 +402,16 @@ describe("webui i18n", () => {
         description: expected.meta.description,
       });
     }
+  });
+
+  it("uses Simplified Chinese before the user chooses a language", () => {
+    const expected = resources["zh-CN"].common.app;
+
+    expect(runPrebootLocale(null)).toEqual({
+      lang: "zh-CN",
+      boot: expected.loading.boot,
+      description: expected.meta.description,
+    });
   });
 
   it("defaults to Simplified Chinese until the user chooses another language", () => {

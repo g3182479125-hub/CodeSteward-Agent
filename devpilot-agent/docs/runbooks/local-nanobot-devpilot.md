@@ -33,6 +33,27 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integr
 依赖、密钥和运行数据检查完成后，再按下文启动控制面和 nanobot。停止时先停止
 nanobot，再停止 DevPilot；仅删除本次新建的隔离数据目录，不删除已有运行数据。
 
+若要启用 P8-03 的 Skill 改进批处理，还必须把仓库中已审核的 `bug-fix` Skill 发布到
+nanobot 实际使用的 workspace。发布只会把 catalog 中的受信 Skill 原子复制到 workspace，
+不会上传密钥或私有改进记录；如果目标文件已经存在，必须保留当前文件并跳过发布，避免
+覆盖人工确认后的 Skill 版本。workspace 路径按本机配置替换：
+
+```powershell
+cd D:\path\to\devflow-agent\devpilot-agent
+$workspace = "D:\path\to\nanobot-workspace"
+$target = Join-Path $workspace "skills\bug-fix\SKILL.md"
+if (Test-Path $target) {
+  Write-Host "保留已有 bug-fix Skill，跳过发布：$target"
+} else {
+  uv run python .\scripts\publish_skill.py `
+    --skill .\skills\catalog\bug-fix\SKILL.md `
+    --workspace $workspace
+}
+```
+
+如果暂时不启用 P8-03，可以跳过这一步。启用后若 workspace 中没有
+`skills/bug-fix/SKILL.md`，命令会被视为未满足前置条件，不能开始批处理。
+
 ## 启动 DevPilot 内部控制面
 
 在 `devpilot-agent` 目录执行：

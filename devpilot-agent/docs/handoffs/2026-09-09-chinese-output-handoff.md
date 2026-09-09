@@ -106,6 +106,26 @@ npm ci
 npm run build
 ```
 
+如果要验证或使用 P8-03 定时 Skill 改进，安装后还要发布一次已审核的 `bug-fix` Skill；
+否则定时任务没有可读取的有效基线，会在运行时安全停止：
+
+```powershell
+cd E:\workspace\devflow-agent\devpilot-agent
+$workspace = "E:\workspace\nanobot-state\workspace"
+$target = Join-Path $workspace "skills\bug-fix\SKILL.md"
+if (Test-Path $target) {
+  Write-Host "保留已有 bug-fix Skill，跳过发布：$target"
+} else {
+  uv run python .\scripts\publish_skill.py `
+    --skill .\skills\catalog\bug-fix\SKILL.md `
+    --workspace $workspace
+}
+```
+
+`--workspace` 必须与 nanobot 的实际 workspace 一致。该命令不会迁移 API Key、数据库、
+私有候选或确认记录；如果不启用 P8-03，可以不发布。新机器上需要在 nanobot 原生聊天
+中重新执行 `schedule enable`；旧机器的 Cron job、确认上下文和私有数据不迁移。
+
 控制面和 FC 配置请严格按照以下运行手册执行，尤其不要把真实密钥写入仓库：
 
 ```text
