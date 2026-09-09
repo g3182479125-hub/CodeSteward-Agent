@@ -1171,9 +1171,15 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     content = "No Skill improvement schedule is configured."
                 else:
                     try:
+                        cancelled = await ctx.loop._cancel_active_tasks(  # pyright: ignore[reportPrivateUsage]
+                            f"devpilot:skill-batch:{batch.batch_id}"
+                        )
                         store.set_scheduled_batch_enabled(batch_id, enabled=False)
                         cron.enable_job(batch.job_id, enabled=False)
-                        content = "Skill improvement schedule disabled; no new batch will start."
+                        content = (
+                            "Skill improvement schedule disabled; no new batch will start. "
+                            f"Cancelled active work: {cancelled}."
+                        )
                     except (ValueError, OSError) as exc:
                         content = f"Schedule disable rejected: {type(exc).__name__}."
             elif action == "run":

@@ -3,7 +3,7 @@
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -176,10 +176,12 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
     assert job.payload.origin_metadata["devpilot_skill_batch"] is True
     assert job.schedule.every_ms == 30_000
 
+    monkeypatch.setattr(loop, "_cancel_active_tasks", AsyncMock(return_value=1))
     disabled = await cmd_skill_improvement(
         _ctx(loop, "/skill-improvement schedule disable", is_user_turn=True)
     )
     assert "disabled" in disabled.content
+    assert "Cancelled active work: 1" in disabled.content
     assert loop.cron_service.get_job(job.id).enabled is False
 
     wall_clock = await cmd_skill_improvement(

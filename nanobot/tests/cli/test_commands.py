@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import signal
+import sqlite3
 import urllib.error
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -25,7 +26,7 @@ from nanobot.cli import webui as cli_webui
 from nanobot.cli import webui_support as cli_webui_support
 from nanobot.cli.commands import app
 from nanobot.config.schema import Config
-from nanobot.cron.service import CronJobSkippedError
+from nanobot.cron.service import CronJobSkippedError, CronService
 from nanobot.cron.session_turns import CRON_DEFER_UNTIL_IDLE_META, CRON_TRIGGER_META
 from nanobot.cron.types import CronJob, CronPayload
 from nanobot.cron.webui_metadata import cron_proactive_delivery_metadata
@@ -41,6 +42,180 @@ from nanobot.webui.metadata import (
 )
 
 runner = CliRunner()
+
+
+@pytest.mark.asyncio
+async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_workspace = tmp_path / "project"
+    skill_path = project_workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    baseline = "---\nname: bug-fix\n---\n\n# Bug fix\n"
+    skill_path.write_text(baseline, encoding="utf-8")
+
+    data_dir = tmp_path / "devpilot-data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            """
+            create table skill_improvement_records (
+                id integer primary key autoincrement,
+                record_key text not null unique,
+                record_type text not null,
+                record_id text not null,
+                payload_json text not null,
+                record_mac text not null,
+                workspace text,
+                project_id text,
+                created_at text not null
+            )
+            """
+        )
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
+
+    from devpilot.nanobot_tools import SkillCandidateTool
+    from devpilot.skill_improvement import (
+        SkillImprovementStore,
+        content_sha256,
+        scheduled_batch_id,
+    )
+
+    from nanobot.agent.tools.context import RequestContext, request_context
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.cron.types import CronSchedule
+
+    project_id = f"project-{content_sha256(str(project_workspace))[:12]}"
+    store = SkillImprovementStore.from_environment(project_workspace)
+    evidence = store.record_feedback(
+        task_id="scheduled-task",
+        project_id=project_id,
+        workspace=project_workspace,
+        user_id="user",
+        session_id="websocket:chat",
+        source_type="user_feedback",
+        skill_id="bug-fix",
+        skill_hash=content_sha256(baseline),
+        correction="先复核失败断言。",
+        actual_result="之前的修复没有覆盖失败断言。",
+        evidence_refs=["run-scheduled"],
+    )
+    batch_id = scheduled_batch_id(project_workspace, project_id, "user")
+
+    class _Runtime:
+        def with_generation_overrides(self, **kwargs):
+            seen["runtime_max_tokens"] = kwargs["max_tokens"]
+            return self
+
+    class _Agent:
+        def __init__(self) -> None:
+            self.tools = ToolRegistry()
+            self.tools.register(SkillCandidateTool(project_workspace))
+            self.llm_runtime = lambda: _Runtime()
+
+        async def process_direct(self, prompt, **kwargs):
+            seen["prompt"] = prompt
+            seen["process_kwargs"] = kwargs
+            attributes = kwargs["attributes"]
+            context = RequestContext(
+                channel=kwargs["channel"],
+                chat_id=kwargs["chat_id"],
+                sender_id=kwargs["sender_id"],
+                session_key=kwargs["session_key"],
+                workspace=Path(attributes["devpilot_workspace"]),
+                attributes=attributes,
+            )
+            with request_context(context):
+                result = await kwargs["tools"].execute(
+                    "devpilot_skill_candidate",
+                    {
+                        "project_id": project_id,
+                        "baseline_content": baseline,
+                        "candidate_content": baseline + "\n- Re-check the assertion.\n",
+                        "evidence_ids": [evidence.evidence_id],
+                        "reason": "The assertion was not rechecked.",
+                        "expected_behavior": "The proposal cites the failing assertion.",
+                        "test_set_version": "p8-02-v1",
+                        "batch_id": batch_id,
+                    },
+                )
+            return OutboundMessage(
+                channel=kwargs["channel"],
+                chat_id=kwargs["chat_id"],
+                content=f"scheduled candidate result: {result}",
+            )
+
+    seen: dict[str, object] = {}
+    delivered: list[OutboundMessage] = []
+    triggered: list[str] = []
+    agent = _Agent()
+
+    async def deliver(message: OutboundMessage) -> None:
+        delivered.append(message)
+
+    service: CronService
+
+    async def on_job(job: CronJob) -> str | None:
+        result = await cli_gateway_runtime._run_scheduled_skill_batch(
+            job,
+            agent=agent,
+            cron=service,
+            deliver=deliver,
+        )
+        triggered.append(job.id)
+        job.enabled = False
+        return result
+
+    service = CronService(
+        tmp_path / "cron" / "jobs.json",
+        on_job=on_job,
+        max_sleep_ms=10,
+    )
+    job = service.add_job(
+        name="DevFlow Skill improvement test",
+        schedule=CronSchedule(kind="every", every_ms=25),
+        message="test-only",
+        session_key="websocket:chat",
+        origin_channel="websocket",
+        origin_chat_id="chat",
+        origin_metadata={"devpilot_skill_batch": True, "batch_id": batch_id},
+    )
+    store.configure_scheduled_batch(
+        batch_id=batch_id,
+        job_id=job.id,
+        workspace=project_workspace,
+        project_id=project_id,
+        user_id="user",
+        session_key="websocket:chat",
+        enabled=True,
+        max_tokens=12_000,
+    )
+
+    await service.start()
+    try:
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not triggered and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+    finally:
+        service.stop()
+
+    assert triggered == [job.id]
+    completed = store.get_scheduled_batch(batch_id)
+    assert completed is not None
+    assert completed.status == "candidate_created"
+    assert completed.candidate_id is not None
+    assert len(delivered) == 1
+    assert delivered[0].channel == "websocket"
+    assert "scheduled candidate result" in delivered[0].content
+    assert seen["process_kwargs"]["sender_id"] == "user"  # type: ignore[index]
+    assert seen["process_kwargs"]["session_key"] == f"devpilot:skill-batch:{batch_id}"  # type: ignore[index]
+    assert seen["runtime_max_tokens"] == 12_000
 
 
 def _without_rendered_line_breaks(output: str) -> str:

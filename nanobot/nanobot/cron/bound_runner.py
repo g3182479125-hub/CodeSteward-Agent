@@ -18,6 +18,7 @@ from nanobot.utils.prompt_templates import render_template
 
 if TYPE_CHECKING:
     from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.utils.llm_runtime import LLMRuntime
 
 
 class BoundCronAgent(Protocol):
@@ -71,10 +72,13 @@ async def run_bound_cron_job(
     trusted_attributes: dict[str, Any] | None = None,
     tools: ToolRegistry | None = None,
     session_key_override: str | None = None,
+    sender_id_override: str | None = None,
+    runtime: LLMRuntime | None = None,
     ephemeral: bool = False,
 ) -> str | None:
     """Execute a session-bound cron job as a normal agent session turn."""
     session_key = session_key_override or job.payload.session_key
+    sender_id = sender_id_override or "cron"
     if not session_key:
         raise ValueError(f"cron job {job.id} is missing payload.session_key")
 
@@ -127,7 +131,7 @@ async def run_bound_cron_job(
             resp = await agent.submit_cron_turn(
                 InboundMessage(
                     channel=channel,
-                    sender_id="cron",
+                    sender_id=sender_id,
                     chat_id=chat_id,
                     content=prompt,
                     metadata=metadata,
@@ -144,10 +148,11 @@ async def run_bound_cron_job(
                 session_key=session_key,
                 channel=channel,
                 chat_id=chat_id,
-                sender_id="cron",
+                sender_id=sender_id,
                 tools=tools,
                 persist_user_message=False,
                 ephemeral=ephemeral,
+                runtime=runtime,
                 attributes=dict(trusted_attributes or {}),
             )
     except (Exception, asyncio.CancelledError) as exc:

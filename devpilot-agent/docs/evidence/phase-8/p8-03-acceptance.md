@@ -1,6 +1,6 @@
 # P8-03 定时 Skill 改进批处理验收记录
 
-状态：实现候选，待本批次 Standards / Spec 双轴 review 及最终实测记录。  
+状态：实现候选，待本批次 Standards / Spec 双轴 review 及最终实测记录。
 范围：只为已有 `bug-fix` Skill 读取已验证反馈并生成私有候选；不自动评测、不启用、不修改用户项目。
 
 ## 用户入口
@@ -55,4 +55,3 @@ P8-03 复用 nanobot 原生 Cron 和原生聊天，不增加管理页面或第�
 新机器先安装 nanobot 与 DevPilot 集成依赖，再重新配置本地 `DEVPILOT_DATA_DIR` 和模型；
 用户需要在新机器原生聊天中重新执行 `schedule enable`。验收用短间隔自有测试任务，确认
 原生 Cron 已触发后立即删除该测试任务；不得把测试任务或真实私有数据提交 Git。
-

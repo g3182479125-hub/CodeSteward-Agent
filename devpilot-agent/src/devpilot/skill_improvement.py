@@ -53,6 +53,7 @@ BATCH_STATES = frozenset(
         "no_new_evidence",
         "candidate_created",
         "failed",
+        "budget_exhausted",
         "disabled",
     }
 )
@@ -379,6 +380,7 @@ class ScheduledSkillBatch:
     run_count: int
     candidate_attempts: int
     token_count: int
+    consecutive_failures: int
     candidate_id: str | None
     last_run_at: str | None
     last_error: str | None
@@ -410,6 +412,7 @@ class ScheduledSkillBatch:
             "run_count": self.run_count,
             "candidate_attempts": self.candidate_attempts,
             "token_count": self.token_count,
+            "consecutive_failures": self.consecutive_failures,
             "candidate_id": self.candidate_id,
             "last_run_at": self.last_run_at,
             "last_error": self.last_error,
@@ -916,6 +919,7 @@ class SkillImprovementStore:
                     run_count=0,
                     candidate_attempts=0,
                     token_count=0,
+                    consecutive_failures=0,
                     candidate_id=None,
                     last_run_at=None,
                     last_error=None,
@@ -982,6 +986,42 @@ class SkillImprovementStore:
                 return ScheduledBatchClaim("busy", batch)
             baseline = self.read_effective_snapshot(batch.workspace)
             processed = set(batch.processed_evidence_ids)
+            if batch.status in {"running", "failed"} and batch.candidate_id:
+                candidate = self.get_candidate(
+                    batch.candidate_id,
+                    workspace=batch.workspace,
+                    user_id=batch.user_id,
+                    project_id=batch.project_id,
+                )
+                if candidate is not None:
+                    evidence = [
+                        self.get_feedback(item) for item in batch.claimed_evidence_ids
+                    ]
+                    valid_evidence = [item for item in evidence if item is not None]
+                    processed.update(item.evidence_id for item in valid_evidence)
+                    cursor_at = max(
+                        (item.occurred_at for item in valid_evidence),
+                        default=batch.cursor_at,
+                    )
+                    recovered = replace(
+                        batch,
+                        cursor_at=cursor_at,
+                        processed_evidence_ids=tuple(sorted(processed))[
+                            -_MAX_PROCESSED_EVIDENCE_IDS:
+                        ],
+                        claimed_evidence_ids=(),
+                        status="candidate_created",
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        consecutive_failures=0,
+                        last_error=None,
+                        last_candidate_ids=(candidate.candidate_id,),
+                        updated_at=_now(),
+                    )
+                    self._atomic_write(
+                        self.batches_dir / f"{batch.batch_id}.json", recovered.to_dict()
+                    )
+                    return ScheduledBatchClaim("candidate_created", recovered)
             evidence = [
                 item
                 for item in self.list_feedback(
@@ -995,6 +1035,24 @@ class SkillImprovementStore:
                 and item.evidence_id not in processed
                 and (batch.cursor_at is None or item.occurred_at >= batch.cursor_at)
             ][:_MAX_SCHEDULED_BATCH_EVIDENCE]
+            if batch.status == "failed" and (
+                batch.candidate_attempts >= batch.max_model_calls
+                or batch.token_count >= batch.max_tokens
+                or batch.consecutive_failures >= batch.max_model_calls
+            ):
+                exhausted = replace(
+                    batch,
+                    status="budget_exhausted",
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_run_at=_now(),
+                    last_error="scheduled batch retry budget exhausted",
+                    updated_at=_now(),
+                )
+                self._atomic_write(
+                    self.batches_dir / f"{batch.batch_id}.json", exhausted.to_dict()
+                )
+                return ScheduledBatchClaim("budget_exhausted", exhausted)
             if not evidence:
                 updated = replace(
                     batch,
@@ -1005,17 +1063,19 @@ class SkillImprovementStore:
                 self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
                 return ScheduledBatchClaim("no_new_evidence", updated)
             deadline = now + min(batch.max_duration_seconds, _MAX_SCHEDULED_DURATION_SECONDS)
+            retrying = batch.status == "failed"
             updated = replace(
                 batch,
                 status="running",
                 lease_owner=owner,
                 lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
                 run_count=batch.run_count + 1,
-                candidate_attempts=0,
-                token_count=0,
+                candidate_attempts=batch.candidate_attempts if retrying else 0,
+                token_count=batch.token_count if retrying else 0,
                 candidate_id=None,
                 claimed_evidence_ids=tuple(item.evidence_id for item in evidence),
                 last_run_at=_now(),
+                consecutive_failures=batch.consecutive_failures if retrying else 0,
                 updated_at=_now(),
             )
             self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
@@ -1131,6 +1191,11 @@ class SkillImprovementStore:
                 lease_expires_at=None,
                 last_error=last_error,
                 last_candidate_ids=last_candidates,
+                consecutive_failures=(
+                    0
+                    if status == "candidate_created"
+                    else batch.consecutive_failures + 1
+                ),
                 updated_at=_now(),
             )
             self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
@@ -1858,6 +1923,7 @@ class SkillImprovementStore:
             run_count=int(raw.get("run_count", 0)),
             candidate_attempts=int(raw.get("candidate_attempts", 0)),
             token_count=int(raw.get("token_count", 0)),
+            consecutive_failures=int(raw.get("consecutive_failures", 0)),
             candidate_id=(
                 raw.get("candidate_id")
                 if isinstance(raw.get("candidate_id"), str)

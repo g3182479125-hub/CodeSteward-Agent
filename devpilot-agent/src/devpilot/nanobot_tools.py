@@ -1532,9 +1532,6 @@ class SkillCandidateTool(Tool):
                 request_context = None
             if request_context is None or not request_context.sender_id:
                 raise SkillImprovementError("candidate requires a trusted request context")
-            request_workspace = (
-                request_context.workspace if request_context is not None else self.workspace
-            )
             trusted_project_id = request_context.attributes.get("devpilot_project_id")
             trusted_task_id = request_context.attributes.get("devpilot_task_id")
             if not isinstance(trusted_project_id, str) or not isinstance(
@@ -1543,9 +1540,18 @@ class SkillCandidateTool(Tool):
                 raise SkillImprovementError("candidate is outside a trusted bug-fix task")
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
-            store = SkillImprovementStore.from_environment(request_workspace)
             requested_batch_id = kwargs.get("batch_id")
             scheduled_batch_id = request_context.attributes.get("devpilot_batch_id")
+            scheduled_workspace = request_context.attributes.get("devpilot_workspace")
+            request_workspace = (
+                Path(scheduled_workspace).expanduser().resolve()
+                if isinstance(scheduled_batch_id, str)
+                and scheduled_batch_id
+                and isinstance(scheduled_workspace, str)
+                and scheduled_workspace.strip()
+                else request_context.workspace or self.workspace
+            )
+            store = SkillImprovementStore.from_environment(request_workspace)
             if isinstance(scheduled_batch_id, str) and scheduled_batch_id:
                 if requested_batch_id != scheduled_batch_id:
                     raise SkillImprovementError(

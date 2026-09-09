@@ -40,6 +40,7 @@ _SENSITIVE_FIELD_MARKERS = (
     "privatekey",
     "credential",
 )
+_NUMERIC_POLICY_FIELDS = frozenset({"max_tokens", "token_count"})
 _SENSITIVE_MULTILINE_ASSIGNMENT_PATTERN = re.compile(
     r"(?is)(?<![A-Za-z0-9])"
     rf"(?P<prefix>[\"']?{_SENSITIVE_NAME}[\"']?\s*[=:]\s*)"
@@ -115,7 +116,11 @@ def redact_sensitive_payload(value: object) -> object:
                 # remain redacted when their value is text or a compound value.
                 result[key] = (
                     item
-                    if isinstance(item, (int, float)) and not isinstance(item, bool)
+                    if (
+                        key.casefold().replace("-", "_") in _NUMERIC_POLICY_FIELDS
+                        and isinstance(item, (int, float))
+                        and not isinstance(item, bool)
+                    )
                     else "[REDACTED]"
                 )
             elif key.casefold() in {"stdout", "stderr"} and isinstance(item, str):

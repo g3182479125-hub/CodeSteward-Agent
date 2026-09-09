@@ -27,6 +27,8 @@ async def test_native_cron_dispatches_a_devpilot_batch_marker(tmp_path) -> None:
             "batch_id": "batch-test",
         }
         triggered.append(job.id)
+        # Keep this acceptance probe one-shot while still using the real timer.
+        job.enabled = False
         return "native-cron-triggered"
 
     service = CronService(

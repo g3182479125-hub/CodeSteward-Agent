@@ -285,6 +285,170 @@ async def _close_gateway_runtime(
             await runtime_tasks
 
 
+async def _run_scheduled_skill_batch(
+    job: Any,
+    *,
+    agent: Any,
+    cron: Any,
+    deliver: Callable[[Any], Awaitable[None]],
+) -> str | None:
+    """Run one explicitly configured P8-03 batch through native Cron."""
+    from nanobot.bus.events import OutboundMessage
+    from nanobot.cron.bound_runner import run_bound_cron_job
+    from nanobot.cron.service import CronJobSkippedError
+
+    try:
+        from devpilot.skill_improvement import (
+            SkillImprovementStore,
+            build_scheduled_batch_prompt,
+        )
+    except ImportError as exc:
+        raise CronJobSkippedError(
+            "DevPilot Skill batch support is not installed"
+        ) from exc
+
+    marker = job.payload.origin_metadata or {}
+    marker_batch_id = marker.get("batch_id")
+    if not isinstance(marker_batch_id, str) or not marker_batch_id:
+        raise CronJobSkippedError("scheduled Skill batch marker is incomplete")
+    store = SkillImprovementStore.from_environment()
+    configured = store.get_scheduled_batch(marker_batch_id)
+    if configured is None or configured.job_id != job.id:
+        raise CronJobSkippedError("scheduled Skill batch binding is invalid")
+    # Rebind the store to the persisted project workspace before any
+    # snapshot/evidence access; the job marker alone is not a scope.
+    store = SkillImprovementStore.from_environment(configured.workspace)
+    owner = f"gateway:{os.getpid()}:{job.id}"
+    claim = store.claim_scheduled_batch(job.id, lease_owner=owner)
+    if claim is None:
+        raise CronJobSkippedError("scheduled Skill batch configuration was not found")
+    origin_channel = job.payload.origin_channel
+    origin_chat_id = job.payload.origin_chat_id
+    if claim.status == "candidate_created":
+        candidate_ids = claim.batch.last_candidate_ids
+        if candidate_ids and origin_channel and origin_chat_id and origin_channel != "cli":
+            await deliver(
+                OutboundMessage(
+                    channel=origin_channel,
+                    chat_id=origin_chat_id,
+                    content=(
+                        "Scheduled Skill improvement candidate is ready for review: "
+                        f"`{candidate_ids[-1]}`."
+                    ),
+                )
+            )
+        raise CronJobSkippedError("scheduled Skill batch candidate recovered")
+    if claim.status != "claimed":
+        raise CronJobSkippedError(
+            f"scheduled Skill batch {claim.status.replace('_', ' ')}"
+        )
+
+    baseline = store.read_effective_snapshot(claim.batch.workspace)
+    prompt = build_scheduled_batch_prompt(
+        claim,
+        baseline_content=baseline.content,
+    )
+    trusted_attributes = {
+        "devpilot_task_id": f"scheduled-{claim.batch.batch_id}",
+        "devpilot_project_id": claim.batch.project_id,
+        "devpilot_skill_id": claim.batch.skill_id,
+        "devpilot_workspace": claim.batch.workspace,
+        "devpilot_batch_id": claim.batch.batch_id,
+        "devpilot_batch_owner": owner,
+        "devpilot_batch_evidence_ids": [
+            item.evidence_id for item in claim.evidence
+        ],
+    }
+    restricted_tools = agent.tools.restricted_to({"devpilot_skill_candidate"})
+    if not restricted_tools.has("devpilot_skill_candidate"):
+        store.finish_scheduled_batch(
+            claim.batch.batch_id,
+            lease_owner=owner,
+            error="devpilot_skill_candidate is unavailable",
+        )
+        raise CronJobSkippedError("devpilot_skill_candidate is unavailable")
+
+    try:
+        runtime_factory = getattr(agent, "llm_runtime", None)
+        runtime = (
+            runtime_factory().with_generation_overrides(
+                max_tokens=claim.batch.max_tokens
+            )
+            if callable(runtime_factory)
+            else None
+        )
+        remaining = max(1.0, (claim.deadline_at or time.time()) - time.time())
+        response = await asyncio.wait_for(
+            run_bound_cron_job(
+                job,
+                agent=agent,
+                cron=cron,
+                message_override=prompt,
+                trusted_attributes=trusted_attributes,
+                tools=restricted_tools,
+                session_key_override=(
+                    f"devpilot:skill-batch:{claim.batch.batch_id}"
+                ),
+                sender_id_override=claim.batch.user_id,
+                runtime=runtime,
+                ephemeral=True,
+            ),
+            timeout=remaining,
+        )
+    except asyncio.CancelledError:
+        store.finish_scheduled_batch(
+            claim.batch.batch_id,
+            lease_owner=owner,
+            cancelled=True,
+        )
+        raise
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {str(exc)[:600]}"
+        should_notify = claim.batch.last_error != message
+        store.finish_scheduled_batch(
+            claim.batch.batch_id,
+            lease_owner=owner,
+            error=message,
+        )
+        if should_notify and origin_channel and origin_chat_id and origin_channel != "cli":
+            await deliver(
+                OutboundMessage(
+                    channel=origin_channel,
+                    chat_id=origin_chat_id,
+                    content=f"Scheduled Skill improvement failed: {type(exc).__name__}.",
+                )
+            )
+        raise
+
+    current = store.get_scheduled_batch(claim.batch.batch_id)
+    if current is None or current.candidate_id is None:
+        error = "scheduled batch completed without saving a candidate"
+        should_notify = claim.batch.last_error != error
+        store.finish_scheduled_batch(
+            claim.batch.batch_id,
+            lease_owner=owner,
+            error=error,
+        )
+        if should_notify and origin_channel and origin_chat_id and origin_channel != "cli":
+            await deliver(
+                OutboundMessage(
+                    channel=origin_channel,
+                    chat_id=origin_chat_id,
+                    content="Scheduled Skill improvement failed: no candidate was saved.",
+                )
+            )
+        raise CronJobSkippedError(error)
+    store.finish_scheduled_batch(
+        claim.batch.batch_id,
+        lease_owner=owner,
+    )
+    if response and origin_channel and origin_chat_id and origin_channel != "cli":
+        await deliver(
+            OutboundMessage(channel=origin_channel, chat_id=origin_chat_id, content=response)
+        )
+    return response
+
+
 def _run_gateway(
     config: Config,
     *,
@@ -639,114 +803,12 @@ def _run_gateway(
         # cannot obtain the trusted batch attributes below.
         batch_marker = job.payload.origin_metadata.get("devpilot_skill_batch")
         if batch_marker is True:
-            try:
-                from devpilot.skill_improvement import (
-                    SkillImprovementStore,
-                    build_scheduled_batch_prompt,
-                )
-            except ImportError as exc:
-                raise CronJobSkippedError(
-                    "DevPilot Skill batch support is not installed"
-                ) from exc
-
-            store = SkillImprovementStore.from_environment()
-            owner = f"gateway:{os.getpid()}:{job.id}"
-            claim = store.claim_scheduled_batch(job.id, lease_owner=owner)
-            if claim is None:
-                raise CronJobSkippedError("scheduled Skill batch configuration was not found")
-            if claim.status != "claimed":
-                raise CronJobSkippedError(
-                    f"scheduled Skill batch {claim.status.replace('_', ' ')}"
-                )
-
-            baseline = store.read_effective_snapshot(claim.batch.workspace)
-            prompt = build_scheduled_batch_prompt(
-                claim,
-                baseline_content=baseline.content,
+            return await _run_scheduled_skill_batch(
+                job,
+                agent=agent,
+                cron=cron,
+                deliver=_deliver_to_channel,
             )
-            trusted_attributes = {
-                "devpilot_task_id": f"scheduled-{claim.batch.batch_id}",
-                "devpilot_project_id": claim.batch.project_id,
-                "devpilot_skill_id": claim.batch.skill_id,
-                "devpilot_batch_id": claim.batch.batch_id,
-                "devpilot_batch_owner": owner,
-                "devpilot_batch_evidence_ids": [
-                    item.evidence_id for item in claim.evidence
-                ],
-            }
-            restricted_tools = agent.tools.restricted_to({"devpilot_skill_candidate"})
-            if not restricted_tools.has("devpilot_skill_candidate"):
-                store.finish_scheduled_batch(
-                    claim.batch.batch_id,
-                    lease_owner=owner,
-                    error="devpilot_skill_candidate is unavailable",
-                )
-                raise CronJobSkippedError("DevPilot Skill candidate tool is unavailable")
-
-            try:
-                remaining = max(1.0, (claim.deadline_at or time.time()) - time.time())
-                response = await asyncio.wait_for(
-                    run_bound_cron_job(
-                        job,
-                        agent=agent,
-                        cron=cron,
-                        message_override=prompt,
-                        trusted_attributes=trusted_attributes,
-                        tools=restricted_tools,
-                        session_key_override=(
-                            f"devpilot:skill-batch:{claim.batch.batch_id}"
-                        ),
-                        ephemeral=True,
-                    ),
-                    timeout=remaining,
-                )
-            except asyncio.CancelledError:
-                store.finish_scheduled_batch(
-                    claim.batch.batch_id,
-                    lease_owner=owner,
-                    cancelled=True,
-                )
-                raise
-            except Exception as exc:
-                message = f"{type(exc).__name__}: {str(exc)[:600]}"
-                should_notify = claim.batch.last_error != message
-                store.finish_scheduled_batch(
-                    claim.batch.batch_id,
-                    lease_owner=owner,
-                    error=message,
-                )
-                channel = job.payload.origin_channel
-                chat_id = job.payload.origin_chat_id
-                if should_notify and channel and chat_id and channel != "cli":
-                    await _deliver_to_channel(
-                        OutboundMessage(
-                            channel=channel,
-                            chat_id=chat_id,
-                            content=f"Scheduled Skill improvement failed: {type(exc).__name__}.",
-                        )
-                    )
-                raise
-
-            current = store.get_scheduled_batch(claim.batch.batch_id)
-            if current is None or current.candidate_id is None:
-                error = "scheduled batch completed without saving a candidate"
-                store.finish_scheduled_batch(
-                    claim.batch.batch_id,
-                    lease_owner=owner,
-                    error=error,
-                )
-                raise CronJobSkippedError(error)
-            store.finish_scheduled_batch(
-                claim.batch.batch_id,
-                lease_owner=owner,
-            )
-            channel = job.payload.origin_channel
-            chat_id = job.payload.origin_chat_id
-            if response and channel and chat_id and channel != "cli":
-                await _deliver_to_channel(
-                    OutboundMessage(channel=channel, chat_id=chat_id, content=response)
-                )
-            return response
 
         if is_bound_cron_job(job):
             return await run_bound_cron_job(job, agent=agent, cron=cron)
