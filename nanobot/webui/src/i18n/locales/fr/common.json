@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "Pièce jointe indisponible",
     "dataTable": "Tableau de données",
     "fileEditPreparing": "Préparation de la modification du fichier…",
+    "fileEditAction": {
+      "editing": "Modification en cours",
+      "edited": "Modifié",
+      "deleting": "Suppression en cours",
+      "deleted": "Supprimé",
+      "couldNotEdit": "Modification impossible",
+      "couldNotDelete": "Suppression impossible"
+    },
     "openLink": "Ouvrir le lien : {{label}}",
     "openAttachment": "Ouvrir {{name}}",
     "skill": "Compétence : {{name}}",

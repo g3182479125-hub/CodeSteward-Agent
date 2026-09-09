@@ -1298,6 +1298,14 @@
     "attachmentUnavailable": "Adjunto no disponible",
     "dataTable": "Tabla de datos",
     "fileEditPreparing": "Preparando la edición del archivo…",
+    "fileEditAction": {
+      "editing": "Editando",
+      "edited": "Editado",
+      "deleting": "Eliminando",
+      "deleted": "Eliminado",
+      "couldNotEdit": "No se pudo editar",
+      "couldNotDelete": "No se pudo eliminar"
+    },
     "openLink": "Abrir enlace: {{label}}",
     "openAttachment": "Abrir {{name}}",
     "skill": "Habilidad: {{name}}",

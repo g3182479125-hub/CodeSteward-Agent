@@ -1,3 +1,4 @@
+import { localizeActivityText } from "./activity-copy";
 import { safeActivityDetail } from "./activity-text";
 import { formatCompactWebUrl, parseSafeActivityHttpUrl } from "./web-url";
 
@@ -16,41 +17,40 @@ export function describeMcpActivity(
   const name = toolName.toLowerCase();
 
   if (matches(name, "navigate", "goto", "open_url", "visit")) {
-    return describe(status, "Opening", "Opened", "Could not open", value(args, ["url"]));
+    return describe(status, "正在打开", "已打开", "打开失败", value(args, ["url"]));
   }
   if (matches(name, "click", "tap")) {
-    return describe(status, "Clicking", "Clicked", "Could not click", elementTarget(args));
+    return describe(status, "正在点击", "已点击", "点击失败", elementTarget(args));
   }
   if (matches(name, "type", "fill", "enter_text", "insert_text")) {
     const target = value(args, ["element", "selector", "ref", "name"]);
-    return describe(status, "Entering text", "Entered text", "Could not enter text", target && `in ${target}`);
+    return describe(status, "正在输入文本", "已输入文本", "输入文本失败", target && `在 ${target}`);
   }
   if (matches(name, "press_key", "keypress")) {
-    return describe(status, "Pressing", "Pressed", "Could not press", value(args, ["key"]));
+    return describe(status, "正在按键", "已按键", "按键失败", value(args, ["key"]));
   }
   if (matches(name, "hover")) {
-    return describe(status, "Hovering over", "Hovered over", "Could not hover over", elementTarget(args));
+    return describe(status, "正在悬停于", "已悬停于", "悬停失败", elementTarget(args));
   }
   if (matches(name, "select", "select_option")) {
-    return describe(status, "Selecting", "Selected", "Could not select", elementTarget(args));
+    return describe(status, "正在选择", "已选择", "选择失败", elementTarget(args));
   }
   if (matches(name, "snapshot", "inspect", "get_page_content", "page_content")) {
-    return describe(status, "Inspecting page", "Inspected page", "Could not inspect page");
+    return describe(status, "正在检查页面", "已检查页面", "检查页面失败");
   }
   if (matches(name, "screenshot", "capture_screenshot")) {
-    return describe(status, "Capturing screenshot", "Captured screenshot", "Could not capture screenshot");
+    return describe(status, "正在截取屏幕", "已截取屏幕", "截取屏幕失败");
   }
   if (matches(name, "wait", "wait_for")) {
-    return describe(status, "Waiting for page", "Waited for page", "Page did not become ready");
+    return describe(status, "正在等待页面", "已等待页面", "页面未就绪");
   }
   if (matches(name, "search", "web_search")) {
-    return describe(status, "Searching", "Searched", "Could not search", value(args, ["query", "q"]));
+    return describe(status, "正在搜索", "已搜索", "搜索失败", value(args, ["query", "q"]));
   }
 
-  const action = humanizeToolName(toolName);
-  if (status === "running") return { action: `Running ${action}` };
-  if (status === "error") return { action: `${action} failed` };
-  return { action: `${action} completed` };
+  if (status === "running") return { action: localizeActivityText(`正在执行工具 ${toolName}`) };
+  if (status === "error") return { action: localizeActivityText(`工具执行失败 ${toolName}`) };
+  return { action: localizeActivityText(`工具执行完成 ${toolName}`) };
 }
 
 function describe(
@@ -61,8 +61,8 @@ function describe(
   target?: string,
 ): McpActivityDescription {
   return {
-    action: status === "running" ? running : status === "error" ? failed : done,
-    target: target ? compactUrl(target) : undefined,
+    action: localizeActivityText(status === "running" ? running : status === "error" ? failed : done),
+    target: target ? localizeActivityText(compactUrl(target)) : undefined,
   };
 }
 
@@ -88,17 +88,6 @@ function value(args: unknown, keys: string[]): string | undefined {
 function compactUrl(value: string): string {
   const url = parseSafeActivityHttpUrl(value);
   if (url) return formatCompactWebUrl(url);
-  if (/^https?:\/\//i.test(value.trim())) return "Private address";
+  if (/^https?:\/\//i.test(value.trim())) return localizeActivityText("私有地址");
   return safeActivityDetail(value, 80);
-}
-
-function humanizeToolName(value: string): string {
-  const words = value
-    .replace(/^(?:browser|page|playwright)[_.-]+/i, "")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_.-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-  return words ? `${words[0].toUpperCase()}${words.slice(1)}` : "Tool call";
 }

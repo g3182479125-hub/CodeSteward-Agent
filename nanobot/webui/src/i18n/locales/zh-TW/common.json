@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "附件無法使用",
     "dataTable": "資料表",
     "fileEditPreparing": "正在準備檔案編輯…",
+    "fileEditAction": {
+      "editing": "正在編輯",
+      "edited": "已編輯",
+      "deleting": "正在刪除",
+      "deleted": "已刪除",
+      "couldNotEdit": "編輯失敗",
+      "couldNotDelete": "刪除失敗"
+    },
     "openLink": "開啟連結：{{label}}",
     "openAttachment": "開啟 {{name}}",
     "skill": "技能：{{name}}",

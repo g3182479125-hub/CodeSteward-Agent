@@ -28,7 +28,6 @@ import { DiffSyntaxHighlight } from "./DiffSyntaxHighlight";
 
 const INITIAL_VISIBLE_DIFF_LINES = 160;
 const AUTO_COLLAPSE_DIFF_LINES = INITIAL_VISIBLE_DIFF_LINES;
-const COLLAPSED_PREVIEW_LINES = 8;
 
 interface VisibleDiffHunk {
   hunk: RenderableFileDiffHunk;
@@ -93,7 +92,10 @@ function FileEditRow({
   const { t } = useTranslation();
   const editing = edit.status === "editing";
   const failed = edit.status === "error";
-  const action = fileEditAction(edit, editing, failed);
+  const actionKey = fileEditActionKey(edit, editing, failed);
+  const action = t(`message.fileEditAction.${actionKey}`, {
+    defaultValue: fileEditActionFallback(actionKey),
+  });
   const hasCountedDiff = !failed && !edit.binary && hasVisibleDiffStats(edit);
   const showDiff = canRenderDiff(edit, displayMode);
   const statusIcon = failed ? (
@@ -146,7 +148,7 @@ function FileEditRow({
         <div className="ml-[2.125rem] min-w-0">
           <FileUnifiedDiff
             diff={edit.diff!}
-            collapsed={displayMode !== "summary"}
+            collapsed={displayMode === "collapsed_diff"}
             previewPath={edit.absolute_path || edit.path}
             onOpenFilePreview={onOpenFilePreview}
           />
@@ -160,11 +162,34 @@ export function hasVisibleDiffStats(edit: Pick<FileEditSummary, "added" | "delet
   return edit.added > 0 || edit.deleted > 0;
 }
 
-function fileEditAction(edit: FileEditSummary, editing: boolean, failed: boolean): string {
+type FileEditActionKey =
+  | "editing"
+  | "edited"
+  | "deleting"
+  | "deleted"
+  | "couldNotEdit"
+  | "couldNotDelete";
+
+function fileEditActionKey(
+  edit: FileEditSummary,
+  editing: boolean,
+  failed: boolean,
+): FileEditActionKey {
   const deleting = edit.operation === "delete";
-  if (failed) return deleting ? "Could not delete" : "Could not edit";
-  if (editing) return deleting ? "Deleting" : "Editing";
-  return deleting ? "Deleted" : "Edited";
+  if (failed) return deleting ? "couldNotDelete" : "couldNotEdit";
+  if (editing) return deleting ? "deleting" : "editing";
+  return deleting ? "deleted" : "edited";
+}
+
+function fileEditActionFallback(action: FileEditActionKey): string {
+  return {
+    editing: "正在编辑",
+    edited: "已编辑",
+    deleting: "正在删除",
+    deleted: "已删除",
+    couldNotEdit: "编辑失败",
+    couldNotDelete: "删除失败",
+  }[action];
 }
 
 function canRenderDiff(edit: FileEditSummary, displayMode: FileEditDisplayMode): boolean {
@@ -206,14 +231,6 @@ function FileUnifiedDiff({
       ? selectVisibleDiffLines(renderableDiff, lineLimit, totalLineCount)
       : EMPTY_VISIBLE_DIFF,
     [lineLimit, renderableDiff, shouldRenderBody, totalLineCount],
-  );
-  const previewDiff = useMemo(
-    () => selectVisibleDiffLines(
-      renderableDiff,
-      Math.min(COLLAPSED_PREVIEW_LINES, totalLineCount),
-      totalLineCount,
-    ),
-    [renderableDiff, totalLineCount],
   );
   const lineCountLabel = t("message.fileEditDiffLineCount", {
     count: diff.truncated ? `${totalLineCount}+` : totalLineCount,
@@ -312,33 +329,6 @@ function FileUnifiedDiff({
     </div>
   );
 
-  const renderPreview = () => (
-    <div
-      className="mt-1 overflow-hidden rounded-md border border-border/45 bg-background/70 opacity-90"
-      data-testid="file-edit-diff-preview"
-    >
-      {previewDiff.hunks.map(({ hunk, skippedBefore }, index) => (
-        <div
-          key={`${hunk.old_start}-${hunk.new_start}-${index}`}
-          className={cn("min-w-0", index > 0 && "border-t border-border/45")}
-        >
-          {skippedBefore > 0 ? <DiffHunkGap lineCount={skippedBefore} /> : null}
-          <div className="max-h-32 overflow-hidden">
-            <DiffSyntaxHighlight language={language} lines={hunk.lines} />
-          </div>
-        </div>
-      ))}
-      {previewDiff.hiddenLineCount > 0 ? (
-        <div className="border-t border-border/45 bg-muted/25 px-2 py-1 text-[11px] text-muted-foreground">
-          {t("message.fileEditShowMoreLines", {
-            count: previewDiff.hiddenLineCount,
-            defaultValue: "还有 {{count}} 行未显示",
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-
   if (!startsCollapsed) return renderBody();
 
   return (
@@ -360,7 +350,7 @@ function FileUnifiedDiff({
         <span className="min-w-0 flex-1">{viewDiffLabel}</span>
         <span className="shrink-0 text-muted-foreground/65">{lineCountLabel}</span>
       </button>
-      {open ? renderBody() : renderPreview()}
+      {open ? renderBody() : null}
     </div>
   );
 }

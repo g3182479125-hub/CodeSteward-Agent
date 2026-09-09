@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "첨부 파일을 사용할 수 없음",
     "dataTable": "데이터 표",
     "fileEditPreparing": "파일 편집 준비 중…",
+    "fileEditAction": {
+      "editing": "편집 중",
+      "edited": "편집됨",
+      "deleting": "삭제 중",
+      "deleted": "삭제됨",
+      "couldNotEdit": "편집할 수 없음",
+      "couldNotDelete": "삭제할 수 없음"
+    },
     "openLink": "링크 열기: {{label}}",
     "openAttachment": "{{name}} 열기",
     "skill": "스킬: {{name}}",

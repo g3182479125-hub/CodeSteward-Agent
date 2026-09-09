@@ -1,3 +1,5 @@
+import { localizeActivityText } from "./activity-copy";
+
 export function redactActivityText(value: string): string {
   return value
     .replace(/(https?:\/\/)[^/@\s]+@/gi, "$1<redacted>@")
@@ -57,7 +59,7 @@ export function summarizeShellCommand(command: string): string {
   const firstPreview = truncateMiddle(firstLine, 92);
   return lines.length <= 1
     ? firstPreview
-    : `${firstPreview} · script, ${lines.length} lines`;
+    : localizeActivityText(`${firstPreview} · 脚本，共 ${lines.length} 行`);
 }
 
 function truncateMiddle(value: string, maxLength: number): string {

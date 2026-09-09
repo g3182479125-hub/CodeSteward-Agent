@@ -31,7 +31,7 @@ describe("describeMcpActivity", () => {
 
   it("humanizes unknown tool names instead of exposing function syntax", () => {
     expect(describeMcpActivity("browser_export_report", {}, "done")).toEqual({
-      action: "Export report completed",
+      action: "Completed browser_export_report",
     });
   });
 });

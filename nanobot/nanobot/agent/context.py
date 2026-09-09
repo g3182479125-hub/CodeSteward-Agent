@@ -158,6 +158,10 @@ class ContextBuilder:
         if session_summary:
             parts.append(f"[Archived Context Summary]\n\n{session_summary}")
 
+        # Keep the language and visibility boundary last so dynamically loaded
+        # skills, history, and summaries cannot accidentally override it.
+        parts.append(render_template("agent/output_language.md"))
+
         return "\n\n---\n\n".join(parts)
 
     def _get_identity(self, channel: str | None = None, workspace: Path | None = None) -> str:

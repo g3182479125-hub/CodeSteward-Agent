@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "添付ファイルを利用できません",
     "dataTable": "データテーブル",
     "fileEditPreparing": "ファイル編集を準備中…",
+    "fileEditAction": {
+      "editing": "編集中",
+      "edited": "編集済み",
+      "deleting": "削除中",
+      "deleted": "削除済み",
+      "couldNotEdit": "編集できませんでした",
+      "couldNotDelete": "削除できませんでした"
+    },
     "openLink": "リンクを開く: {{label}}",
     "openAttachment": "開く: {{name}}",
     "skill": "スキル: {{name}}",

@@ -1326,6 +1326,14 @@
     "attachmentUnavailable": "Attachment unavailable",
     "dataTable": "Data table",
     "fileEditPreparing": "Preparing file edit…",
+    "fileEditAction": {
+      "editing": "Editing",
+      "edited": "Edited",
+      "deleting": "Deleting",
+      "deleted": "Deleted",
+      "couldNotEdit": "Could not edit",
+      "couldNotDelete": "Could not delete"
+    },
     "openLink": "Open link: {{label}}",
     "openAttachment": "Open {{name}}",
     "skill": "Skill: {{name}}",

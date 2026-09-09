@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "Lampiran tidak tersedia",
     "dataTable": "Tabel data",
     "fileEditPreparing": "Menyiapkan perubahan file…",
+    "fileEditAction": {
+      "editing": "Mengedit",
+      "edited": "Diedit",
+      "deleting": "Menghapus",
+      "deleted": "Dihapus",
+      "couldNotEdit": "Tidak dapat mengedit",
+      "couldNotDelete": "Tidak dapat menghapus"
+    },
     "openLink": "Buka tautan: {{label}}",
     "openAttachment": "Buka {{name}}",
     "skill": "Keterampilan: {{name}}",

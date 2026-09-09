@@ -1326,6 +1326,14 @@
     "attachmentUnavailable": "Anexo indisponível",
     "dataTable": "Tabela de dados",
     "fileEditPreparing": "Preparando a edição do arquivo…",
+    "fileEditAction": {
+      "editing": "Editando",
+      "edited": "Editado",
+      "deleting": "Excluindo",
+      "deleted": "Excluído",
+      "couldNotEdit": "Não foi possível editar",
+      "couldNotDelete": "Não foi possível excluir"
+    },
     "openLink": "Abrir link: {{label}}",
     "openAttachment": "Abrir {{name}}",
     "skill": "Habilidade: {{name}}",

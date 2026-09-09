@@ -1,3 +1,4 @@
+import { localizeActivityText } from "./activity-copy";
 import { compactActivityPath, redactActivityText } from "./activity-text";
 
 export type GenericToolStatus = "running" | "done" | "error";
@@ -105,7 +106,7 @@ export function canGroupGenericToolRuns(previous: GenericToolRunItem, next: Gene
 function compactGenericToolPath(value: string): string {
   const normalized = redactActivityText(value).replace(/\\/g, "/");
   if (isCollectedSourcePath(normalized)) {
-    return truncateMiddle(normalized.split("/").pop() || "collected source", 64);
+    return truncateMiddle(normalized.split("/").pop() || localizeActivityText("收集内容"), 64);
   }
   return compactActivityPath(normalized);
 }
@@ -197,63 +198,63 @@ function activityLabel(
   if (family === "content-search") {
     return statusCopy(
       status,
-      collected ? "Reviewing sources" : "Searching files",
-      collected ? "Reviewed sources" : "Searched files",
-      collected ? "Could not review sources" : "Could not search files",
+      collected ? "正在检查来源" : "正在搜索文件",
+      collected ? "已检查来源" : "已搜索文件",
+      collected ? "检查来源失败" : "搜索文件失败",
     );
   }
   if (family === "file-search") {
-    return statusCopy(status, "Finding files", "Found files", "Could not find files");
+    return statusCopy(status, "正在查找文件", "已找到文件", "查找文件失败");
   }
   if (family === "list") {
-    return statusCopy(status, "Listing files", "Listed files", "Could not list files");
+    return statusCopy(status, "正在列出文件", "已列出文件", "列出文件失败");
   }
   if (family === "read") {
     return statusCopy(
       status,
-      collected ? "Reading source" : "Reading file",
-      collected ? "Read source" : "Read file",
-      collected ? "Could not read source" : "Could not read file",
+      collected ? "正在读取来源" : "正在读取文件",
+      collected ? "已读取来源" : "已读取文件",
+      collected ? "读取来源失败" : "读取文件失败",
     );
   }
   if (family === "memory") {
-    return statusCopy(status, "Searching memory", "Searched memory", "Could not search memory");
+    return statusCopy(status, "正在搜索记忆", "已搜索记忆", "搜索记忆失败");
   }
 
   const action = fieldValue(items[0]?.trace, "action").toLowerCase();
   switch (name) {
     case "generate_image":
-      return statusCopy(status, "Generating image", "Generated image", "Could not generate image");
+      return statusCopy(status, "正在生成图片", "已生成图片", "生成图片失败");
     case "spawn":
-      return statusCopy(status, "Delegating task", "Delegated task", "Could not delegate task");
+      return statusCopy(status, "正在委派任务", "已委派任务", "委派任务失败");
     case "message":
-      return statusCopy(status, "Sending message", "Sent message", "Could not send message");
+      return statusCopy(status, "正在发送消息", "已发送消息", "发送消息失败");
     case "my":
       return action === "set" || action === "modify"
-        ? statusCopy(status, "Updating agent settings", "Updated agent settings", "Could not update agent settings")
-        : statusCopy(status, "Checking agent settings", "Checked agent settings", "Could not check agent settings");
+        ? statusCopy(status, "正在更新 Agent 设置", "已更新 Agent 设置", "更新 Agent 设置失败")
+        : statusCopy(status, "正在检查 Agent 设置", "已检查 Agent 设置", "检查 Agent 设置失败");
     case "cron":
-      if (action === "add") return statusCopy(status, "Scheduling automation", "Scheduled automation", "Could not schedule automation");
-      if (action === "remove") return statusCopy(status, "Removing automation", "Removed automation", "Could not remove automation");
-      return statusCopy(status, "Checking automations", "Checked automations", "Could not check automations");
+      if (action === "add") return statusCopy(status, "正在安排自动任务", "已安排自动任务", "安排自动任务失败");
+      if (action === "remove") return statusCopy(status, "正在移除自动任务", "已移除自动任务", "移除自动任务失败");
+      return statusCopy(status, "正在检查自动任务", "已检查自动任务", "检查自动任务失败");
     case "create_goal":
-      return statusCopy(status, "Starting long task", "Started long task", "Could not start long task");
+      return statusCopy(status, "正在启动长任务", "已启动长任务", "启动长任务失败");
     case "update_goal":
-      return statusCopy(status, "Updating long task", "Updated long task", "Could not update long task");
+      return statusCopy(status, "正在更新长任务", "已更新长任务", "更新长任务失败");
     case "write_stdin":
-      return statusCopy(status, "Continuing command", "Continued command", "Could not continue command");
+      return statusCopy(status, "正在继续命令", "已继续命令", "继续命令失败");
     case "list_exec_sessions":
-      return statusCopy(status, "Checking running commands", "Checked running commands", "Could not check running commands");
+      return statusCopy(status, "正在检查运行中的命令", "已检查运行中的命令", "检查运行中的命令失败");
     case "screenshot":
     case "capture_screenshot":
-      return statusCopy(status, "Capturing screenshot", "Captured screenshot", "Could not capture screenshot");
+      return statusCopy(status, "正在截取屏幕", "已截取屏幕", "截取屏幕失败");
     default: {
       const humanName = humanizeToolName(name);
       return statusCopy(
         status,
-        `Running ${humanName}`,
-        `Completed ${humanName}`,
-        `Could not complete ${humanName}`,
+        `正在执行工具 ${humanName}`,
+        `工具执行完成 ${humanName}`,
+        `工具执行失败 ${humanName}`,
       );
     }
   }
@@ -303,12 +304,12 @@ function activityDetail(items: GenericToolRunItem[], family: ToolFamily, name: s
 
 function activityAside(items: GenericToolRunItem[], family: ToolFamily): string {
   const pathCount = uniqueValues(items, ["path", "file_path"]).length;
-  if (pathCount > 1) return `${pathCount} files`;
+  if (pathCount > 1) return localizeActivityText(`${pathCount} 个文件`);
   if (items.length <= 1) return "";
   if (family === "content-search" || family === "file-search" || family === "memory") {
-    return `${items.length} searches`;
+    return localizeActivityText(`${items.length} 次搜索`);
   }
-  return `${items.length} actions`;
+  return localizeActivityText(`${items.length} 个动作`);
 }
 
 function fieldValue(trace: GenericToolTrace | undefined, key: ToolField["key"]): string {
@@ -323,7 +324,7 @@ function uniqueValues(items: GenericToolRunItem[], keys: ToolField["key"][]): st
 }
 
 function statusCopy(status: GenericToolStatus, running: string, done: string, failed: string): string {
-  return status === "running" ? running : status === "error" ? failed : done;
+  return localizeActivityText(status === "running" ? running : status === "error" ? failed : done);
 }
 
 function compactDetail(value: string): string {

@@ -1326,6 +1326,14 @@
     "attachmentUnavailable": "附件不可用",
     "dataTable": "数据表",
     "fileEditPreparing": "正在准备文件编辑…",
+    "fileEditAction": {
+      "editing": "正在编辑",
+      "edited": "已编辑",
+      "deleting": "正在删除",
+      "deleted": "已删除",
+      "couldNotEdit": "编辑失败",
+      "couldNotDelete": "删除失败"
+    },
     "openLink": "打开链接：{{label}}",
     "openAttachment": "打开 {{name}}",
     "skill": "技能：{{name}}",

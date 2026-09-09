@@ -1297,6 +1297,14 @@
     "attachmentUnavailable": "Tệp đính kèm không khả dụng",
     "dataTable": "Bảng dữ liệu",
     "fileEditPreparing": "Đang chuẩn bị sửa tệp…",
+    "fileEditAction": {
+      "editing": "Đang sửa",
+      "edited": "Đã sửa",
+      "deleting": "Đang xóa",
+      "deleted": "Đã xóa",
+      "couldNotEdit": "Không thể sửa",
+      "couldNotDelete": "Không thể xóa"
+    },
     "openLink": "Mở liên kết: {{label}}",
     "openAttachment": "Mở {{name}}",
     "skill": "Kỹ năng: {{name}}",

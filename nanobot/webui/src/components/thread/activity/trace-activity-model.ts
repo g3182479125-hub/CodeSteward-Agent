@@ -1,4 +1,5 @@
 import type { GenericToolStatus } from "./generic-tool-model";
+import { localizeActivityText } from "./activity-copy";
 import { safeActivityDetail, summarizeShellCommand } from "./activity-text";
 import { presentWebSearchAction } from "./web-search-model";
 import { displayWebHost, formatCompactWebUrl, parseSafeActivityHttpUrl } from "./web-url";
@@ -39,9 +40,9 @@ export function describeTraceLine(
     const pageTitle = parsedUrl ? webPageTitle(result) : "";
     return {
       kind: "tool",
-      label: pageTitle || statusCopy(status, "Reading", "Read", "Could not read"),
+      label: pageTitle || statusCopy(status, "正在读取", "已读取", "读取失败"),
       detail: webDetail || (/^https?:\/\//i.test(rawTarget.trim())
-        ? "Private address"
+        ? localizeActivityText("私有地址")
         : safeActivityDetail(rawTarget)),
       url: parsedUrl?.href,
       host: parsedUrl ? displayWebHost(parsedUrl.hostname) : undefined,
@@ -49,10 +50,10 @@ export function describeTraceLine(
   }
   if (isShellTraceName(name)) return describeShellTrace(args, trimmed, status);
   if (name === "write_file") {
-    return describeFileMutationTrace(args, status, "Writing file", "Wrote file", "Could not write file");
+    return describeFileMutationTrace(args, status, "正在写入文件", "已写入文件", "写入文件失败");
   }
   if (name === "edit_file" || name === "apply_patch") {
-    return describeFileMutationTrace(args, status, "Editing file", "Edited file", "Could not edit file");
+    return describeFileMutationTrace(args, status, "正在编辑文件", "已编辑文件", "编辑文件失败");
   }
   if (name) {
     const action = humanizeTraceToolName(name);
@@ -60,19 +61,19 @@ export function describeTraceLine(
       kind: "tool",
       label: statusCopy(
         status,
-        `Running ${action}`,
-        `Completed ${action}`,
-        `Could not complete ${action}`,
+        `正在执行工具 ${action}`,
+        `工具执行完成 ${action}`,
+        `工具执行失败 ${action}`,
       ),
       detail: "",
     };
   }
   if (/done|complete|success/i.test(trimmed)) {
-    return { kind: "done", label: "Completed step", detail: safeActivityDetail(trimmed) };
+    return { kind: "done", label: localizeActivityText("步骤已完成"), detail: safeActivityDetail(trimmed) };
   }
   return {
     kind: status === "done" ? "done" : "trace",
-    label: statusCopy(status, "Working", "Completed step", "Step failed"),
+    label: statusCopy(status, "处理中", "步骤已完成", "步骤失败"),
     detail: safeActivityDetail(trimmed),
   };
 }
@@ -98,9 +99,9 @@ function describeShellTrace(
       kind: "tool",
       label: statusCopy(
         status,
-        "Checking current time",
-        "Checked current time",
-        "Could not check current time",
+        "正在检查当前时间",
+        "已检查当前时间",
+        "检查当前时间失败",
       ),
       detail: "",
       icon: "clock",
@@ -108,7 +109,7 @@ function describeShellTrace(
   }
   return {
     kind: "tool",
-    label: statusCopy(status, "Running command", "Ran command", "Command failed"),
+    label: statusCopy(status, "正在运行命令", "已运行命令", "命令执行失败"),
     detail: summarizeShellCommand(command),
   };
 }
@@ -134,7 +135,7 @@ function statusCopy(
   done: string,
   failed: string,
 ): string {
-  return status === "running" ? running : status === "error" ? failed : done;
+  return localizeActivityText(status === "running" ? running : status === "error" ? failed : done);
 }
 
 function traceFieldFromArgs(args: string, keys: string[]): string {

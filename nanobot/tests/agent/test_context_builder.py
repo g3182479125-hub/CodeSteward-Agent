@@ -331,6 +331,13 @@ class TestBuildUserContent:
 
 
 class TestBuildSystemPrompt:
+    def test_requires_simplified_chinese_for_user_visible_output(self, tmp_path):
+        prompt = _builder(tmp_path).build_system_prompt()
+
+        assert "所有面向用户的文字必须使用简体中文" in prompt
+        assert "工作进度、工具调用说明、状态描述" in prompt
+        assert "代码、文件路径、命令、函数名" in prompt
+
     def test_returns_nonempty_string(self, tmp_path):
         builder = _builder(tmp_path)
         result = builder.build_system_prompt()

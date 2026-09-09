@@ -1,6 +1,7 @@
 import { canonicalToolTrace, formatToolCallTrace } from "@/lib/tool-traces";
 import type { ToolProgressEvent } from "@/lib/types";
 
+import { localizeActivityText } from "./activity-copy";
 import { redactActivityText, safeActivityDetail } from "./activity-text";
 import { displayWebHost, formatCompactWebUrl, parseSafeActivityHttpUrl } from "./web-url";
 
@@ -97,15 +98,15 @@ export function presentWebSearchAction(
 ): string {
   const presentation = presentWebSearchQuery(query);
   const verb = status === "error"
-    ? "Could not search"
+    ? "搜索失败"
     : status === "running"
-      ? "Searching"
-      : "Searched";
+      ? "正在搜索"
+      : "已搜索";
   const queryTarget = [presentation.scope, presentation.query].filter(Boolean).join(" · ");
   if (target === "x") {
-    return queryTarget ? `${verb} X · ${queryTarget}` : `${verb} X`;
+    return localizeActivityText(queryTarget ? `${verb} X · ${queryTarget}` : `${verb} X`);
   }
-  return queryTarget ? `${verb} ${queryTarget}` : `${verb} the web`;
+  return localizeActivityText(queryTarget ? `${verb} ${queryTarget}` : `${verb}网页`);
 }
 
 function mergeWebSearchRun(
@@ -278,7 +279,7 @@ function readableError(error: unknown): string | undefined {
   try {
     return safeErrorText(JSON.stringify(error));
   } catch {
-    return "Web search failed";
+    return localizeActivityText("网页搜索失败");
   }
 }
 

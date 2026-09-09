@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 
 import { cliAppInitials, mcpPresetInitials } from "@/components/CliAppMentionText";
 import { ActivityStep } from "@/components/thread/activity/ActivityStep";
+import { localizeActivityText } from "@/components/thread/activity/activity-copy";
 import { coalesceActivityMessages } from "@/components/thread/activity/activity-message-model";
 import {
   compactActivityPath,
@@ -707,7 +708,7 @@ function toolProgressError(error: unknown): string | undefined {
     try {
       return JSON.stringify(error);
     } catch {
-      return "Tool call failed";
+      return localizeActivityText("工具调用失败");
     }
   }
   return undefined;
@@ -1093,8 +1094,8 @@ function CliRunRow({ run, active, app }: { run: CliRunSummary; active: boolean; 
   const logoUrls = useMemo(() => logoFallbackUrls(app?.logo_url), [app?.logo_url]);
   const { logoUrl, onLogoError, onLogoLoad } = useLogoFallback(logoUrls);
   const displayName = app?.display_name || titleFromPresetName(run.name);
-  const action = failed ? "Could not use" : rowActive ? "Using" : "Used";
-  const label = `${action} ${displayName}${args ? ` · ${args}` : ""}`;
+  const action = failed ? "无法使用" : rowActive ? "正在使用" : "已使用";
+  const label = localizeActivityText(`${action} ${displayName}${args ? ` · ${args}` : ""}`);
 
   return (
     <ActivityStep
