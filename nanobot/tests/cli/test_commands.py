@@ -187,6 +187,7 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
             agent=agent,
             cron=service,
             deliver=deliver,
+            gateway_workspace=project_workspace,
         )
         triggered.append(job.id)
         job.enabled = False
@@ -224,6 +225,16 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
         enabled=True,
         max_tokens=12_000,
     )
+
+    with pytest.raises(CronJobSkippedError, match="outside the Gateway workspace"):
+        await cli_gateway_runtime._run_scheduled_skill_batch(
+            job,
+            agent=agent,
+            cron=service,
+            deliver=deliver,
+            gateway_workspace=tmp_path / "another-gateway-workspace",
+        )
+    assert "process_kwargs" not in seen
 
     await service.start()
     try:

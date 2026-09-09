@@ -291,6 +291,7 @@ async def _run_scheduled_skill_batch(
     agent: Any,
     cron: Any,
     deliver: Callable[[Any], Awaitable[None]],
+    gateway_workspace: Path,
 ) -> str | None:
     """Run one explicitly configured P8-03 batch through native Cron."""
     from nanobot.bus.events import OutboundMessage
@@ -321,6 +322,8 @@ async def _run_scheduled_skill_batch(
     configured = store.get_scheduled_batch(marker_batch_id)
     if configured is None or configured.job_id != job.id:
         raise CronJobSkippedError("scheduled Skill batch binding is invalid")
+    if str(Path(gateway_workspace).expanduser().resolve()) != configured.workspace:
+        raise CronJobSkippedError("scheduled Skill batch is outside the Gateway workspace")
     if str(Path(marker_workspace).expanduser().resolve()) != configured.workspace:
         raise CronJobSkippedError("scheduled Skill batch workspace binding is invalid")
     scope_path = marker_scope.get("project_path") or marker_scope.get("path")
@@ -830,6 +833,7 @@ def _run_gateway(
                 agent=agent,
                 cron=cron,
                 deliver=_deliver_to_channel,
+                gateway_workspace=config.workspace_path,
             )
 
         if is_bound_cron_job(job):
