@@ -145,6 +145,8 @@ class TurnContext:
     delivery: TurnDelivery
     original_user_text: str | None = None
     session: Session | None = None
+    max_iterations: int | None = None
+    finalize_on_max_iterations: bool | None = None
 
     history: list[dict[str, Any]] = field(default_factory=list)
     initial_messages: list[dict[str, Any]] = field(default_factory=list)
@@ -1250,6 +1252,8 @@ class AgentLoop:
         on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
         *,
         runtime: LLMRuntime,
+        max_iterations: int | None = None,
+        finalize_on_max_iterations: bool | None = None,
         session: Session | None = None,
         channel: str = "cli",
         chat_id: str = "direct",
@@ -1466,7 +1470,9 @@ class AgentLoop:
                 initial_messages=initial_messages,
                 tools=effective_tools,
                 runtime=runtime,
-                max_iterations=self.max_iterations,
+                max_iterations=(
+                    max_iterations if max_iterations is not None else self.max_iterations
+                ),
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=hook,
                 error_message="Sorry, I encountered an error calling the AI model.",
@@ -1491,10 +1497,14 @@ class AgentLoop:
                 goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
                 goal_continue_message=_goal_continue,
                 request_context=request_ctx,
-                finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
-                    pending_queue_available=pending_queue is not None and session is not None,
-                    session_metadata=session_metadata,
-                    message_metadata=metadata,
+                finalize_on_max_iterations=(
+                    finalize_on_max_iterations
+                    if finalize_on_max_iterations is not None
+                    else turn_continuation.should_finalize_on_max_iterations(
+                        pending_queue_available=pending_queue is not None and session is not None,
+                        session_metadata=session_metadata,
+                        message_metadata=metadata,
+                    )
                 ),
                 provider_state=provider_state,
                 loop_guard=loop_guard,
@@ -1865,6 +1875,8 @@ class AgentLoop:
         hook_factories: list[AgentTurnHookFactory] | None = None,
         tools: ToolRegistry | None = None,
         runtime: LLMRuntime | None = None,
+        max_iterations: int | None = None,
+        finalize_on_max_iterations: bool | None = None,
         delivery: TurnDelivery | None = None,
         on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
         attributes: Mapping[str, Any] | None = None,
@@ -1895,6 +1907,8 @@ class AgentLoop:
             runtime=runtime,
             kind=kind,
             delivery=delivery,
+            max_iterations=max_iterations,
+            finalize_on_max_iterations=finalize_on_max_iterations,
             original_user_text=(
                 None
                 if kind is TurnKind.SYSTEM
@@ -2276,6 +2290,8 @@ class AgentLoop:
         result = await self._run_agent_loop(
             ctx.initial_messages,
             runtime=runtime,
+            max_iterations=ctx.max_iterations,
+            finalize_on_max_iterations=ctx.finalize_on_max_iterations,
             on_progress=ctx.on_progress,
             on_stream=ctx.on_stream,
             on_stream_end=ctx.on_stream_end,
@@ -2721,6 +2737,9 @@ class AgentLoop:
         tools: ToolRegistry | None = None,
         persist_user_message: bool = True,
         runtime: LLMRuntime | None = None,
+        max_iterations: int | None = None,
+        finalize_on_max_iterations: bool | None = None,
+        metadata: Mapping[str, Any] | None = None,
         on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
         attributes: Mapping[str, Any] | None = None,
     ) -> OutboundMessage | None:
@@ -2728,12 +2747,12 @@ class AgentLoop:
         if channel == "system":
             raise ValueError("channel 'system' is reserved for internal messages")
         await self._connect_mcp()
-        metadata: dict[str, Any] = {}
+        message_metadata: dict[str, Any] = dict(metadata or {})
         if not persist_user_message:
-            metadata[turn_continuation.SKIP_USER_PERSIST_META] = True
+            message_metadata[turn_continuation.SKIP_USER_PERSIST_META] = True
         msg = InboundMessage(
             channel=channel, sender_id=sender_id, chat_id=chat_id,
-            content=content, media=media or [], metadata=metadata,
+            content=content, media=media or [], metadata=message_metadata,
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._get_session_lock(session_key)
@@ -2756,6 +2775,10 @@ class AgentLoop:
                     kwargs["tools"] = tools
                 if runtime is not None:
                     kwargs["runtime"] = runtime
+                if max_iterations is not None:
+                    kwargs["max_iterations"] = max_iterations
+                if finalize_on_max_iterations is not None:
+                    kwargs["finalize_on_max_iterations"] = finalize_on_max_iterations
                 if on_runtime_admitted is not None:
                     kwargs["on_runtime_admitted"] = on_runtime_admitted
                 if attributes is not None:

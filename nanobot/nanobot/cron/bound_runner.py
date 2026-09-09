@@ -74,6 +74,9 @@ async def run_bound_cron_job(
     session_key_override: str | None = None,
     sender_id_override: str | None = None,
     runtime: LLMRuntime | None = None,
+    max_iterations: int | None = None,
+    finalize_on_max_iterations: bool | None = None,
+    metadata: dict[str, Any] | None = None,
     ephemeral: bool = False,
 ) -> str | None:
     """Execute a session-bound cron job as a normal agent session turn."""
@@ -90,12 +93,14 @@ async def run_bound_cron_job(
     prompt_ref = _cron_prompt_ref(prompt)
     effective_message = message_override if message_override is not None else job.payload.message
     run_id = f"{job.id}:{int(time.time() * 1000)}:{uuid.uuid4().hex[:8]}"
-    channel, chat_id, metadata = _bound_session_delivery_context(
+    channel, chat_id, turn_metadata = _bound_session_delivery_context(
         job,
         turn_seed=f"cron:{job.id}",
         source_label=job.name,
     )
-    metadata[CRON_TRIGGER_META] = {
+    if metadata:
+        turn_metadata.update(metadata)
+    turn_metadata[CRON_TRIGGER_META] = {
         "job_id": job.id,
         "job_name": job.name,
         "run_id": run_id,
@@ -104,7 +109,7 @@ async def run_bound_cron_job(
             f"Scheduled cron job triggered: {job.name}\n\n{job.payload.message}"
         ),
     }
-    metadata[CRON_DEFER_UNTIL_IDLE_META] = True
+    turn_metadata[CRON_DEFER_UNTIL_IDLE_META] = True
     run_record_base: dict[str, Any] = {
         "job_id": job.id,
         "job_name": job.name,
@@ -134,7 +139,7 @@ async def run_bound_cron_job(
                     sender_id=sender_id,
                     chat_id=chat_id,
                     content=prompt,
-                    metadata=metadata,
+                    metadata=turn_metadata,
                     attributes=dict(trusted_attributes or {}),
                     session_key_override=session_key,
                 )
@@ -153,6 +158,9 @@ async def run_bound_cron_job(
                 persist_user_message=False,
                 ephemeral=ephemeral,
                 runtime=runtime,
+                max_iterations=max_iterations,
+                finalize_on_max_iterations=finalize_on_max_iterations,
+                metadata=turn_metadata,
                 attributes=dict(trusted_attributes or {}),
             )
     except (Exception, asyncio.CancelledError) as exc:

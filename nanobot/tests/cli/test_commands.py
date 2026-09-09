@@ -89,6 +89,7 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
 
     from nanobot.agent.tools.context import RequestContext, request_context
     from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.channels.websocket.runtime import WebSocketChannel
     from nanobot.cron.types import CronSchedule
 
     project_id = f"project-{content_sha256(str(project_workspace))[:12]}"
@@ -156,8 +157,27 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     triggered: list[str] = []
     agent = _Agent()
 
+    class _Connection:
+        def __init__(self) -> None:
+            self.frames: list[str] = []
+
+        async def send(self, raw: str) -> None:
+            self.frames.append(raw)
+
+    connection = _Connection()
+    websocket_channel = object.__new__(WebSocketChannel)
+    websocket_channel._subs = {"chat": {connection}}
+    websocket_channel._media = SimpleNamespace(
+        rewrite_local_markdown_images=lambda value: value,
+        sign_or_stage_media_path=lambda _path: None,
+    )
+    websocket_channel._temporary_chats = SimpleNamespace(
+        should_persist_transcript=lambda _chat_id: False,
+    )
+
     async def deliver(message: OutboundMessage) -> None:
         delivered.append(message)
+        await websocket_channel.send(message)
 
     service: CronService
 
@@ -184,7 +204,15 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
         session_key="websocket:chat",
         origin_channel="websocket",
         origin_chat_id="chat",
-        origin_metadata={"devpilot_skill_batch": True, "batch_id": batch_id},
+        origin_metadata={
+            "devpilot_skill_batch": True,
+            "batch_id": batch_id,
+            "workspace": str(project_workspace),
+            "workspace_scope": {
+                "project_path": str(project_workspace),
+                "access_mode": "full",
+            },
+        },
     )
     store.configure_scheduled_batch(
         batch_id=batch_id,
@@ -203,6 +231,7 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
         while not triggered and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
     finally:
+        service.remove_job(job.id)
         service.stop()
 
     assert triggered == [job.id]
@@ -213,9 +242,19 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     assert len(delivered) == 1
     assert delivered[0].channel == "websocket"
     assert "scheduled candidate result" in delivered[0].content
+    assert json.loads(connection.frames[0]) == {
+        "event": "message",
+        "chat_id": "chat",
+        "text": delivered[0].content,
+    }
     assert seen["process_kwargs"]["sender_id"] == "user"  # type: ignore[index]
     assert seen["process_kwargs"]["session_key"] == f"devpilot:skill-batch:{batch_id}"  # type: ignore[index]
-    assert seen["runtime_max_tokens"] == 12_000
+    assert seen["runtime_max_tokens"] == 6_000
+    assert seen["process_kwargs"]["max_iterations"] == 2  # type: ignore[index]
+    assert seen["process_kwargs"]["finalize_on_max_iterations"] is False  # type: ignore[index]
+    assert seen["process_kwargs"]["metadata"]["workspace_scope"]["project_path"] == str(  # type: ignore[index]
+        project_workspace
+    )
 
 
 def _without_rendered_line_breaks(output: str) -> str:

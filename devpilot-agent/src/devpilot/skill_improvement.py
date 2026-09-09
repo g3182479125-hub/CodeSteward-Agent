@@ -986,14 +986,43 @@ class SkillImprovementStore:
                 return ScheduledBatchClaim("busy", batch)
             baseline = self.read_effective_snapshot(batch.workspace)
             processed = set(batch.processed_evidence_ids)
-            if batch.status in {"running", "failed"} and batch.candidate_id:
-                candidate = self.get_candidate(
-                    batch.candidate_id,
-                    workspace=batch.workspace,
-                    user_id=batch.user_id,
-                    project_id=batch.project_id,
+            if batch.status in {"running", "failed"}:
+                candidate = (
+                    self.get_candidate(
+                        batch.candidate_id,
+                        workspace=batch.workspace,
+                        user_id=batch.user_id,
+                        project_id=batch.project_id,
+                    )
+                    if batch.candidate_id
+                    else None
                 )
-                if candidate is not None:
+                if candidate is None:
+                    # Candidate creation and batch registration are two durable
+                    # records. A worker may die between those writes, so
+                    # recover the orphan by its immutable batch/evidence scope
+                    # before allowing another model attempt.
+                    orphan_candidates = [
+                        item
+                        for item in self.list_candidates(
+                            batch_id=batch.batch_id,
+                            workspace=batch.workspace,
+                            user_id=batch.user_id,
+                            project_id=batch.project_id,
+                        )
+                        if item.status == "pending_evaluation"
+                        and set(item.evidence_ids) == set(batch.claimed_evidence_ids)
+                    ]
+                    if orphan_candidates:
+                        candidate = sorted(
+                            orphan_candidates,
+                            key=lambda item: (item.created_at, item.candidate_id),
+                        )[-1]
+                if (
+                    candidate is not None
+                    and batch.claimed_evidence_ids
+                    and set(candidate.evidence_ids) == set(batch.claimed_evidence_ids)
+                ):
                     evidence = [
                         self.get_feedback(item) for item in batch.claimed_evidence_ids
                     ]
@@ -1014,6 +1043,7 @@ class SkillImprovementStore:
                         lease_owner=None,
                         lease_expires_at=None,
                         consecutive_failures=0,
+                        candidate_id=candidate.candidate_id,
                         last_error=None,
                         last_candidate_ids=(candidate.candidate_id,),
                         updated_at=_now(),
@@ -1035,7 +1065,7 @@ class SkillImprovementStore:
                 and item.evidence_id not in processed
                 and (batch.cursor_at is None or item.occurred_at >= batch.cursor_at)
             ][:_MAX_SCHEDULED_BATCH_EVIDENCE]
-            if batch.status == "failed" and (
+            if batch.status in {"running", "failed"} and (
                 batch.candidate_attempts >= batch.max_model_calls
                 or batch.token_count >= batch.max_tokens
                 or batch.consecutive_failures >= batch.max_model_calls
@@ -1063,7 +1093,7 @@ class SkillImprovementStore:
                 self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
                 return ScheduledBatchClaim("no_new_evidence", updated)
             deadline = now + min(batch.max_duration_seconds, _MAX_SCHEDULED_DURATION_SECONDS)
-            retrying = batch.status == "failed"
+            retrying = batch.status in {"running", "failed"}
             updated = replace(
                 batch,
                 status="running",

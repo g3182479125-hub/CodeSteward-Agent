@@ -1211,6 +1211,27 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     else:
                         schedule, options, _timezone = parsed
                         new_job = False
+                        current_scope = (
+                            ctx.loop.workspace_scopes.for_message(
+                                ctx.msg,
+                                ctx.session.metadata if ctx.session is not None else {},
+                            )
+                            if ctx.session is not None
+                            else None
+                        )
+                        batch_origin_metadata = {
+                            "devpilot_skill_batch": True,
+                            "batch_id": batch_id,
+                            "workspace": str(workspace),
+                            "workspace_scope": (
+                                current_scope.metadata()
+                                if current_scope is not None
+                                else {
+                                    "project_path": str(workspace),
+                                    "access_mode": "full",
+                                }
+                            ),
+                        }
                         job = cron.get_job(batch.job_id) if batch is not None else None
                         if job is None:
                             for candidate_job in cron.list_jobs(include_disabled=True):
@@ -1232,13 +1253,11 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                                     session_key=ctx.key,
                                     origin_channel=ctx.msg.channel,
                                     origin_chat_id=ctx.msg.chat_id,
-                                    origin_metadata={
-                                        "devpilot_skill_batch": True,
-                                        "batch_id": batch_id,
-                                    },
+                                    origin_metadata=batch_origin_metadata,
                                 )
                                 new_job = True
                             else:
+                                job.payload.origin_metadata = batch_origin_metadata
                                 updated_job = cron.update_job(
                                     job.id,
                                     schedule=schedule,

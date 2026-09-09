@@ -218,6 +218,80 @@ def test_saved_candidate_is_recovered_after_lease_expiry(tmp_path: Path) -> None
     assert recovered.evidence == ()
 
 
+def test_orphan_candidate_is_recovered_before_a_duplicate_model_attempt(
+    tmp_path: Path,
+) -> None:
+    store, workspace, baseline, evidence_id = _store(tmp_path)
+    batch_id = _configure(store, workspace)
+    claim = store.claim_scheduled_batch("cron-1", lease_owner="owner-1")
+    assert claim is not None and claim.status == "claimed"
+    store.reserve_scheduled_candidate_attempt(
+        batch_id,
+        lease_owner="owner-1",
+        estimated_tokens=100,
+    )
+    # Simulate a worker dying after the candidate file is durable but before
+    # the batch reference is committed.
+    candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-1",
+        skill_path="skills/bug-fix/SKILL.md",
+        baseline_content=baseline,
+        candidate_content=baseline + "\n- Keep the candidate private.\n",
+        evidence_ids=[evidence_id],
+        reason="The prior task did not keep the candidate private.",
+        expected_behavior="The scheduled result remains pending evaluation.",
+        test_set_version="p8-02-v1",
+        batch_id=batch_id,
+        workspace=workspace,
+    )
+    running = store.get_scheduled_batch(batch_id)
+    assert running is not None and running.candidate_id is None
+    store._atomic_write(  # type: ignore[attr-defined]  # simulate a crashed worker lease
+        store.batches_dir / f"{batch_id}.json",
+        replace(running, lease_expires_at=time.time() - 1).to_dict(),
+    )
+
+    recovered = store.claim_scheduled_batch("cron-1", lease_owner="owner-2")
+    assert recovered is not None and recovered.status == "candidate_created"
+    assert recovered.batch.candidate_id == candidate.candidate_id
+    assert recovered.batch.candidate_attempts == 1
+    assert recovered.batch.processed_evidence_ids == (evidence_id,)
+
+
+def test_expired_running_batch_preserves_cumulative_retry_budget(
+    tmp_path: Path,
+) -> None:
+    store, workspace, _baseline_text, _evidence_id = _store(tmp_path)
+    batch_id = _configure(store, workspace)
+    first = store.claim_scheduled_batch("cron-1", lease_owner="owner-1")
+    assert first is not None and first.status == "claimed"
+    store.reserve_scheduled_candidate_attempt(
+        batch_id,
+        lease_owner="owner-1",
+        estimated_tokens=6_000,
+    )
+    running = store.get_scheduled_batch(batch_id)
+    assert running is not None
+    store._atomic_write(  # type: ignore[attr-defined]  # simulate a crashed worker lease
+        store.batches_dir / f"{batch_id}.json",
+        replace(running, lease_expires_at=time.time() - 1).to_dict(),
+    )
+
+    retry = store.claim_scheduled_batch("cron-1", lease_owner="owner-2")
+    assert retry is not None and retry.status == "claimed"
+    assert retry.batch.candidate_attempts == 1
+    assert retry.batch.token_count == 6_000
+    store.reserve_scheduled_candidate_attempt(
+        batch_id,
+        lease_owner="owner-2",
+        estimated_tokens=6_000,
+    )
+    store.finish_scheduled_batch(batch_id, lease_owner="owner-2", error="provider timeout")
+    exhausted = store.claim_scheduled_batch("cron-1", lease_owner="owner-3")
+    assert exhausted is not None and exhausted.status == "budget_exhausted"
+
+
 def test_failed_scheduled_retries_preserve_and_exhaust_cumulative_budget(
     tmp_path: Path,
 ) -> None:

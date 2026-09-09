@@ -311,10 +311,24 @@ async def _run_scheduled_skill_batch(
     marker_batch_id = marker.get("batch_id")
     if not isinstance(marker_batch_id, str) or not marker_batch_id:
         raise CronJobSkippedError("scheduled Skill batch marker is incomplete")
+    marker_workspace = marker.get("workspace")
+    marker_scope = marker.get("workspace_scope")
+    if not isinstance(marker_workspace, str) or not marker_workspace.strip():
+        raise CronJobSkippedError("scheduled Skill batch workspace marker is missing")
+    if not isinstance(marker_scope, dict):
+        raise CronJobSkippedError("scheduled Skill batch workspace scope is missing")
     store = SkillImprovementStore.from_environment()
     configured = store.get_scheduled_batch(marker_batch_id)
     if configured is None or configured.job_id != job.id:
         raise CronJobSkippedError("scheduled Skill batch binding is invalid")
+    if str(Path(marker_workspace).expanduser().resolve()) != configured.workspace:
+        raise CronJobSkippedError("scheduled Skill batch workspace binding is invalid")
+    scope_path = marker_scope.get("project_path") or marker_scope.get("path")
+    if (
+        not isinstance(scope_path, str)
+        or str(Path(scope_path).expanduser().resolve()) != configured.workspace
+    ):
+        raise CronJobSkippedError("scheduled Skill batch scope binding is invalid")
     # Rebind the store to the persisted project workspace before any
     # snapshot/evidence access; the job marker alone is not a scope.
     store = SkillImprovementStore.from_environment(configured.workspace)
@@ -370,9 +384,14 @@ async def _run_scheduled_skill_batch(
 
     try:
         runtime_factory = getattr(agent, "llm_runtime", None)
+        per_call_tokens = max(
+            1,
+            (claim.batch.max_tokens + claim.batch.max_model_calls - 1)
+            // claim.batch.max_model_calls,
+        )
         runtime = (
             runtime_factory().with_generation_overrides(
-                max_tokens=claim.batch.max_tokens
+                max_tokens=per_call_tokens
             )
             if callable(runtime_factory)
             else None
@@ -391,6 +410,9 @@ async def _run_scheduled_skill_batch(
                 ),
                 sender_id_override=claim.batch.user_id,
                 runtime=runtime,
+                max_iterations=claim.batch.max_model_calls,
+                finalize_on_max_iterations=False,
+                metadata={"workspace_scope": marker_scope},
                 ephemeral=True,
             ),
             timeout=remaining,
