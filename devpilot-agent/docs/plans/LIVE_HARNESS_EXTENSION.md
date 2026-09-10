@@ -1,8 +1,9 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
 版本：0.2，2026-09-10；状态：计划初稿已完成一次独立审查并集中修订一轮。
-当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2–H10
-尚未实现。本文件仍是 H 阶段的范围和验收约束，不能把计划内容当作已具备能力。
+当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
+`b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3–H10 尚未实现。本文件仍是 H 阶段的
+范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
 
@@ -320,11 +321,12 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | 节点 | 状态 | 实际证据 |
 |---|---|---|
 | H1 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h1-contract-baseline.md`、`docs/reviews/h1-*-review-2930119.md` |
-| H2–H10 | 未开始 | 无；本文件是计划 |
+| H2 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h2-plugin-lifecycle.md`、`docs/reviews/h2-*-review-b8141f0.md` |
+| H3–H10 | 未开始 | 无；本文件是计划 |
 
 ## 8. 下一条开发指令
 
-“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1 已完成，不要重做。先核对 HEAD 和本地修改，按 H2 实现受信 manager/routing 与原生命令，让已登记的本地工具在不重启进程的情况下 load/stop；保留旧 ToolLoader 默认路径，完成 H2 验收和节点双轴审查，未完成 H2 不开始 H3。”
+“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2 已完成，不要重做。先核对 HEAD 和本地修改，按 H3 实现不可变版本更新、资源排空和清理；保留 H2 的无重启工具 load/stop、旧 ToolLoader 和现有 nanobot 行为，完成 H3 验收和节点双轴审查，未完成 H3 不开始 H4。”
 
 ## 9. 本次一次审查与一轮修订记录
 
