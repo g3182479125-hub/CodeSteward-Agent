@@ -1180,7 +1180,24 @@ class AgentLoop:
         dispatch_fn: Callable[[CommandContext], Awaitable[OutboundMessage | None]],
     ) -> None:
         """Dispatch a command directly from the run() loop and publish the result."""
-        ctx = CommandContext(msg=msg, session=None, key=key, raw=raw, loop=self)
+        session = self.sessions.get_cached(key)
+        _, automation_metadata = automation_history_overrides(msg.metadata)
+        ctx = CommandContext(
+            msg=msg,
+            session=session,
+            key=key,
+            raw=raw,
+            loop=self,
+            is_user_turn=(
+                not automation_metadata
+                and msg.channel != "system"
+                and msg.sender_id != "subagent"
+            ),
+            workspace=self.workspace_scopes.for_message(
+                msg,
+                session.metadata if session is not None else None,
+            ).project_path,
+        )
         result = await dispatch_fn(ctx)
         if result:
             await self.bus.publish_outbound(result)
@@ -1449,6 +1466,12 @@ class AgentLoop:
 
         session_metadata = session.metadata if session is not None else None
         profile = self.task_profile_for_session(session) if session is not None else None
+        effective_tools = self.plugin_manager.live_tools_for_session(
+            effective_tools,
+            active_session_key or "",
+            project_id=self.plugin_manager.project_id_for_path(effective_scope.project_path),
+            policy=profile.dynamic_plugins if profile is not None else None,
+        )
         loop_guard = self._task_loop_guard(session, profile) if session is not None and profile else None
         try:
             for scope in turn_scopes or ():

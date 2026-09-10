@@ -86,6 +86,7 @@ class _Operation:
     state: str
     result: PluginOperationResult
     event: asyncio.Event
+    scope_key: ScopeKey
 
 
 class PluginManager:
@@ -286,6 +287,7 @@ class PluginManager:
             action="load",
             plugin_id=plugin_id,
             version=version,
+            scope_key=scope_key,
             state=PluginLifecycle.ACTIVE.value,
             result=PluginOperationResult.success(
                 "plugin loaded for the current scope",
@@ -329,6 +331,7 @@ class PluginManager:
             action="stop",
             plugin_id=plugin_id,
             version=manifest.version,
+            scope_key=scope_key,
             state=PluginLifecycle.DRAINING.value,
             result=PluginOperationResult.success(
                 "plugin route retired; existing calls are draining",
@@ -353,10 +356,17 @@ class PluginManager:
             task.add_done_callback(self._drain_tasks.discard)
         return operation.result
 
-    async def wait_operation(self, operation_id: str, *, timeout: float | None = None) -> dict[str, Any]:
+    async def wait_operation(
+        self,
+        operation_id: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         """Wait for an H2 operation without blocking message consumption."""
         operation = self._operations.get(operation_id)
-        if operation is None:
+        if operation is None or not self._operation_visible(operation, session_id, project_id):
             return {"ok": False, "code": "operation_not_found", "operation_id": operation_id}
         try:
             if not operation.event.is_set():
@@ -368,9 +378,28 @@ class PluginManager:
             pass
         return self._operation_view(operation)
 
-    def operation_status(self, operation_id: str) -> dict[str, Any] | None:
+    def operation_status(
+        self,
+        operation_id: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any] | None:
         operation = self._operations.get(operation_id)
-        return self._operation_view(operation) if operation is not None else None
+        if operation is None or not self._operation_visible(operation, session_id, project_id):
+            return None
+        return self._operation_view(operation)
+
+    @staticmethod
+    def _operation_visible(
+        operation: _Operation,
+        session_id: str,
+        project_id: str | None,
+    ) -> bool:
+        scope, binding = operation.scope_key
+        return (scope is PluginScope.SESSION and binding == session_id) or (
+            scope is PluginScope.PROJECT and project_id is not None and binding == project_id
+        )
 
     @staticmethod
     def _operation_view(operation: _Operation) -> dict[str, Any]:
@@ -387,16 +416,47 @@ class PluginManager:
         policy: DynamicPluginPolicy | None = None,
     ) -> ToolRegistry:
         """Return a live dynamic overlay, or the untouched base view."""
+        base_tools = self._unwrap_dynamic_view(base_tools)
         if (
             (policy is not None and not policy.enabled)
             or not self.is_authorized(session_id, project_id)
         ):
             return base_tools
-        return DynamicPluginRegistry(self, base_tools, session_id, project_id)
+        return DynamicPluginRegistry(self, base_tools, session_id, project_id, policy=policy)
+
+    def live_tools_for_session(
+        self,
+        base_tools: ToolRegistry,
+        session_id: str,
+        *,
+        project_id: str | None = None,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> ToolRegistry:
+        """Return a live overlay that can activate after an inline command."""
+        required_methods = ("has", "restricted_to", "get_runtime_context_providers")
+        if any(not callable(getattr(base_tools, name, None)) for name in required_methods):
+            return base_tools
+        return DynamicPluginRegistry(
+            self,
+            self._unwrap_dynamic_view(base_tools),
+            session_id,
+            project_id,
+            policy=policy,
+        )
+
+    @staticmethod
+    def _unwrap_dynamic_view(base_tools: ToolRegistry) -> ToolRegistry:
+        while isinstance(base_tools, DynamicPluginRegistry):
+            base_tools = base_tools._base
+        return base_tools
 
     def _load_tool(self, registration: _RegisteredPlugin) -> Tool:
         manifest = registration.record.manifest
         entry = manifest.resolve_entry(registration.artifact_root)
+        if not entry.is_file():
+            raise OSError("plugin entry is not a file")
+        if hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
+            raise ValueError("plugin entry changed after registration")
         module_name = (
             "_nanobot_plugin_"
             + manifest.plugin_id.replace("-", "_")
@@ -593,6 +653,7 @@ class PluginManager:
         action: str,
         plugin_id: str,
         version: str | None,
+        scope_key: ScopeKey,
         state: str,
         result: PluginOperationResult,
     ) -> _Operation:
@@ -613,6 +674,7 @@ class PluginManager:
                 details=result.details_dict,
             ),
             event=asyncio.Event(),
+            scope_key=scope_key,
         )
         self._operations[operation_id] = operation
         return operation
@@ -638,7 +700,12 @@ class PluginManager:
     def _finish_stop(self, operation: _Operation, route: _ActiveRoute) -> None:
         self._retired_routes.pop(route.route_key, None)
         self._retired_operations.pop(route.route_key, None)
-        self._lifecycles[route.registration.registration_key] = PluginLifecycle.INACTIVE
+        current_route = self._routes.get(route.route_key[0], {}).get(
+            route.registration.record.manifest.plugin_id
+        )
+        self._lifecycles[route.registration.registration_key] = (
+            PluginLifecycle.ACTIVE if current_route is not None else PluginLifecycle.INACTIVE
+        )
         operation.state = PluginLifecycle.INACTIVE.value
         operation.result = PluginOperationResult.success(
             "plugin stopped for the current scope",
@@ -759,18 +826,37 @@ class DynamicPluginRegistry(ToolRegistry):
         base: ToolRegistry,
         session_id: str,
         project_id: str | None,
+        *,
+        policy: DynamicPluginPolicy | None = None,
     ) -> None:
         super().__init__()
         self._manager = manager
         self._base = base
         self._session_id = session_id
         self._project_id = project_id
+        self._policy = policy
         self._known: dict[str, ManagedPluginTool] = {}
+
+    def _visible_routes(self) -> tuple[_ActiveRoute, ...]:
+        if not self._manager.is_authorized(self._session_id, self._project_id):
+            return ()
+        routes = self._manager._active_routes(self._session_id, self._project_id)
+        if self._policy is None:
+            return routes
+        return tuple(
+            route
+            for route in routes
+            if self._manager._policy_allows(
+                self._policy,
+                route.registration.record.manifest,
+                "load",
+            )
+        )
 
     @property
     def tool_names(self) -> list[str]:
         names = list(self._base.tool_names)
-        for route in self._manager._active_routes(self._session_id, self._project_id):
+        for route in self._visible_routes():
             if route.tool.name not in names:
                 names.append(route.tool.name)
                 self._known[route.tool.name] = route.tool
@@ -779,9 +865,10 @@ class DynamicPluginRegistry(ToolRegistry):
     def get(self, name: str) -> Tool | None:
         if (tool := self._base.get(name)) is not None:
             return tool
-        if (tool := self._manager._active_proxy(self._session_id, self._project_id, name)) is not None:
-            self._known[name] = tool
-            return tool
+        for route in self._visible_routes():
+            if route.tool.name == name:
+                self._known[name] = route.tool
+                return route.tool
         return self._known.get(name)
 
     def has(self, name: str) -> bool:
@@ -791,10 +878,10 @@ class DynamicPluginRegistry(ToolRegistry):
         definitions = list(self._base.get_definitions())
         dynamic = [
             route.tool.to_schema()
-            for route in self._manager._active_routes(self._session_id, self._project_id)
+            for route in self._visible_routes()
             if route.tool.name not in self._base.tool_names
         ]
-        for route in self._manager._active_routes(self._session_id, self._project_id):
+        for route in self._visible_routes():
             self._known[route.tool.name] = route.tool
         return self._sort_definitions(definitions + dynamic)
 
@@ -802,7 +889,7 @@ class DynamicPluginRegistry(ToolRegistry):
         providers = list(self._base.get_runtime_context_providers())
         providers.extend(
             provider
-            for route in self._manager._active_routes(self._session_id, self._project_id)
+            for route in self._visible_routes()
             if (provider := route.tool.runtime_context_provider()) is not None
         )
         return providers
@@ -842,6 +929,7 @@ class DynamicPluginRegistry(ToolRegistry):
             self._base.restricted_to(allowed_tools, disabled_tools),
             self._session_id,
             self._project_id,
+            policy=self._policy,
         )
 
     def __len__(self) -> int:

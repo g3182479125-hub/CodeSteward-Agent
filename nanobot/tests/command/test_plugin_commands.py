@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -34,11 +35,13 @@ async def test_native_plugin_commands_control_the_live_view(tmp_path: Path) -> N
     loop = _make_loop(tmp_path)
     record, root = _example_record("cli:direct")
     assert loop.plugin_manager.register_version(record, root).ok
+    pid_before = os.getpid()
+    session_key = "cli:direct"
     base_identity = id(loop.tools)
 
     loaded = await loop.process_direct(
         "/plugins load devflow-math@0.1.0",
-        session_key="cli:direct",
+        session_key=session_key,
     )
 
     assert loaded is not None
@@ -48,17 +51,18 @@ async def test_native_plugin_commands_control_the_live_view(tmp_path: Path) -> N
 
     view = loop.plugin_manager.tools_for_session(
         loop.tools,
-        "cli:direct",
+        session_key,
         project_id=loop.plugin_manager.project_id_for_path(tmp_path),
     )
     assert "demo_add" in view.tool_names
     assert await view.execute("demo_add", {"left": 2, "right": 3}) == 5
 
-    stopped = await loop.process_direct("/plugins stop devflow-math", session_key="cli:direct")
+    stopped = await loop.process_direct("/plugins stop devflow-math", session_key=session_key)
 
     assert stopped is not None
     assert "plugin stopped" in stopped.content
     assert "demo_add" not in view.tool_names
+    assert os.getpid() == pid_before
 
 
 def test_plugins_command_is_visible_in_help_and_palette() -> None:

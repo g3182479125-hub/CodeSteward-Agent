@@ -161,6 +161,94 @@ def test_session_routes_do_not_leak_to_another_session() -> None:
     assert "demo_greeting" not in second_view
 
 
+def test_live_view_observes_an_inline_authorization_without_rebuilding_loop() -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _example_record()
+    manager.register_version(record, root)
+    view = manager.live_tools_for_session(base, "cli:direct")
+
+    assert "demo_greeting" not in view.tool_names
+    manager.authorize("cli:direct")
+    assert manager.load("devflow-greeting", "0.1.0", session_id="cli:direct").ok
+    assert "demo_greeting" in view.tool_names
+
+
+def test_cross_session_dynamic_view_is_unwrapped_before_routing() -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _example_record("cli:first")
+    manager.register_version(record, root)
+    manager.authorize("cli:first")
+    assert manager.load("devflow-greeting", "0.1.0", session_id="cli:first").ok
+    first_view = manager.tools_for_session(base, "cli:first")
+
+    second_view = manager.tools_for_session(first_view, "cli:second")
+
+    assert second_view is base
+    assert "demo_greeting" not in second_view.tool_names
+
+
+def test_load_rechecks_the_registered_artifact_hash(tmp_path: Path) -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _blocking_record(tmp_path)
+    assert manager.register_version(record, root).ok
+    source = root / "blocking.py"
+    source.write_text(source.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+    manager.authorize("cli:direct")
+
+    result = manager.load("devflow-blocking", "0.1.0", session_id="cli:direct")
+
+    assert result.ok is False
+    assert result.code is not None
+    assert result.code.value == "plugin_load_failed"
+
+
+@pytest.mark.asyncio
+async def test_finished_old_generation_does_not_hide_a_new_generation(tmp_path: Path) -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _blocking_record(tmp_path)
+    manager.register_version(record, root)
+    manager.authorize("cli:direct")
+    view = manager.tools_for_session(base, "cli:direct")
+    assert manager.load("devflow-blocking", "0.1.0", session_id="cli:direct").ok
+
+    running = asyncio.create_task(view.execute("demo_blocking", {}))
+    tool = view.get("demo_blocking")
+    assert tool is not None
+    await asyncio.wait_for(tool.started.wait(), timeout=1)  # type: ignore[attr-defined]
+    stopped = manager.stop("devflow-blocking", session_id="cli:direct")
+    assert stopped.operation_id is not None
+    assert manager.load("devflow-blocking", "0.1.0", session_id="cli:direct").ok
+
+    tool.release.set()  # type: ignore[attr-defined]
+    assert await running == "completed"
+    status = await manager.wait_operation(
+        stopped.operation_id,
+        session_id="cli:direct",
+        timeout=1,
+    )
+
+    assert status["state"] == "inactive"
+    row = manager.list_view("cli:direct")[0]
+    assert row["lifecycle"] == "active"
+
+
+def test_operation_status_is_scoped_to_the_requesting_session() -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _example_record("cli:first")
+    manager.register_version(record, root)
+    manager.authorize("cli:first")
+    result = manager.load("devflow-greeting", "0.1.0", session_id="cli:first")
+    assert result.operation_id is not None
+
+    assert manager.operation_status(result.operation_id, session_id="cli:second") is None
+    assert manager.operation_status(result.operation_id, session_id="cli:first") is not None
+
+
 @pytest.mark.asyncio
 async def test_stop_drains_existing_lease_and_retires_next_call(tmp_path: Path) -> None:
     base = ToolRegistry()
@@ -183,6 +271,10 @@ async def test_stop_drains_existing_lease_and_retires_next_call(tmp_path: Path) 
 
     tool.release.set()  # type: ignore[attr-defined]
     assert await running == "completed"
-    status = await manager.wait_operation(stopped.operation_id, timeout=1)
+    status = await manager.wait_operation(
+        stopped.operation_id,
+        session_id="cli:direct",
+        timeout=1,
+    )
     assert status["state"] == "inactive"
     assert "TOOL_VERSION_RETIRED" in str(await view.execute("demo_blocking", {}))

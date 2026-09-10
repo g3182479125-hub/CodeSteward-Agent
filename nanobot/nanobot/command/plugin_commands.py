@@ -82,7 +82,11 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
     if action == "list" and len(parts) == 1:
         return _text(ctx, _format_list(manager.list_view(ctx.key, project_id=project_id)))
     if action == "status" and len(parts) == 2:
-        status = manager.operation_status(parts[1])
+        status = manager.operation_status(
+            parts[1],
+            session_id=ctx.key,
+            project_id=project_id,
+        )
         return _text(ctx, str(status) if status is not None else "Unknown plugin operation.")
     if action not in {"load", "stop"}:
         return _text(ctx, _usage())
