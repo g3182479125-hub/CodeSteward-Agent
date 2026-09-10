@@ -180,8 +180,8 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
     ),
     BuiltinCommandSpec(
         "/skill-improvement",
-        "Review Skill improvement",
-        "Review Skill candidates or configure the optional native-Cron batch in chat.",
+        "审查 Skill 改进",
+        "查看 Skill 候选，或在聊天中配置可选的原生 Cron 批处理。",
         "wrench",
         "[schedule status|run|disable|enable ...|candidate-id ...|delete-evidence evidence-id]",
         accepts_args=True,
@@ -1055,8 +1055,8 @@ def _parse_skill_batch_schedule(
 
     if len(values) < 2 or values[0].lower() not in {"every", "cron"}:
         return (
-            "Usage: /skill-improvement schedule enable every <seconds> [timezone] "
-            "or cron \"<5-field expression>\" [timezone] "
+            "用法：/skill-improvement schedule enable every <秒数> [时区]，"
+            "或 cron \"<5 位表达式>\" [时区] "
             "[calls=1|2] [tokens=512-20000] [timeout=30-600]"
         )
     schedule_kind = values[0].lower()
@@ -1066,9 +1066,9 @@ def _parse_skill_batch_schedule(
         try:
             seconds = int(values[1])
         except ValueError:
-            return "Schedule interval must be an integer number of seconds."
+            return "定时间隔必须是整数秒。"
         if seconds < 30:
-            return "Schedule interval must be at least 30 seconds."
+            return "定时间隔至少为 30 秒。"
         if len(values) > 2 and "=" not in values[2]:
             timezone = values[2]
             option_start = 3
@@ -1078,20 +1078,20 @@ def _parse_skill_batch_schedule(
     options = {"calls": 2, "tokens": 12_000, "timeout": 600}
     for value in values[option_start:]:
         if "=" not in value:
-            return f"Unknown schedule option `{value}`."
+            return f"未知的定时选项 `{value}`。"
         key, raw = value.split("=", 1)
         if key not in options:
-            return f"Unknown schedule option `{key}`."
+            return f"未知的定时选项 `{key}`。"
         try:
             options[key] = int(raw)
         except ValueError:
-            return f"Schedule option `{key}` must be an integer."
+            return f"定时选项 `{key}` 必须是整数。"
     if options["calls"] not in {1, 2}:
-        return "Schedule calls must be 1 or 2."
+        return "每批调用次数必须是 1 或 2。"
     if not 512 <= options["tokens"] <= 20_000:
-        return "Schedule tokens must be between 512 and 20000."
+        return "每批 token 上限必须在 512 到 20000 之间。"
     if not 30 <= options["timeout"] <= 600:
-        return "Schedule timeout must be between 30 and 600 seconds."
+        return "每批超时时间必须在 30 到 600 秒之间。"
     try:
         if schedule_kind == "every":
             # ``every`` is elapsed-time based in nanobot, so CronSchedule does
@@ -1100,8 +1100,46 @@ def _parse_skill_batch_schedule(
         else:
             schedule = CronSchedule(kind="cron", expr=values[1], tz=timezone)
     except (TypeError, ValueError) as exc:
-        return f"Invalid schedule: {type(exc).__name__}."
+        return f"定时配置无效：{_skill_exception_label(exc)}。"
     return schedule, options, timezone
+
+
+_SKILL_STATUS_LABELS = {
+    "idle": "空闲",
+    "disabled": "已停用",
+    "running": "运行中",
+    "no_new_evidence": "没有新证据",
+    "failed": "失败",
+    "candidate_created": "已生成候选",
+    "budget_exhausted": "预算已用尽",
+    "pending_evaluation": "等待评测",
+    "evaluation_failed": "评测失败",
+    "pending_confirmation": "等待确认",
+    "active": "已启用",
+    "enabled": "已启用",
+    "ignored": "已忽略",
+    "stale": "已过期",
+    "eligible": "符合启用条件",
+    "no_verified_improvement": "未发现已验证改进",
+}
+
+
+def _skill_status_label(status: str) -> str:
+    """Translate internal Skill states for native-chat output."""
+    return _SKILL_STATUS_LABELS.get(status, f"未识别状态（{status}）")
+
+
+_SKILL_EXCEPTION_LABELS = {
+    "ImportError": "依赖未加载",
+    "OSError": "本地存储或文件操作失败",
+    "TypeError": "参数类型错误",
+    "ValueError": "参数或状态不合法",
+}
+
+
+def _skill_exception_label(exc: BaseException) -> str:
+    """Translate implementation errors before returning them to native chat."""
+    return _SKILL_EXCEPTION_LABELS.get(type(exc).__name__, "内部处理失败")
 
 
 async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
@@ -1110,7 +1148,10 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="Skill improvement is disabled; set DEVPILOT_ENABLE_SKILL_IMPROVEMENT=1 for the controlled trial.",
+            content=(
+                "Skill 改进功能当前未启用；如需受控试用，请在 nanobot 启动进程中设置 "
+                "DEVPILOT_ENABLE_SKILL_IMPROVEMENT=1。"
+            ),
         )
     try:
         from devpilot.skill_improvement import SkillImprovementStore, scheduled_batch_id
@@ -1118,7 +1159,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         workspace = ctx.workspace or ctx.loop.context.memory.workspace
         store = SkillImprovementStore.from_environment(workspace)
     except (ImportError, ValueError, OSError) as exc:
-        content = f"Skill improvement is unavailable: {type(exc).__name__}."
+        content = f"Skill 改进功能不可用：{_skill_exception_label(exc)}。"
         return OutboundMessage(channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=content)
 
     args = ctx.args.strip().split()
@@ -1129,11 +1170,14 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             workspace=workspace, user_id=user_id, project_id=project_id
         )
         if not candidates:
-            content = "No private Skill candidates are available."
+            content = "暂无私有 Skill 候选。"
         else:
-            lines = ["Private Skill candidates:", ""]
-            lines.extend(f"- `{item.candidate_id}` — {item.status}" for item in candidates)
-            lines.append("\nUse `/skill-improvement <candidate-id>` to view a candidate.")
+            lines = ["私有 Skill 候选：", ""]
+            lines.extend(
+                f"- `{item.candidate_id}` — {_skill_status_label(item.status)}"
+                for item in candidates
+            )
+            lines.append("\n使用 `/skill-improvement <候选 ID>` 查看候选详情。")
             content = "\n".join(lines)
         return OutboundMessage(
             channel=ctx.msg.channel,
@@ -1144,31 +1188,32 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
     if args[0].lower() == "schedule":
         cron = ctx.loop.cron_service
         if cron is None:
-            content = "Native Cron is unavailable; scheduled Skill improvement is disabled."
+            content = "nanobot 原生 Cron 不可用；Skill 改进定时任务已停用。"
         else:
             batch_id = scheduled_batch_id(workspace, project_id, user_id)
             batch = store.get_scheduled_batch(batch_id)
             action = args[1].lower() if len(args) > 1 else "status"
             if action == "status":
                 if batch is None:
-                    content = "No Skill improvement schedule is configured (default: off)."
+                    content = "尚未配置 Skill 改进定时任务（默认关闭）。"
                 else:
                     job = cron.get_job(batch.job_id)
                     job_state = (
-                        f"enabled={job.enabled}, next_run_at_ms={job.state.next_run_at_ms}"
+                        f"任务已启用={job.enabled}，下次运行时间戳={job.state.next_run_at_ms}"
                         if job is not None
-                        else "cron_job=missing"
+                        else "Cron 任务缺失"
                     )
                     content = (
-                        f"Skill improvement schedule: enabled={batch.enabled}, "
-                        f"status={batch.status}, {job_state}; "
-                        f"run_count={batch.run_count}, last_error={batch.last_error or 'none'}."
+                        f"Skill 改进定时任务：已启用={batch.enabled}，"
+                        f"状态={_skill_status_label(batch.status)}，"
+                        f"{job_state}；运行次数={batch.run_count}，"
+                        f"最近错误={batch.last_error or '无'}。"
                     )
             elif action == "disable":
                 if not ctx.is_user_turn:
-                    content = "Schedule changes require a direct user chat turn."
+                    content = "定时任务变更必须由用户在聊天中直接发起。"
                 elif batch is None:
-                    content = "No Skill improvement schedule is configured."
+                    content = "尚未配置 Skill 改进定时任务。"
                 else:
                     try:
                         cancelled = await ctx.loop._cancel_active_tasks(  # pyright: ignore[reportPrivateUsage]
@@ -1177,29 +1222,29 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         store.set_scheduled_batch_enabled(batch_id, enabled=False)
                         cron.enable_job(batch.job_id, enabled=False)
                         content = (
-                            "Skill improvement schedule disabled; no new batch will start. "
-                            f"Cancelled active work: {cancelled}."
+                            "Skill 改进定时任务已停用，不会启动新的批次。"
+                            f"已取消进行中的任务：{cancelled}。"
                         )
                     except (ValueError, OSError) as exc:
-                        content = f"Schedule disable rejected: {type(exc).__name__}."
+                        content = f"停用定时任务被拒绝：{_skill_exception_label(exc)}。"
             elif action == "run":
                 if not ctx.is_user_turn:
-                    content = "Manual schedule runs require a direct user chat turn."
+                    content = "手动触发定时任务必须由用户在聊天中直接发起。"
                 elif batch is None:
-                    content = "No Skill improvement schedule is configured; enable it first."
+                    content = "尚未配置 Skill 改进定时任务，请先启用。"
                 else:
                     try:
                         ran = await cron.run_job(batch.job_id, force=True)
                         content = (
-                            "Manual Skill improvement batch queued through native Cron."
+                            "手动 Skill 改进批次已通过 nanobot 原生 Cron 排队。"
                             if ran
-                            else "Manual Skill improvement batch was skipped; check schedule status."
+                            else "手动 Skill 改进批次已跳过，请检查定时任务状态。"
                         )
                     except (ValueError, OSError) as exc:
-                        content = f"Manual schedule run rejected: {type(exc).__name__}."
+                        content = f"手动触发定时任务被拒绝：{_skill_exception_label(exc)}。"
             elif action == "enable":
                 if not ctx.is_user_turn:
-                    content = "Schedule changes require a direct user chat turn."
+                    content = "定时任务变更必须由用户在聊天中直接发起。"
                 else:
                     try:
                         schedule_values = shlex.split(ctx.args)[2:]
@@ -1247,9 +1292,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         try:
                             if job is None:
                                 job = cron.add_job(
-                                    name="DevFlow Skill improvement",
+                                    name="DevFlow Skill 改进",
                                     schedule=schedule,
-                                    message="Run the configured DevFlow Skill improvement batch.",
+                                    message="执行已配置的 DevFlow Skill 改进批次。",
                                     session_key=ctx.key,
                                     origin_channel=ctx.msg.channel,
                                     origin_chat_id=ctx.msg.chat_id,
@@ -1261,7 +1306,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                                 updated_job = cron.update_job(
                                     job.id,
                                     schedule=schedule,
-                                    message="Run the configured DevFlow Skill improvement batch.",
+                                    message="执行已配置的 DevFlow Skill 改进批次。",
                                 )
                                 if isinstance(updated_job, str):
                                     raise ValueError(f"cron job update failed: {updated_job}")
@@ -1280,23 +1325,23 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                             )
                             cron.enable_job(job.id, enabled=True)
                             schedule_description = (
-                                f"every {schedule.every_ms // 1000}s"
+                                f"每 {schedule.every_ms // 1000} 秒"
                                 if schedule.kind == "every" and schedule.every_ms
-                                else f'cron "{schedule.expr}"'
+                                else f'Cron "{schedule.expr}"'
                             )
                             content = (
-                                f"Skill improvement schedule enabled: {schedule_description} "
-                                f"(timezone={_timezone}); batch={configured.batch_id}. "
-                                "Only verified evidence is processed; candidates remain pending review."
+                                f"Skill 改进定时任务已启用：{schedule_description} "
+                                f"（时区={_timezone}）；批次={configured.batch_id}。"
+                                "系统只处理已验证证据，候选仍需人工审核。"
                             )
                         except (ValueError, OSError) as exc:
                             if new_job and job is not None:
                                 cron.remove_job(job.id)
-                            content = f"Schedule enable rejected: {type(exc).__name__}."
+                            content = f"启用定时任务被拒绝：{_skill_exception_label(exc)}。"
             else:
                 content = (
-                    "Usage: /skill-improvement schedule status|run|disable|"
-                    "enable every <seconds> [timezone] or cron \"<expr>\" [timezone] "
+                    "用法：/skill-improvement schedule status|run|disable|"
+                    "enable every <秒数> [时区] 或 cron \"<表达式>\" [时区] "
                     "[calls=1|2] "
                     "[tokens=512-20000] [timeout=30-600]"
                 )
@@ -1308,18 +1353,18 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         )
     if args[0].lower() == "feedback":
         if not ctx.is_user_turn:
-            content = "Feedback requires a direct user chat turn."
+            content = "提交反馈必须由用户在聊天中直接发起。"
         else:
             feedback_text = ctx.args.strip()[len("feedback"):].strip()
             task_context = (ctx.session.metadata or {}).get("task_context")
             if not feedback_text:
-                content = "Usage: /skill-improvement feedback <what went wrong>"
+                content = "用法：/skill-improvement feedback <问题描述>"
             elif (
                 not isinstance(task_context, dict)
                 or not isinstance(task_context.get("task_id"), str)
                 or not str(task_context.get("profile_binding", "")).startswith("bug-fix@")
             ):
-                content = "Feedback requires an active bug-fix task profile."
+                content = "提交反馈前必须存在正在执行的 bug-fix 任务。"
             else:
                 try:
                     skill = store.read_effective_snapshot(workspace)
@@ -1335,9 +1380,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         correction=feedback_text,
                         actual_result=feedback_text,
                     )
-                    content = f"Feedback recorded as verified evidence: `{evidence.evidence_id}`."
+                    content = f"反馈已记录为已验证证据：`{evidence.evidence_id}`。"
                 except (ValueError, OSError) as exc:
-                    content = f"Feedback rejected: {type(exc).__name__}."
+                    content = f"反馈被拒绝：{_skill_exception_label(exc)}。"
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
@@ -1347,9 +1392,9 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
 
     if args[0].lower() == "delete-evidence":
         if len(args) != 2:
-            content = "Usage: /skill-improvement delete-evidence <evidence-id>"
+            content = "用法：/skill-improvement delete-evidence <证据 ID>"
         elif not ctx.is_user_turn:
-            content = "Evidence deletion requires a direct user chat turn."
+            content = "删除证据必须由用户在聊天中直接发起。"
         else:
             try:
                 evidence = store.get_feedback(
@@ -1364,10 +1409,10 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     project_id=project_id,
                 )
                 content = (
-                    f"Evidence `{deleted.evidence_id}` deleted; associated candidates were invalidated."
+                    f"证据 `{deleted.evidence_id}` 已删除；关联候选已失效。"
                 )
             except (ValueError, OSError) as exc:
-                content = f"Evidence deletion rejected: {type(exc).__name__}."
+                content = f"删除证据被拒绝：{_skill_exception_label(exc)}。"
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
@@ -1379,17 +1424,17 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         args[0], workspace=workspace, user_id=user_id, project_id=project_id
     )
     if candidate is None:
-        content = f"Candidate `{args[0]}` was not found."
+        content = f"未找到候选 `{args[0]}`。"
     elif len(args) == 1 or args[1].lower() == "view":
         evaluation = store.get_evaluation(candidate.result_refs[-1]) if candidate.result_refs else None
         lines = [
-            f"## Skill candidate `{candidate.candidate_id}`",
+            f"## Skill 候选 `{candidate.candidate_id}`",
             "",
-            f"- Skill: `{candidate.skill_id}`",
-            f"- Status: `{candidate.status}`",
-            f"- Why: {candidate.reason}",
-            f"- Expected behavior: {candidate.expected_behavior}",
-            f"- Evidence: {', '.join(candidate.evidence_ids)}",
+            f"- Skill：`{candidate.skill_id}`",
+            f"- 状态：`{_skill_status_label(candidate.status)}`",
+            f"- 原因：{candidate.reason}",
+            f"- 预期行为：{candidate.expected_behavior}",
+            f"- 证据：{', '.join(candidate.evidence_ids)}",
         ]
         evidence_summaries = []
         for evidence_id in candidate.evidence_ids:
@@ -1400,7 +1445,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 project_id=project_id,
             )
             if evidence is not None:
-                evidence_summaries.append(f"- Evidence summary: {evidence.correction[:240]}")
+                evidence_summaries.append(f"- 证据摘要：{evidence.correction[:240]}")
         lines.extend(evidence_summaries)
         baseline = store.read_effective_snapshot(workspace)
         diff = "".join(
@@ -1411,17 +1456,17 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 tofile=f"candidate/{candidate.candidate_id}/SKILL.md",
             )
         )
-        lines.extend(["", "Short candidate Diff preview:", "```diff", diff[:8_000], "```"])
+        lines.extend(["", "候选 Diff 摘要：", "```diff", diff[:8_000], "```"])
         if evaluation is not None:
             lines.extend([
-                f"- Fixed comparison: baseline {evaluation.baseline_successes}/9, "
-                f"candidate {evaluation.candidate_successes}/9",
-                f"- Eligibility: `{evaluation.status}`",
+                f"- 固定对照：基线 {evaluation.baseline_successes}/9，"
+                f"候选 {evaluation.candidate_successes}/9",
+                f"- 资格状态：`{_skill_status_label(evaluation.status)}`",
             ])
         lines.extend([
             "",
-            "Actions: `/skill-improvement <id> enable|ignore|restore`.",
-            "Enable/restore are direct user confirmations; no page is required.",
+            "操作：`/skill-improvement <id> enable|ignore|restore`。",
+            "启用和恢复必须由用户在聊天中直接确认，不需要单独页面。",
         ])
         content = "\n".join(lines)
     elif args[1].lower() == "evaluate":
@@ -1433,12 +1478,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 project_id=candidate.project_id,
             )
             content = (
-                f"Fixed P8-02 comparison completed: baseline "
-                f"{report.baseline_successes}/9, candidate {report.candidate_successes}/9; "
-                f"status `{report.status}`."
+                f"P8-02 固定对照已完成：基线 "
+                f"{report.baseline_successes}/9，候选 {report.candidate_successes}/9；"
+                f"状态为 `{_skill_status_label(report.status)}`。"
             )
         except (ValueError, OSError) as exc:
-            content = f"Evaluation rejected: {type(exc).__name__}."
+            content = f"评测被拒绝：{_skill_exception_label(exc)}。"
     elif args[1].lower() == "ignore":
         try:
             ignored = store.ignore_candidate(
@@ -1447,12 +1492,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 user_id=user_id,
                 project_id=project_id,
             )
-            content = f"Candidate `{ignored.candidate_id}` is now ignored; the active Skill was unchanged."
+            content = f"候选 `{ignored.candidate_id}` 已忽略；当前生效的 Skill 未改变。"
         except (ValueError, OSError) as exc:
-            content = f"Ignore rejected: {type(exc).__name__}."
+            content = f"忽略候选被拒绝：{_skill_exception_label(exc)}。"
     elif args[1].lower() == "enable":
         if not ctx.is_user_turn:
-            content = "Enable requires a direct user chat turn."
+            content = "启用候选必须由用户在聊天中直接发起。"
         else:
             try:
                 confirmation = store.issue_confirmation(
@@ -1469,12 +1514,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     session_id=ctx.key,
                     project_id=project_id,
                 )
-                content = f"Candidate enabled for new tasks. Active Skill hash: `{active.content_hash}`."
+                content = f"候选已对新任务启用。当前 Skill 哈希：`{active.content_hash}`。"
             except (ValueError, OSError) as exc:
-                content = f"Enable rejected: {type(exc).__name__}."
+                content = f"启用候选被拒绝：{_skill_exception_label(exc)}。"
     elif args[1].lower() == "restore":
         if not ctx.is_user_turn:
-            content = "Restore requires a direct user chat turn."
+            content = "恢复候选必须由用户在聊天中直接发起。"
         else:
             try:
                 restored = store.restore_candidate(
@@ -1483,13 +1528,13 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     user_id=user_id,
                     project_id=project_id,
                 )
-                content = f"Stable Skill restored. Current hash: `{restored.content_hash}`."
+                content = f"稳定版 Skill 已恢复。当前哈希：`{restored.content_hash}`。"
             except (ValueError, OSError) as exc:
-                content = f"Restore rejected: {type(exc).__name__}."
+                content = f"恢复候选被拒绝：{_skill_exception_label(exc)}。"
     else:
         content = (
-            "Usage: /skill-improvement <candidate-id> [view|enable|ignore|restore] "
-            "or delete-evidence <evidence-id>"
+            "用法：/skill-improvement <候选 ID> [view|enable|ignore|restore]，"
+            "或 delete-evidence <证据 ID>"
         )
     return OutboundMessage(
         channel=ctx.msg.channel,

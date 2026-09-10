@@ -11,7 +11,14 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.skills import SkillsLoader
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.command.builtin import cmd_skill, cmd_skill_improvement, register_builtin_commands
+from nanobot.command.builtin import (
+    BUILTIN_COMMAND_SPECS,
+    _skill_exception_label,
+    _skill_status_label,
+    cmd_skill,
+    cmd_skill_improvement,
+    register_builtin_commands,
+)
 from nanobot.command.router import CommandContext, CommandRouter
 from nanobot.config.schema import ModelPresetConfig
 
@@ -41,6 +48,37 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
             ),
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        ("active", "已启用"),
+        ("evaluation_failed", "评测失败"),
+        ("pending_confirmation", "等待确认"),
+        ("stale", "已过期"),
+        ("no_new_evidence", "没有新证据"),
+        ("eligible", "符合启用条件"),
+        ("no_verified_improvement", "未发现已验证改进"),
+    ],
+)
+def test_skill_statuses_are_translated_for_native_chat(status: str, label: str) -> None:
+    assert _skill_status_label(status) == label
+
+
+def test_skill_status_unknown_value_has_chinese_fallback() -> None:
+    assert _skill_status_label("unexpected_state") == "未识别状态（unexpected_state）"
+
+
+def test_skill_exception_labels_are_chinese() -> None:
+    assert _skill_exception_label(ValueError("bad input")) == "参数或状态不合法"
+    assert _skill_exception_label(RuntimeError("unexpected")) == "内部处理失败"
+
+
+def test_skill_improvement_command_metadata_is_chinese() -> None:
+    spec = next(item for item in BUILTIN_COMMAND_SPECS if item.command == "/skill-improvement")
+    assert spec.title == "审查 Skill 改进"
+    assert "查看 Skill 候选" in spec.description
 
 
 def _ctx(
@@ -120,7 +158,7 @@ async def test_skill_improvement_command_uses_native_chat(tmp_path: Path, monkey
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     loop = _loop_with_skills(tmp_path)
     out = await cmd_skill_improvement(_ctx(loop, "/skill-improvement"))
-    assert out.content == "No private Skill candidates are available."
+    assert out.content == "暂无私有 Skill 候选。"
 
 
 @pytest.mark.asyncio
@@ -161,7 +199,7 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
     loop.cron_service = CronService(tmp_path / "cron" / "jobs.json")
 
     status = await cmd_skill_improvement(_ctx(loop, "/skill-improvement schedule status"))
-    assert "default: off" in status.content
+    assert "默认关闭" in status.content
 
     enabled = await cmd_skill_improvement(
         _ctx(
@@ -170,7 +208,7 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
             is_user_turn=True,
         )
     )
-    assert "schedule enabled" in enabled.content
+    assert "定时任务已启用" in enabled.content
     assert len(loop.cron_service.list_jobs(include_disabled=True)) == 1
     job = loop.cron_service.list_jobs(include_disabled=True)[0]
     assert job.payload.origin_metadata["devpilot_skill_batch"] is True
@@ -180,8 +218,8 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
     disabled = await cmd_skill_improvement(
         _ctx(loop, "/skill-improvement schedule disable", is_user_turn=True)
     )
-    assert "disabled" in disabled.content
-    assert "Cancelled active work: 1" in disabled.content
+    assert "定时任务已停用" in disabled.content
+    assert "已取消进行中的任务：1" in disabled.content
     assert loop.cron_service.get_job(job.id).enabled is False
 
     wall_clock = await cmd_skill_improvement(
@@ -191,7 +229,7 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
             is_user_turn=True,
         )
     )
-    assert 'cron "0 9 * * *"' in wall_clock.content
+    assert 'Cron "0 9 * * *"' in wall_clock.content
     assert loop.cron_service.get_job(job.id).schedule.tz == "Asia/Shanghai"
 
     manual_runs: list[str] = []
@@ -204,7 +242,7 @@ async def test_skill_improvement_schedule_is_explicit_and_reuses_native_cron(
     manual = await cmd_skill_improvement(
         _ctx(loop, "/skill-improvement schedule run", is_user_turn=True)
     )
-    assert "queued through native Cron" in manual.content
+    assert "已通过 nanobot 原生 Cron 排队" in manual.content
     assert manual_runs == [job.id]
 
 
@@ -323,7 +361,7 @@ async def test_skill_improvement_is_disabled_without_controlled_mode(
 ) -> None:
     monkeypatch.delenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", raising=False)
     out = await cmd_skill_improvement(_ctx(_make_loop(tmp_path), "/skill-improvement"))
-    assert "disabled" in out.content
+    assert "未启用" in out.content
 
 
 @pytest.mark.asyncio
@@ -359,7 +397,7 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
             workspace=project_workspace,
         )
     )
-    assert "direct user chat turn" in rejected.content
+    assert "用户在聊天中直接发起" in rejected.content
 
     accepted = await cmd_skill_improvement(
         _ctx(
@@ -370,7 +408,7 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
             workspace=project_workspace,
         )
     )
-    assert "recorded as verified" in accepted.content
+    assert "已记录为已验证证据" in accepted.content
 
     from devpilot.skill_improvement import SkillImprovementStore
 
@@ -391,6 +429,12 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
         test_set_version="p8-02-v1",
         workspace=project_workspace,
     )
+    evaluation = store.evaluate_candidate(
+        candidate.candidate_id,
+        workspace=project_workspace,
+        user_id="user",
+        project_id=_devpilot_project_id(project_workspace),
+    )
     viewed = await cmd_skill_improvement(
         _ctx(
             loop,
@@ -399,8 +443,9 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
             workspace=project_workspace,
         )
     )
-    assert "Short candidate Diff preview" in viewed.content
+    assert "候选 Diff 摘要" in viewed.content
     assert "Re-check the failing assertion" in viewed.content
+    assert f"资格状态：`{_skill_status_label(evaluation.status)}`" in viewed.content
 
 
 @pytest.mark.asyncio
