@@ -112,6 +112,14 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         accepts_args=True,
     ),
     BuiltinCommandSpec(
+        "/plugins",
+        "Manage dynamic plugins",
+        "List or control trusted, read-only plugin versions for this chat.",
+        "puzzle",
+        "[list|load <plugin-id>@<version>|stop <plugin-id>|status <operation-id>]",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/history",
         "Show conversation history",
         "Print the last N persisted conversation messages.",
@@ -1624,6 +1632,9 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/model ", cmd_model)
     router.exact("/task-profile", cmd_task_profile)
     router.prefix("/task-profile ", cmd_task_profile)
+    from nanobot.command.plugin_commands import register_plugin_commands
+
+    register_plugin_commands(router)
     router.exact("/history", cmd_history)
     router.prefix("/history ", cmd_history)
     router.exact("/goal", cmd_goal)

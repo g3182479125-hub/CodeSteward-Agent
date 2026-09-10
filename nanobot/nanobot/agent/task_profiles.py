@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from nanobot.agent.plugins.contracts import DynamicPluginPolicy
+
 TASK_PROFILE_METADATA_KEY = "task_profile"
 TASK_PROFILE_VERSION_METADATA_KEY = "task_profile_version"
 TASK_CONTEXT_METADATA_KEY = "task_context"
@@ -32,6 +34,7 @@ class TaskProfile:
     allowed_tools: frozenset[str]
     output_contract: tuple[str, ...]
     version: str = "1"
+    dynamic_plugins: DynamicPluginPolicy = field(default_factory=DynamicPluginPolicy)
 
     def __post_init__(self) -> None:
         if not self.name or not self.skill_names or not self.allowed_tools or not self.output_contract:

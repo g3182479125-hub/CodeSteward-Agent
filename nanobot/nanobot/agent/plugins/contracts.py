@@ -81,6 +81,38 @@ class PluginErrorCode(_ValueEnum):
     MODEL_CANDIDATE_NOT_ACTIVE = "model_candidate_not_active"
     MODEL_CANDIDATE_NOT_FC_PROXY = "model_candidate_not_fc_proxy"
     INVALID_CANDIDATE_STATE = "invalid_candidate_state"
+    PLUGIN_NOT_FOUND = "plugin_not_found"
+    PLUGIN_KIND_UNSUPPORTED = "plugin_kind_unsupported"
+    PLUGIN_SOURCE_UNTRUSTED = "plugin_source_untrusted"
+    PLUGIN_NOT_PURE = "plugin_not_pure"
+    PLUGIN_NOT_AUTHORIZED = "plugin_not_authorized"
+    PLUGIN_ALREADY_ACTIVE = "plugin_already_active"
+    PLUGIN_NOT_ACTIVE = "plugin_not_active"
+    PLUGIN_LOAD_FAILED = "plugin_load_failed"
+    TOOL_VERSION_RETIRED = "tool_version_retired"
+    PLUGIN_STOP_TIMEOUT = "plugin_stop_timeout"
+    UNSUPPORTED_SCOPE = "unsupported_scope"
+    PLUGIN_LIMIT_REACHED = "plugin_limit_reached"
+
+
+@dataclass(frozen=True)
+class DynamicPluginPolicy:
+    """Explicit host policy for dynamic plugin management in one profile."""
+
+    enabled: bool = False
+    allowed_kinds: frozenset[str] = frozenset()
+    allowed_capabilities: frozenset[str] = frozenset()
+    allowed_actions: frozenset[str] = frozenset()
+    allowed_scopes: frozenset[str] = frozenset()
+    max_active_plugins: int = 0
+
+    def allows(self, *, kind: str, capabilities: set[str], action: str, scope: str) -> bool:
+        """Return whether the policy admits one host-validated operation."""
+        if not self.enabled or kind not in self.allowed_kinds or scope not in self.allowed_scopes:
+            return False
+        if action not in self.allowed_actions:
+            return False
+        return capabilities.issubset(self.allowed_capabilities)
 
 
 class PluginContractError(ValueError):
@@ -194,6 +226,11 @@ class PluginOperationResult:
         if self.details:
             result["details"] = dict(self.details)
         return result
+
+    @property
+    def details_dict(self) -> dict[str, str]:
+        """Return operation details as a fresh mapping for command adapters."""
+        return dict(self.details)
 
 
 _MANIFEST_FIELDS = frozenset(

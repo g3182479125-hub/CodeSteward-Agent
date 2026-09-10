@@ -3,6 +3,7 @@
 from nanobot.agent.plugins.catalog import PluginCatalog, PluginRecord
 from nanobot.agent.plugins.context import PluginContext, PluginTaskHandle
 from nanobot.agent.plugins.contracts import (
+    DynamicPluginPolicy,
     PluginCandidateStatus,
     PluginContractError,
     PluginErrorCode,
@@ -14,17 +15,20 @@ from nanobot.agent.plugins.contracts import (
     PluginScope,
     PluginSource,
 )
+from nanobot.agent.plugins.manager import PluginManager
 
 __all__ = [
     "PluginCandidateStatus",
     "PluginCatalog",
     "PluginContext",
     "PluginContractError",
+    "DynamicPluginPolicy",
     "PluginErrorCode",
     "PluginExecutionMode",
     "PluginKind",
     "PluginLifecycle",
     "PluginManifest",
+    "PluginManager",
     "PluginOperationResult",
     "PluginRecord",
     "PluginScope",

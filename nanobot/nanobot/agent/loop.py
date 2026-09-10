@@ -32,6 +32,7 @@ from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
+from nanobot.agent.plugins.manager import PluginManager
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.task_profiles import (
@@ -398,6 +399,7 @@ class AgentLoop:
         self.sessions = session_manager or SessionManager(workspace)
         self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
         self.tools = ToolRegistry()
+        self._plugin_tool_context: Any = None
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
         self._file_state_store = FileStateStore()
@@ -473,6 +475,10 @@ class AgentLoop:
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
+        self.plugin_manager = PluginManager(
+            self.tools,
+            tool_context=self._plugin_tool_context,
+        )
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
         self.commands = CommandRouter()
@@ -645,6 +651,7 @@ class AgentLoop:
             workspace_sandbox=self.workspace_scopes.sandbox_status,
             runtime_events=self.runtime_events,
         )
+        self._plugin_tool_context = ctx
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
 
@@ -2075,6 +2082,14 @@ class AgentLoop:
         tools = ctx.tools or self.tools
         if session.policy.allowed_tools is not None or session.policy.disabled_tools:
             tools = tools.restricted_to(session.policy.allowed_tools, session.policy.disabled_tools)
+        project_path = self.workspace_scopes.for_message(msg, session.metadata).project_path
+        profile = self.task_profile_for_session(session)
+        tools = self.plugin_manager.tools_for_session(
+            tools,
+            session.key,
+            project_id=self.plugin_manager.project_id_for_path(project_path),
+            policy=profile.dynamic_plugins if profile is not None else None,
+        )
         ctx.tools = tools
 
         if ctx.kind is TurnKind.SYSTEM:
