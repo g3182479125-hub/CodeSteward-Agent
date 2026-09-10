@@ -266,7 +266,7 @@ class PluginManager:
             )
         try:
             tool = self._load_tool(registration)
-        except (OSError, RuntimeError, TypeError, ValueError, ImportError):
+        except Exception:
             self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_LOAD_FAILED,
@@ -704,7 +704,13 @@ class PluginManager:
             route.registration.record.manifest.plugin_id
         )
         self._lifecycles[route.registration.registration_key] = (
-            PluginLifecycle.ACTIVE if current_route is not None else PluginLifecycle.INACTIVE
+            PluginLifecycle.ACTIVE
+            if (
+                current_route is not None
+                and current_route.registration.registration_key
+                == route.registration.registration_key
+            )
+            else PluginLifecycle.INACTIVE
         )
         operation.state = PluginLifecycle.INACTIVE.value
         operation.result = PluginOperationResult.success(

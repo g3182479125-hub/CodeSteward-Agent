@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -210,7 +211,13 @@ async def test_finished_old_generation_does_not_hide_a_new_generation(tmp_path: 
     base = ToolRegistry()
     manager = PluginManager(base)
     record, root = _blocking_record(tmp_path)
+    newer = PluginRecord(
+        replace(record.manifest, version="0.2.0"),
+        PluginSource.DEVELOPER,
+        session_id="cli:direct",
+    )
     manager.register_version(record, root)
+    manager.register_version(newer, root)
     manager.authorize("cli:direct")
     view = manager.tools_for_session(base, "cli:direct")
     assert manager.load("devflow-blocking", "0.1.0", session_id="cli:direct").ok
@@ -221,7 +228,7 @@ async def test_finished_old_generation_does_not_hide_a_new_generation(tmp_path: 
     await asyncio.wait_for(tool.started.wait(), timeout=1)  # type: ignore[attr-defined]
     stopped = manager.stop("devflow-blocking", session_id="cli:direct")
     assert stopped.operation_id is not None
-    assert manager.load("devflow-blocking", "0.1.0", session_id="cli:direct").ok
+    assert manager.load("devflow-blocking", "0.2.0", session_id="cli:direct").ok
 
     tool.release.set()  # type: ignore[attr-defined]
     assert await running == "completed"
@@ -232,8 +239,9 @@ async def test_finished_old_generation_does_not_hide_a_new_generation(tmp_path: 
     )
 
     assert status["state"] == "inactive"
-    row = manager.list_view("cli:direct")[0]
-    assert row["lifecycle"] == "active"
+    rows = {row["version"]: row for row in manager.list_view("cli:direct")}
+    assert rows["0.1.0"]["lifecycle"] == "inactive"
+    assert rows["0.2.0"]["lifecycle"] == "active"
 
 
 def test_operation_status_is_scoped_to_the_requesting_session() -> None:
