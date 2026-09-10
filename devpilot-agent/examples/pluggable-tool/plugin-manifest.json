@@ -1,0 +1,13 @@
+{
+  "plugin_id": "devflow-greeting",
+  "version": "0.1.0",
+  "content_hash": "318489272d61624733b5e1c527c584d879b19333056c7fd6e3df20540b533063",
+  "kind": "tool",
+  "api_version": "nanobot.tool/v1",
+  "scope": "session",
+  "entry": "src/devflow_greeting_tool/tool.py",
+  "requires": [],
+  "provides": ["tool:demo_greeting"],
+  "requested_capabilities": ["read_only"],
+  "execution_mode": "in_process"
+}

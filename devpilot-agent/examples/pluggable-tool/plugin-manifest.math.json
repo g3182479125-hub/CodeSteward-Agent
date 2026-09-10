@@ -1,0 +1,13 @@
+{
+  "plugin_id": "devflow-math",
+  "version": "0.1.0",
+  "content_hash": "af82f87c53fd7929213d224375ca199cbc07b7770bc9ffd1008f362705d5eb91",
+  "kind": "tool",
+  "api_version": "nanobot.tool/v1",
+  "scope": "session",
+  "entry": "src/devflow_greeting_tool/math_tool.py",
+  "requires": [],
+  "provides": ["tool:demo_add"],
+  "requested_capabilities": ["read_only"],
+  "execution_mode": "in_process"
+}

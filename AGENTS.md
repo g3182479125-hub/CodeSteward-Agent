@@ -1,5 +1,18 @@
 # Agent Instructions
 
+## Live Harness extension planning (2026-09-10)
+
+For runtime plugin / self-evolving Harness work, also read
+`devpilot-agent/docs/plans/LIVE_HARNESS_EXTENSION.md` in full. It defines the
+proposed H1–H10 extension and explicit exceptions to the old startup-only plugin
+scope. P0–P8 remain historical completed work; H1 is implemented pending its
+batched review, and H2–H10 are not implemented.
+When the user asks to implement this extension, follow its contracts and node
+order instead of interpreting the old no-hot-unload/no-Loop-change rules as a
+ban on the newly requested capability. Existing execution permissions remain.
+The user requested one subagent review and one revision for this plan only;
+future code reviews still follow the batched Standards/Spec procedure below.
+
 This repository contains the nanobot agent and the DevPilot control plane. The
 project also vendors Matt Pocock's engineering skills under
 `agent-skills/mattpocock-skills/skills/` so that every coding agent can use the
