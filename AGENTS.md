@@ -5,7 +5,7 @@
 For runtime plugin / self-evolving Harness work, also read
 `devpilot-agent/docs/plans/LIVE_HARNESS_EXTENSION.md` in full. It defines the
 proposed H1–H10 extension and explicit exceptions to the old startup-only plugin
-scope. P0–P8 remain historical completed work; H1 is implemented pending its
+scope. P0–P8 remain historical completed work; H1 is implemented and passed its
 batched review, and H2–H10 are not implemented.
 When the user asks to implement this extension, follow its contracts and node
 order instead of interpreting the old no-hot-unload/no-Loop-change rules as a

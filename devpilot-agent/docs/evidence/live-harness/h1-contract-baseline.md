@@ -1,6 +1,6 @@
 # H1：插件契约与兼容基线
 
-状态：REVIEW_PENDING（代码和验收已完成，等待本节点双轴审查）
+状态：COMPLETE（代码、验收和本节点双轴审查已完成）
 
 ## 固定点和范围
 
@@ -41,6 +41,12 @@
 | H1-B：无效 manifest、越界/NUL entry、同名/重复版本、候选状态分离 | 10 个专项用例覆盖；均返回明确错误码 |
 | H1-C：两个 session 列举不串用 | `test_catalog_isolates_sessions_and_exposes_read_only_status` 通过 |
 | 示例 manifest | 用实际 `PluginManifest.from_mapping()` 解析通过；entry hash 与示例源码一致 |
+
+## 双轴审查
+
+- Standards：PASS，报告见 `devpilot-agent/docs/reviews/h1-standards-review-2930119.md`
+- Spec：PASS，报告见 `devpilot-agent/docs/reviews/h1-spec-review-2930119.md`
+- 两轴均复核固定候选 `2930119`；H1 无待修复项。
 
 ## 可复现检查
 
