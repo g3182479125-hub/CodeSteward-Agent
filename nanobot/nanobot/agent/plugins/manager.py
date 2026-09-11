@@ -742,7 +742,16 @@ class PluginManager:
                 version=version,
             )
 
-        dependency_keys: set[RouteKey] = set()
+        affected_routes = self._active_dependents(scope_key, active)
+        switches_service = any(
+            not interface_id.startswith("tool:")
+            for interface_id in active.registration.record.manifest.provides
+        )
+        dependency_keys = {route.route_key for route in affected_routes}
+        if switches_service:
+            # Reserve the complete composition before the first await in
+            # staging, so a concurrent load cannot join the old version.
+            self._dependency_switching.setdefault(scope_key, set()).update(dependency_keys)
         self._management_busy.add(scope_key)
         try:
             # Let a concurrently scheduled update/stop observe the reservation
@@ -779,14 +788,6 @@ class PluginManager:
                     },
                 )
 
-            affected_routes = self._active_dependents(scope_key, active)
-            switches_service = any(
-                not interface_id.startswith("tool:")
-                for interface_id in active.registration.record.manifest.provides
-            )
-            dependency_keys = {route.route_key for route in affected_routes}
-            if switches_service:
-                self._dependency_switching.setdefault(scope_key, set()).update(dependency_keys)
             if switches_service and not await self._wait_for_routes_idle(affected_routes):
                 self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
                 return self._staging_failure_operation(
