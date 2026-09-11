@@ -468,10 +468,22 @@ def _result_from_dict(payload: object) -> CandidateExecutionResult | None:
         return None
     required = {
         "status",
+        "candidate_id",
+        "version",
         "trial_id",
+        "run_id",
+        "backend",
+        "sandbox_id",
+        "exit_code",
+        "output",
+        "error_code",
+        "error_message",
         "duration_ms",
         "cleanup_status",
+        "source_hash",
+        "input_hash",
         "output_truncated",
+        "operation_id",
     }
     if not required.issubset(payload):
         return None
