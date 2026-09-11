@@ -3,7 +3,7 @@
 版本：0.3，2026-09-11；状态：计划初稿已完成一次独立审查并集中修订一轮，H4 已完成节点验收。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5–H10 尚未实现。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `c115aef` 形成候选执行边界检查点，但双轴增量 Review 均为 `NEEDS_FIX`；H6–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -325,11 +325,12 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | H2 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h2-plugin-lifecycle.md`、`docs/reviews/h2-*-review-b8141f0.md` |
 | H3 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h3-plugin-update-cleanup.md`、`docs/reviews/h3-*-review-6159add.md` |
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
-| H5–H10 | 未开始 | 无；本文件是计划 |
+| H5 | 代码检查点，Review 未通过 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-c115aef.md` |
+| H6–H10 | 未开始 | H5 尚未通过，不能提前进入 |
 
 ## 8. 下一条开发指令
 
-“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4 已完成，不要重做。先核对 HEAD 和本地修改，按 H5 实现模型候选的执行边界；保留 H4 的版本化依赖、作用域隔离、整组租约和切换阻断，完成 H5 验收和节点双轴审查，未完成 H5 不开始 H6。”
+“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4 已完成，不要重做。先核对 HEAD 和本地修改，读取 H5 证据与两份 NEEDS_FIX 报告，按剩余项修复模型候选的执行边界；保留 H4 的版本化依赖、作用域隔离、整组租约和切换阻断，完成 H5 验收和节点双轴审查，未完成 H5 不开始 H6。”
 
 ## 9. 本次一次审查与一轮修订记录
 

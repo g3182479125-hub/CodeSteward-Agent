@@ -29,6 +29,11 @@ FC Agent Sandbox 的可选执行端口已实现，但云端连通性必须由用
 Changeset 提案和状态查看。R1/R2 动作仍需受信任的本地 Action Broker；Broker 完成前不得
 声称“仅靠聊天即可执行”。独立审批 WebUI 已移除，主流程只使用 nanobot 自带 WebUI。
 
+运行中可重组 Harness 扩展目前已完成 H1–H4；H5 的模型候选受控试运行已形成代码检查点
+`c115aef`，但双轴增量 Review 仍为 `NEEDS_FIX`，H6–H10 尚未开始。当前事实、测试结果、
+FC 现场记录和换机步骤以 [H5 交接文档](docs/handoffs/2026-09-11-h5-github-handoff.md)
+和 [H5 证据](docs/evidence/live-harness/h5-candidate-execution.md) 为准。
+
 新 AI/开发者接手本项目时，先阅读
  [当前精简执行计划](docs/plans/CURRENT_PLAN.md) 和
  [计划修订依据](docs/adr/ADR-0006-nanobot-first-personal-agent.md) 和
