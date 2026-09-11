@@ -18,7 +18,7 @@
 | H3-B 反复装卸无资源残留 | `test_resource_cleanup_returns_to_baseline_after_repeated_stop`：50 次循环，监听器、任务、服务计数回到 0 | 通过 |
 | H3-C 失败可区分、可恢复 | 语法失败、激活失败、退休清理失败、初始化清理失败分别有测试；清理失败由 `cleanup-retry` 接续 | 通过 |
 | H3-D 并发管理 | `test_concurrent_updates_commit_only_one_generation`：并发更新仅一个代次提交，另一请求返回冲突 | 通过 |
-| H3-E 重启恢复 | `test_persisted_retirement_can_be_reconciled_after_restart`：持久化清理引用可由新 Manager 接续核对 | 通过 |
+| H3-E 重启恢复 | `test_persisted_retirement_can_be_reconciled_after_restart` 加 `test_forced_process_exit_preserves_retryable_retirement`：真实子进程 `os._exit(0)` 后由新 Manager 接续核对并重试清理 | 通过 |
 | H3-F 准备阶段隔离 | `test_preparing_context_does_not_open_resources_before_activation`：激活前不注册监听、不运行任务 | 通过 |
 | H3-G 停用/移除边界 | 生命周期示例验证插件任务和监听器随 stop 清理；inactive 版本可 remove，active/排空引用会拒绝 remove | 通过 |
 
@@ -32,7 +32,7 @@ $env:DEVPILOT_DATABASE_URL = $null
 uv run pytest tests/agent/test_plugin_h3.py tests/agent/test_plugin_manager.py tests/agent/test_plugin_contracts.py tests/command/test_plugin_commands.py tests/command/test_model_command.py tests/command/test_router_dispatchable.py -q
 ```
 
-结果：`80 passed`。
+结果：`81 passed`。
 
 静态检查：
 
