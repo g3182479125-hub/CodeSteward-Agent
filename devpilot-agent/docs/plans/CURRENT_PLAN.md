@@ -2,11 +2,11 @@
 
 2026-09-10 扩展入口：[运行中可重组 Harness 计划](LIVE_HARNESS_EXTENSION.md)。
 用户要求规划 H1–H10：工具热插拔、模型动态插件、Loop 接续和反馈选择。
-本计划的 P0–P8 完成状态不代表该扩展完成；H1–H3 已完成，H4–H10 仍未完成；H 阶段实施以扩展文档的明确范围例外为准，
-保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期与 H3 版本更新/资源清理已完成专项验收和双轴审查；H4–H10
+本计划的 P0–P8 完成状态不代表该扩展完成；H1–H4 已完成，H5–H10 仍未完成；H 阶段实施以扩展文档的明确范围例外为准，
+保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期、H3 版本更新/资源清理与 H4 有限依赖组合已完成专项验收和双轴审查；H5–H10
 尚未实施。证据见 `devpilot-agent/docs/evidence/live-harness/`，报告见
 `devpilot-agent/docs/reviews/h1-*-review-2930119.md`、`h2-*-review-b8141f0.md` 和
-`h3-*-review-6159add.md`。
+`h3-*-review-6159add.md`、`h4-*-review-78456c6.md`。
 
 版本：3.6（2026-09-09，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准设计方向，P0–P8 已按本计划完成并通过相应验收；本文继续作为冻结边界与维护依据。
 生效关系见 [ADR-0006](../adr/ADR-0006-nanobot-first-personal-agent.md) 和
