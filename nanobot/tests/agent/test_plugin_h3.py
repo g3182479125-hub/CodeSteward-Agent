@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -673,3 +676,71 @@ async def test_persisted_retirement_can_be_reconciled_after_restart(tmp_path: Pa
     assert recovered.ok is True
     assert recovered.details_dict["old_cleanup"] == "recovered_after_restart"
     assert second.list_view("cli:direct")[0]["lifecycle"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_forced_process_exit_preserves_retryable_retirement(tmp_path: Path) -> None:
+    state_path = tmp_path / "forced-exit.db"
+    record, root = _record(
+        tmp_path,
+        "devflow-forced-exit",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    @classmethod
+    def create(cls, ctx):
+        async def dispose():
+            await asyncio.sleep(30)
+        ctx.on_dispose(dispose)
+        return cls()
+
+    async def execute(self, **kwargs):
+        return "ok"
+""",
+    )
+    worker = f'''
+import asyncio
+import os
+from pathlib import Path
+from nanobot.agent.plugins import PluginManager, PluginManifest, PluginRecord, PluginSource
+from nanobot.agent.tools.registry import ToolRegistry
+
+async def main():
+    manifest = PluginManifest.from_mapping({record.manifest.to_dict()!r})
+    record = PluginRecord(manifest, PluginSource.DEVELOPER, session_id="cli:direct")
+    manager = PluginManager(ToolRegistry(), state_path=Path({str(state_path)!r}))
+    manager.register_version(record, Path({str(root)!r}))
+    manager.authorize("cli:direct")
+    manager.load("devflow-forced-exit", "1.0.0", session_id="cli:direct")
+    manager.stop("devflow-forced-exit", session_id="cli:direct")
+    os._exit(0)
+
+asyncio.run(main())
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", worker],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "DEVPILOT_DATA_DIR": "", "DEVPILOT_DATABASE_URL": ""},
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    recovered_manager = PluginManager(ToolRegistry(), state_path=state_path)
+    recovered_manager.authorize("cli:direct")
+    stop_operation_id = next(
+        operation_id
+        for operation_id, operation in recovered_manager._operations.items()
+        if operation.action == "stop"
+    )
+    operation = recovered_manager.operation_status(
+        stop_operation_id, session_id="cli:direct"
+    )
+    assert operation is not None and operation["action"] == "stop"
+    recovered = await recovered_manager.retry_cleanup(
+        operation["operation_id"], session_id="cli:direct"
+    )
+    assert recovered.ok is True
+    assert recovered.details_dict["old_cleanup"] == "recovered_after_restart"
