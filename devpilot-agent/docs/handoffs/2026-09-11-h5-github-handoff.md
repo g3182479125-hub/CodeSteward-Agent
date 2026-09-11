@@ -5,7 +5,7 @@
 - 仓库：`https://github.com/g3182479125-hub/devflow-agent.git`
 - 当前开发分支：`handoff-2026-09-01`
 - H5 代码候选：`c115aef`
-- 本次交接会再提交文档，并把当前分支内容推送到远端 `main`（若远端未发生分叉）。
+- GitHub `main` 已更新至交接提交：`36a30b6`。
 
 ## 当前完成情况
 
