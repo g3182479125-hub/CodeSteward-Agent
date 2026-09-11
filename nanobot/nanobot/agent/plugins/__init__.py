@@ -1,7 +1,7 @@
 """Contracts for the managed, runtime-extensible agent plugins."""
 
 from nanobot.agent.plugins.catalog import PluginCatalog, PluginRecord
-from nanobot.agent.plugins.context import PluginContext, PluginTaskHandle
+from nanobot.agent.plugins.context import ManagedPluginContext, PluginContext, PluginTaskHandle
 from nanobot.agent.plugins.contracts import (
     DynamicPluginPolicy,
     PluginCandidateStatus,
@@ -21,6 +21,7 @@ __all__ = [
     "PluginCandidateStatus",
     "PluginCatalog",
     "PluginContext",
+    "ManagedPluginContext",
     "PluginContractError",
     "DynamicPluginPolicy",
     "PluginErrorCode",

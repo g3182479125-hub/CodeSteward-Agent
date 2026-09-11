@@ -91,6 +91,10 @@ class PluginErrorCode(_ValueEnum):
     PLUGIN_LOAD_FAILED = "plugin_load_failed"
     TOOL_VERSION_RETIRED = "tool_version_retired"
     PLUGIN_STOP_TIMEOUT = "plugin_stop_timeout"
+    PLUGIN_UPDATE_FAILED = "plugin_update_failed"
+    PLUGIN_REMOVE_REJECTED = "plugin_remove_rejected"
+    PLUGIN_CLEANUP_FAILED = "plugin_cleanup_failed"
+    PLUGIN_OPERATION_CONFLICT = "plugin_operation_conflict"
     UNSUPPORTED_SCOPE = "unsupported_scope"
     PLUGIN_LIMIT_REACHED = "plugin_limit_reached"
 

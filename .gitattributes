@@ -1,3 +1,4 @@
 # Keep patch/apply/rollback fixtures byte-stable across Windows and Unix.
 devpilot-agent/tests/fixtures/**/*.py text eol=lf
 devpilot-agent/tests/fixtures/**/*.js text eol=lf
+devpilot-agent/examples/pluggable-tool/src/**/*.py text eol=lf

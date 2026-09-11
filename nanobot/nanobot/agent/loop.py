@@ -478,6 +478,7 @@ class AgentLoop:
         self.plugin_manager = PluginManager(
             self.tools,
             tool_context=self._plugin_tool_context,
+            state_path=self.workspace / ".nanobot" / "plugins.json",
         )
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0

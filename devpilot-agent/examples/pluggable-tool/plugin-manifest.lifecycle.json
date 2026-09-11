@@ -1,0 +1,13 @@
+{
+  "plugin_id": "devflow-lifecycle",
+  "version": "0.1.0",
+  "content_hash": "ff2b12e687998f3c9a5c42ca656751240272ab4d2fa130bbb71d7cb8dad4f2b7",
+  "kind": "tool",
+  "api_version": "nanobot.tool/v1",
+  "scope": "session",
+  "entry": "src/devflow_greeting_tool/lifecycle_tool.py",
+  "requires": [],
+  "provides": ["tool:demo_lifecycle"],
+  "requested_capabilities": ["read_only"],
+  "execution_mode": "in_process"
+}

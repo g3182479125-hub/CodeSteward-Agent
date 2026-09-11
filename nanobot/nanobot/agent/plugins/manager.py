@@ -1,4 +1,4 @@
-"""Trusted, in-process plugin lifecycle for H2.
+"""Trusted, in-process plugin lifecycle for H3.
 
 The manager is deliberately small: H2 admits only developer-owned, read-only
 Tool implementations from already registered manifests.  It overlays the
@@ -16,13 +16,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
+import json
+import os
 import uuid
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from nanobot.agent.plugins.catalog import PluginCatalog, PluginRecord
+from nanobot.agent.plugins.context import ManagedPluginContext, SubscribeImpl
 from nanobot.agent.plugins.contracts import (
     DynamicPluginPolicy,
     PluginContractError,
@@ -30,16 +33,14 @@ from nanobot.agent.plugins.contracts import (
     PluginExecutionMode,
     PluginKind,
     PluginLifecycle,
+    PluginManifest,
     PluginOperationResult,
     PluginScope,
     PluginSource,
 )
 from nanobot.agent.tools.base import Tool, ToolResult
-from nanobot.agent.tools.context import current_request_context
+from nanobot.agent.tools.context import ToolContext, current_request_context
 from nanobot.agent.tools.registry import ToolRegistry
-
-if TYPE_CHECKING:
-    from nanobot.agent.tools.context import ToolContext
 
 ScopeKey = tuple[PluginScope, str]
 RegistrationKey = tuple[str, str, str, str]
@@ -58,8 +59,10 @@ class _ActiveRoute:
     registration: _RegisteredPlugin
     generation: int
     tool: ManagedPluginTool
+    context: ManagedPluginContext
     leases: int = 0
     lease_zero: asyncio.Event | None = None
+    cleanup_started: bool = False
 
     @property
     def route_key(self) -> RouteKey:
@@ -98,10 +101,16 @@ class PluginManager:
         *,
         tool_context: ToolContext | None = None,
         drain_timeout_s: float = 30.0,
+        subscribe_impl: SubscribeImpl | None = None,
+        service_registry: dict[str, Any] | None = None,
+        state_path: str | Path | None = None,
     ) -> None:
         self._base_registry = base_registry
         self._tool_context = tool_context
         self._drain_timeout_s = max(0.0, drain_timeout_s)
+        self._subscribe_impl = subscribe_impl
+        self._service_registry = service_registry if service_registry is not None else {}
+        self._state_path = Path(state_path).resolve() if state_path is not None else None
         self._registered: dict[RegistrationKey, _RegisteredPlugin] = {}
         self._lifecycles: dict[RegistrationKey, PluginLifecycle] = {}
         self._routes: dict[ScopeKey, dict[str, _ActiveRoute]] = {}
@@ -110,13 +119,179 @@ class PluginManager:
         self._operations: dict[str, _Operation] = {}
         self._retired_operations: dict[RouteKey, _Operation] = {}
         self._drain_tasks: set[asyncio.Task[Any]] = set()
+        self._management_busy: set[ScopeKey] = set()
+        self._restored_routes: dict[tuple[ScopeKey, str], tuple[_RegisteredPlugin, int]] = {}
+        self._restored_retired: set[RouteKey] = set()
         self._next_generation = 0
+        self._restore_state()
 
     @staticmethod
     def project_id_for_path(path: str | Path) -> str:
         """Return the stable, non-sensitive project binding used by commands."""
         resolved = Path(path).resolve()
         return "local-" + hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
+
+    def _save_state(self) -> None:
+        """Persist version/route/operation metadata atomically when configured."""
+        if self._state_path is None:
+            return
+        data = {
+            "version": 1,
+            "plugins": [
+                {
+                    "manifest": item.record.manifest.to_dict(),
+                    "source": item.record.source.value,
+                    "session_id": item.record.session_id,
+                    "project_id": item.record.project_id,
+                    "online_lifecycle": item.record.online_lifecycle,
+                    "artifact_root": str(item.artifact_root),
+                    "lifecycle": self._lifecycles[key].value,
+                }
+                for key, item in self._registered.items()
+            ],
+            "active_routes": [
+                {
+                    "scope": scope.value,
+                    "binding": binding,
+                    "plugin_id": plugin_id,
+                    "version": route.registration.record.manifest.version,
+                    "generation": route.generation,
+                }
+                for (scope, binding), routes in self._routes.items()
+                for plugin_id, route in routes.items()
+            ],
+            "retired_routes": [
+                {
+                    "scope": scope.value,
+                    "binding": binding,
+                    "plugin_id": plugin_id,
+                    "version": version,
+                    "generation": generation,
+                    "leases": route.leases,
+                    "cleanup_started": route.cleanup_started,
+                    "operation_id": (
+                        self._retired_operations[route.route_key].operation_id
+                        if route.route_key in self._retired_operations
+                        else None
+                    ),
+                }
+                for ((scope, binding), plugin_id, version, generation), route in self._retired_routes.items()
+            ],
+            "operations": [self._operation_to_dict(operation) for operation in self._operations.values()],
+        }
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._state_path.with_name(self._state_path.name + ".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self._state_path)
+
+    @staticmethod
+    def _operation_to_dict(operation: _Operation) -> dict[str, Any]:
+        result = operation.result.to_dict()
+        return {
+            "operation_id": operation.operation_id,
+            "action": operation.action,
+            "plugin_id": operation.plugin_id,
+            "version": operation.version,
+            "state": operation.state,
+            "result": result,
+            "scope": operation.scope_key[0].value,
+            "binding": operation.scope_key[1],
+        }
+
+    def _restore_state(self) -> None:
+        """Restore metadata without importing plugin code during manager startup."""
+        if self._state_path is None or not self._state_path.is_file():
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            for raw in data.get("plugins", []):
+                manifest = PluginManifest.from_mapping(raw["manifest"])
+                record = PluginRecord(
+                    manifest,
+                    PluginSource(raw["source"]),
+                    session_id=raw.get("session_id"),
+                    project_id=raw.get("project_id"),
+                    online_lifecycle=bool(raw.get("online_lifecycle", False)),
+                )
+                key = self._registration_key(record)
+                root = Path(raw["artifact_root"]).resolve()
+                self._registered[key] = _RegisteredPlugin(record, root, key)
+                try:
+                    entry = manifest.resolve_entry(root)
+                    healthy = entry.is_file() and hashlib.sha256(entry.read_bytes()).hexdigest() == manifest.content_hash
+                except (OSError, ValueError, PluginContractError):
+                    healthy = False
+                lifecycle = PluginLifecycle(raw.get("lifecycle", PluginLifecycle.INACTIVE.value))
+                self._lifecycles[key] = lifecycle if healthy else PluginLifecycle.FAILED
+            for raw in data.get("active_routes", []):
+                scope = PluginScope(raw["scope"])
+                scope_key = (scope, raw["binding"])
+                plugin_id = raw["plugin_id"]
+                registration = next(
+                    (
+                        item
+                        for item in self._registered.values()
+                        if item.record.manifest.plugin_id == plugin_id
+                        and item.record.manifest.version == raw["version"]
+                        and self._registration_key(item.record)[3] == raw["binding"]
+                    ),
+                    None,
+                )
+                if registration is not None and self._lifecycles[registration.registration_key] is not PluginLifecycle.FAILED:
+                    generation = int(raw["generation"])
+                    self._restored_routes[(scope_key, plugin_id)] = (registration, generation)
+                    self._next_generation = max(self._next_generation, generation)
+            for raw in data.get("retired_routes", []):
+                self._restored_retired.add(
+                    (
+                        (PluginScope(raw["scope"]), raw["binding"]),
+                        raw["plugin_id"],
+                        raw["version"],
+                        int(raw["generation"]),
+                    )
+                )
+            for raw in data.get("operations", []):
+                scope_key = (PluginScope(raw["scope"]), raw["binding"])
+                raw_result = raw.get("result", {})
+                code_value = raw_result.get("code")
+                code = PluginErrorCode(code_value) if code_value else None
+                if code is None:
+                    result = PluginOperationResult.success(
+                        raw_result.get("message", "operation restored after restart"),
+                        plugin_id=raw.get("plugin_id"),
+                        version=raw.get("version"),
+                        operation_id=raw["operation_id"],
+                        details=raw_result.get("details"),
+                    )
+                else:
+                    result = PluginOperationResult.failure(
+                        code,
+                        raw_result.get("message", "operation restored after restart"),
+                        plugin_id=raw.get("plugin_id"),
+                        version=raw.get("version"),
+                        operation_id=raw["operation_id"],
+                        details=raw_result.get("details"),
+                    )
+                operation = _Operation(
+                    operation_id=raw["operation_id"],
+                    action=raw["action"],
+                    plugin_id=raw["plugin_id"],
+                    version=raw.get("version"),
+                    state=raw.get("state", "interrupted"),
+                    result=result,
+                    event=asyncio.Event(),
+                    scope_key=scope_key,
+                )
+                operation.event.set()
+                self._operations[operation.operation_id] = operation
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            # Plugin state is recoverable metadata.  Keep the file intact and
+            # start empty rather than risking an unsafe or partial activation.
+            self._registered.clear()
+            self._lifecycles.clear()
+            self._restored_routes.clear()
+            self._restored_retired.clear()
+            self._operations.clear()
 
     def register_version(
         self,
@@ -187,6 +362,7 @@ class PluginManager:
         registered = _RegisteredPlugin(record, root, registration_key)
         self._registered[registration_key] = registered
         self._lifecycles[registration_key] = PluginLifecycle.INACTIVE
+        self._save_state()
         return PluginOperationResult.success(
             "plugin version registered",
             plugin_id=manifest.plugin_id,
@@ -245,6 +421,7 @@ class PluginManager:
             return self._failure_not_authorized(plugin_id, version)
         if policy is not None and not self._policy_allows(policy, manifest, "load"):
             return self._failure_not_authorized(plugin_id, version)
+        self._restore_route_if_needed(scope_key, plugin_id)
         if (
             policy is not None
             and policy.max_active_plugins > 0
@@ -264,9 +441,13 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
             )
+        plugin_context: ManagedPluginContext | None = None
         try:
-            tool = self._load_tool(registration)
+            tool, plugin_context = self._load_tool(registration)
+            plugin_context.activate()
         except Exception:
+            if plugin_context is not None:
+                self._schedule_context_cleanup(plugin_context)
             self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_LOAD_FAILED,
@@ -278,7 +459,7 @@ class PluginManager:
         self._next_generation += 1
         route_key = (scope_key, plugin_id, version, self._next_generation)
         proxy = ManagedPluginTool(self, route_key, tool)
-        route = _ActiveRoute(registration, self._next_generation, proxy)
+        route = _ActiveRoute(registration, self._next_generation, proxy, plugin_context)
         route.lease_zero = asyncio.Event()
         route.lease_zero.set()
         self._routes[scope_key][plugin_id] = route
@@ -301,6 +482,263 @@ class PluginManager:
             ),
         )
         operation.event.set()
+        self._save_state()
+        return operation.result
+
+    async def update(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        expected_generation: int | None = None,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> PluginOperationResult:
+        """Stage and atomically switch to a registered version.
+
+        The new module is imported under its immutable version namespace.  The
+        old route is removed from new dispatch before its leases and owned
+        resources are drained, so an in-flight call can finish without mixing
+        parameters or implementation versions.
+        """
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the requested registered plugin version is not visible here",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        manifest = registration.record.manifest
+        scope_key = self._scope_key(manifest.scope, session_id, project_id)
+        if scope_key is None or scope_key not in self._authorized:
+            return self._failure_not_authorized(plugin_id, version)
+        if policy is not None and not self._policy_allows(policy, manifest, "update"):
+            return self._failure_not_authorized(plugin_id, version)
+        self._restore_route_if_needed(scope_key, plugin_id)
+        if scope_key in self._management_busy:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_OPERATION_CONFLICT,
+                "another plugin management operation is already preparing this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        active = self._routes.setdefault(scope_key, {}).get(plugin_id)
+        if active is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_ACTIVE,
+                "update requires an active version in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if expected_generation is not None and active.generation != expected_generation:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_OPERATION_CONFLICT,
+                "the active plugin generation changed before update",
+                plugin_id=plugin_id,
+                version=version,
+                details={"expected_generation": str(expected_generation), "actual_generation": str(active.generation)},
+            )
+        if active.registration.registration_key == registration.registration_key:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_ALREADY_ACTIVE,
+                "the requested plugin version is already active in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+
+        self._management_busy.add(scope_key)
+        try:
+            # Let a concurrently scheduled update/stop observe the reservation
+            # before staging can commit.  The manager is owned by nanobot's
+            # single event loop, so this short yield makes the scope reservation
+            # an explicit concurrency boundary without holding a global lock.
+            await asyncio.sleep(0)
+            self._lifecycles[registration.registration_key] = PluginLifecycle.PREPARING
+            try:
+                tool, plugin_context = self._load_tool(registration)
+            except Exception:
+                self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
+                return PluginOperationResult.failure(
+                    PluginErrorCode.PLUGIN_UPDATE_FAILED,
+                    "new plugin version failed staging; the existing route is unchanged",
+                    plugin_id=plugin_id,
+                    version=version,
+                    details={"route_commit": "not_committed", "old_version": active.registration.record.manifest.version},
+                )
+
+            self._next_generation += 1
+            new_route_key = (scope_key, plugin_id, version, self._next_generation)
+            new_route = _ActiveRoute(
+                registration,
+                self._next_generation,
+                ManagedPluginTool(self, new_route_key, tool),
+                plugin_context,
+            )
+            new_route.lease_zero = asyncio.Event()
+            new_route.lease_zero.set()
+            self._routes[scope_key][plugin_id] = new_route
+            try:
+                plugin_context.activate()
+            except Exception:
+                self._routes[scope_key][plugin_id] = active
+                self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
+                await self._cleanup_staging_context(plugin_context)
+                return PluginOperationResult.failure(
+                    PluginErrorCode.PLUGIN_UPDATE_FAILED,
+                    "new plugin version failed activation; the existing route is unchanged",
+                    plugin_id=plugin_id,
+                    version=version,
+                    details={"route_commit": "rolled_back", "old_version": active.registration.record.manifest.version},
+                )
+
+            self._retire_route(scope_key, active)
+            self._lifecycles[active.registration.registration_key] = PluginLifecycle.DRAINING
+            self._lifecycles[registration.registration_key] = PluginLifecycle.ACTIVE
+            operation = self._new_operation(
+                action="update",
+                plugin_id=plugin_id,
+                version=version,
+                scope_key=scope_key,
+                state=PluginLifecycle.DRAINING.value,
+                result=PluginOperationResult.success(
+                    "plugin route updated; the previous version is draining",
+                    plugin_id=plugin_id,
+                    version=version,
+                    details={
+                        "state": PluginLifecycle.DRAINING.value,
+                        "route_commit": "committed",
+                        "old_version": active.registration.record.manifest.version,
+                        "old_generation": str(active.generation),
+                        "generation": str(new_route.generation),
+                        "old_cleanup": "pending",
+                    },
+                ),
+            )
+            operation.event.clear()
+            self._retired_operations[active.route_key] = operation
+            self._start_retirement(operation, active)
+            self._save_state()
+            return operation.result
+        finally:
+            self._management_busy.discard(scope_key)
+
+    def remove(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> PluginOperationResult:
+        """Remove an inactive metadata record without deleting its artifact."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the requested registered plugin version is not visible here",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        manifest = registration.record.manifest
+        scope_key = self._scope_key(manifest.scope, session_id, project_id)
+        if scope_key is None or scope_key not in self._authorized:
+            return self._failure_not_authorized(plugin_id, version)
+        if policy is not None and not self._policy_allows(policy, manifest, "remove"):
+            return self._failure_not_authorized(plugin_id, version)
+        self._restore_route_if_needed(scope_key, plugin_id)
+        active = self._routes.get(scope_key, {}).get(plugin_id)
+        if active is not None and active.registration.registration_key == registration.registration_key:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_REMOVE_REJECTED,
+                "stop the active plugin version before removing its metadata",
+                plugin_id=plugin_id,
+                version=version,
+                details={"reason": "active_route"},
+            )
+        if any(
+            retired.registration.registration_key == registration.registration_key
+            for retired in self._retired_routes.values()
+        ) or any(
+            route_key[0] == scope_key
+            and route_key[1] == plugin_id
+            and route_key[2] == version
+            for route_key in self._restored_retired
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_REMOVE_REJECTED,
+                "plugin version still has a draining or cleanup reference",
+                plugin_id=plugin_id,
+                version=version,
+                details={"reason": "retired_reference"},
+            )
+        if scope_key in self._management_busy:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_OPERATION_CONFLICT,
+                "another plugin management operation is already preparing this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        key = registration.registration_key
+        self._registered.pop(key, None)
+        self._lifecycles.pop(key, None)
+        self._save_state()
+        return PluginOperationResult.success(
+            "plugin version removed; its artifact was retained",
+            plugin_id=plugin_id,
+            version=version,
+            details={"artifact": "retained", "state": PluginLifecycle.INACTIVE.value},
+        )
+
+    async def retry_cleanup(
+        self,
+        operation_id: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+    ) -> PluginOperationResult:
+        """Retry only the owned resources left by a failed retirement."""
+        operation = self._operations.get(operation_id)
+        if operation is None or not self._operation_visible(operation, session_id, project_id):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "plugin operation was not found in this scope",
+                operation_id=operation_id,
+            )
+        retired = next(
+            (route for route, item in self._retired_operations.items() if item is operation),
+            None,
+        )
+        if retired is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_CLEANUP_FAILED,
+                "the operation has no retryable cleanup reference",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation_id,
+            )
+        route = self._retired_routes.get(retired)
+        if route is None or route.leases:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_CLEANUP_FAILED,
+                "plugin resources are still draining",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation_id,
+            )
+        operation.state = PluginLifecycle.DRAINING.value
+        operation.result = PluginOperationResult.success(
+            "plugin cleanup retry started",
+            plugin_id=operation.plugin_id,
+            version=operation.version,
+            operation_id=operation.operation_id,
+            details={"state": PluginLifecycle.DRAINING.value, "old_cleanup": "retrying"},
+        )
+        operation.event.clear()
+        self._start_retirement(operation, route)
+        self._save_state()
         return operation.result
 
     def stop(
@@ -309,6 +747,7 @@ class PluginManager:
         *,
         session_id: str,
         project_id: str | None = None,
+        expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
     ) -> PluginOperationResult:
         """Retire a route immediately and drain only its existing leases."""
@@ -324,8 +763,23 @@ class PluginManager:
             return self._failure_not_authorized(plugin_id, manifest.version)
         if policy is not None and not self._policy_allows(policy, manifest, "stop"):
             return self._failure_not_authorized(plugin_id, manifest.version)
+        if scope_key in self._management_busy:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_OPERATION_CONFLICT,
+                "another plugin management operation is already preparing this scope",
+                plugin_id=plugin_id,
+                version=manifest.version,
+            )
+        if expected_generation is not None and route.generation != expected_generation:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_OPERATION_CONFLICT,
+                "the active plugin generation changed before stop",
+                plugin_id=plugin_id,
+                version=manifest.version,
+                details={"expected_generation": str(expected_generation), "actual_generation": str(route.generation)},
+            )
         self._routes[scope_key].pop(plugin_id, None)
-        self._retired_routes[route.route_key] = route
+        self._retire_route(scope_key, route)
         self._lifecycles[route.registration.registration_key] = PluginLifecycle.DRAINING
         operation = self._new_operation(
             action="stop",
@@ -345,15 +799,8 @@ class PluginManager:
             ),
         )
         self._retired_operations[route.route_key] = operation
-        if route.leases == 0:
-            self._finish_stop(operation, route)
-        else:
-            try:
-                task = asyncio.create_task(self._drain(operation, route))
-            except RuntimeError:
-                return operation.result
-            self._drain_tasks.add(task)
-            task.add_done_callback(self._drain_tasks.discard)
+        self._start_retirement(operation, route)
+        self._save_state()
         return operation.result
 
     async def wait_operation(
@@ -450,7 +897,7 @@ class PluginManager:
             base_tools = base_tools._base
         return base_tools
 
-    def _load_tool(self, registration: _RegisteredPlugin) -> Tool:
+    def _load_tool(self, registration: _RegisteredPlugin) -> tuple[Tool, ManagedPluginContext]:
         manifest = registration.record.manifest
         entry = manifest.resolve_entry(registration.artifact_root)
         if not entry.is_file():
@@ -465,26 +912,37 @@ class PluginManager:
             + "_"
             + manifest.content_hash[:12]
         )
-        module_spec = importlib.util.spec_from_file_location(module_name, entry)
-        if module_spec is None or module_spec.loader is None:
-            raise ImportError("plugin module could not be created")
-        module = importlib.util.module_from_spec(module_spec)
-        module_spec.loader.exec_module(module)
-        candidates = [
-            value
-            for value in vars(module).values()
-            if isinstance(value, type)
-            and issubclass(value, Tool)
-            and value is not Tool
-            and value.__module__ == module_name
-            and not getattr(value, "__abstractmethods__", None)
-        ]
-        if len(candidates) != 1:
-            raise TypeError("a H2 plugin entry must define exactly one concrete Tool")
-        tool_cls = candidates[0]
-        tool = tool_cls.create(self._tool_context) if self._tool_context is not None else tool_cls()
-        self._validate_loaded_tool(manifest.provides, tool)
-        return tool
+        plugin_context = ManagedPluginContext(
+            legacy_context=self._tool_context,
+            subscribe_impl=self._subscribe_impl,
+            service_registry=self._service_registry,
+        )
+        try:
+            module_spec = importlib.util.spec_from_file_location(module_name, entry)
+            if module_spec is None or module_spec.loader is None:
+                raise ImportError("plugin module could not be created")
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+            candidates = [
+                value
+                for value in vars(module).values()
+                if isinstance(value, type)
+                and issubclass(value, Tool)
+                and value is not Tool
+                and value.__module__ == module_name
+                and not getattr(value, "__abstractmethods__", None)
+            ]
+            if len(candidates) != 1:
+                raise TypeError("a H3 plugin entry must define exactly one concrete Tool")
+            tool_cls = candidates[0]
+            # H2 keeps the legacy ``ToolContext`` factory annotation, while
+            # H3 supplies the compatible managed context at runtime.
+            tool = tool_cls.create(cast(ToolContext, cast(object, plugin_context)))
+            self._validate_loaded_tool(manifest.provides, tool)
+            return tool, plugin_context
+        except BaseException:
+            self._schedule_context_cleanup(plugin_context)
+            raise
 
     @staticmethod
     def _validate_h2_declaration(record: PluginRecord) -> None:
@@ -564,11 +1022,13 @@ class PluginManager:
         project_id: str | None,
     ) -> tuple[_ActiveRoute | None, ScopeKey | None]:
         session_key = (PluginScope.SESSION, session_id)
+        self._restore_route_if_needed(session_key, plugin_id)
         route = self._routes.get(session_key, {}).get(plugin_id)
         if route is not None:
             return route, session_key
         if project_id is not None:
             project_key = (PluginScope.PROJECT, project_id)
+            self._restore_route_if_needed(project_key, plugin_id)
             route = self._routes.get(project_key, {}).get(plugin_id)
             if route is not None:
                 return route, project_key
@@ -585,9 +1045,48 @@ class PluginManager:
                 continue
             if scope_key not in self._authorized:
                 continue
+            for plugin_id in tuple(self._restored_routes_for_scope(cast(ScopeKey, scope_key))):
+                self._restore_route_if_needed(cast(ScopeKey, scope_key), plugin_id)
             for plugin_id, route in self._routes.get(cast(ScopeKey, scope_key), {}).items():
                 routes[plugin_id] = route
         return tuple(routes[name] for name in sorted(routes))
+
+    def _restored_routes_for_scope(self, scope_key: ScopeKey) -> tuple[str, ...]:
+        return tuple(
+            plugin_id
+            for (candidate_scope, plugin_id) in self._restored_routes
+            if candidate_scope == scope_key
+        )
+
+    def _restore_route_if_needed(self, scope_key: ScopeKey, plugin_id: str) -> None:
+        pending = self._restored_routes.get((scope_key, plugin_id))
+        if pending is None or plugin_id in self._routes.get(scope_key, {}):
+            return
+        registration, generation = pending
+        plugin_context: ManagedPluginContext | None = None
+        try:
+            tool, plugin_context = self._load_tool(registration)
+            plugin_context.activate()
+        except Exception:
+            if plugin_context is not None:
+                self._schedule_context_cleanup(plugin_context)
+            self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
+            self._restored_routes.pop((scope_key, plugin_id), None)
+            self._save_state()
+            return
+        route_key = (scope_key, plugin_id, registration.record.manifest.version, generation)
+        route = _ActiveRoute(
+            registration,
+            generation,
+            ManagedPluginTool(self, route_key, tool),
+            plugin_context,
+        )
+        route.lease_zero = asyncio.Event()
+        route.lease_zero.set()
+        self._routes.setdefault(scope_key, {})[plugin_id] = route
+        self._restored_routes.pop((scope_key, plugin_id), None)
+        self._lifecycles[registration.registration_key] = PluginLifecycle.ACTIVE
+        self._save_state()
 
     def _active_proxy(
         self,
@@ -612,6 +1111,17 @@ class PluginManager:
             ),
             None,
         )
+        restored = next(
+            (
+                generation
+                for (scope_key, plugin_id), (_item, generation) in self._restored_routes.items()
+                if plugin_id == manifest.plugin_id
+                and scope_key[0] is manifest.scope
+                and scope_key[1] == (record.session_id or record.project_id)
+                and _item.registration_key == registration.registration_key
+            ),
+            None,
+        )
         result: dict[str, Any] = {
             "plugin_id": manifest.plugin_id,
             "version": manifest.version,
@@ -623,6 +1133,8 @@ class PluginManager:
         }
         if active is not None:
             result.update({"generation": active.generation, "tool": active.tool.name})
+        elif restored is not None:
+            result.update({"generation": restored, "tool": next((name.removeprefix("tool:") for name in manifest.provides if name.startswith("tool:")), "")})
         return result
 
     @staticmethod
@@ -677,7 +1189,85 @@ class PluginManager:
             scope_key=scope_key,
         )
         self._operations[operation_id] = operation
+        self._save_state()
         return operation
+
+    def _retire_route(self, scope_key: ScopeKey, route: _ActiveRoute) -> None:
+        """Keep an old generation addressable until its cleanup is complete."""
+        self._retired_routes[route.route_key] = route
+        self._routes.setdefault(scope_key, {})
+
+    def _start_retirement(self, operation: _Operation, route: _ActiveRoute) -> None:
+        if route.cleanup_started:
+            return
+        if route.leases == 0:
+            self._begin_retirement(operation, route)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._drain(operation, route))
+        self._drain_tasks.add(task)
+        task.add_done_callback(self._drain_tasks.discard)
+
+    def _begin_retirement(self, operation: _Operation, route: _ActiveRoute) -> None:
+        if route.cleanup_started:
+            return
+        route.cleanup_started = True
+        if not route.context.has_resources:
+            self._complete_retirement(operation, route)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            route.cleanup_started = False
+            return
+        task = loop.create_task(self._cleanup_retired(operation, route))
+        self._drain_tasks.add(task)
+        task.add_done_callback(self._drain_tasks.discard)
+
+    async def _cleanup_retired(self, operation: _Operation, route: _ActiveRoute) -> None:
+        try:
+            await route.context.cleanup()
+        except Exception:
+            route.cleanup_started = False
+            self._lifecycles[route.registration.registration_key] = PluginLifecycle.FAILED
+            operation.state = "cleanup_failed"
+            operation.result = PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_CLEANUP_FAILED,
+                "plugin route retired but owned resources still need cleanup",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation.operation_id,
+                details={
+                    "route_commit": "committed",
+                    "old_cleanup": "failed",
+                    "retry_available": "true",
+                },
+            )
+            operation.event.set()
+            self._save_state()
+            return
+        self._complete_retirement(operation, route)
+
+    async def _cleanup_staging_context(self, context: ManagedPluginContext) -> None:
+        try:
+            await context.cleanup()
+        except Exception:
+            # The update result still reports route rollback.  The context is
+            # not attached to a route, so there is no other plugin state to
+            # hide; the failure remains visible in the caller's details.
+            return
+
+    def _schedule_context_cleanup(self, context: ManagedPluginContext) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._cleanup_staging_context(context))
+        self._drain_tasks.add(task)
+        task.add_done_callback(self._drain_tasks.discard)
 
     async def _drain(self, operation: _Operation, route: _ActiveRoute) -> None:
         assert route.lease_zero is not None
@@ -694,12 +1284,19 @@ class PluginManager:
                 details={"state": PluginLifecycle.DRAINING.value, "leases": str(route.leases)},
             )
             operation.event.set()
+            self._save_state()
             return
-        self._finish_stop(operation, route)
+        self._begin_retirement(operation, route)
 
     def _finish_stop(self, operation: _Operation, route: _ActiveRoute) -> None:
+        """Compatibility alias for the H2 stop seam."""
+        self._complete_retirement(operation, route)
+
+    def _complete_retirement(self, operation: _Operation, route: _ActiveRoute) -> None:
         self._retired_routes.pop(route.route_key, None)
         self._retired_operations.pop(route.route_key, None)
+        self._restored_retired.discard(route.route_key)
+        route.cleanup_started = False
         current_route = self._routes.get(route.route_key[0], {}).get(
             route.registration.record.manifest.plugin_id
         )
@@ -712,15 +1309,31 @@ class PluginManager:
             )
             else PluginLifecycle.INACTIVE
         )
-        operation.state = PluginLifecycle.INACTIVE.value
-        operation.result = PluginOperationResult.success(
-            "plugin stopped for the current scope",
-            plugin_id=operation.plugin_id,
-            version=operation.version,
-            operation_id=operation.operation_id,
-            details={"state": PluginLifecycle.INACTIVE.value, "generation": str(route.generation)},
-        )
+        if operation.action == "update":
+            operation.state = PluginLifecycle.ACTIVE.value
+            operation.result = PluginOperationResult.success(
+                "plugin update completed and the previous version was cleaned up",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation.operation_id,
+                details={
+                    "state": PluginLifecycle.ACTIVE.value,
+                    "route_commit": "committed",
+                    "old_cleanup": "complete",
+                    "generation": str(current_route.generation if current_route is not None else route.generation),
+                },
+            )
+        else:
+            operation.state = PluginLifecycle.INACTIVE.value
+            operation.result = PluginOperationResult.success(
+                "plugin stopped for the current scope",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation.operation_id,
+                details={"state": PluginLifecycle.INACTIVE.value, "generation": str(route.generation)},
+            )
         operation.event.set()
+        self._save_state()
 
     def _begin_call(self, route_key: RouteKey) -> bool:
         scope_key, plugin_id, version, generation = route_key
@@ -751,7 +1364,7 @@ class PluginManager:
             if retired:
                 operation = self._retired_operations.get(route_key)
                 if operation is not None:
-                    self._finish_stop(operation, route)
+                    self._start_retirement(operation, route)
 
 
 class ManagedPluginTool(Tool):
@@ -916,7 +1529,10 @@ class DynamicPluginRegistry(ToolRegistry):
         if error:
             return ToolResult.error(str(error) + hint)
         if tool is None:
-            return ToolResult.error(f"Error: Tool '{name}' not found." + hint)
+            # Preserve the base registry's execution seam for callers that
+            # provide a custom prepare_call/execute pair.  This is also what
+            # keeps an un-authorized live overlay transparent to core tools.
+            return await self._base.execute(name, params)
         try:
             result = await tool.execute(**cast_params)
             if isinstance(result, ToolResult) and result.is_error:

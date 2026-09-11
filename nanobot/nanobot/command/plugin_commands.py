@@ -1,4 +1,4 @@
-"""Native chat commands for the H2 trusted plugin manager."""
+"""Native chat commands for the H3 trusted plugin manager."""
 
 from __future__ import annotations
 
@@ -35,7 +35,9 @@ def _profile_policy(ctx: CommandContext) -> tuple[TaskProfile | None, DynamicPlu
 def _usage() -> str:
     return (
         "Usage: `/plugins list`; `/plugins load <plugin-id>@<version>`; "
-        "`/plugins stop <plugin-id>`; `/plugins status <operation-id>`"
+        "`/plugins update <plugin-id>@<version>`; `/plugins stop <plugin-id>`; "
+        "`/plugins remove <plugin-id>@<version>`; `/plugins cleanup-retry <operation-id>`; "
+        "`/plugins status <operation-id>`"
     )
 
 
@@ -88,7 +90,7 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             project_id=project_id,
         )
         return _text(ctx, str(status) if status is not None else "Unknown plugin operation.")
-    if action not in {"load", "stop"}:
+    if action not in {"load", "update", "stop", "remove", "cleanup-retry"}:
         return _text(ctx, _usage())
     if not ctx.is_user_turn:
         return _text(ctx, "Only a direct user message can change dynamic plugin routing.")
@@ -97,18 +99,45 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
         return _text(ctx, "Dynamic plugins are disabled by the active task profile.")
     manager.authorize(ctx.key, project_id)
 
-    if action == "load":
+    if action in {"load", "update", "remove"}:
         if len(parts) != 2:
             return _text(ctx, _usage())
         plugin_id, separator, version = parts[1].partition("@")
         if not separator or not plugin_id or not version:
-            return _text(ctx, "Usage: `/plugins load <plugin-id>@<version>`")
-        result = manager.load(
-            plugin_id,
-            version,
+            return _text(ctx, f"Usage: `/plugins {action} <plugin-id>@<version>`")
+        if action == "load":
+            result = manager.load(
+                plugin_id,
+                version,
+                session_id=ctx.key,
+                project_id=project_id,
+                policy=policy,
+            )
+        elif action == "update":
+            result = await manager.update(
+                plugin_id,
+                version,
+                session_id=ctx.key,
+                project_id=project_id,
+                policy=policy,
+            )
+        else:
+            result = manager.remove(
+                plugin_id,
+                version,
+                session_id=ctx.key,
+                project_id=project_id,
+                policy=policy,
+            )
+        return _text(ctx, _format_result(result))
+
+    if action == "cleanup-retry":
+        if len(parts) != 2:
+            return _text(ctx, _usage())
+        result = await manager.retry_cleanup(
+            parts[1],
             session_id=ctx.key,
             project_id=project_id,
-            policy=policy,
         )
         return _text(ctx, _format_result(result))
 
