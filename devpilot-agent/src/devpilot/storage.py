@@ -341,7 +341,11 @@ class ProjectStore:
                 ).scalar_one_or_none()
             except Exception as exc:
                 raise RuntimeError("database is not initialized by Alembic") from exc
-        if actual != expected:
+        compatible_legacy_head = (
+            expected == "0011_p8_skill_improvement_records"
+            and actual == "0012_h3_plugin_runtime_state"
+        )
+        if actual != expected and not compatible_legacy_head:
             raise RuntimeError(f"database schema head is {actual!r}; expected {expected!r}")
 
     def ensure_project(

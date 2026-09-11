@@ -16,6 +16,7 @@ from nanobot.agent.plugins.contracts import (
     PluginSource,
 )
 from nanobot.agent.plugins.manager import PluginManager
+from nanobot.agent.plugins.store import PluginStateStore, SqlitePluginStateStore
 
 __all__ = [
     "PluginCandidateStatus",
@@ -35,4 +36,6 @@ __all__ = [
     "PluginScope",
     "PluginSource",
     "PluginTaskHandle",
+    "PluginStateStore",
+    "SqlitePluginStateStore",
 ]

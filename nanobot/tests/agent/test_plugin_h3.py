@@ -431,3 +431,150 @@ async def test_trusted_lifecycle_example_owns_listener_and_timer(tmp_path: Path)
         "tasks": 0,
         "services": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_update_and_stop_replay_the_supplied_operation_id(tmp_path: Path) -> None:
+    v1, root1 = _record(
+        tmp_path,
+        "devflow-idempotent",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    async def execute(self, **kwargs):
+        return "v1"
+""",
+    )
+    v2, root2 = _record(
+        tmp_path,
+        "devflow-idempotent",
+        "2.0.0",
+        _TOOL_PREFIX
+        + """
+    async def execute(self, **kwargs):
+        return "v2"
+""",
+    )
+    manager = PluginManager(ToolRegistry())
+    assert manager.register_version(v1, root1).ok
+    assert manager.register_version(v2, root2).ok
+    manager.authorize("cli:direct")
+    assert manager.load("devflow-idempotent", "1.0.0", session_id="cli:direct").ok
+
+    first_update = await manager.update(
+        "devflow-idempotent",
+        "2.0.0",
+        session_id="cli:direct",
+        operation_id="update-op-1",
+        expected_generation=1,
+    )
+    replayed_update = await manager.update(
+        "devflow-idempotent",
+        "2.0.0",
+        session_id="cli:direct",
+        operation_id="update-op-1",
+        expected_generation=999,
+    )
+    assert first_update == replayed_update
+    assert manager._routes[("session", "cli:direct")]["devflow-idempotent"].generation == 2  # type: ignore[index]
+
+    first_stop = manager.stop(
+        "devflow-idempotent",
+        session_id="cli:direct",
+        operation_id="stop-op-1",
+        expected_generation=2,
+    )
+    replayed_stop = manager.stop(
+        "devflow-idempotent",
+        session_id="cli:direct",
+        operation_id="stop-op-1",
+        expected_generation=1,
+    )
+    assert first_stop.to_dict() == replayed_stop.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_staging_cleanup_failure_is_a_retryable_independent_result(tmp_path: Path) -> None:
+    v1, root1 = _record(
+        tmp_path,
+        "devflow-staging-cleanup",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    async def execute(self, **kwargs):
+        return "stable"
+""",
+    )
+    v2, root2 = _record(
+        tmp_path,
+        "devflow-staging-cleanup",
+        "2.0.0",
+        _TOOL_PREFIX
+        + """
+    @classmethod
+    def create(cls, ctx):
+        async def dispose():
+            raise RuntimeError("staging cleanup failure")
+        ctx.on_dispose(dispose)
+        ctx.provide_service("occupied", object())
+        return cls()
+
+    async def execute(self, **kwargs):
+        return "should-not-run"
+""",
+    )
+    manager = PluginManager(ToolRegistry(), service_registry={"occupied": object()})
+    assert manager.register_version(v1, root1).ok
+    assert manager.register_version(v2, root2).ok
+    manager.authorize("cli:direct")
+    assert manager.load("devflow-staging-cleanup", "1.0.0", session_id="cli:direct").ok
+
+    result = await manager.update("devflow-staging-cleanup", "2.0.0", session_id="cli:direct")
+    assert result.ok is False
+    assert result.code is not None and result.code.value == "plugin_cleanup_failed"
+    assert result.operation_id is not None
+    assert result.details_dict["route_commit"] == "rolled_back"
+    assert result.details_dict["staging_cleanup"] == "failed"
+
+    retry = await manager.retry_cleanup(result.operation_id, session_id="cli:direct")
+    assert retry.ok is False
+    assert retry.code is not None and retry.code.value == "plugin_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_persisted_retirement_can_be_reconciled_after_restart(tmp_path: Path) -> None:
+    state_path = tmp_path / "plugin-runtime.db"
+    record, root = _record(
+        tmp_path,
+        "devflow-restart-cleanup",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    @classmethod
+    def create(cls, ctx):
+        async def dispose():
+            raise RuntimeError("process-local cleanup failure")
+        ctx.on_dispose(dispose)
+        return cls()
+
+    async def execute(self, **kwargs):
+        return "ok"
+""",
+    )
+    first = PluginManager(ToolRegistry(), state_path=state_path)
+    assert first.register_version(record, root).ok
+    first.authorize("cli:direct")
+    assert first.load("devflow-restart-cleanup", "1.0.0", session_id="cli:direct").ok
+    stopped = first.stop("devflow-restart-cleanup", session_id="cli:direct")
+    assert stopped.operation_id is not None
+    failed = await first.wait_operation(stopped.operation_id, session_id="cli:direct", timeout=1)
+    assert failed["state"] == "cleanup_failed"
+
+    second = PluginManager(ToolRegistry(), state_path=state_path)
+    second.authorize("cli:direct")
+    restored = second.operation_status(stopped.operation_id, session_id="cli:direct")
+    assert restored is not None and restored["state"] == "cleanup_failed"
+    recovered = await second.retry_cleanup(stopped.operation_id, session_id="cli:direct")
+    assert recovered.ok is True
+    assert recovered.details_dict["old_cleanup"] == "recovered_after_restart"
+    assert second.list_view("cli:direct")[0]["lifecycle"] == "inactive"

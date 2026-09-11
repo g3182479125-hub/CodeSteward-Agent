@@ -33,6 +33,7 @@ from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.plugins.manager import PluginManager
+from nanobot.agent.plugins.store import SqlitePluginStateStore
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.task_profiles import (
@@ -199,6 +200,19 @@ class TurnContext:
         if self.session is None:
             raise RuntimeError("turn session is not initialized; RESTORE must run before this stage")
         return self.session
+
+
+def _plugin_state_database(workspace: Path) -> tuple[Path, bool]:
+    """Resolve the shared DevPilot SQLite database when the host configured one."""
+    database_url = os.environ.get("DEVPILOT_DATABASE_URL", "").strip()
+    if database_url.startswith("sqlite:///"):
+        raw_path = database_url.removeprefix("sqlite:///")
+        if raw_path and raw_path != ":memory:":
+            return Path(raw_path).expanduser().resolve(), True
+    data_dir = os.environ.get("DEVPILOT_DATA_DIR", "").strip()
+    if data_dir:
+        return Path(data_dir).expanduser().resolve() / "devpilot.db", True
+    return workspace / ".nanobot" / "plugins.db", False
 
 
 class AgentLoop:
@@ -475,10 +489,14 @@ class AgentLoop:
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
+        plugin_state_path, require_plugin_state_schema = _plugin_state_database(self.workspace)
         self.plugin_manager = PluginManager(
             self.tools,
             tool_context=self._plugin_tool_context,
-            state_path=self.workspace / ".nanobot" / "plugins.json",
+            state_store=SqlitePluginStateStore(
+                plugin_state_path,
+                require_schema=require_plugin_state_schema,
+            ),
         )
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0

@@ -549,9 +549,13 @@ class SkillImprovementStore:
                 raise SkillImprovementError(
                     "database schema must be initialized by Alembic before P8 use"
                 )
-            if version is not None and version[0] != "0011_p8_skill_improvement_records":
+            compatible_heads = {
+                "0011_p8_skill_improvement_records",
+                "0012_h3_plugin_runtime_state",
+            }
+            if version is not None and version[0] not in compatible_heads:
                 raise SkillImprovementError(
-                    "database schema must be upgraded to 0011_p8_skill_improvement_records"
+                    "database schema must be upgraded to 0012_h3_plugin_runtime_state"
                 )
             if version is not None:
                 has_records_table = connection.execute(

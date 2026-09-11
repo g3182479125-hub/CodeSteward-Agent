@@ -110,12 +110,12 @@ class ManagedPluginContext:
             nonlocal host_disposer, disposed
             if disposed:
                 return
-            disposed = True
             if host_disposer is not None:
                 result = host_disposer()
                 if isawaitable(result):
                     await result
                 host_disposer = None
+            disposed = True
 
         resource = _OwnedResource(activate, dispose_async, kind="listeners")
         self._resources.append(resource)
@@ -140,7 +140,6 @@ class ManagedPluginContext:
             nonlocal disposed
             if disposed:
                 return
-            disposed = True
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -148,6 +147,7 @@ class ManagedPluginContext:
                 close = getattr(awaitable, "close", None)
                 if callable(close):
                     close()
+            disposed = True
 
         resource = _OwnedResource(lambda: None, dispose_task, active=True, kind="tasks")
         self._resources.append(resource)
@@ -230,10 +230,10 @@ class ManagedPluginContext:
             nonlocal called
             if called:
                 return
-            called = True
             result = disposer()
             if isawaitable(result):
                 await result
+            called = True
 
         return wrapped
 
