@@ -125,6 +125,10 @@ class PluginManager:
         self._management_busy: set[ScopeKey] = set()
         self._restored_routes: dict[tuple[ScopeKey, str], tuple[_RegisteredPlugin, int]] = {}
         self._restored_retired: dict[RouteKey, dict[str, Any]] = {}
+        # Keep already-issued proxies addressable after a route is removed so
+        # an in-flight/live view returns the explicit retired-version error
+        # instead of silently degrading to the generic "tool not found" path.
+        self._retired_tool_keys: set[RouteKey] = set()
         self._staging_operations: dict[str, ManagedPluginContext] = {}
         self._next_generation = 0
         self._restore_state()
@@ -273,6 +277,7 @@ class PluginManager:
                     "cleanup_started": bool(raw.get("cleanup_started", False)),
                     "operation_id": raw.get("operation_id"),
                 }
+                self._retired_tool_keys.add(route_key)
             for raw in data.get("operations", []):
                 scope_key = (PluginScope(raw["scope"]), raw["binding"])
                 raw_result = raw.get("result", {})
@@ -1406,6 +1411,7 @@ class PluginManager:
     def _retire_route(self, scope_key: ScopeKey, route: _ActiveRoute) -> None:
         """Keep an old generation addressable until its cleanup is complete."""
         self._retired_routes[route.route_key] = route
+        self._retired_tool_keys.add(route.route_key)
         self._routes.setdefault(scope_key, {})
 
     def _start_retirement(self, operation: _Operation, route: _ActiveRoute) -> None:
@@ -1702,6 +1708,12 @@ class DynamicPluginRegistry(ToolRegistry):
             if route.tool.name == name:
                 self._known[name] = route.tool
                 return route.tool
+        # A view may have handed this proxy to the caller before stop/remove.
+        # Keep it callable long enough to surface the stable retirement error;
+        # do not keep arbitrary inactive tools reachable through the overlay.
+        known = self._known.get(name)
+        if known is not None and known._route_key in self._manager._retired_tool_keys:
+            return known
         self._known.pop(name, None)
         return None
 
