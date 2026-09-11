@@ -1117,6 +1117,22 @@ class ProjectStore:
                 raise KeyError("unknown idempotency key")
             record.response_json = response_json
 
+    def compare_and_set_idempotency(
+        self, key: str, expected_response_json: str | None, response_json: str
+    ) -> bool:
+        """Replace one operation receipt only if its prior value is unchanged."""
+
+        with self._session_factory.begin() as session:
+            result = session.execute(
+                update(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.key == key,
+                    IdempotencyRecord.response_json == expected_response_json,
+                )
+                .values(response_json=response_json)
+            )
+            return int(cast(Any, result).rowcount or 0) == 1
+
     def bind_idempotency_request_id(self, key: str, request_id: str) -> str | None:
         """Atomically bind and return the identity used by a completed replay."""
         with self._session_factory.begin() as session:
@@ -1183,23 +1199,42 @@ class ProjectStore:
         return hashlib.sha256(f"candidate-budget:{task_id}".encode()).hexdigest()
 
     @staticmethod
-    def _decode_candidate_budget(response_json: str | None) -> tuple[int, int]:
+    def _decode_candidate_budget(response_json: str | None) -> tuple[int, int, str | None, int]:
         if response_json is None:
             raise ValueError("candidate budget state is incomplete")
         try:
             payload = json.loads(response_json)
         except (TypeError, ValueError) as exc:
             raise ValueError("candidate budget state is not valid JSON") from exc
-        if not isinstance(payload, dict) or set(payload) != {"trials", "reserved_seconds"}:
+        if not isinstance(payload, dict) or set(payload) != {
+            "trials",
+            "reserved_seconds",
+            "active_operation_id",
+            "active_until_epoch",
+        }:
             raise ValueError("candidate budget state has an invalid shape")
         trials = payload.get("trials")
         reserved_seconds = payload.get("reserved_seconds")
+        active_operation_id = payload.get("active_operation_id")
+        active_until_epoch = payload.get("active_until_epoch")
         if not all(
             isinstance(value, int) and not isinstance(value, bool) and value >= 0
             for value in (trials, reserved_seconds)
         ):
             raise ValueError("candidate budget state has invalid counters")
-        return trials, reserved_seconds
+        if active_operation_id is not None and not isinstance(active_operation_id, str):
+            raise ValueError("candidate budget state has an invalid active operation")
+        if (
+            not isinstance(active_until_epoch, int)
+            or isinstance(active_until_epoch, bool)
+            or active_until_epoch < 0
+        ):
+            raise ValueError("candidate budget state has an invalid lease expiry")
+        if active_operation_id is None and active_until_epoch != 0:
+            raise ValueError("candidate budget state has an orphaned lease expiry")
+        if active_operation_id is not None and active_until_epoch == 0:
+            raise ValueError("candidate budget state has an active lease without expiry")
+        return trials, reserved_seconds, active_operation_id, active_until_epoch
 
     def reserve_candidate_budget(
         self,
@@ -1207,10 +1242,16 @@ class ProjectStore:
         max_trials: int,
         max_trial_seconds: int,
         reservation_seconds: int,
+        operation_id: str,
     ) -> tuple[bool, int, int]:
         """Atomically reserve one bounded candidate trial across processes."""
 
-        if not task_id or not 1 <= max_trials or not 1 <= max_trial_seconds:
+        if (
+            not task_id
+            or not operation_id
+            or not 1 <= max_trials
+            or not 1 <= max_trial_seconds
+        ):
             raise ValueError("candidate budget arguments are invalid")
         if not 1 <= reservation_seconds <= max_trial_seconds:
             raise ValueError("candidate reservation is outside the task budget")
@@ -1227,28 +1268,47 @@ class ProjectStore:
                 if row is None:
                     trials = 0
                     reserved_seconds = 0
+                    initial = {
+                        "active_operation_id": None,
+                        "active_until_epoch": 0,
+                        "reserved_seconds": 0,
+                        "trials": 0,
+                    }
                     connection.execute(
                         insert(IdempotencyRecord).values(
                             key=key,
                             request_hash=request_hash,
-                            response_json=json.dumps(
-                                {"reserved_seconds": 0, "trials": 0},
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            ),
+                            response_json=json.dumps(initial, ensure_ascii=False, sort_keys=True),
                             created_at=utc_now(),
                         )
                     )
+                    active_operation_id = None
+                    active_until_epoch = 0
                 else:
                     if row.request_hash != request_hash:
                         raise ValueError("candidate budget key was reused with different content")
-                    trials, reserved_seconds = self._decode_candidate_budget(row.response_json)
+                    trials, reserved_seconds, active_operation_id, active_until_epoch = (
+                        self._decode_candidate_budget(row.response_json)
+                    )
+                now_epoch = int(utc_now().timestamp())
+                if (
+                    active_operation_id is not None
+                    and active_operation_id != operation_id
+                    and active_until_epoch > now_epoch
+                ):
+                    connection.commit()
+                    return False, trials, reserved_seconds
+                if active_operation_id == operation_id and active_until_epoch > now_epoch:
+                    connection.commit()
+                    return True, trials, reserved_seconds
                 if trials >= max_trials or (
                     reserved_seconds + reservation_seconds > max_trial_seconds
                 ):
                     connection.commit()
                     return False, trials, reserved_seconds
                 updated = {
+                    "active_operation_id": operation_id,
+                    "active_until_epoch": now_epoch + max_trial_seconds,
                     "reserved_seconds": reserved_seconds + reservation_seconds,
                     "trials": trials + 1,
                 }
@@ -1281,7 +1341,43 @@ class ProjectStore:
             return 0, 0
         if row.request_hash != request_hash:
             raise ValueError("candidate budget key was reused with different content")
-        return self._decode_candidate_budget(row.response_json)
+        trials, reserved_seconds, _active_operation_id, _active_until_epoch = (
+            self._decode_candidate_budget(row.response_json)
+        )
+        return trials, reserved_seconds
+
+    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool:
+        """Release a completed operation's active lease without refunding budget."""
+
+        key = self._candidate_budget_key(task_id)
+        request_hash = self._candidate_budget_request_hash(task_id)
+        with self._session_factory.begin() as session:
+            record = session.get(IdempotencyRecord, key)
+            if record is None:
+                return False
+            if record.request_hash != request_hash:
+                raise ValueError("candidate budget key was reused with different content")
+            trials, reserved_seconds, active_operation_id, _active_until_epoch = (
+                self._decode_candidate_budget(record.response_json)
+            )
+            if active_operation_id != operation_id:
+                return False
+            payload = {
+                "active_operation_id": None,
+                "active_until_epoch": 0,
+                "reserved_seconds": reserved_seconds,
+                "trials": trials,
+            }
+            result = session.execute(
+                update(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.key == key,
+                    IdempotencyRecord.request_hash == request_hash,
+                    IdempotencyRecord.response_json == record.response_json,
+                )
+                .values(response_json=json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            )
+            return int(cast(Any, result).rowcount or 0) == 1
 
     def reserve_broker_action(self, payload: dict[str, Any]) -> bool:
         """Atomically consume a gateway confirmation before capability issuance."""

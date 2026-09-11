@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import threading
+import time as pytime
 from dataclasses import replace
 from typing import Any
 
@@ -19,6 +21,7 @@ from devpilot.candidate_runner import (
     CandidateTrialRunner,
 )
 from devpilot.execution import ExecutionError, ExecutionResult
+from devpilot.fc_sandbox import FCSandboxBackend
 from devpilot.storage import ProjectStore
 
 VALID_SOURCE = "def transform(payload):\n    return {'message': 'Hello, ' + payload['name']}\n"
@@ -64,7 +67,7 @@ def request_for(
             session_id=session_id,
             task_id=task_id,
             project_id=project_id,
-            allowed_input_rules=(("name", "string", 64),),
+            allowed_input_rules=(("name", "string", 64, None, None),),
         ),
         manifest=manifest_for(source, **manifest_overrides),
         source=source,
@@ -86,7 +89,7 @@ def runner_for(
     )
 
 
-class RecordingBackend:
+class RecordingBackend(FCSandboxBackend):
     name = "fc-agent-sandbox"
     verification_available = True
     candidate_execution_available = True
@@ -97,6 +100,7 @@ class RecordingBackend:
         error: Exception | None = None,
         cleanup_status: str = "cleaned",
     ):
+        super().__init__(None)  # type: ignore[arg-type]
         self.result = result or ExecutionResult(
             backend=self.name,
             sandbox_id="candidate-sandbox",
@@ -106,6 +110,8 @@ class RecordingBackend:
             duration_ms=12,
             command_profile="model-candidate",
             bundle_bytes=100,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
         self.error = error
         self.cleanup_status = cleanup_status
@@ -130,7 +136,12 @@ class RecordingBackend:
 
     def cancel(self, run_id: str) -> dict[str, str]:
         self.cancelled.append(run_id)
-        return {"run_id": run_id, "sandbox_id": "candidate-sandbox", "cleanup_status": "cleaned"}
+        return {
+            "run_id": run_id,
+            "sandbox_id": "candidate-sandbox",
+            "status": "cancelled",
+            "cleanup_status": "cleaned",
+        }
 
 
 class MemoryIdempotencyStore:
@@ -159,6 +170,16 @@ class MemoryIdempotencyStore:
         request_hash, _ = self.records[key]
         self.records[key] = (request_hash, response_json)
 
+    def compare_and_set_idempotency(
+        self, key: str, expected_response_json: str | None, response_json: str
+    ) -> bool:
+        with self._lock:
+            record = self.records.get(key)
+            if record is None or record[1] != expected_response_json:
+                return False
+            self.records[key] = (record[0], response_json)
+            return True
+
     def get_idempotency(self, key: str) -> tuple[str, str | None] | None:
         return self.records.get(key)
 
@@ -174,6 +195,7 @@ class MemoryIdempotencyStore:
         max_trials: int,
         max_trial_seconds: int,
         reservation_seconds: int,
+        operation_id: str,
     ) -> tuple[bool, int, int]:
         key = "candidate-budget-" + hashlib.sha256(task_id.encode()).hexdigest()
         request_hash = hashlib.sha256(f"candidate-budget:{task_id}".encode()).hexdigest()
@@ -183,17 +205,39 @@ class MemoryIdempotencyStore:
                 trials, reserved_seconds = 0, 0
                 self.records[key] = (
                     request_hash,
-                    json.dumps({"trials": 0, "reserved_seconds": 0}, sort_keys=True),
+                    json.dumps(
+                        {
+                            "active_operation_id": None,
+                            "active_until_epoch": 0,
+                            "trials": 0,
+                            "reserved_seconds": 0,
+                        },
+                        sort_keys=True,
+                    ),
                 )
+                active_operation_id = None
             else:
                 assert record[0] == request_hash
                 payload = json.loads(record[1] or "")
-                assert set(payload) == {"trials", "reserved_seconds"}
+                assert set(payload) == {
+                    "active_operation_id",
+                    "active_until_epoch",
+                    "trials",
+                    "reserved_seconds",
+                }
                 trials = payload["trials"]
                 reserved_seconds = payload["reserved_seconds"]
+                active_operation_id = payload["active_operation_id"]
+                _active_until_epoch = payload["active_until_epoch"]
+            if active_operation_id not in {None, operation_id}:
+                return False, trials, reserved_seconds
+            if active_operation_id == operation_id:
+                return True, trials, reserved_seconds
             if trials >= max_trials or reserved_seconds + reservation_seconds > max_trial_seconds:
                 return False, trials, reserved_seconds
             updated = {
+                "active_operation_id": operation_id,
+                "active_until_epoch": 1,
                 "trials": trials + 1,
                 "reserved_seconds": reserved_seconds + reservation_seconds,
             }
@@ -206,8 +250,27 @@ class MemoryIdempotencyStore:
         if record is None:
             return 0, 0
         payload = json.loads(record[1] or "")
-        assert set(payload) == {"trials", "reserved_seconds"}
+        assert set(payload) == {
+            "active_operation_id",
+            "active_until_epoch",
+            "trials",
+            "reserved_seconds",
+        }
         return payload["trials"], payload["reserved_seconds"]
+
+    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool:
+        key = "candidate-budget-" + hashlib.sha256(task_id.encode()).hexdigest()
+        with self._lock:
+            record = self.records.get(key)
+            if record is None:
+                return False
+            payload = json.loads(record[1] or "")
+            if payload.get("active_operation_id") != operation_id:
+                return False
+            payload["active_operation_id"] = None
+            payload["active_until_epoch"] = 0
+            self.records[key] = (record[0], json.dumps(payload, sort_keys=True))
+            return True
 
 
 class CrashBackend(RecordingBackend):
@@ -238,6 +301,21 @@ class RecoverBackend(RecordingBackend):
                 "output_truncated": False,
             },
         }
+
+
+def _reserve_budget_in_process(database_path: str, index: int) -> bool:
+    store = ProjectStore(database_path)
+    for _attempt in range(50):
+        allowed, trials, seconds = store.reserve_candidate_budget(
+            "shared-task", CANDIDATE_MAX_TRIALS, CANDIDATE_MAX_TRIAL_SECONDS, 30, f"op-{index}"
+        )
+        if allowed:
+            store.settle_candidate_budget("shared-task", f"op-{index}")
+            return True
+        if trials >= CANDIDATE_MAX_TRIALS or seconds >= CANDIDATE_MAX_TRIAL_SECONDS:
+            return False
+        pytime.sleep(0.02)
+    return False
 
 
 def test_trial_runs_only_the_fixed_json_candidate_bundle() -> None:
@@ -350,6 +428,33 @@ def test_fc_backend_contract_is_checked_before_budget_or_execution() -> None:
     assert backend.requests == []
 
 
+def test_fc_result_receipt_must_match_the_fixed_candidate_contract() -> None:
+    backend = RecordingBackend()
+    backend.result = replace(backend.result, network_policy="required")
+
+    result = runner_for(backend).trial(request_for())
+
+    assert result.error_code == "CANDIDATE_RESULT_CONTRACT_INVALID"
+    assert result.status == "failed"
+
+
+def test_numeric_input_must_stay_inside_the_host_signed_range() -> None:
+    source = "def transform(payload):\n    return {'age': payload['age']}\n"
+    grant = ISSUER.issue(
+        session_id="session-1",
+        task_id="task-1",
+        project_id="project-1",
+        allowed_input_rules=(("age", "integer", 8, 0, 120),),
+    )
+
+    result = runner_for(RecordingBackend()).trial(
+        request_for(source=source, input_data={"age": 121}, grant=grant)
+    )
+
+    assert result.error_code == "CANDIDATE_INPUT_SCOPE_INVALID"
+    assert result.status == "rejected"
+
+
 def test_candidate_source_cannot_reference_a_local_path() -> None:
     source = "def transform(payload):\n    return {'path': 'C:/Users/private'}\n"
 
@@ -424,6 +529,8 @@ def test_nonzero_exit_is_not_a_success() -> None:
             duration_ms=4,
             command_profile="model-candidate",
             bundle_bytes=100,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
     )
 
@@ -445,6 +552,8 @@ def test_invalid_or_truncated_json_output_is_rejected() -> None:
             duration_ms=1,
             command_profile="model-candidate",
             bundle_bytes=100,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
     )
     truncated = RecordingBackend(
@@ -458,6 +567,8 @@ def test_invalid_or_truncated_json_output_is_rejected() -> None:
             command_profile="model-candidate",
             bundle_bytes=100,
             output_truncated=True,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
     )
 
@@ -481,6 +592,8 @@ def test_fixed_runner_output_limit_is_reported_as_a_bounded_failure() -> None:
             duration_ms=1,
             command_profile="model-candidate",
             bundle_bytes=100,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
     )
 
@@ -568,6 +681,8 @@ def test_candidate_output_is_redacted_before_result_persistence() -> None:
             duration_ms=1,
             command_profile="model-candidate",
             bundle_bytes=100,
+            template="code-interpreter-v1",
+            network_policy="provider-default",
         )
     )
 
@@ -631,6 +746,32 @@ def test_operation_progress_can_be_queried_cancelled_and_persisted() -> None:
     assert runner.operation_status(request)["status"] == "cancelled"
 
 
+def test_cancel_requires_provider_confirmation_before_completing_operation() -> None:
+    class UnconfirmedCancelBackend(RecordingBackend):
+        def cancel(self, run_id: str) -> dict[str, str]:
+            self.cancelled.append(run_id)
+            return {
+                "run_id": run_id,
+                "sandbox_id": "candidate-sandbox",
+                "status": "cancelled",
+                "cleanup_status": "pending",
+            }
+
+    store = MemoryIdempotencyStore()
+    request = request_for()
+    with pytest.raises(KeyboardInterrupt):
+        runner_for(CrashBackend(), store=store).trial(request)
+
+    result = runner_for(UnconfirmedCancelBackend(), store=store).cancel(request)
+
+    assert result.status == "unknown"
+    assert result.error_code == "CANDIDATE_CANCEL_UNCONFIRMED"
+    assert (
+        runner_for(UnconfirmedCancelBackend(), store=store).operation_status(request)["status"]
+        == "in_progress"
+    )
+
+
 def test_recover_uses_provider_state_without_starting_a_second_run() -> None:
     store = MemoryIdempotencyStore()
     request = request_for()
@@ -650,9 +791,11 @@ def test_project_store_budget_survives_reload_and_fails_closed_on_corruption(tmp
     store = ProjectStore(tmp_path / "devpilot.db")
     store.initialize()
 
-    assert store.reserve_candidate_budget("task", 2, 60, 30)[0] is True
-    assert store.reserve_candidate_budget("task", 2, 60, 30)[0] is True
-    assert store.reserve_candidate_budget("task", 2, 60, 30)[0] is False
+    assert store.reserve_candidate_budget("task", 2, 60, 30, "op-1")[0] is True
+    assert store.settle_candidate_budget("task", "op-1") is True
+    assert store.reserve_candidate_budget("task", 2, 60, 30, "op-2")[0] is True
+    assert store.settle_candidate_budget("task", "op-2") is True
+    assert store.reserve_candidate_budget("task", 2, 60, 30, "op-3")[0] is False
 
     reopened = ProjectStore(tmp_path / "devpilot.db")
     assert reopened.get_candidate_budget("task") == (2, 60)
@@ -661,3 +804,22 @@ def test_project_store_budget_survives_reload_and_fails_closed_on_corruption(tmp
 
     with pytest.raises(ValueError, match="candidate budget state"):
         reopened.get_candidate_budget("task")
+
+
+def test_project_store_budget_is_atomic_across_processes(tmp_path: Any) -> None:
+    database_path = str(tmp_path / "concurrent.db")
+    store = ProjectStore(database_path)
+    store.initialize()
+    context = multiprocessing.get_context("spawn")
+
+    with context.Pool(CANDIDATE_MAX_TRIALS + 2) as pool:
+        results = pool.starmap(
+            _reserve_budget_in_process,
+            [(database_path, index) for index in range(CANDIDATE_MAX_TRIALS + 2)],
+        )
+
+    assert sum(results) == CANDIDATE_MAX_TRIALS
+    assert store.get_candidate_budget("shared-task") == (
+        CANDIDATE_MAX_TRIALS,
+        CANDIDATE_MAX_TRIALS * 30,
+    )

@@ -27,6 +27,7 @@ from .execution import (
     ExecutionRequest,
     ExecutionResult,
 )
+from .fc_sandbox import FCSandboxBackend
 from .redaction import is_sensitive_field_name, redact_sensitive_payload, redact_sensitive_text
 
 CANDIDATE_MAX_TRIALS = 3
@@ -85,6 +86,8 @@ if len(serialized.encode("utf-8")) > 65536:
 print(serialized)
 """
 
+CandidateInputRule = tuple[str, str, int, int | float | None, int | float | None]
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateTrialGrant:
@@ -95,7 +98,7 @@ class CandidateTrialGrant:
     task_id: str
     project_id: str
     allowed_input_fields: tuple[str, ...]
-    allowed_input_rules: tuple[tuple[str, str, int], ...] = ()
+    allowed_input_rules: tuple[CandidateInputRule, ...] = ()
     expires_at_epoch: int | None = None
     signature: str = ""
 
@@ -119,7 +122,7 @@ class CandidateTrialGrantIssuer:
         session_id: str,
         task_id: str,
         project_id: str,
-        allowed_input_rules: tuple[tuple[str, str, int], ...],
+        allowed_input_rules: tuple[CandidateInputRule, ...],
         expires_at_epoch: int | None = None,
     ) -> CandidateTrialGrant:
         grant = CandidateTrialGrant(
@@ -174,6 +177,10 @@ class CandidateTrialStore(Protocol):
 
     def complete_idempotency(self, key: str, response_json: str) -> None: ...
 
+    def compare_and_set_idempotency(
+        self, key: str, expected_response_json: str | None, response_json: str
+    ) -> bool: ...
+
     def get_idempotency(self, key: str) -> tuple[str, str | None] | None: ...
 
     def reserve_candidate_budget(
@@ -182,9 +189,12 @@ class CandidateTrialStore(Protocol):
         max_trials: int,
         max_trial_seconds: int,
         reservation_seconds: int,
+        operation_id: str,
     ) -> tuple[bool, int, int]: ...
 
     def get_candidate_budget(self, task_id: str) -> tuple[int, int]: ...
+
+    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,13 +542,13 @@ def _validate_grant(
         not isinstance(grant.allowed_input_rules, tuple)
         or len(grant.allowed_input_rules) != len(grant.allowed_input_fields)
         or any(
-            not isinstance(rule, tuple) or len(rule) != 3
+            not isinstance(rule, tuple) or len(rule) != 5
             for rule in grant.allowed_input_rules
         )
     ):
         return "CANDIDATE_GRANT_INVALID", "候选试用授权缺少值级输入规则"
     for rule in grant.allowed_input_rules:
-        field, kind, max_length = rule
+        field, kind, max_length, min_value, max_value = rule
         if (
             not isinstance(field, str)
             or field not in grant.allowed_input_fields
@@ -546,6 +556,29 @@ def _validate_grant(
             or not isinstance(max_length, int)
             or isinstance(max_length, bool)
             or not 1 <= max_length <= CANDIDATE_MAX_INPUT_BYTES
+            or (min_value is not None and (
+                not isinstance(min_value, (int, float)) or isinstance(min_value, bool)
+            ))
+            or (max_value is not None and (
+                not isinstance(max_value, (int, float)) or isinstance(max_value, bool)
+            ))
+            or (
+                min_value is not None
+                and max_value is not None
+                and min_value > max_value
+            )
+            or (
+                kind == "integer"
+                and any(
+                    value is not None and not isinstance(value, int)
+                    or isinstance(value, bool)
+                    for value in (min_value, max_value)
+                )
+            )
+            or (
+                kind in {"string", "boolean"}
+                and (min_value is not None or max_value is not None)
+            )
         ):
             return "CANDIDATE_GRANT_INVALID", "候选试用授权的值级输入规则无效"
     if grant.expires_at_epoch is not None and (
@@ -569,22 +602,33 @@ def _validate_approved_input(
     if any(not isinstance(field, str) for field in fields):
         return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入字段名必须是文本"
     allowed = set(grant.allowed_input_fields)
-    rules = {field: (kind, max_length) for field, kind, max_length in grant.allowed_input_rules}
+    rules = {
+        field: (kind, max_length, min_value, max_value)
+        for field, kind, max_length, min_value, max_value in grant.allowed_input_rules
+    }
     if any(field not in allowed for field in fields):
         return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入包含未获授权的字段"
     if any(field.casefold() in _SENSITIVE_INPUT_NAME for field in fields):
         return "CANDIDATE_INPUT_SENSITIVE", "候选输入包含不允许的数据类别"
     for field in fields:
-        kind, max_length = rules[field]
+        kind, max_length, min_value, max_value = rules[field]
         value = input_data[field]
         if kind == "string" and (not isinstance(value, str) or len(value) > max_length):
             return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
-        if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
-            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
-        if kind == "number" and (
-            not isinstance(value, (int, float)) or isinstance(value, bool)
-        ):
-            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+        if kind == "integer":
+            if not isinstance(value, int) or isinstance(value, bool):
+                return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+            if (min_value is not None and value < min_value) or (
+                max_value is not None and value > max_value
+            ):
+                return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入超出 Host 签发的数值范围"
+        if kind == "number":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+            if (min_value is not None and value < min_value) or (
+                max_value is not None and value > max_value
+            ):
+                return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入超出 Host 签发的数值范围"
         if kind == "boolean" and not isinstance(value, bool):
             return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
     return None
@@ -595,7 +639,7 @@ def _candidate_backend_error(backend: ExecutionBackend | None) -> tuple[str, str
 
     if backend is None:
         return "CANDIDATE_BACKEND_UNAVAILABLE", "候选试运行未绑定受信 FC 后端，未执行本机回退"
-    if getattr(backend, "name", None) != "fc-agent-sandbox":
+    if not isinstance(backend, FCSandboxBackend):
         return "CANDIDATE_BACKEND_UNAVAILABLE", "候选试运行只允许使用受信 FC 后端，未执行本机回退"
     contract = getattr(backend, "candidate_execution_contract", None)
     if not callable(contract):
@@ -612,6 +656,19 @@ def _candidate_backend_error(backend: ExecutionBackend | None) -> tuple[str, str
     )
     if actual != expected:
         return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端未绑定固定 FC profile、模板和策略"
+    return None
+
+
+def _execution_receipt_error(result: ExecutionResult) -> tuple[str, str] | None:
+    expected = (
+        "fc-agent-sandbox",
+        CANDIDATE_COMMAND_PROFILE,
+        CANDIDATE_TEMPLATE,
+        CANDIDATE_NETWORK_POLICY,
+    )
+    actual = (result.backend, result.command_profile, result.template, result.network_policy)
+    if actual != expected:
+        return "CANDIDATE_RESULT_CONTRACT_INVALID", "FC 返回结果未满足固定候选执行契约"
     return None
 
 
@@ -667,6 +724,13 @@ class CandidateTrialRunner:
         """Read one durable operation without starting or retrying execution."""
 
         operation_id = self._operation_key(request)
+        grant_error = _validate_grant(request, self._grant_issuer)
+        if grant_error is not None:
+            return {
+                "status": "rejected",
+                "operation_id": operation_id,
+                "error_code": grant_error[0],
+            }
         record = self._store.get_idempotency(operation_id)
         if record is None:
             return {"status": "not_found", "operation_id": operation_id}
@@ -696,6 +760,15 @@ class CandidateTrialRunner:
         """Cancel a durable in-progress operation through the backend port."""
 
         operation_id = self._operation_key(request)
+        grant_error = _validate_grant(request, self._grant_issuer)
+        if grant_error is not None:
+            return _failure(
+                request,
+                grant_error[0],
+                grant_error[1],
+                operation_id=operation_id,
+                status="rejected",
+            )
         progress = self._operation_progress(request)
         if progress is None:
             return _failure(
@@ -729,6 +802,21 @@ class CandidateTrialRunner:
                 operation_id=operation_id,
                 status="unknown",
             )
+        if (
+            not isinstance(state, Mapping)
+            or state.get("status") != "cancelled"
+            or state.get("cleanup_status") != "cleaned"
+        ):
+            return _failure(
+                request,
+                "CANDIDATE_CANCEL_UNCONFIRMED",
+                "FC 未确认取消和清理完成，operation 保持未知",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
         cleanup_status = (
             state.get("cleanup_status") if isinstance(state, Mapping) else "unknown"
         )
@@ -754,6 +842,15 @@ class CandidateTrialRunner:
         """Query an unfinished run and finalize only a provider-confirmed result."""
 
         operation_id = self._operation_key(request)
+        grant_error = _validate_grant(request, self._grant_issuer)
+        if grant_error is not None:
+            return _failure(
+                request,
+                grant_error[0],
+                grant_error[1],
+                operation_id=operation_id,
+                status="rejected",
+            )
         progress = self._operation_progress(request)
         if progress is None:
             record = self._store.get_idempotency(operation_id)
@@ -792,6 +889,39 @@ class CandidateTrialRunner:
                 operation_id=operation_id,
                 status="unknown",
             )
+        stored_sandbox_id = self._string_value(progress.get("sandbox_id"))
+        provider_sandbox_id = self._string_value(state.get("sandbox_id"))
+        if (
+            stored_sandbox_id is not None
+            and provider_sandbox_id is not None
+            and stored_sandbox_id != provider_sandbox_id
+        ):
+            return _failure(
+                request,
+                "CANDIDATE_RESULT_UNKNOWN",
+                "持久 operation 与 FC 返回的 sandbox 不匹配，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                sandbox_id=provider_sandbox_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        if stored_sandbox_id is None and provider_sandbox_id is not None:
+            if not self._update_operation_progress(
+                operation_id, {"sandbox_id": provider_sandbox_id}
+            ):
+                return _failure(
+                    request,
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选恢复时无法持久化 sandbox 标识",
+                    candidate_id=self._string_value(progress.get("candidate_id")),
+                    version=self._string_value(progress.get("version")),
+                    run_id=run_id,
+                    sandbox_id=provider_sandbox_id,
+                    operation_id=operation_id,
+                    status="unknown",
+                )
         state_name = state.get("status")
         if state_name in {"starting", "running"}:
             return _failure(
@@ -877,6 +1007,19 @@ class CandidateTrialRunner:
         ):
             return None
         return payload
+
+    def _update_operation_progress(
+        self, operation_key: str, updates: Mapping[str, object]
+    ) -> bool:
+        record = self._store.get_idempotency(operation_key)
+        if record is None:
+            return False
+        payload = self._decode_operation(record[1])
+        if payload is None or payload.get("status") != "in_progress":
+            return False
+        payload.update(updates)
+        updated = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return self._store.compare_and_set_idempotency(operation_key, record[1], updated)
 
     def _budget_key(self, task_id: str) -> str:
         digest = hashlib.sha256(task_id.encode()).hexdigest()
@@ -1055,7 +1198,13 @@ class CandidateTrialRunner:
                 }
             )
             serialized = json.dumps(persisted, ensure_ascii=False, sort_keys=True)
-            self._store.complete_idempotency(operation_key, serialized)
+            record = self._store.get_idempotency(operation_key)
+            if record is None or not self._store.compare_and_set_idempotency(
+                operation_key, record[1], serialized
+            ):
+                raise RuntimeError("candidate operation completion lost its compare-and-set")
+            if result.status != "unknown":
+                self._store.settle_candidate_budget(request.task_id, operation_key)
         except Exception:
             return _failure(
                 request,
@@ -1216,6 +1365,7 @@ class CandidateTrialRunner:
                 self._max_trials,
                 self._max_trial_seconds,
                 self._timeout_seconds,
+                operation_key,
             )
         except Exception:
             return finish(
@@ -1287,6 +1437,40 @@ class CandidateTrialRunner:
                     source_hash=source_hash,
                     input_hash=input_hash,
                     cleanup_status=self._cleanup_status(run_id),
+                )
+            )
+        receipt_error = _execution_receipt_error(result)
+        if receipt_error is not None:
+            return finish(
+                _failure(
+                    request,
+                    receipt_error[0],
+                    receipt_error[1],
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    cleanup_status=self._cleanup_status(run_id),
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                )
+            )
+        if not self._update_operation_progress(
+            operation_key, {"sandbox_id": result.sandbox_id}
+        ):
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选沙箱标识无法持久化",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
                 )
             )
         cleanup_status = self._cleanup_status(run_id)
@@ -1461,6 +1645,26 @@ class CandidateTrialRunner:
         run_id: str,
         result: ExecutionResult,
     ) -> CandidateExecutionResult:
+        receipt_error = _execution_receipt_error(result)
+        if receipt_error is not None:
+            return self._complete_operation(
+                request,
+                operation_key,
+                operation_hash,
+                _failure(
+                    request,
+                    receipt_error[0],
+                    receipt_error[1],
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    operation_id=operation_key,
+                ),
+            )
         cleanup_status = self._cleanup_status(run_id)
         if not cleanup_status:
             cleanup_status = "unknown"
