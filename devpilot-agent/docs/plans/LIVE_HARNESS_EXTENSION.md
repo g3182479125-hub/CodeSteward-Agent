@@ -1,9 +1,9 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.3，2026-09-11；状态：计划初稿已完成一次独立审查并集中修订一轮，H4 已完成节点验收。
+版本：0.3，2026-09-11；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `c115aef` 形成候选执行边界检查点，但双轴增量 Review 均为 `NEEDS_FIX`；H6–H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -316,7 +316,8 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 若一轮修订后还有未解决设计问题，如实列出，不用“只改一次”推断通过。代码审查也不得为赶节点忽略明确缺陷。
 
 建议里程碑：H1–H3 用户可用热插拔；H4–H6 模型运行中造工具；H7–H8 Loop 接续；H9–H10 有证据的自改进与交付。每个里程碑可单独演示，但不能提前宣称最终目标完成。
-没有真实云端凭据时可完成契约/离线工作，H5/H6/H10 的真实云端验收标待完成；不能静默以本机执行代替。
+没有真实云端凭据时可完成契约/离线工作；H5 已保留一次 `provider-default` 真实 FC
+试运行与清理证据，H6/H10 的真实云端验收仍待完成；不能静默以本机执行代替。
 不要承诺日历工期或收益百分比。每次交接更新下表和对应证据，下一模型只执行首个未完成节点。
 
 | 节点 | 状态 | 实际证据 |
@@ -325,12 +326,12 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | H2 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h2-plugin-lifecycle.md`、`docs/reviews/h2-*-review-b8141f0.md` |
 | H3 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h3-plugin-update-cleanup.md`、`docs/reviews/h3-*-review-6159add.md` |
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
-| H5 | 代码检查点，Review 未通过 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-c115aef.md` |
-| H6–H10 | 未开始 | H5 尚未通过，不能提前进入 |
+| H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
+| H6–H10 | 未开始 | H5 已通过，下一节点为 H6 |
 
 ## 8. 下一条开发指令
 
-“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4 已完成，不要重做。先核对 HEAD 和本地修改，读取 H5 证据与两份 NEEDS_FIX 报告，按剩余项修复模型候选的执行边界；保留 H4 的版本化依赖、作用域隔离、整组租约和切换阻断，完成 H5 验收和节点双轴审查，未完成 H5 不开始 H6。”
+“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4/H5 已完成，不要重做。先核对 HEAD 和本地修改，读取 H5 证据与两份 PASS 报告；保留 H4 的版本化依赖、作用域隔离、整组租约和切换阻断，从 H6 开始实现模型侧 `inspect/define/trial/activate/stop/remove`，复用 H5 的 FC 执行边界和 nanobot 原生聊天。H6 按 ADR-0004 一次批量双轴 Review、集中修复、同一对 reviewer 增量复核，不逐个问题循环 Review。”
 
 ## 9. 本次一次审查与一轮修订记录
 

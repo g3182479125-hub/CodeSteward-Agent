@@ -3,18 +3,20 @@
 ## 当前远端检查点
 
 - 仓库：`https://github.com/g3182479125-hub/devflow-agent.git`
-- 当前开发分支：`handoff-2026-09-01`
-- H5 代码候选：`c115aef`
-- GitHub `main` 已更新至交接提交：`36a30b6`。
+- 当前开发分支：`main`
+- H5 最新代码候选：`e08299e`
+- 本轮增量提交：`9d216c7`、`e08299e`。
+- 当前工作区基于远端 `main`，H5 已完成；本次文档提交后再形成新的交接提交。
 
 ## 当前完成情况
 
 - H1–H4：已实现，并有既有 Standards / Spec 双轴通过记录。
-- H5：候选执行边界代码已提交；定向测试和 Ruff 通过；真实 FC 曾在
-  `provider-default` 模式完成过一例成功试运行和清理。
-- H5 尚未完成：本次两名独立 reviewer 的增量结论均为 `NEEDS_FIX`。具体问题、路径和下一步
-  见 `docs/evidence/live-harness/h5-candidate-execution.md` 及两份 H5 review 报告。
-- H6–H10：尚未开始。不要把 H5 的 runner 当作已经具备模型 `activate/remove` 等产品动作。
+- H5：模型候选执行边界已实现；生产路径强制使用真实 `ProjectStore`、具体 FC 后端和
+  Host 签发的可验证 TrialGrant；operation、结果、run/sandbox、预算租约支持持久化、
+  CAS/fencing、查询、取消和恢复。
+- H5 Review：同一对 Standards / Spec reviewer 对 `9d216c7...e08299e` 均为 `PASS`。
+- 验证：Ruff 通过；H5/FC/P2B 定向测试通过；全量 `317 passed, 3 skipped`（共收集 320 项）。
+- H6–H10：尚未开始。H5 仍不是模型侧 `inspect/define/trial/activate/stop/remove` 产品动作。
 
 ## 另一台电脑首次拉取
 
@@ -93,13 +95,26 @@ $env:DEVPILOT_FC_ALLOW_NETWORK = "0"
 不等于网络隔离；不要在简历或验收中写成“断网沙箱”。真实云调用会产生费用，正式测试只用
 自有合成 fixture，并控制次数、超时和清理。
 
-## H5 下一步（换机后继续）
+## H5 可选本地配置
 
-1. 强制 H5 生产路径使用真实 `ProjectStore` 和可验证的 Host TrialGrant。
-2. 将 session/project/版本/哈希/run/sandbox/未知状态持久化，补查询、取消、恢复和
-   跨进程原子预算预留；损坏记录必须失败关闭。
-3. 强化 FC 固定 profile/template 校验，补候选源码本机路径检测。
-4. 运行受影响测试后，仍使用同一对 reviewer 做增量复核；两轴 PASS 前不要开始 H6。
+H5 的 runner 工厂默认关闭。仅在准备离线/受控试验时，在本机设置以下变量；密钥和
+Grant secret 不写入仓库：
+
+```powershell
+$env:DEVPILOT_ENABLE_MODEL_CANDIDATES = "1"
+$env:DEVPILOT_CANDIDATE_GRANT_SECRET = "<至少 32 字节的本地随机 secret>"
+```
+
+H5 尚未提供模型管理动作或独立管理页面，不能仅凭这两个变量在聊天中执行
+`activate/remove`；这些属于 H6。
+
+## H6 下一步（换机后继续）
+
+按 `docs/plans/LIVE_HARNESS_EXTENSION.md` 实现最少模型动作：
+`inspect → define → trial → activate → stop/remove`。必须复用 H5 runner 和现有
+nanobot 原生聊天，不能增加第二个 Runtime、管理页面或宿主 import 候选代码；激活前
+核对候选内容哈希、成功 trial、当前契约、授权和预算。按 ADR-0004 对 H6 做一次批量
+双轴 Review，集中修复后由同一对 reviewer 只复核增量，禁止逐个问题循环 Review。
 
 ## 本机未上传内容
 
