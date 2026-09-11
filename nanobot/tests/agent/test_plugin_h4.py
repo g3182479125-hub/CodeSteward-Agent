@@ -360,6 +360,8 @@ async def test_provider_update_waits_for_the_whole_dependency_lease(tmp_path: Pa
     )
     await asyncio.sleep(0.05)
     assert not updating.done()
+    blocked = await view.execute("devflow-blocking-consumer-tool", {})
+    assert "PLUGIN_DEPENDENCY_SWITCHING" in blocked
     tool.release.set()  # type: ignore[attr-defined]
     assert await running == "v1"
     assert (await updating).ok is True

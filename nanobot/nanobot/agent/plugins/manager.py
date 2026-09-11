@@ -136,6 +136,7 @@ class PluginManager:
         self._restored_retired: dict[RouteKey, dict[str, Any]] = {}
         self._waiting_routes: dict[ScopeKey, set[RegistrationKey]] = {}
         self._dependency_busy: set[ScopeKey] = set()
+        self._dependency_switching: dict[ScopeKey, set[RouteKey]] = {}
         self._staging_operations: dict[str, ManagedPluginContext] = {}
         self._next_generation = 0
         self._restore_state()
@@ -354,6 +355,7 @@ class PluginManager:
             self._restored_retired.clear()
             self._waiting_routes.clear()
             self._dependency_busy.clear()
+            self._dependency_switching.clear()
             self._operations.clear()
             self._staging_operations.clear()
 
@@ -732,6 +734,7 @@ class PluginManager:
                 version=version,
             )
 
+        dependency_keys: set[RouteKey] = set()
         self._management_busy.add(scope_key)
         try:
             # Let a concurrently scheduled update/stop observe the reservation
@@ -769,7 +772,14 @@ class PluginManager:
                 )
 
             affected_routes = self._active_dependents(scope_key, active)
-            if len(affected_routes) > 1 and not await self._wait_for_routes_idle(affected_routes):
+            switches_service = any(
+                not interface_id.startswith("tool:")
+                for interface_id in active.registration.record.manifest.provides
+            )
+            dependency_keys = {route.route_key for route in affected_routes}
+            if switches_service:
+                self._dependency_switching.setdefault(scope_key, set()).update(dependency_keys)
+            if switches_service and not await self._wait_for_routes_idle(affected_routes):
                 self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
                 return self._staging_failure_operation(
                     action="update",
@@ -879,6 +889,11 @@ class PluginManager:
             self._activate_waiting(scope_key)
             return operation.result
         finally:
+            blocked = self._dependency_switching.get(scope_key)
+            if blocked is not None:
+                blocked.difference_update(dependency_keys)
+                if not blocked:
+                    self._dependency_switching.pop(scope_key, None)
             self._management_busy.discard(scope_key)
 
     def remove(
@@ -2186,6 +2201,9 @@ class PluginManager:
         operation.event.set()
         self._save_state()
 
+    def _is_dependency_switching(self, route_key: RouteKey) -> bool:
+        return route_key in self._dependency_switching.get(route_key[0], set())
+
     def _dependency_group(self, route_key: RouteKey) -> tuple[RouteKey, ...] | None:
         scope_key = route_key[0]
         route = self._routes.get(scope_key, {}).get(route_key[1])
@@ -2208,6 +2226,8 @@ class PluginManager:
 
     def _begin_call(self, route_key: RouteKey) -> tuple[RouteKey, ...] | None:
         scope_key, plugin_id, version, generation = route_key
+        if route_key in self._dependency_switching.get(scope_key, set()):
+            return None
         route = self._routes.get(scope_key, {}).get(plugin_id)
         if route is None or route.generation != generation:
             return None
@@ -2310,7 +2330,15 @@ class ManagedPluginTool(Tool):
             setter(ctx)
 
     async def execute(self, **kwargs: Any) -> Any:
-        lease = None if self._retired else self._manager._begin_call(self._route_key)
+        if self._retired:
+            return ToolResult.error(
+                "TOOL_VERSION_RETIRED: this plugin version was stopped before dispatch"
+            )
+        if self._manager._is_dependency_switching(self._route_key):
+            return ToolResult.error(
+                "PLUGIN_DEPENDENCY_SWITCHING: this dependency composition is switching"
+            )
+        lease = self._manager._begin_call(self._route_key)
         if lease is None:
             return ToolResult.error(
                 "TOOL_VERSION_RETIRED: this plugin version was stopped before dispatch"

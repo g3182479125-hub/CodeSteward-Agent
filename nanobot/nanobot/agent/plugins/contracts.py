@@ -101,6 +101,7 @@ class PluginErrorCode(_ValueEnum):
     PLUGIN_DEPENDENCY_UNAVAILABLE = "plugin_dependency_unavailable"
     PLUGIN_DEPENDENCY_CYCLE = "plugin_dependency_cycle"
     PLUGIN_DEPENDENCY_CONFLICT = "plugin_dependency_conflict"
+    PLUGIN_DEPENDENCY_SWITCHING = "plugin_dependency_switching"
 
 
 @dataclass(frozen=True)
