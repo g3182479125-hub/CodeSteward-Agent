@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from devpilot.candidate_runner import (
     CANDIDATE_MAX_TRIAL_SECONDS,
     CANDIDATE_MAX_TRIALS,
     CandidateExecutionResult,
+    CandidateTrialGrant,
     CandidateTrialRequest,
     CandidateTrialRunner,
 )
@@ -47,6 +49,14 @@ def request_for(
         task_id="task-1",
         project_id="project-1",
         trial_id="trial-1",
+        session_id="session-1",
+        grant=CandidateTrialGrant(
+            grant_id="grant-1",
+            session_id="session-1",
+            task_id="task-1",
+            project_id="project-1",
+            allowed_input_fields=("name",),
+        ),
         manifest=manifest_for(source, **manifest_overrides),
         source=source,
         input_data=input_data if input_data is not None else {"name": "Alice"},
@@ -56,8 +66,14 @@ def request_for(
 class RecordingBackend:
     name = "fc-agent-sandbox"
     verification_available = True
+    candidate_execution_available = True
 
-    def __init__(self, result: ExecutionResult | None = None, error: Exception | None = None):
+    def __init__(
+        self,
+        result: ExecutionResult | None = None,
+        error: Exception | None = None,
+        cleanup_status: str = "cleaned",
+    ):
         self.result = result or ExecutionResult(
             backend=self.name,
             sandbox_id="candidate-sandbox",
@@ -69,6 +85,7 @@ class RecordingBackend:
             bundle_bytes=100,
         )
         self.error = error
+        self.cleanup_status = cleanup_status
         self.requests: list[Any] = []
 
     def run(self, request: Any) -> ExecutionResult:
@@ -76,6 +93,34 @@ class RecordingBackend:
         if self.error is not None:
             raise self.error
         return self.result
+
+    def get_run_state(self, _run_id: str) -> dict[str, str]:
+        return {"cleanup_status": self.cleanup_status}
+
+
+class MemoryIdempotencyStore:
+    """Small test double for the ProjectStore idempotency contract."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, tuple[str, str | None]] = {}
+
+    def reserve_idempotency(self, key: str, request_hash: str) -> tuple[str, str | None]:
+        existing = self.records.get(key)
+        if existing is None:
+            self.records[key] = (request_hash, None)
+            return "new", None
+        if existing[0] != request_hash:
+            raise ValueError("idempotency key was reused with different content")
+        if existing[1] is None:
+            return "in_progress", None
+        return "replay", existing[1]
+
+    def complete_idempotency(self, key: str, response_json: str) -> None:
+        request_hash, _ = self.records[key]
+        self.records[key] = (request_hash, response_json)
+
+    def get_idempotency(self, key: str) -> tuple[str, str | None] | None:
+        return self.records.get(key)
 
 
 def test_trial_runs_only_the_fixed_json_candidate_bundle() -> None:
@@ -134,9 +179,7 @@ def test_candidate_contract_rejects_unsafe_or_non_pure_definitions(
     source: str, manifest_overrides: dict[str, object], error_code: str
 ) -> None:
     backend = RecordingBackend()
-    result = CandidateTrialRunner(backend).trial(
-        request_for(source=source, **manifest_overrides)
-    )
+    result = CandidateTrialRunner(backend).trial(request_for(source=source, **manifest_overrides))
 
     assert result.status == "rejected"
     assert result.error_code == error_code
@@ -145,9 +188,7 @@ def test_candidate_contract_rejects_unsafe_or_non_pure_definitions(
 
 def test_candidate_content_hash_must_match_before_backend_call() -> None:
     backend = RecordingBackend()
-    result = CandidateTrialRunner(backend).trial(
-        request_for(content_hash="0" * 64)
-    )
+    result = CandidateTrialRunner(backend).trial(request_for(content_hash="0" * 64))
 
     assert result.status == "rejected"
     assert result.error_code == "CANDIDATE_HASH_MISMATCH"
@@ -160,6 +201,39 @@ def test_backend_is_required_and_never_falls_back_to_host_execution() -> None:
     assert result.status == "failed"
     assert result.error_code == "CANDIDATE_BACKEND_UNAVAILABLE"
     assert result.output is None
+
+
+def test_candidate_requires_host_grant_and_rejects_unapproved_input() -> None:
+    runner = CandidateTrialRunner(RecordingBackend())
+
+    missing_grant = runner.trial(replace(request_for(), grant=None))
+    out_of_scope = runner.trial(request_for(input_data={"email": "a@example.com"}))
+
+    assert missing_grant.error_code == "CANDIDATE_GRANT_REQUIRED"
+    assert out_of_scope.error_code == "CANDIDATE_INPUT_SCOPE_INVALID"
+
+
+def test_candidate_rejects_secrets_in_source_and_input_values() -> None:
+    source = "def transform(payload):\n    return {'value': 'sk-12345678901234567890'}\n"
+    source_result = CandidateTrialRunner(RecordingBackend()).trial(request_for(source=source))
+    input_result = CandidateTrialRunner(RecordingBackend()).trial(
+        request_for(input_data={"name": "C:\\private\\fixture"})
+    )
+
+    assert source_result.error_code == "CANDIDATE_SOURCE_SENSITIVE"
+    assert input_result.error_code == "CANDIDATE_INPUT_SENSITIVE"
+
+
+def test_non_fc_backend_and_unconfirmed_cleanup_cannot_report_success() -> None:
+    from devpilot.execution import FakeExecutionBackend
+
+    non_fc = CandidateTrialRunner(FakeExecutionBackend()).trial(request_for())
+    pending_cleanup = CandidateTrialRunner(RecordingBackend(cleanup_status="pending")).trial(
+        request_for()
+    )
+
+    assert non_fc.error_code == "CANDIDATE_BACKEND_UNAVAILABLE"
+    assert pending_cleanup.error_code == "CANDIDATE_CLEANUP_UNCONFIRMED"
 
 
 @pytest.mark.parametrize(
@@ -232,8 +306,7 @@ def test_invalid_or_truncated_json_output_is_rejected() -> None:
     )
 
     assert (
-        CandidateTrialRunner(invalid).trial(request_for()).error_code
-        == "CANDIDATE_OUTPUT_INVALID"
+        CandidateTrialRunner(invalid).trial(request_for()).error_code == "CANDIDATE_OUTPUT_INVALID"
     )
     assert (
         CandidateTrialRunner(truncated).trial(request_for()).error_code
@@ -289,6 +362,14 @@ def test_trial_budget_is_shared_across_concurrent_calls() -> None:
                 task_id="task-budget",
                 project_id="project-1",
                 trial_id=f"trial-{index}",
+                session_id="session-budget",
+                grant=CandidateTrialGrant(
+                    grant_id="grant-budget",
+                    session_id="session-budget",
+                    task_id="task-budget",
+                    project_id="project-1",
+                    allowed_input_fields=("name",),
+                ),
                 manifest=manifest_for(),
                 source=VALID_SOURCE,
                 input_data={"name": "Alice"},
@@ -347,3 +428,38 @@ def test_candidate_output_is_redacted_before_result_persistence() -> None:
 
     assert result.status == "passed"
     assert result.output == {"api_key": "[REDACTED]", "message": "ok"}
+
+
+def test_persisted_result_is_replayed_after_runner_restart() -> None:
+    store = MemoryIdempotencyStore()
+    first_backend = RecordingBackend()
+    first = CandidateTrialRunner(first_backend, store=store).trial(request_for())
+
+    second_backend = RecordingBackend()
+    second = CandidateTrialRunner(second_backend, store=store).trial(request_for())
+
+    assert first.status == "passed"
+    assert second == first
+    assert second_backend.requests == []
+
+
+def test_persisted_budget_survives_runner_restart() -> None:
+    store = MemoryIdempotencyStore()
+    first_backend = RecordingBackend()
+    first_runner = CandidateTrialRunner(first_backend, store=store)
+    assert first_runner.trial(request_for()).status == "passed"
+
+    second_backend = RecordingBackend()
+    second_runner = CandidateTrialRunner(second_backend, store=store)
+    for index in range(2, CANDIDATE_MAX_TRIALS + 1):
+        request = replace(
+            request_for(),
+            trial_id=f"trial-{index}",
+        )
+        assert second_runner.trial(request).status == "passed"
+
+    exceeded = second_runner.trial(replace(request_for(), trial_id="trial-over"))
+
+    assert exceeded.status == "failed"
+    assert exceeded.error_code == "CANDIDATE_BUDGET_EXCEEDED"
+    assert len(first_backend.requests) + len(second_backend.requests) == CANDIDATE_MAX_TRIALS

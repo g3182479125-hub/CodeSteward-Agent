@@ -220,6 +220,12 @@ class FCSandboxBackend:
 
         return FC_VERIFICATION_PROFILES
 
+    @property
+    def candidate_execution_available(self) -> bool:
+        """Expose the dedicated model-candidate FC execution contract."""
+
+        return self.verification_available
+
     def supports_profile(self, profile: str) -> bool:
         return profile in self.supported_profiles
 
