@@ -37,7 +37,8 @@ def _usage() -> str:
         "Usage: `/plugins list`; `/plugins load <plugin-id>@<version>`; "
         "`/plugins update <plugin-id>@<version> [operation-id] [expected-generation]`; "
         "`/plugins stop <plugin-id> [operation-id] [expected-generation]`; "
-        "`/plugins remove <plugin-id>@<version>`; `/plugins cleanup-retry <operation-id>`; "
+        "`/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`; "
+        "`/plugins cleanup-retry <operation-id>`; "
         "`/plugins status <operation-id>`"
     )
 
@@ -100,7 +101,7 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
         return _text(ctx, "Dynamic plugins are disabled by the active task profile.")
     manager.authorize(ctx.key, project_id)
 
-    if action in {"load", "remove"}:
+    if action == "load":
         if len(parts) != 2:
             return _text(ctx, _usage())
         plugin_id, separator, version = parts[1].partition("@")
@@ -114,14 +115,29 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
                 project_id=project_id,
                 policy=policy,
             )
-        else:
-            result = manager.remove(
-                plugin_id,
-                version,
-                session_id=ctx.key,
-                project_id=project_id,
-                policy=policy,
-            )
+        return _text(ctx, _format_result(result))
+
+    if action == "remove":
+        if len(parts) not in {2, 3, 4}:
+            return _text(ctx, _usage())
+        plugin_id, separator, version = parts[1].partition("@")
+        if not separator or not plugin_id or not version:
+            return _text(ctx, "Usage: `/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`")
+        expected_generation: int | None = None
+        if len(parts) == 4:
+            try:
+                expected_generation = int(parts[3])
+            except ValueError:
+                return _text(ctx, "expected-generation 必须是整数。")
+        result = manager.remove(
+            plugin_id,
+            version,
+            session_id=ctx.key,
+            project_id=project_id,
+            operation_id=parts[2] if len(parts) >= 3 else None,
+            expected_generation=expected_generation,
+            policy=policy,
+        )
         return _text(ctx, _format_result(result))
 
     if action == "update":

@@ -116,7 +116,7 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Manage dynamic plugins",
         "List or control trusted, read-only plugin versions for this chat.",
         "puzzle",
-        "[list|load <plugin-id>@<version>|stop <plugin-id>|status <operation-id>]",
+        "[list|load <plugin-id>@<version>|update <plugin-id>@<version>|stop <plugin-id>|remove <plugin-id>@<version>|cleanup-retry <operation-id>|status <operation-id>]",
         accepts_args=True,
     ),
     BuiltinCommandSpec(

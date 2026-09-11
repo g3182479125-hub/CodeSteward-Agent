@@ -139,7 +139,10 @@ async def test_native_plugin_commands_update_and_remove_versions(tmp_path: Path)
 def test_plugins_command_is_visible_in_help_and_palette() -> None:
     from nanobot.command.builtin import build_help_text, builtin_command_palette
 
-    assert "/plugins" in build_help_text()
+    help_text = build_help_text()
+    assert "/plugins" in help_text
+    assert "update <plugin-id>@<version>" in help_text
+    assert "remove <plugin-id>@<version>" in help_text
     spec = next(item for item in builtin_command_palette() if item["command"] == "/plugins")
     assert spec["accepts_args"] is True
     assert spec["lifecycle"] == "side_channel"

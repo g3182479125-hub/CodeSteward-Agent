@@ -13,7 +13,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.execute(
         """
-        create table plugin_runtime_state (
+        create table if not exists plugin_runtime_state (
             id integer primary key check (id = 1),
             schema_version integer not null,
             state_json text not null,

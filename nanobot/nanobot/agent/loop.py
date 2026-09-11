@@ -202,7 +202,7 @@ class TurnContext:
         return self.session
 
 
-def _plugin_state_database(workspace: Path) -> tuple[Path, bool]:
+def _plugin_state_database(workspace: Path) -> tuple[Path | None, bool]:
     """Resolve the shared DevPilot SQLite database when the host configured one."""
     database_url = os.environ.get("DEVPILOT_DATABASE_URL", "").strip()
     if database_url.startswith("sqlite:///"):
@@ -212,7 +212,10 @@ def _plugin_state_database(workspace: Path) -> tuple[Path, bool]:
     data_dir = os.environ.get("DEVPILOT_DATA_DIR", "").strip()
     if data_dir:
         return Path(data_dir).expanduser().resolve() / "devpilot.db", True
-    return workspace / ".nanobot" / "plugins.db", False
+    # Do not create a second runtime database when DevPilot is not configured.
+    # The live host injects its existing DevPilot database through one of the
+    # two settings above; tests and plain nanobot sessions remain ephemeral.
+    return None, False
 
 
 class AgentLoop:
@@ -493,9 +496,13 @@ class AgentLoop:
         self.plugin_manager = PluginManager(
             self.tools,
             tool_context=self._plugin_tool_context,
-            state_store=SqlitePluginStateStore(
-                plugin_state_path,
-                require_schema=require_plugin_state_schema,
+            state_store=(
+                SqlitePluginStateStore(
+                    plugin_state_path,
+                    require_schema=require_plugin_state_schema,
+                )
+                if plugin_state_path is not None
+                else None
             ),
         )
         self._runtime_vars: dict[str, Any] = {}

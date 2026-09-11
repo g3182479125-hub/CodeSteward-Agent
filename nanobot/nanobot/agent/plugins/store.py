@@ -12,7 +12,7 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 _TABLE = "plugin_runtime_state"
 
@@ -63,9 +63,36 @@ class SqlitePluginStateStore:
             (_TABLE,),
         ).fetchone()
         if found is None:
-            raise RuntimeError(
-                f"{_TABLE} is missing; run the Alembic migration before enabling live plugins"
+            # A running nanobot may start against a DevPilot database that was
+            # stopped one migration before H3.  Add the H3 table only when the
+            # database identifies itself as the known 0011 schema; the next
+            # Alembic upgrade is idempotent and records the real head.
+            try:
+                version_row = connection.execute(
+                    "select version_num from alembic_version"
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                raise RuntimeError(
+                    f"{_TABLE} is missing; run the Alembic migration before enabling live plugins"
+                ) from exc
+            if version_row is None or str(version_row[0]) != "0011_p8_skill_improvement_records":
+                raise RuntimeError(
+                    f"{_TABLE} is missing; run the Alembic migration before enabling live plugins"
+                )
+            self._ensure_table_on_connection(connection)
+
+    @staticmethod
+    def _ensure_table_on_connection(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            f"""
+            create table if not exists {_TABLE} (
+                id integer primary key check (id = 1),
+                schema_version integer not null,
+                state_json text not null,
+                updated_at text not null
             )
+            """
+        )
 
     def load(self) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -78,7 +105,7 @@ class SqlitePluginStateStore:
         value = json.loads(str(row[0]))
         if not isinstance(value, dict):
             raise RuntimeError("plugin runtime state must be a JSON object")
-        return value
+        return cast(dict[str, Any], value)
 
     def save(self, state: Mapping[str, Any]) -> None:
         payload = json.dumps(dict(state), ensure_ascii=False, sort_keys=True)

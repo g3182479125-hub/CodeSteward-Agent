@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from nanobot.agent.plugins import (
     PluginRecord,
     PluginSource,
 )
+from nanobot.agent.plugins.store import SqlitePluginStateStore
 from nanobot.agent.tools.registry import ToolRegistry
 
 
@@ -491,6 +493,99 @@ async def test_update_and_stop_replay_the_supplied_operation_id(tmp_path: Path) 
         expected_generation=1,
     )
     assert first_stop.to_dict() == replayed_stop.to_dict()
+
+
+def test_configured_store_bridges_the_previous_alembic_head(tmp_path: Path) -> None:
+    database_path = tmp_path / "devpilot.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("create table alembic_version (version_num varchar(64) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+
+    store = SqlitePluginStateStore(database_path, require_schema=True)
+    store.save({"version": 1, "plugins": [], "active_routes": [], "retired_routes": [], "operations": []})
+
+    assert store.load() == {
+        "version": 1,
+        "plugins": [],
+        "active_routes": [],
+        "retired_routes": [],
+        "operations": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_remove_replays_with_the_same_operation_id(tmp_path: Path) -> None:
+    record, root = _record(
+        tmp_path,
+        "devflow-remove-idempotent",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    async def execute(self, **kwargs):
+        return "unused"
+""",
+    )
+    manager = PluginManager(ToolRegistry())
+    assert manager.register_version(record, root).ok
+    manager.authorize("cli:direct")
+
+    first = manager.remove(
+        "devflow-remove-idempotent",
+        "1.0.0",
+        session_id="cli:direct",
+        operation_id="remove-op-1",
+    )
+    replay = manager.remove(
+        "devflow-remove-idempotent",
+        "1.0.0",
+        session_id="cli:direct",
+        operation_id="remove-op-1",
+        expected_generation=99,
+    )
+
+    assert first.ok is True
+    assert first.operation_id == "remove-op-1"
+    assert replay.to_dict() == first.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_initialization_failure_exposes_retryable_staging_cleanup(tmp_path: Path) -> None:
+    record, root = _record(
+        tmp_path,
+        "devflow-init-cleanup",
+        "1.0.0",
+        _TOOL_PREFIX
+        + """
+    @classmethod
+    def create(cls, ctx):
+        calls = [0]
+        async def dispose():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise RuntimeError("initialization cleanup failure")
+        ctx.on_dispose(dispose)
+        raise RuntimeError("initialization failed")
+
+    async def execute(self, **kwargs):
+        return "unreachable"
+""",
+    )
+    manager = PluginManager(ToolRegistry())
+    assert manager.register_version(record, root).ok
+    manager.authorize("cli:direct")
+
+    result = manager.load("devflow-init-cleanup", "1.0.0", session_id="cli:direct")
+    assert result.ok is False
+    assert result.operation_id is not None
+    failed = await manager.wait_operation(result.operation_id, session_id="cli:direct", timeout=1)
+    assert failed["code"] == "plugin_cleanup_failed"
+    recovered = await manager.retry_cleanup(result.operation_id, session_id="cli:direct")
+    assert recovered.ok is False
+    assert recovered.code is not None and recovered.code.value == "plugin_load_failed"
+    assert recovered.details_dict["staging_cleanup"] == "complete"
 
 
 @pytest.mark.asyncio
