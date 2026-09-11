@@ -17,6 +17,7 @@ MAX_EXECUTION_FILES = 200
 MAX_EXECUTION_FILE_BYTES = 512 * 1024
 MAX_EXECUTION_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
+MAX_REQUEST_OUTPUT_BYTES = 64 * 1024
 
 
 class ExecutionError(RuntimeError):
@@ -50,6 +51,7 @@ class ExecutionRequest:
     timeout_seconds: int = 300
     network_allowed: bool = False
     command_profile: str = ""
+    max_output_bytes: int = MAX_EXECUTION_OUTPUT_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +70,7 @@ class ExecutionResult:
     region: str = ""
     template: str = ""
     network_policy: str = ""
+    output_truncated: bool = False
 
 
 class ExecutionBackend(Protocol):
@@ -97,6 +100,15 @@ def validate_request(request: ExecutionRequest) -> None:
     if not 1 <= request.timeout_seconds <= 900:
         raise ExecutionError(
             "EXECUTION_TIMEOUT_INVALID", "timeout must be between 1 and 900 seconds"
+        )
+    if (
+        not isinstance(request.max_output_bytes, int)
+        or isinstance(request.max_output_bytes, bool)
+        or not 1 <= request.max_output_bytes <= MAX_REQUEST_OUTPUT_BYTES
+    ):
+        raise ExecutionError(
+            "EXECUTION_OUTPUT_LIMIT_INVALID",
+            f"output limit must be between 1 and {MAX_REQUEST_OUTPUT_BYTES} bytes",
         )
     seen: set[str] = set()
     bundle_bytes = 0
@@ -213,15 +225,31 @@ class FakeExecutionBackend:
             ):
                 exit_code = 1
                 stderr = "react-static contract: event.preventDefault() is missing"
+        stdout = self.stdout
+        stderr_bytes = stderr.encode("utf-8")
+        stdout_bytes = stdout.encode("utf-8")
+        output_truncated = (
+            len(stdout_bytes) > request.max_output_bytes
+            or len(stderr_bytes) > request.max_output_bytes
+        )
+        if len(stdout_bytes) > request.max_output_bytes:
+            stdout = stdout_bytes[-request.max_output_bytes :].decode(
+                "utf-8", errors="replace"
+            )
+        if len(stderr_bytes) > request.max_output_bytes:
+            stderr = stderr_bytes[-request.max_output_bytes :].decode(
+                "utf-8", errors="replace"
+            )
         return ExecutionResult(
             backend=self.name,
             sandbox_id="fake-sandbox",
             exit_code=exit_code,
-            stdout=self.stdout,
+            stdout=stdout,
             stderr=stderr,
             duration_ms=0,
             command_profile=request.command_profile,
             bundle_bytes=execution_bundle_bytes(request),
+            output_truncated=output_truncated,
         )
 
 
@@ -258,6 +286,9 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
     network_allowed = payload.get("network_allowed", False)
     if not isinstance(network_allowed, bool):
         raise ExecutionError("EXECUTION_INPUT_INVALID", "network_allowed must be a boolean")
+    max_output_bytes = payload.get("max_output_bytes", MAX_EXECUTION_OUTPUT_BYTES)
+    if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
+        raise ExecutionError("EXECUTION_INPUT_INVALID", "max_output_bytes must be an integer")
     return ExecutionRequest(
         run_id=run_id,
         project_id=project_id,
@@ -266,4 +297,5 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         timeout_seconds=timeout,
         network_allowed=network_allowed,
         command_profile=str(payload.get("command_profile", "")),
+        max_output_bytes=max_output_bytes,
     )

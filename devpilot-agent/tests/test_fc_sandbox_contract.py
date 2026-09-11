@@ -78,6 +78,20 @@ def test_mapping_parser_accepts_internal_bytes_only() -> None:
     assert request.files[0].content == b"print(1)"
 
 
+@pytest.mark.parametrize("value", [True, "16384"])
+def test_mapping_parser_rejects_non_integer_output_limit(value: object) -> None:
+    with pytest.raises(ExecutionError, match="EXECUTION_INPUT_INVALID"):
+        request_from_mapping(
+            {
+                "run_id": "run-1",
+                "project_id": "project-1",
+                "command": "python3 /workspace/devpilot/src/main.py",
+                "files": [{"relative_path": "src/main.py", "content": b"print(1)"}],
+                "max_output_bytes": value,
+            }
+        )
+
+
 def test_fc_backend_uses_short_lived_sandbox_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[object] = []
 

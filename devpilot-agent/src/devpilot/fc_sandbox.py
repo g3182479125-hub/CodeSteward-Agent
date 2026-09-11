@@ -22,7 +22,7 @@ from threading import RLock
 from typing import Any
 
 from .execution import (
-    MAX_EXECUTION_OUTPUT_BYTES,
+    MAX_REQUEST_OUTPUT_BYTES,
     ExecutionBackend,
     ExecutionError,
     ExecutionRequest,
@@ -280,10 +280,10 @@ class FCSandboxBackend:
                 "sandbox_id": state.result.sandbox_id,
                 "exit_code": state.result.exit_code,
                 "stdout": redact_execution_output(
-                    state.result.stdout[-MAX_EXECUTION_OUTPUT_BYTES:]
+                    state.result.stdout[-MAX_REQUEST_OUTPUT_BYTES:]
                 ),
                 "stderr": redact_execution_output(
-                    state.result.stderr[-MAX_EXECUTION_OUTPUT_BYTES:]
+                    state.result.stderr[-MAX_REQUEST_OUTPUT_BYTES:]
                 ),
                 "duration_ms": state.result.duration_ms,
                 "command_profile": state.result.command_profile,
@@ -291,6 +291,7 @@ class FCSandboxBackend:
                 "region": state.result.region,
                 "template": state.result.template,
                 "network_policy": state.result.network_policy,
+                "output_truncated": state.result.output_truncated,
             }
         return payload
 
@@ -387,6 +388,7 @@ class FCSandboxBackend:
                     region=str(result_payload.get("region", "")),
                     template=str(result_payload.get("template", "")),
                     network_policy=str(result_payload.get("network_policy", "")),
+                    output_truncated=bool(result_payload.get("output_truncated", False)),
                 )
             except (KeyError, TypeError, ValueError):
                 result = None
@@ -639,18 +641,29 @@ class FCSandboxBackend:
             with self._lock:
                 if state.cancel_requested:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
+            raw_stdout = str(getattr(result, "stdout", ""))
+            raw_stderr = str(getattr(result, "stderr", ""))
+            stdout_bytes = raw_stdout.encode("utf-8")
+            stderr_bytes = raw_stderr.encode("utf-8")
+            output_truncated = (
+                len(stdout_bytes) > request.max_output_bytes
+                or len(stderr_bytes) > request.max_output_bytes
+            )
+            stdout = stdout_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
+            stderr = stderr_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
             receipt = ExecutionResult(
                 backend=self.name,
                 sandbox_id=state.sandbox_id or _sandbox_id(sandbox_handle),
                 exit_code=int(getattr(result, "exit_code", 0)),
-                stdout=str(getattr(result, "stdout", ""))[-MAX_EXECUTION_OUTPUT_BYTES:],
-                stderr=str(getattr(result, "stderr", ""))[-MAX_EXECUTION_OUTPUT_BYTES:],
+                stdout=stdout,
+                stderr=stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 command_profile=request.command_profile,
                 bundle_bytes=execution_bundle_bytes(request),
                 region=self.config.region,
                 template=self.config.template,
                 network_policy=self.config.network_policy_mode,
+                output_truncated=output_truncated,
             )
             with self._lock:
                 state.result = receipt
