@@ -2,7 +2,7 @@
 
 ## 候选与边界
 
-- 最终候选：`7147390`
+- 实现候选：`6159add`
 - H3 实现基线：`409eef8`
 - 运行时仍是 nanobot 单 Loop；没有新增 WebUI、第二套运行时或第二个生产数据库。
 - DevPilot 已配置时，插件状态写入现有 `DEVPILOT_DATA_DIR/devpilot.db` 或
