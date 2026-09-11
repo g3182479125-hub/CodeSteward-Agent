@@ -9,6 +9,7 @@ from nanobot.agent.plugins import (
     PluginManager,
     PluginManifest,
     PluginRecord,
+    PluginScope,
     PluginSource,
 )
 from nanobot.agent.tools.registry import ToolRegistry
@@ -66,6 +67,87 @@ class H4Tool(Tool):
         }
     )
     return PluginRecord(manifest, PluginSource.DEVELOPER, session_id="cli:direct"), root
+
+
+def _service_record(
+    tmp_path: Path,
+    plugin_id: str,
+    *,
+    version: str = "1.0.0",
+    interface: str,
+    value: str,
+    requires: list[str] | None = None,
+    consumer: bool = False,
+    scope: str = "session",
+    session_id: str | None = "cli:direct",
+    project_id: str | None = None,
+) -> tuple[PluginRecord, Path]:
+    root = tmp_path / f"{plugin_id}-{version}"
+    root.mkdir()
+    entry = root / "tool.py"
+    if consumer:
+        create = (
+            "    @classmethod\n"
+            "    def create(cls, ctx):\n"
+            "        tool = cls()\n"
+            "        tool.context = ctx\n"
+            "        return tool\n"
+        )
+        execute = "return self.context.get_service(%r)" % interface
+    else:
+        create = (
+            "    @classmethod\n"
+            "    def create(cls, ctx):\n"
+            "        ctx.provide_service(%r, %r)\n"
+            "        return cls()\n"
+        ) % (interface, value)
+        execute = "return %r" % value
+    entry.write_text(
+        f'''\nfrom nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({{"type": "object", "properties": {{}}, "additionalProperties": False}})
+class H4ServiceTool(Tool):
+    @property
+    def name(self):
+        return "{plugin_id}-tool"
+
+    @property
+    def description(self):
+        return "H4 service fixture"
+
+    @property
+    def read_only(self):
+        return True
+
+{create}
+    async def execute(self, **kwargs):
+        {execute}
+'''.strip()
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    manifest = PluginManifest.from_mapping(
+        {
+            "plugin_id": plugin_id,
+            "version": version,
+            "content_hash": hashlib.sha256(entry.read_bytes()).hexdigest(),
+            "kind": "tool",
+            "api_version": "nanobot.tool/v1",
+            "scope": scope,
+            "entry": "tool.py",
+            "requires": requires or [],
+            "provides": [f"tool:{plugin_id}-tool"] + ([] if consumer else [interface]),
+            "requested_capabilities": ["read_only"],
+            "execution_mode": "in_process",
+        }
+    )
+    return PluginRecord(
+        manifest,
+        PluginSource.DEVELOPER,
+        session_id=session_id if scope == "session" else None,
+        project_id=project_id if scope == "project" else None,
+    ), root
 
 
 def _register(manager: PluginManager, record_and_root: tuple[PluginRecord, Path]) -> None:
@@ -172,6 +254,90 @@ async def test_stopping_provider_suspends_the_affected_subgraph(tmp_path: Path) 
 
     assert manager.load("devflow-root", "1.0.0", session_id="cli:direct").ok
     assert await view.execute("devflow-leaf-tool", {}) == "leaf"
+
+
+@pytest.mark.asyncio
+async def test_provider_update_switches_the_scoped_service_binding(tmp_path: Path) -> None:
+    interface = "service:greeting@v1"
+    provider_v1 = _service_record(
+        tmp_path,
+        "devflow-service-provider",
+        interface=interface,
+        value="v1",
+    )
+    provider_v2 = _service_record(
+        tmp_path,
+        "devflow-service-provider",
+        version="2.0.0",
+        interface=interface,
+        value="v2",
+    )
+    consumer = _service_record(
+        tmp_path,
+        "devflow-service-consumer",
+        interface=interface,
+        value="unused",
+        requires=[interface],
+        consumer=True,
+    )
+    manager = PluginManager(ToolRegistry())
+    for item in (provider_v1, provider_v2, consumer):
+        _register(manager, item)
+    manager.authorize("cli:direct")
+    view = manager.tools_for_session(ToolRegistry(), "cli:direct")
+    assert manager.load("devflow-service-provider", "1.0.0", session_id="cli:direct").ok
+    assert manager.load("devflow-service-consumer", "1.0.0", session_id="cli:direct").ok
+    assert await view.execute("devflow-service-consumer-tool", {}) == "v1"
+
+    updated = await manager.update(
+        "devflow-service-provider",
+        "2.0.0",
+        session_id="cli:direct",
+        expected_generation=1,
+    )
+    assert updated.ok is True
+    assert await view.execute("devflow-service-consumer-tool", {}) == "v2"
+
+
+def test_service_bindings_are_isolated_by_project_scope(tmp_path: Path) -> None:
+    interface = "service:search@v1"
+    project_a = _service_record(
+        tmp_path,
+        "devflow-project-service-a",
+        interface=interface,
+        value="a",
+        scope="project",
+        session_id=None,
+        project_id="project-a",
+    )
+    project_b = _service_record(
+        tmp_path,
+        "devflow-project-service-b",
+        interface=interface,
+        value="b",
+        scope="project",
+        session_id=None,
+        project_id="project-b",
+    )
+    manager = PluginManager(ToolRegistry())
+    _register(manager, project_a)
+    _register(manager, project_b)
+    manager.authorize("cli:direct", "project-a")
+    manager.authorize("cli:direct", "project-b")
+    assert manager.load(
+        "devflow-project-service-a",
+        "1.0.0",
+        session_id="cli:direct",
+        project_id="project-a",
+    ).ok
+    assert manager.load(
+        "devflow-project-service-b",
+        "1.0.0",
+        session_id="cli:direct",
+        project_id="project-b",
+    ).ok
+    assert manager._service_registries[(PluginScope.PROJECT, "project-a")][interface] == "a"
+    assert manager._service_registries[(PluginScope.PROJECT, "project-b")][interface] == "b"
 
 
 def test_same_interface_has_one_provider_per_scope(tmp_path: Path) -> None:

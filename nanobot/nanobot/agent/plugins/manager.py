@@ -118,7 +118,8 @@ class PluginManager:
         self._tool_context = tool_context
         self._drain_timeout_s = max(0.0, drain_timeout_s)
         self._subscribe_impl = subscribe_impl
-        self._service_registry = service_registry if service_registry is not None else {}
+        self._service_registry_seed = dict(service_registry or {})
+        self._service_registries: dict[ScopeKey, dict[str, Any]] = {}
         self._state_store = state_store
         if self._state_store is None and state_path is not None:
             self._state_store = SqlitePluginStateStore(state_path)
@@ -543,7 +544,7 @@ class PluginManager:
             )
         plugin_context: ManagedPluginContext | None = None
         try:
-            tool, plugin_context = self._load_tool(registration)
+            tool, plugin_context = self._load_tool(registration, scope_key=scope_key)
             plugin_context.activate()
         except Exception as exc:
             if isinstance(exc, _PluginLoadError):
@@ -716,7 +717,16 @@ class PluginManager:
             await asyncio.sleep(0)
             self._lifecycles[registration.registration_key] = PluginLifecycle.PREPARING
             try:
-                tool, plugin_context = self._load_tool(registration)
+                tool, plugin_context = self._load_tool(
+                    registration,
+                    scope_key=scope_key,
+                    allow_service_replacement=True,
+                    replaceable_service_ids=frozenset(
+                        interface_id
+                        for interface_id in active.registration.record.manifest.provides
+                        if not interface_id.startswith("tool:")
+                    ),
+                )
             except _PluginLoadError as exc:
                 self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
                 return self._staging_failure_operation(
@@ -1259,12 +1269,21 @@ class PluginManager:
             base_tools = base_tools._base
         return base_tools
 
-    def _load_tool(self, registration: _RegisteredPlugin) -> tuple[Tool, ManagedPluginContext]:
+    def _load_tool(
+        self,
+        registration: _RegisteredPlugin,
+        *,
+        scope_key: ScopeKey,
+        allow_service_replacement: bool = False,
+        replaceable_service_ids: frozenset[str] = frozenset(),
+    ) -> tuple[Tool, ManagedPluginContext]:
         manifest = registration.record.manifest
         plugin_context = ManagedPluginContext(
             legacy_context=self._tool_context,
             subscribe_impl=self._subscribe_impl,
-            service_registry=self._service_registry,
+            service_registry=self._service_registry_for_scope(scope_key),
+            allow_service_replacement=allow_service_replacement,
+            replaceable_service_ids=replaceable_service_ids,
         )
         module_name = (
             "_nanobot_plugin_"
@@ -1369,6 +1388,14 @@ class PluginManager:
             and self._registration_key(item.record)[3] == binding
         )
 
+    def _service_registry_for_scope(self, scope_key: ScopeKey) -> dict[str, Any]:
+        """Return the service binding table owned by one session/project."""
+        registry = self._service_registries.get(scope_key)
+        if registry is None:
+            registry = dict(self._service_registry_seed)
+            self._service_registries[scope_key] = registry
+        return registry
+
     def _active_providers(
         self,
         scope_key: ScopeKey,
@@ -1469,7 +1496,7 @@ class PluginManager:
                         continue
                     plugin_context: ManagedPluginContext | None = None
                     try:
-                        tool, plugin_context = self._load_tool(registration)
+                        tool, plugin_context = self._load_tool(registration, scope_key=scope_key)
                         plugin_context.activate()
                     except Exception as exc:
                         if isinstance(exc, _PluginLoadError):
@@ -1639,7 +1666,7 @@ class PluginManager:
         registration, generation = pending
         plugin_context: ManagedPluginContext | None = None
         try:
-            tool, plugin_context = self._load_tool(registration)
+            tool, plugin_context = self._load_tool(registration, scope_key=scope_key)
             plugin_context.activate()
         except Exception as exc:
             if isinstance(exc, _PluginLoadError):

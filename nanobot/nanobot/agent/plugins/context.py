@@ -57,10 +57,14 @@ class ManagedPluginContext:
         legacy_context: Any | None = None,
         subscribe_impl: SubscribeImpl | None = None,
         service_registry: dict[str, Any] | None = None,
+        allow_service_replacement: bool = False,
+        replaceable_service_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._legacy_context = legacy_context
         self._subscribe_impl = subscribe_impl
         self._service_registry = service_registry if service_registry is not None else {}
+        self._allow_service_replacement = allow_service_replacement
+        self._replaceable_service_ids = replaceable_service_ids
         self._resources: list[_OwnedResource] = []
         self._active_event = asyncio.Event()
         self._active = False
@@ -154,24 +158,43 @@ class ManagedPluginContext:
         return PluginTaskHandle(task=task, dispose=self._idempotent(dispose_task))
 
     def provide_service(self, service_id: str, value: Any) -> Disposer:
+        missing = object()
+        previous: Any = missing
         owned = False
 
         def activate() -> None:
-            nonlocal owned
-            if service_id in self._service_registry:
+            nonlocal owned, previous
+            previous = self._service_registry.get(service_id, missing)
+            if (
+                previous is not missing
+                and not (
+                    self._allow_service_replacement
+                    and service_id in self._replaceable_service_ids
+                )
+            ):
                 raise RuntimeError(f"service already provided: {service_id}")
             self._service_registry[service_id] = value
             owned = True
 
         def dispose() -> None:
-            nonlocal owned
+            nonlocal owned, previous
             if owned and self._service_registry.get(service_id) is value:
-                self._service_registry.pop(service_id, None)
+                if previous is missing:
+                    self._service_registry.pop(service_id, None)
+                else:
+                    self._service_registry[service_id] = previous
             owned = False
 
         resource = _OwnedResource(activate, dispose, kind="services")
         self._resources.append(resource)
         return self._idempotent(dispose)
+
+    def get_service(self, service_id: str) -> Any:
+        """Read a service already activated in this plugin's scope."""
+        try:
+            return self._service_registry[service_id]
+        except KeyError as exc:
+            raise RuntimeError(f"required service is unavailable: {service_id}") from exc
 
     def on_dispose(self, disposer: Disposer) -> None:
         resource = _OwnedResource(lambda: None, disposer, active=True)
@@ -266,6 +289,10 @@ class PluginContext(Protocol):
 
     def provide_service(self, service_id: str, value: Any) -> Disposer:
         """Publish a scoped service and return its owned disposer."""
+        ...
+
+    def get_service(self, service_id: str) -> Any:
+        """Read a service activated in the current plugin scope."""
         ...
 
     def on_dispose(self, disposer: Disposer) -> None:
