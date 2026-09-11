@@ -481,7 +481,16 @@ class FCSandboxBackend:
             state.cancel_requested = True
             handle = state.handle
         if handle is None:
-            return self.get_run_state(run_id)
+            recovered = self.recover(
+                run_id,
+                state.sandbox_id,
+                _for_cleanup=True,
+            )
+            with self._lock:
+                refreshed = self._get_or_load_state(run_id)
+                handle = refreshed.handle if refreshed is not None else None
+            if handle is None:
+                return recovered
         with self._lock:
             if state.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS:
                 return self._state_payload(state)

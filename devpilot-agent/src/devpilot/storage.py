@@ -1199,7 +1199,9 @@ class ProjectStore:
         return hashlib.sha256(f"candidate-budget:{task_id}".encode()).hexdigest()
 
     @staticmethod
-    def _decode_candidate_budget(response_json: str | None) -> tuple[int, int, str | None, int]:
+    def _decode_candidate_budget(
+        response_json: str | None,
+    ) -> tuple[int, int, str | None, int, int]:
         if response_json is None:
             raise ValueError("candidate budget state is incomplete")
         try:
@@ -1211,12 +1213,14 @@ class ProjectStore:
             "reserved_seconds",
             "active_operation_id",
             "active_until_epoch",
+            "lease_token",
         }:
             raise ValueError("candidate budget state has an invalid shape")
         trials = payload.get("trials")
         reserved_seconds = payload.get("reserved_seconds")
         active_operation_id = payload.get("active_operation_id")
         active_until_epoch = payload.get("active_until_epoch")
+        lease_token = payload.get("lease_token")
         if not all(
             isinstance(value, int) and not isinstance(value, bool) and value >= 0
             for value in (trials, reserved_seconds)
@@ -1234,7 +1238,9 @@ class ProjectStore:
             raise ValueError("candidate budget state has an orphaned lease expiry")
         if active_operation_id is not None and active_until_epoch == 0:
             raise ValueError("candidate budget state has an active lease without expiry")
-        return trials, reserved_seconds, active_operation_id, active_until_epoch
+        if not isinstance(lease_token, int) or isinstance(lease_token, bool) or lease_token < 0:
+            raise ValueError("candidate budget state has an invalid fencing token")
+        return trials, reserved_seconds, active_operation_id, active_until_epoch, lease_token
 
     def reserve_candidate_budget(
         self,
@@ -1243,7 +1249,7 @@ class ProjectStore:
         max_trial_seconds: int,
         reservation_seconds: int,
         operation_id: str,
-    ) -> tuple[bool, int, int]:
+    ) -> tuple[bool, int, int, int]:
         """Atomically reserve one bounded candidate trial across processes."""
 
         if (
@@ -1271,6 +1277,7 @@ class ProjectStore:
                     initial = {
                         "active_operation_id": None,
                         "active_until_epoch": 0,
+                        "lease_token": 0,
                         "reserved_seconds": 0,
                         "trials": 0,
                     }
@@ -1284,12 +1291,17 @@ class ProjectStore:
                     )
                     active_operation_id = None
                     active_until_epoch = 0
+                    lease_token = 0
                 else:
                     if row.request_hash != request_hash:
                         raise ValueError("candidate budget key was reused with different content")
-                    trials, reserved_seconds, active_operation_id, active_until_epoch = (
-                        self._decode_candidate_budget(row.response_json)
-                    )
+                    (
+                        trials,
+                        reserved_seconds,
+                        active_operation_id,
+                        active_until_epoch,
+                        lease_token,
+                    ) = self._decode_candidate_budget(row.response_json)
                 now_epoch = int(utc_now().timestamp())
                 if (
                     active_operation_id is not None
@@ -1297,18 +1309,19 @@ class ProjectStore:
                     and active_until_epoch > now_epoch
                 ):
                     connection.commit()
-                    return False, trials, reserved_seconds
+                    return False, trials, reserved_seconds, lease_token
                 if active_operation_id == operation_id and active_until_epoch > now_epoch:
                     connection.commit()
-                    return True, trials, reserved_seconds
+                    return True, trials, reserved_seconds, lease_token
                 if trials >= max_trials or (
                     reserved_seconds + reservation_seconds > max_trial_seconds
                 ):
                     connection.commit()
-                    return False, trials, reserved_seconds
+                    return False, trials, reserved_seconds, lease_token
                 updated = {
                     "active_operation_id": operation_id,
                     "active_until_epoch": now_epoch + max_trial_seconds,
+                    "lease_token": lease_token + 1,
                     "reserved_seconds": reserved_seconds + reservation_seconds,
                     "trials": trials + 1,
                 }
@@ -1321,7 +1334,12 @@ class ProjectStore:
                     .values(response_json=json.dumps(updated, ensure_ascii=False, sort_keys=True))
                 )
                 connection.commit()
-                return True, updated["trials"], updated["reserved_seconds"]
+                return (
+                    True,
+                    updated["trials"],
+                    updated["reserved_seconds"],
+                    updated["lease_token"],
+                )
             except Exception:
                 connection.rollback()
                 raise
@@ -1341,12 +1359,36 @@ class ProjectStore:
             return 0, 0
         if row.request_hash != request_hash:
             raise ValueError("candidate budget key was reused with different content")
-        trials, reserved_seconds, _active_operation_id, _active_until_epoch = (
+        trials, reserved_seconds, _active_operation_id, _active_until_epoch, _lease_token = (
             self._decode_candidate_budget(row.response_json)
         )
         return trials, reserved_seconds
 
-    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool:
+    def validate_candidate_lease(
+        self, task_id: str, operation_id: str, lease_token: int
+    ) -> bool:
+        key = self._candidate_budget_key(task_id)
+        request_hash = self._candidate_budget_request_hash(task_id)
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(IdempotencyRecord.request_hash, IdempotencyRecord.response_json).where(
+                    IdempotencyRecord.key == key
+                )
+            ).first()
+        if row is None or row.request_hash != request_hash:
+            return False
+        _trials, _seconds, active_operation_id, active_until_epoch, current_token = (
+            self._decode_candidate_budget(row.response_json)
+        )
+        return (
+            active_operation_id == operation_id
+            and current_token == lease_token
+            and active_until_epoch > int(utc_now().timestamp())
+        )
+
+    def settle_candidate_budget(
+        self, task_id: str, operation_id: str, lease_token: int | None
+    ) -> bool:
         """Release a completed operation's active lease without refunding budget."""
 
         key = self._candidate_budget_key(task_id)
@@ -1357,14 +1399,17 @@ class ProjectStore:
                 return False
             if record.request_hash != request_hash:
                 raise ValueError("candidate budget key was reused with different content")
-            trials, reserved_seconds, active_operation_id, _active_until_epoch = (
+            trials, reserved_seconds, active_operation_id, _active_until_epoch, current_token = (
                 self._decode_candidate_budget(record.response_json)
             )
-            if active_operation_id != operation_id:
+            if active_operation_id != operation_id or (
+                lease_token is not None and current_token != lease_token
+            ):
                 return False
             payload = {
                 "active_operation_id": None,
                 "active_until_epoch": 0,
+                "lease_token": current_token,
                 "reserved_seconds": reserved_seconds,
                 "trials": trials,
             }

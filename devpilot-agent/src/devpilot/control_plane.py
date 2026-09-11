@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .candidate_runner import CandidateTrialGrantIssuer, CandidateTrialRunner
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
 from .execution import ExecutionBackend, ExecutionError, FakeExecutionBackend
 from .patches import (
@@ -186,6 +187,32 @@ def _configured_data_dir() -> Path:
     ).expanduser().resolve()
 
 
+def _candidate_trial_runner_from_environment(
+    *, store: ProjectStore, execution_backend: ExecutionBackend | None
+) -> CandidateTrialRunner | None:
+    """Build the H5 runner only from an explicit host opt-in.
+
+    H5 intentionally has no public management routes yet.  This factory wires
+    the durable store, FC execution port and Host-owned grant issuer together so
+    H6 can expose actions without creating a second, untrusted execution path.
+    """
+
+    if os.environ.get("DEVPILOT_ENABLE_MODEL_CANDIDATES") != "1":
+        return None
+    if execution_backend is None:
+        raise RuntimeError("model candidates require the explicitly configured FC backend")
+    grant_secret = os.environ.get("DEVPILOT_CANDIDATE_GRANT_SECRET", "").encode("utf-8")
+    if len(grant_secret) < 32:
+        raise RuntimeError(
+            "DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes"
+        )
+    return CandidateTrialRunner(
+        execution_backend,
+        store=store,
+        grant_issuer=CandidateTrialGrantIssuer(grant_secret),
+    )
+
+
 def _project_id(project: Path, requested: str | None) -> str:
     if requested:
         return requested
@@ -245,10 +272,12 @@ class ControlPlaneManager:
         token_ttl: timedelta = DEFAULT_TOKEN_TTL,
         execution_backend: ExecutionBackend | None = None,
         artifacts_root: str | Path | None = None,
+        candidate_trial_runner: CandidateTrialRunner | None = None,
     ) -> None:
         self.store = store
         self.token_ttl = token_ttl
         self.execution_backend = execution_backend
+        self.candidate_trial_runner = candidate_trial_runner
         self.artifacts_root = (
             Path(artifacts_root).expanduser().resolve() if artifacts_root is not None else None
         )
@@ -1480,11 +1509,15 @@ def create_app(
             from .fc_sandbox import build_fc_backend_from_environment
 
             execution_backend = build_fc_backend_from_environment()
+        candidate_trial_runner = _candidate_trial_runner_from_environment(
+            store=store, execution_backend=execution_backend
+        )
         manager = ControlPlaneManager(
             allowed_roots=allowed_roots or _configured_roots(),
             store=store,
             execution_backend=execution_backend,
             artifacts_root=resolved_data_dir,
+            candidate_trial_runner=candidate_trial_runner,
         )
     app = FastAPI(title="DevPilot Local Control Plane", version="0.2.0")
     # This is an internal loopback API for nanobot adapters and the local action

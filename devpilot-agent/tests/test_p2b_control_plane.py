@@ -7,9 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from devpilot.control_plane import ControlPlaneManager, create_app
+from devpilot.control_plane import (
+    ControlPlaneManager,
+    _candidate_trial_runner_from_environment,
+    create_app,
+)
 from devpilot.domain import FileOperation
 from devpilot.execution import FakeExecutionBackend
+from devpilot.fc_sandbox import FCSandboxBackend, FCSandboxConfig
 from devpilot.nanobot_tools import (
     ExecuteChangeSetTool,
     ProposeChangeSetTool,
@@ -535,3 +540,33 @@ def test_create_app_exposes_only_local_control_plane_routes(tmp_path: Path) -> N
     assert "/v1/change-sets/preview" in routes
     assert "/v1/change-sets/{change_set_id}/apply" in routes
     assert "/v1/change-sets/{change_set_id}/rollback" in routes
+
+
+def test_h5_factory_injects_durable_store_fc_backend_and_host_issuer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ProjectStore(tmp_path / "candidate" / "devpilot.db")
+    store.initialize()
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+        )
+    )
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_CANDIDATE_GRANT_SECRET", "h5-test-secret-012345678901234567890")
+
+    runner = _candidate_trial_runner_from_environment(
+        store=store, execution_backend=backend
+    )
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        store=store,
+        execution_backend=backend,
+        candidate_trial_runner=runner,
+    )
+
+    assert runner is not None
+    assert manager.candidate_trial_runner is runner

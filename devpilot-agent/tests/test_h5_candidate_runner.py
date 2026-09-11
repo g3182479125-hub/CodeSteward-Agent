@@ -209,6 +209,7 @@ class MemoryIdempotencyStore:
                         {
                             "active_operation_id": None,
                             "active_until_epoch": 0,
+                            "lease_token": 0,
                             "trials": 0,
                             "reserved_seconds": 0,
                         },
@@ -216,33 +217,36 @@ class MemoryIdempotencyStore:
                     ),
                 )
                 active_operation_id = None
+                lease_token = 0
             else:
                 assert record[0] == request_hash
                 payload = json.loads(record[1] or "")
                 assert set(payload) == {
                     "active_operation_id",
                     "active_until_epoch",
+                    "lease_token",
                     "trials",
                     "reserved_seconds",
                 }
                 trials = payload["trials"]
                 reserved_seconds = payload["reserved_seconds"]
                 active_operation_id = payload["active_operation_id"]
-                _active_until_epoch = payload["active_until_epoch"]
+                lease_token = payload["lease_token"]
             if active_operation_id not in {None, operation_id}:
-                return False, trials, reserved_seconds
+                return False, trials, reserved_seconds, lease_token
             if active_operation_id == operation_id:
-                return True, trials, reserved_seconds
+                return True, trials, reserved_seconds, lease_token
             if trials >= max_trials or reserved_seconds + reservation_seconds > max_trial_seconds:
-                return False, trials, reserved_seconds
+                return False, trials, reserved_seconds, lease_token
             updated = {
                 "active_operation_id": operation_id,
                 "active_until_epoch": 1,
+                "lease_token": lease_token + 1,
                 "trials": trials + 1,
                 "reserved_seconds": reserved_seconds + reservation_seconds,
             }
             self.records[key] = (request_hash, json.dumps(updated, sort_keys=True))
-            return True, updated["trials"], updated["reserved_seconds"]
+            return True, updated["trials"], updated["reserved_seconds"], updated["lease_token"]
 
     def get_candidate_budget(self, task_id: str) -> tuple[int, int]:
         key = "candidate-budget-" + hashlib.sha256(task_id.encode()).hexdigest()
@@ -253,19 +257,38 @@ class MemoryIdempotencyStore:
         assert set(payload) == {
             "active_operation_id",
             "active_until_epoch",
+            "lease_token",
             "trials",
             "reserved_seconds",
         }
         return payload["trials"], payload["reserved_seconds"]
 
-    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool:
+    def validate_candidate_lease(
+        self, task_id: str, operation_id: str, lease_token: int
+    ) -> bool:
+        key = "candidate-budget-" + hashlib.sha256(task_id.encode()).hexdigest()
+        record = self.records.get(key)
+        if record is None:
+            return False
+        payload = json.loads(record[1] or "")
+        return (
+            payload.get("active_operation_id") == operation_id
+            and payload.get("active_until_epoch") == 1
+            and payload.get("lease_token") == lease_token
+        )
+
+    def settle_candidate_budget(
+        self, task_id: str, operation_id: str, lease_token: int | None
+    ) -> bool:
         key = "candidate-budget-" + hashlib.sha256(task_id.encode()).hexdigest()
         with self._lock:
             record = self.records.get(key)
             if record is None:
                 return False
             payload = json.loads(record[1] or "")
-            if payload.get("active_operation_id") != operation_id:
+            if payload.get("active_operation_id") != operation_id or (
+                lease_token is not None and payload.get("lease_token") != lease_token
+            ):
                 return False
             payload["active_operation_id"] = None
             payload["active_until_epoch"] = 0
@@ -306,11 +329,11 @@ class RecoverBackend(RecordingBackend):
 def _reserve_budget_in_process(database_path: str, index: int) -> bool:
     store = ProjectStore(database_path)
     for _attempt in range(50):
-        allowed, trials, seconds = store.reserve_candidate_budget(
+        allowed, trials, seconds, _lease_token = store.reserve_candidate_budget(
             "shared-task", CANDIDATE_MAX_TRIALS, CANDIDATE_MAX_TRIAL_SECONDS, 30, f"op-{index}"
         )
         if allowed:
-            store.settle_candidate_budget("shared-task", f"op-{index}")
+            store.settle_candidate_budget("shared-task", f"op-{index}", _lease_token)
             return True
         if trials >= CANDIDATE_MAX_TRIALS or seconds >= CANDIDATE_MAX_TRIAL_SECONDS:
             return False
@@ -706,6 +729,24 @@ def test_persisted_result_is_replayed_after_runner_restart() -> None:
     assert second_backend.requests == []
 
 
+def test_persisted_candidate_record_requires_scope_and_operation_hash() -> None:
+    store = MemoryIdempotencyStore()
+    request = request_for()
+    first = runner_for(RecordingBackend(), store=store).trial(request)
+    assert first.status == "passed"
+
+    operation_key = runner_for(RecordingBackend(), store=store)._operation_key(request)
+    request_hash, response_json = store.records[operation_key]
+    payload = json.loads(response_json or "")
+    payload.pop("operation_hash")
+    store.records[operation_key] = (request_hash, json.dumps(payload, sort_keys=True))
+
+    result = runner_for(RecordingBackend(), store=store).trial(request)
+
+    assert result.status == "failed"
+    assert result.error_code == "CANDIDATE_PERSISTENCE_INVALID"
+
+
 def test_persisted_budget_survives_runner_restart() -> None:
     store = MemoryIdempotencyStore()
     grant = request_for().grant
@@ -792,9 +833,9 @@ def test_project_store_budget_survives_reload_and_fails_closed_on_corruption(tmp
     store.initialize()
 
     assert store.reserve_candidate_budget("task", 2, 60, 30, "op-1")[0] is True
-    assert store.settle_candidate_budget("task", "op-1") is True
+    assert store.settle_candidate_budget("task", "op-1", 1) is True
     assert store.reserve_candidate_budget("task", 2, 60, 30, "op-2")[0] is True
-    assert store.settle_candidate_budget("task", "op-2") is True
+    assert store.settle_candidate_budget("task", "op-2", 2) is True
     assert store.reserve_candidate_budget("task", 2, 60, 30, "op-3")[0] is False
 
     reopened = ProjectStore(tmp_path / "devpilot.db")

@@ -45,6 +45,7 @@ _CANDIDATE_RUNNER = "candidate_runner.py"
 _INPUT_FILE = "input.json"
 _CANDIDATE_OUTPUT_LIMIT_EXIT_CODE = 86
 _BUDGET_KEY_PREFIX = "candidate-budget-"
+_RESULT_STATUSES = frozenset({"passed", "failed", "cancelled", "unknown", "rejected"})
 _SENSITIVE_INPUT_NAME = frozenset(
     {"database", "db", "connection_string", "dsn", "session", "cookie", "headers", "env"}
 )
@@ -148,9 +149,11 @@ class CandidateTrialGrantIssuer:
     def verify(self, grant: CandidateTrialGrant) -> bool:
         if not isinstance(grant.signature, str) or not grant.signature:
             return False
-        return hmac.compare_digest(
-            grant.signature, self._sign(grant)
-        )
+        try:
+            expected = self._sign(grant)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return hmac.compare_digest(grant.signature, expected)
 
     def _sign(self, grant: CandidateTrialGrant) -> str:
         payload = json.dumps(
@@ -164,6 +167,7 @@ class CandidateTrialGrantIssuer:
                 "expires_at_epoch": grant.expires_at_epoch,
             },
             ensure_ascii=False,
+            allow_nan=False,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -190,11 +194,17 @@ class CandidateTrialStore(Protocol):
         max_trial_seconds: int,
         reservation_seconds: int,
         operation_id: str,
-    ) -> tuple[bool, int, int]: ...
+    ) -> tuple[bool, int, int, int]: ...
 
     def get_candidate_budget(self, task_id: str) -> tuple[int, int]: ...
 
-    def settle_candidate_budget(self, task_id: str, operation_id: str) -> bool: ...
+    def validate_candidate_lease(
+        self, task_id: str, operation_id: str, lease_token: int
+    ) -> bool: ...
+
+    def settle_candidate_budget(
+        self, task_id: str, operation_id: str, lease_token: int | None
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,14 +476,36 @@ def _result_from_dict(payload: object) -> CandidateExecutionResult | None:
     if not required.issubset(payload):
         return None
     if not all(
-        isinstance(payload.get(field), str) for field in {"status", "trial_id", "cleanup_status"}
-    ):
+        isinstance(payload.get(field), str)
+        for field in {"status", "trial_id", "cleanup_status"}
+    ) or payload["status"] not in _RESULT_STATUSES:
         return None
     if not isinstance(payload.get("duration_ms"), int) or isinstance(
         payload.get("duration_ms"), bool
     ):
         return None
-    if not isinstance(payload.get("output_truncated"), bool):
+    if payload["duration_ms"] < 0 or not isinstance(payload.get("output_truncated"), bool):
+        return None
+    optional_strings = {
+        "candidate_id",
+        "version",
+        "run_id",
+        "backend",
+        "sandbox_id",
+        "error_code",
+        "error_message",
+        "source_hash",
+        "input_hash",
+        "operation_id",
+    }
+    if any(
+        field in payload and payload[field] is not None and not isinstance(payload[field], str)
+        for field in optional_strings
+    ):
+        return None
+    if "exit_code" in payload and payload["exit_code"] is not None and (
+        not isinstance(payload["exit_code"], int) or isinstance(payload["exit_code"], bool)
+    ):
         return None
     return CandidateExecutionResult(
         status=payload["status"],
@@ -745,8 +777,20 @@ class CandidateTrialRunner:
             payload.get("record_type") == "candidate_trial"
             and payload.get("status") == "in_progress"
         ):
+            if not self._operation_envelope_matches(payload, request, operation_id):
+                return {
+                    "status": "unknown",
+                    "operation_id": operation_id,
+                    "error_code": "CANDIDATE_PERSISTENCE_INVALID",
+                }
             payload["operation_id"] = operation_id
             return payload
+        if not self._operation_envelope_matches(payload, request, operation_id):
+            return {
+                "status": "unknown",
+                "operation_id": operation_id,
+                "error_code": "CANDIDATE_PERSISTENCE_INVALID",
+            }
         if _result_from_dict(payload) is None:
             return {
                 "status": "unknown",
@@ -768,6 +812,14 @@ class CandidateTrialRunner:
                 grant_error[1],
                 operation_id=operation_id,
                 status="rejected",
+            )
+        backend_error = _candidate_backend_error(self._backend)
+        if backend_error is not None:
+            return _failure(
+                request,
+                backend_error[0],
+                backend_error[1],
+                operation_id=operation_id,
             )
         progress = self._operation_progress(request)
         if progress is None:
@@ -836,7 +888,16 @@ class CandidateTrialRunner:
             operation_id=operation_id,
             status="cancelled",
         )
-        return self._complete_operation(request, operation_id, "", result)
+        operation_hash = self._string_value(progress.get("operation_hash"))
+        if operation_hash is None:
+            return _failure(
+                request,
+                "CANDIDATE_PERSISTENCE_INVALID",
+                "候选 operation 缺少不可变操作哈希",
+                operation_id=operation_id,
+                status="unknown",
+            )
+        return self._complete_operation(request, operation_id, operation_hash, result)
 
     def recover(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         """Query an unfinished run and finalize only a provider-confirmed result."""
@@ -850,6 +911,14 @@ class CandidateTrialRunner:
                 grant_error[1],
                 operation_id=operation_id,
                 status="rejected",
+            )
+        backend_error = _candidate_backend_error(self._backend)
+        if backend_error is not None:
+            return _failure(
+                request,
+                backend_error[0],
+                backend_error[1],
+                operation_id=operation_id,
             )
         progress = self._operation_progress(request)
         if progress is None:
@@ -961,10 +1030,19 @@ class CandidateTrialRunner:
                 operation_id=operation_id,
                 status="unknown",
             )
+        operation_hash = self._string_value(progress.get("operation_hash"))
+        if operation_hash is None:
+            return _failure(
+                request,
+                "CANDIDATE_PERSISTENCE_INVALID",
+                "候选 operation 缺少不可变操作哈希",
+                operation_id=operation_id,
+                status="unknown",
+            )
         return self._finalize_execution(
             request,
             operation_id,
-            "",
+            operation_hash,
             self._string_value(progress.get("candidate_id")),
             self._string_value(progress.get("version")),
             self._string_value(progress.get("source_hash")),
@@ -996,6 +1074,21 @@ class CandidateTrialRunner:
             for field in ("task_id", "session_id", "project_id", "trial_id")
         )
 
+    @staticmethod
+    def _operation_envelope_matches(
+        payload: Mapping[str, object],
+        request: CandidateTrialRequest,
+        operation_key: str,
+    ) -> bool:
+        operation_hash = payload.get("operation_hash")
+        return (
+            payload.get("record_type") == "candidate_trial"
+            and payload.get("operation_id") == operation_key
+            and isinstance(operation_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", operation_hash) is not None
+            and CandidateTrialRunner._operation_scope_matches(payload, request)
+        )
+
     def _operation_progress(self, request: CandidateTrialRequest) -> dict[str, object] | None:
         record = self._store.get_idempotency(self._operation_key(request))
         payload = self._decode_operation(record[1]) if record else None
@@ -1003,7 +1096,9 @@ class CandidateTrialRunner:
             payload is None
             or payload.get("record_type") != "candidate_trial"
             or payload.get("status") != "in_progress"
-            or not self._operation_scope_matches(payload, request)
+            or not self._operation_envelope_matches(
+                payload, request, self._operation_key(request)
+            )
         ):
             return None
         return payload
@@ -1015,7 +1110,14 @@ class CandidateTrialRunner:
         if record is None:
             return False
         payload = self._decode_operation(record[1])
-        if payload is None or payload.get("status") != "in_progress":
+        if (
+            payload is None
+            or payload.get("status") != "in_progress"
+            or payload.get("record_type") != "candidate_trial"
+            or payload.get("operation_id") != operation_key
+            or not isinstance(payload.get("operation_hash"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", payload["operation_hash"]) is None
+        ):
             return False
         payload.update(updates)
         updated = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -1105,6 +1207,12 @@ class CandidateTrialRunner:
             except (TypeError, ValueError):
                 decoded = None
             replay = _result_from_dict(decoded)
+            if replay is None or not isinstance(decoded, Mapping):
+                replay = None
+            elif not self._operation_envelope_matches(decoded, request, operation_key):
+                replay = None
+            elif decoded.get("operation_hash") != operation_hash:
+                replay = None
             if replay is None:
                 return (
                     _failure(
@@ -1122,6 +1230,26 @@ class CandidateTrialRunner:
                 )
             return replay, False
         if state == "in_progress":
+            decoded = self._decode_operation(response_json)
+            if (
+                decoded is None
+                or not self._operation_envelope_matches(decoded, request, operation_key)
+                or decoded.get("operation_hash") != operation_hash
+            ):
+                return (
+                    _failure(
+                        request,
+                        "CANDIDATE_PERSISTENCE_INVALID",
+                        "候选试运行状态记录无法验证",
+                        candidate_id=candidate_id,
+                        version=version,
+                        run_id=run_id,
+                        source_hash=source_hash,
+                        input_hash=input_hash,
+                        operation_id=operation_key,
+                    ),
+                    False,
+                )
             return (
                 _failure(
                     request,
@@ -1141,6 +1269,7 @@ class CandidateTrialRunner:
                 "record_type": "candidate_trial",
                 "status": "in_progress",
                 "operation_id": operation_key,
+                "operation_hash": operation_hash,
                 "task_id": request.task_id,
                 "session_id": request.session_id,
                 "project_id": request.project_id,
@@ -1151,6 +1280,7 @@ class CandidateTrialRunner:
                 "input_hash": input_hash,
                 "run_id": run_id,
                 "sandbox_id": None,
+                "lease_token": None,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1188,6 +1318,12 @@ class CandidateTrialRunner:
         result: CandidateExecutionResult,
     ) -> CandidateExecutionResult:
         try:
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", operation_hash)
+                or result.operation_id != operation_key
+                or result.trial_id != request.trial_id
+            ):
+                raise ValueError("candidate operation envelope is invalid")
             persisted = result.to_dict()
             persisted.update(
                 {
@@ -1195,16 +1331,30 @@ class CandidateTrialRunner:
                     "task_id": request.task_id,
                     "session_id": request.session_id,
                     "project_id": request.project_id,
+                    "operation_hash": operation_hash,
                 }
             )
-            serialized = json.dumps(persisted, ensure_ascii=False, sort_keys=True)
+            serialized = json.dumps(
+                persisted, ensure_ascii=False, sort_keys=True, allow_nan=False
+            )
             record = self._store.get_idempotency(operation_key)
-            if record is None or not self._store.compare_and_set_idempotency(
-                operation_key, record[1], serialized
+            lease_token = None
+            if record is None:
+                raise RuntimeError("candidate operation reservation is missing")
+            progress = self._decode_operation(record[1])
+            if (
+                progress is None
+                or progress.get("status") != "in_progress"
+                or not self._operation_envelope_matches(progress, request, operation_key)
+                or progress.get("operation_hash") != operation_hash
             ):
+                raise ValueError("candidate operation reservation is invalid")
+            if isinstance(progress.get("lease_token"), int):
+                lease_token = progress["lease_token"]
+            if not self._store.compare_and_set_idempotency(operation_key, record[1], serialized):
                 raise RuntimeError("candidate operation completion lost its compare-and-set")
             if result.status != "unknown":
-                self._store.settle_candidate_budget(request.task_id, operation_key)
+                self._store.settle_candidate_budget(request.task_id, operation_key, lease_token)
         except Exception:
             return _failure(
                 request,
@@ -1360,7 +1510,12 @@ class CandidateTrialRunner:
             return self._complete_operation(request, operation_key, operation_hash, result)
 
         try:
-            reserved, _trials, _reserved_seconds = self._store.reserve_candidate_budget(
+            (
+                reserved,
+                _trials,
+                _reserved_seconds,
+                lease_token,
+            ) = self._store.reserve_candidate_budget(
                 request.task_id,
                 self._max_trials,
                 self._max_trial_seconds,
@@ -1391,6 +1546,40 @@ class CandidateTrialRunner:
                     run_id=run_id,
                     source_hash=source_hash,
                     input_hash=input_hash,
+                )
+            )
+        if not self._store.validate_candidate_lease(
+            request.task_id, operation_key, lease_token
+        ):
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_LEASE_LOST",
+                    "候选执行租约已失效，未启动 FC 运行",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                    status="unknown",
+                )
+            )
+        if not self._update_operation_progress(
+            operation_key, {"lease_token": lease_token}
+        ):
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选执行租约无法持久化",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                    status="unknown",
                 )
             )
         execution_request = ExecutionRequest(
@@ -1440,6 +1629,25 @@ class CandidateTrialRunner:
                 )
             )
         receipt_error = _execution_receipt_error(result)
+        if not self._store.validate_candidate_lease(
+            request.task_id, operation_key, lease_token
+        ):
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_LEASE_LOST",
+                    "候选执行租约已失效，FC 结果保持未知",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    cleanup_status=self._cleanup_status(run_id),
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    status="unknown",
+                )
+            )
         if receipt_error is not None:
             return finish(
                 _failure(
