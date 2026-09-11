@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import hmac
 import json
 import re
+import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from time import time
 from typing import Protocol
@@ -23,6 +25,7 @@ from .execution import (
     ExecutionError,
     ExecutionFile,
     ExecutionRequest,
+    ExecutionResult,
 )
 from .redaction import is_sensitive_field_name, redact_sensitive_payload, redact_sensitive_text
 
@@ -34,6 +37,8 @@ CANDIDATE_MAX_SOURCE_BYTES = 64 * 1024
 CANDIDATE_MAX_INPUT_BYTES = 64 * 1024
 CANDIDATE_API_VERSION = "nanobot.tool/v1"
 CANDIDATE_COMMAND_PROFILE = "model-candidate"
+CANDIDATE_TEMPLATE = "code-interpreter-v1"
+CANDIDATE_NETWORK_POLICY = "provider-default"
 _CANDIDATE_ENTRY = "candidate.py"
 _CANDIDATE_RUNNER = "candidate_runner.py"
 _INPUT_FILE = "input.json"
@@ -90,7 +95,76 @@ class CandidateTrialGrant:
     task_id: str
     project_id: str
     allowed_input_fields: tuple[str, ...]
+    allowed_input_rules: tuple[tuple[str, str, int], ...] = ()
     expires_at_epoch: int | None = None
+    signature: str = ""
+
+
+class CandidateTrialGrantIssuer:
+    """Host-only issuer/verifier for scoped candidate trial grants.
+
+    A caller may construct the dataclass for serialization, but only a grant
+    signed by this host-owned issuer is accepted by the runner.  The secret is
+    supplied by the host and never included in a candidate request or result.
+    """
+
+    def __init__(self, secret: bytes) -> None:
+        if len(secret) < 32:
+            raise ValueError("candidate grant secret must contain at least 32 bytes")
+        self._secret = secret
+
+    def issue(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        project_id: str,
+        allowed_input_rules: tuple[tuple[str, str, int], ...],
+        expires_at_epoch: int | None = None,
+    ) -> CandidateTrialGrant:
+        grant = CandidateTrialGrant(
+            grant_id=str(uuid.uuid4()),
+            session_id=session_id,
+            task_id=task_id,
+            project_id=project_id,
+            allowed_input_fields=tuple(rule[0] for rule in allowed_input_rules),
+            allowed_input_rules=allowed_input_rules,
+            expires_at_epoch=expires_at_epoch,
+        )
+        return CandidateTrialGrant(
+            grant_id=grant.grant_id,
+            session_id=grant.session_id,
+            task_id=grant.task_id,
+            project_id=grant.project_id,
+            allowed_input_fields=grant.allowed_input_fields,
+            allowed_input_rules=grant.allowed_input_rules,
+            expires_at_epoch=grant.expires_at_epoch,
+            signature=self._sign(grant),
+        )
+
+    def verify(self, grant: CandidateTrialGrant) -> bool:
+        if not isinstance(grant.signature, str) or not grant.signature:
+            return False
+        return hmac.compare_digest(
+            grant.signature, self._sign(grant)
+        )
+
+    def _sign(self, grant: CandidateTrialGrant) -> str:
+        payload = json.dumps(
+            {
+                "grant_id": grant.grant_id,
+                "session_id": grant.session_id,
+                "task_id": grant.task_id,
+                "project_id": grant.project_id,
+                "allowed_input_fields": grant.allowed_input_fields,
+                "allowed_input_rules": grant.allowed_input_rules,
+                "expires_at_epoch": grant.expires_at_epoch,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hmac.new(self._secret, payload, hashlib.sha256).hexdigest()
 
 
 class CandidateTrialStore(Protocol):
@@ -101,6 +175,16 @@ class CandidateTrialStore(Protocol):
     def complete_idempotency(self, key: str, response_json: str) -> None: ...
 
     def get_idempotency(self, key: str) -> tuple[str, str | None] | None: ...
+
+    def reserve_candidate_budget(
+        self,
+        task_id: str,
+        max_trials: int,
+        max_trial_seconds: int,
+        reservation_seconds: int,
+    ) -> tuple[bool, int, int]: ...
+
+    def get_candidate_budget(self, task_id: str) -> tuple[int, int]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +222,7 @@ class CandidateExecutionResult:
     source_hash: str | None
     input_hash: str | None
     output_truncated: bool = False
+    operation_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a bounded result without source code or raw input."""
@@ -158,6 +243,7 @@ class CandidateExecutionResult:
             "source_hash": self.source_hash,
             "input_hash": self.input_hash,
             "output_truncated": self.output_truncated,
+            "operation_id": self.operation_id,
         }
 
 
@@ -166,12 +252,6 @@ class _CandidateManifest:
     plugin_id: str
     version: str
     content_hash: str
-
-
-@dataclass(slots=True)
-class _TaskBudget:
-    trials: int = 0
-    reserved_seconds: int = 0
 
 
 def _failure(
@@ -190,6 +270,7 @@ def _failure(
     backend: str | None = None,
     sandbox_id: str | None = None,
     output_truncated: bool = False,
+    operation_id: str | None = None,
     status: str = "failed",
 ) -> CandidateExecutionResult:
     return CandidateExecutionResult(
@@ -209,6 +290,7 @@ def _failure(
         source_hash=source_hash,
         input_hash=input_hash,
         output_truncated=output_truncated,
+        operation_id=operation_id,
     )
 
 
@@ -286,6 +368,8 @@ def _validate_source(source: str) -> tuple[str, str] | None:
         return "CANDIDATE_SOURCE_INVALID", "候选源码不是有效 UTF-8"
     if not encoded or len(encoded) > CANDIDATE_MAX_SOURCE_BYTES:
         return "CANDIDATE_SOURCE_LIMIT_EXCEEDED", "候选源码超过 64 KiB 限制"
+    if _LOCAL_REFERENCE_PATTERN.search(source) is not None:
+        return "CANDIDATE_SOURCE_LOCAL_REFERENCE", "候选源码包含本机绝对路径或 file 引用"
     try:
         tree = ast.parse(source, filename=_CANDIDATE_ENTRY, mode="exec")
     except SyntaxError:
@@ -410,10 +494,16 @@ def _result_from_dict(payload: object) -> CandidateExecutionResult | None:
         if isinstance(payload.get("input_hash"), str)
         else None,
         output_truncated=payload["output_truncated"],
+        operation_id=payload.get("operation_id")
+        if isinstance(payload.get("operation_id"), str)
+        else None,
     )
 
 
-def _validate_grant(request: CandidateTrialRequest) -> tuple[str, str] | None:
+def _validate_grant(
+    request: CandidateTrialRequest,
+    issuer: CandidateTrialGrantIssuer,
+) -> tuple[str, str] | None:
     grant = request.grant
     if not isinstance(grant, CandidateTrialGrant):
         return "CANDIDATE_GRANT_REQUIRED", "候选试运行必须使用 Host 签发的试用授权"
@@ -423,13 +513,46 @@ def _validate_grant(request: CandidateTrialRequest) -> tuple[str, str] | None:
         or grant.project_id != request.project_id
     ):
         return "CANDIDATE_GRANT_SCOPE_INVALID", "候选试用授权与当前会话或项目不匹配"
-    if not grant.grant_id or not grant.allowed_input_fields:
+    if (
+        not isinstance(grant.grant_id, str)
+        or not isinstance(grant.allowed_input_fields, tuple)
+        or not grant.grant_id
+        or not grant.allowed_input_fields
+        or not issuer.verify(grant)
+    ):
         return "CANDIDATE_GRANT_INVALID", "候选试用授权缺少输入字段投影"
+    if any(not isinstance(field, str) for field in grant.allowed_input_fields):
+        return "CANDIDATE_GRANT_INVALID", "候选试用授权的输入字段投影无效"
     if len(set(grant.allowed_input_fields)) != len(grant.allowed_input_fields) or any(
-        not isinstance(field, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", field)
+        not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", field)
         for field in grant.allowed_input_fields
     ):
         return "CANDIDATE_GRANT_INVALID", "候选试用授权的输入字段投影无效"
+    if (
+        not isinstance(grant.allowed_input_rules, tuple)
+        or len(grant.allowed_input_rules) != len(grant.allowed_input_fields)
+        or any(
+            not isinstance(rule, tuple) or len(rule) != 3
+            for rule in grant.allowed_input_rules
+        )
+    ):
+        return "CANDIDATE_GRANT_INVALID", "候选试用授权缺少值级输入规则"
+    for rule in grant.allowed_input_rules:
+        field, kind, max_length = rule
+        if (
+            not isinstance(field, str)
+            or field not in grant.allowed_input_fields
+            or kind not in {"string", "integer", "number", "boolean"}
+            or not isinstance(max_length, int)
+            or isinstance(max_length, bool)
+            or not 1 <= max_length <= CANDIDATE_MAX_INPUT_BYTES
+        ):
+            return "CANDIDATE_GRANT_INVALID", "候选试用授权的值级输入规则无效"
+    if grant.expires_at_epoch is not None and (
+        not isinstance(grant.expires_at_epoch, int)
+        or isinstance(grant.expires_at_epoch, bool)
+    ):
+        return "CANDIDATE_GRANT_INVALID", "候选试用授权的过期时间无效"
     if grant.expires_at_epoch is not None and grant.expires_at_epoch <= int(time()):
         return "CANDIDATE_GRANT_EXPIRED", "候选试用授权已过期"
     return None
@@ -446,10 +569,49 @@ def _validate_approved_input(
     if any(not isinstance(field, str) for field in fields):
         return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入字段名必须是文本"
     allowed = set(grant.allowed_input_fields)
+    rules = {field: (kind, max_length) for field, kind, max_length in grant.allowed_input_rules}
     if any(field not in allowed for field in fields):
         return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入包含未获授权的字段"
     if any(field.casefold() in _SENSITIVE_INPUT_NAME for field in fields):
         return "CANDIDATE_INPUT_SENSITIVE", "候选输入包含不允许的数据类别"
+    for field in fields:
+        kind, max_length = rules[field]
+        value = input_data[field]
+        if kind == "string" and (not isinstance(value, str) or len(value) > max_length):
+            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+        if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+        if kind == "number" and (
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+        ):
+            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+        if kind == "boolean" and not isinstance(value, bool):
+            return "CANDIDATE_INPUT_SCOPE_INVALID", "候选输入不符合 Host 签发的值级规则"
+    return None
+
+
+def _candidate_backend_error(backend: ExecutionBackend | None) -> tuple[str, str] | None:
+    """Require the fixed FC candidate contract, not a caller-set flag."""
+
+    if backend is None:
+        return "CANDIDATE_BACKEND_UNAVAILABLE", "候选试运行未绑定受信 FC 后端，未执行本机回退"
+    if getattr(backend, "name", None) != "fc-agent-sandbox":
+        return "CANDIDATE_BACKEND_UNAVAILABLE", "候选试运行只允许使用受信 FC 后端，未执行本机回退"
+    contract = getattr(backend, "candidate_execution_contract", None)
+    if not callable(contract):
+        return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端未提供固定 FC 执行契约"
+    try:
+        actual = contract()
+    except Exception:
+        return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端能力检查失败"
+    expected = (
+        "fc-agent-sandbox",
+        CANDIDATE_COMMAND_PROFILE,
+        CANDIDATE_TEMPLATE,
+        CANDIDATE_NETWORK_POLICY,
+    )
+    if actual != expected:
+        return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端未绑定固定 FC profile、模板和策略"
     return None
 
 
@@ -463,7 +625,8 @@ class CandidateTrialRunner:
         max_trials: int = CANDIDATE_MAX_TRIALS,
         max_trial_seconds: int = CANDIDATE_MAX_TRIAL_SECONDS,
         timeout_seconds: int = CANDIDATE_TIMEOUT_SECONDS,
-        store: CandidateTrialStore | None = None,
+        store: CandidateTrialStore,
+        grant_issuer: CandidateTrialGrantIssuer,
     ) -> None:
         if not 1 <= max_trials <= CANDIDATE_MAX_TRIALS:
             raise ValueError("max_trials must be between 1 and 3")
@@ -476,9 +639,8 @@ class CandidateTrialRunner:
         self._max_trial_seconds = max_trial_seconds
         self._timeout_seconds = timeout_seconds
         self._store = store
+        self._grant_issuer = grant_issuer
         self._lock = RLock()
-        self._budgets: dict[str, _TaskBudget] = {}
-        self._operations: dict[str, tuple[str, CandidateExecutionResult | None]] = {}
 
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         """Validate and trial one candidate without executing it on the host."""
@@ -493,17 +655,228 @@ class CandidateTrialRunner:
         return self._run(request)
 
     def budget_status(self, task_id: str) -> dict[str, int]:
-        with self._lock:
-            budget = self._budgets.get(task_id)
-            if budget is None:
-                budget = self._load_persisted_budget(task_id)
-                self._budgets[task_id] = budget
+        trials, reserved_seconds = self._store.get_candidate_budget(task_id)
         return {
-            "trials": budget.trials,
-            "reserved_seconds": budget.reserved_seconds,
+            "trials": trials,
+            "reserved_seconds": reserved_seconds,
             "max_trials": self._max_trials,
             "max_trial_seconds": self._max_trial_seconds,
         }
+
+    def operation_status(self, request: CandidateTrialRequest) -> dict[str, object]:
+        """Read one durable operation without starting or retrying execution."""
+
+        operation_id = self._operation_key(request)
+        record = self._store.get_idempotency(operation_id)
+        if record is None:
+            return {"status": "not_found", "operation_id": operation_id}
+        payload = self._decode_operation(record[1])
+        if payload is None or not self._operation_scope_matches(payload, request):
+            return {
+                "status": "unknown",
+                "operation_id": operation_id,
+                "error_code": "CANDIDATE_PERSISTENCE_INVALID",
+            }
+        if (
+            payload.get("record_type") == "candidate_trial"
+            and payload.get("status") == "in_progress"
+        ):
+            payload["operation_id"] = operation_id
+            return payload
+        if _result_from_dict(payload) is None:
+            return {
+                "status": "unknown",
+                "operation_id": operation_id,
+                "error_code": "CANDIDATE_PERSISTENCE_INVALID",
+            }
+        payload["operation_id"] = operation_id
+        return payload
+
+    def cancel(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        """Cancel a durable in-progress operation through the backend port."""
+
+        operation_id = self._operation_key(request)
+        progress = self._operation_progress(request)
+        if progress is None:
+            return _failure(
+                request,
+                "CANDIDATE_OPERATION_NOT_FOUND",
+                "候选试运行没有可取消的持久 operation",
+                operation_id=operation_id,
+            )
+        run_id = progress.get("run_id")
+        cancel = getattr(self._backend, "cancel", None)
+        if not isinstance(run_id, str) or not callable(cancel):
+            return _failure(
+                request,
+                "CANDIDATE_CANCEL_UNAVAILABLE",
+                "候选执行后端不支持安全取消",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id if isinstance(run_id, str) else None,
+                operation_id=operation_id,
+            )
+        try:
+            state = cancel(run_id)
+        except Exception:
+            return _failure(
+                request,
+                "CANDIDATE_CANCEL_FAILED",
+                "候选执行取消失败，结果保持未知",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        cleanup_status = (
+            state.get("cleanup_status") if isinstance(state, Mapping) else "unknown"
+        )
+        result = _failure(
+            request,
+            "CANDIDATE_CANCELLED",
+            "候选试运行已取消",
+            candidate_id=self._string_value(progress.get("candidate_id")),
+            version=self._string_value(progress.get("version")),
+            run_id=run_id,
+            sandbox_id=(
+                self._string_value(state.get("sandbox_id"))
+                if isinstance(state, Mapping)
+                else None
+            ),
+            cleanup_status=cleanup_status if isinstance(cleanup_status, str) else "unknown",
+            operation_id=operation_id,
+            status="cancelled",
+        )
+        return self._complete_operation(request, operation_id, "", result)
+
+    def recover(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        """Query an unfinished run and finalize only a provider-confirmed result."""
+
+        operation_id = self._operation_key(request)
+        progress = self._operation_progress(request)
+        if progress is None:
+            record = self._store.get_idempotency(operation_id)
+            replay = _result_from_dict(self._decode_operation(record[1]) if record else None)
+            return replay or _failure(
+                request,
+                "CANDIDATE_OPERATION_NOT_FOUND",
+                "候选试运行没有可恢复的持久 operation",
+                operation_id=operation_id,
+            )
+        run_id = progress.get("run_id")
+        getter = getattr(self._backend, "get_run_state", None)
+        if not isinstance(run_id, str) or not callable(getter):
+            return _failure(
+                request,
+                "CANDIDATE_RESULT_UNKNOWN",
+                "无法查询候选运行状态，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id if isinstance(run_id, str) else None,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        try:
+            state = getter(run_id)
+        except Exception:
+            state = None
+        if not isinstance(state, Mapping):
+            return _failure(
+                request,
+                "CANDIDATE_RESULT_UNKNOWN",
+                "候选运行状态无法读取，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        state_name = state.get("status")
+        if state_name in {"starting", "running"}:
+            return _failure(
+                request,
+                "CANDIDATE_TRIAL_IN_PROGRESS",
+                "候选运行仍在处理中，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        raw_result = state.get("result")
+        if not isinstance(raw_result, Mapping):
+            result = _failure(
+                request,
+                "CANDIDATE_RESULT_UNKNOWN",
+                "候选运行缺少可验证结果，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                sandbox_id=self._string_value(state.get("sandbox_id")),
+                cleanup_status=self._string_value(state.get("cleanup_status")) or "unknown",
+                operation_id=operation_id,
+                status="unknown",
+            )
+            return self._complete_operation(request, operation_id, "", result)
+        execution = self._execution_from_mapping(raw_result)
+        if execution is None:
+            return _failure(
+                request,
+                "CANDIDATE_RESULT_UNKNOWN",
+                "候选运行结果格式无法验证，未自动重试",
+                candidate_id=self._string_value(progress.get("candidate_id")),
+                version=self._string_value(progress.get("version")),
+                run_id=run_id,
+                operation_id=operation_id,
+                status="unknown",
+            )
+        return self._finalize_execution(
+            request,
+            operation_id,
+            "",
+            self._string_value(progress.get("candidate_id")),
+            self._string_value(progress.get("version")),
+            self._string_value(progress.get("source_hash")),
+            self._string_value(progress.get("input_hash")),
+            run_id,
+            execution,
+        )
+
+    @staticmethod
+    def _string_value(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _decode_operation(response_json: str | None) -> dict[str, object] | None:
+        if not response_json:
+            return None
+        try:
+            decoded = json.loads(response_json)
+        except (TypeError, ValueError):
+            return None
+        return dict(decoded) if isinstance(decoded, Mapping) else None
+
+    @staticmethod
+    def _operation_scope_matches(
+        payload: Mapping[str, object], request: CandidateTrialRequest
+    ) -> bool:
+        return all(
+            payload.get(field) == getattr(request, field)
+            for field in ("task_id", "session_id", "project_id", "trial_id")
+        )
+
+    def _operation_progress(self, request: CandidateTrialRequest) -> dict[str, object] | None:
+        record = self._store.get_idempotency(self._operation_key(request))
+        payload = self._decode_operation(record[1]) if record else None
+        if (
+            payload is None
+            or payload.get("record_type") != "candidate_trial"
+            or payload.get("status") != "in_progress"
+            or not self._operation_scope_matches(payload, request)
+        ):
+            return None
+        return payload
 
     def _budget_key(self, task_id: str) -> str:
         digest = hashlib.sha256(task_id.encode()).hexdigest()
@@ -511,7 +884,7 @@ class CandidateTrialRunner:
 
     def _operation_key(self, request: CandidateTrialRequest) -> str:
         digest = hashlib.sha256(
-            f"{request.session_id}\0{request.task_id}\0{request.trial_id}".encode()
+            f"{request.session_id}\0{request.project_id}\0{request.task_id}\0{request.trial_id}".encode()
         ).hexdigest()
         return "candidate-operation-" + digest
 
@@ -548,110 +921,120 @@ class CandidateTrialRunner:
         source_hash: str,
         input_hash: str,
     ) -> tuple[CandidateExecutionResult | None, bool]:
-        if self._store is not None:
+        try:
+            state, response_json = self._store.reserve_idempotency(
+                operation_key, operation_hash
+            )
+        except ValueError:
+            return (
+                _failure(
+                    request,
+                    "CANDIDATE_TRIAL_CONFLICT",
+                    "相同试运行编号绑定了不同候选内容",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                    status="rejected",
+                ),
+                False,
+            )
+        except Exception:
+            return (
+                _failure(
+                    request,
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选试运行状态无法持久化",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                ),
+                False,
+            )
+        if state == "replay":
             try:
-                state, response_json = self._store.reserve_idempotency(
-                    operation_key, operation_hash
-                )
-            except ValueError:
+                decoded = json.loads(response_json or "")
+            except (TypeError, ValueError):
+                decoded = None
+            replay = _result_from_dict(decoded)
+            if replay is None:
                 return (
                     _failure(
                         request,
-                        "CANDIDATE_TRIAL_CONFLICT",
-                        "相同试运行编号绑定了不同候选内容",
+                        "CANDIDATE_PERSISTENCE_INVALID",
+                        "候选试运行结果记录无法读取",
                         candidate_id=candidate_id,
                         version=version,
                         run_id=run_id,
                         source_hash=source_hash,
                         input_hash=input_hash,
-                        status="rejected",
+                        operation_id=operation_key,
                     ),
                     False,
                 )
-            except Exception:
-                return (
-                    _failure(
-                        request,
-                        "CANDIDATE_PERSISTENCE_UNAVAILABLE",
-                        "候选试运行状态无法持久化",
-                        candidate_id=candidate_id,
-                        version=version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                    ),
-                    False,
-                )
-            if state == "replay":
+            return replay, False
+        if state == "in_progress":
+            return (
+                _failure(
+                    request,
+                    "CANDIDATE_TRIAL_IN_PROGRESS",
+                    "相同候选试运行仍在处理中，请先查询或恢复 operation_id",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                ),
+                False,
+            )
+        progress = json.dumps(
+            {
+                "record_type": "candidate_trial",
+                "status": "in_progress",
+                "operation_id": operation_key,
+                "task_id": request.task_id,
+                "session_id": request.session_id,
+                "project_id": request.project_id,
+                "trial_id": request.trial_id,
+                "candidate_id": candidate_id,
+                "version": version,
+                "source_hash": source_hash,
+                "input_hash": input_hash,
+                "run_id": run_id,
+                "sandbox_id": None,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        try:
+            self._store.complete_idempotency(operation_key, progress)
+        except Exception:
+            abort = getattr(self._store, "abort_idempotency", None)
+            if callable(abort):
                 try:
-                    decoded = json.loads(response_json or "")
-                except (TypeError, ValueError):
-                    decoded = None
-                replay = _result_from_dict(decoded)
-                if replay is None:
-                    return (
-                        _failure(
-                            request,
-                            "CANDIDATE_PERSISTENCE_INVALID",
-                            "候选试运行结果记录无法读取",
-                            candidate_id=candidate_id,
-                            version=version,
-                            run_id=run_id,
-                            source_hash=source_hash,
-                            input_hash=input_hash,
-                        ),
-                        False,
-                    )
-                return replay, False
-            if state == "in_progress":
-                return (
-                    _failure(
-                        request,
-                        "CANDIDATE_TRIAL_IN_PROGRESS",
-                        "相同候选试运行仍在处理中，未自动重试",
-                        candidate_id=candidate_id,
-                        version=version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                    ),
-                    False,
-                )
-            return None, True
-        with self._lock:
-            existing = self._operations.get(operation_key)
-            if existing is not None:
-                if existing[0] != operation_hash:
-                    return (
-                        _failure(
-                            request,
-                            "CANDIDATE_TRIAL_CONFLICT",
-                            "相同试运行编号绑定了不同候选内容",
-                            candidate_id=candidate_id,
-                            version=version,
-                            run_id=run_id,
-                            source_hash=source_hash,
-                            input_hash=input_hash,
-                            status="rejected",
-                        ),
-                        False,
-                    )
-                if existing[1] is not None:
-                    return existing[1], False
-                return (
-                    _failure(
-                        request,
-                        "CANDIDATE_TRIAL_IN_PROGRESS",
-                        "相同候选试运行仍在处理中，未自动重试",
-                        candidate_id=candidate_id,
-                        version=version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                    ),
-                    False,
-                )
-            self._operations[operation_key] = (operation_hash, None)
+                    abort(operation_key)
+                except Exception:
+                    pass
+            return (
+                _failure(
+                    request,
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选试运行状态无法持久化",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    operation_id=operation_key,
+                ),
+                False,
+            )
         return None, True
 
     def _complete_operation(
@@ -661,12 +1044,17 @@ class CandidateTrialRunner:
         operation_hash: str,
         result: CandidateExecutionResult,
     ) -> CandidateExecutionResult:
-        if self._store is None:
-            with self._lock:
-                self._operations[operation_key] = (operation_hash, result)
-            return result
         try:
-            serialized = json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
+            persisted = result.to_dict()
+            persisted.update(
+                {
+                    "record_type": "candidate_trial",
+                    "task_id": request.task_id,
+                    "session_id": request.session_id,
+                    "project_id": request.project_id,
+                }
+            )
+            serialized = json.dumps(persisted, ensure_ascii=False, sort_keys=True)
             self._store.complete_idempotency(operation_key, serialized)
         except Exception:
             return _failure(
@@ -683,50 +1071,9 @@ class CandidateTrialRunner:
                 exit_code=result.exit_code,
                 backend=result.backend,
                 sandbox_id=result.sandbox_id,
+                operation_id=result.operation_id,
             )
         return result
-
-    def _load_persisted_budget(self, task_id: str) -> _TaskBudget:
-        if self._store is None:
-            return _TaskBudget()
-        record = self._store.get_idempotency(self._budget_key(task_id))
-        if record is None or record[1] is None:
-            return _TaskBudget()
-        try:
-            payload = json.loads(record[1])
-        except (TypeError, ValueError):
-            return _TaskBudget()
-        if not isinstance(payload, Mapping):
-            return _TaskBudget()
-        trials = payload.get("trials")
-        reserved = payload.get("reserved_seconds")
-        if not (
-            isinstance(trials, int)
-            and not isinstance(trials, bool)
-            and isinstance(reserved, int)
-            and not isinstance(reserved, bool)
-            and trials >= 0
-            and reserved >= 0
-        ):
-            return _TaskBudget()
-        return _TaskBudget(trials=trials, reserved_seconds=reserved)
-
-    def _persist_budget(self, task_id: str, budget: _TaskBudget) -> None:
-        if self._store is None:
-            return
-        key = self._budget_key(task_id)
-        payload = json.dumps(
-            {"trials": budget.trials, "reserved_seconds": budget.reserved_seconds},
-            sort_keys=True,
-        )
-        record = self._store.get_idempotency(key)
-        if record is None:
-            state, _ = self._store.reserve_idempotency(
-                key, hashlib.sha256(f"budget:{task_id}".encode()).hexdigest()
-            )
-            if state != "new":
-                raise RuntimeError("candidate budget reservation is not new")
-        self._store.complete_idempotency(key, payload)
 
     def _run(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         if not request.task_id or not request.project_id or not request.trial_id:
@@ -736,10 +1083,13 @@ class CandidateTrialRunner:
         if not isinstance(request.manifest, Mapping):
             return _failure(request, "CANDIDATE_MANIFEST_INVALID", "候选 manifest 必须是对象")
         grant = request.grant
-        grant_error = _validate_grant(request)
+        grant_error = _validate_grant(request, self._grant_issuer)
         if grant_error is not None:
             return _failure(request, grant_error[0], grant_error[1], status="rejected")
         assert isinstance(grant, CandidateTrialGrant)
+        backend_error = _candidate_backend_error(self._backend)
+        if backend_error is not None:
+            return _failure(request, backend_error[0], backend_error[1], status="failed")
         if request.timeout_seconds != self._timeout_seconds:
             return _failure(
                 request,
@@ -825,7 +1175,9 @@ class CandidateTrialRunner:
             )
         run_id = (
             "candidate-trial-"
-            + hashlib.sha256(f"{request.task_id}\0{request.trial_id}".encode()).hexdigest()[:32]
+            + hashlib.sha256(
+                f"{request.session_id}\0{request.project_id}\0{request.task_id}\0{request.trial_id}".encode()
+            ).hexdigest()[:32]
         )
         operation_key = self._operation_key(request)
         operation_hash = self._operation_hash(request, source_hash, input_hash, manifest)
@@ -854,70 +1206,36 @@ class CandidateTrialRunner:
             )
 
         def finish(result: CandidateExecutionResult) -> CandidateExecutionResult:
+            if result.operation_id is None:
+                result = replace(result, operation_id=operation_key)
             return self._complete_operation(request, operation_key, operation_hash, result)
 
-        with self._lock:
-            budget = self._budgets.get(request.task_id)
-            if budget is None:
-                try:
-                    budget = self._load_persisted_budget(request.task_id)
-                except Exception:
-                    return finish(
-                        _failure(
-                            request,
-                            "CANDIDATE_PERSISTENCE_UNAVAILABLE",
-                            "候选任务预算无法读取",
-                            candidate_id=manifest.plugin_id,
-                            version=manifest.version,
-                            run_id=run_id,
-                            source_hash=source_hash,
-                            input_hash=input_hash,
-                        )
-                    )
-                self._budgets[request.task_id] = budget
-            if (
-                budget.trials >= self._max_trials
-                or budget.reserved_seconds + self._timeout_seconds > self._max_trial_seconds
-            ):
-                return finish(
-                    _failure(
-                        request,
-                        "CANDIDATE_BUDGET_EXCEEDED",
-                        "候选试运行已达到任务预算",
-                        candidate_id=manifest.plugin_id,
-                        version=manifest.version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                    )
-                )
-            old_trials = budget.trials
-            old_reserved_seconds = budget.reserved_seconds
-            budget.trials += 1
-            budget.reserved_seconds += self._timeout_seconds
-            try:
-                self._persist_budget(request.task_id, budget)
-            except Exception:
-                budget.trials = old_trials
-                budget.reserved_seconds = old_reserved_seconds
-                return finish(
-                    _failure(
-                        request,
-                        "CANDIDATE_PERSISTENCE_UNAVAILABLE",
-                        "候选任务预算无法持久化",
-                        candidate_id=manifest.plugin_id,
-                        version=manifest.version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                    )
-                )
-        if not self._has_candidate_backend():
+        try:
+            reserved, _trials, _reserved_seconds = self._store.reserve_candidate_budget(
+                request.task_id,
+                self._max_trials,
+                self._max_trial_seconds,
+                self._timeout_seconds,
+            )
+        except Exception:
             return finish(
                 _failure(
                     request,
-                    "CANDIDATE_BACKEND_UNAVAILABLE",
-                    "候选试运行未绑定受信 FC 后端，未执行本机回退",
+                    "CANDIDATE_PERSISTENCE_UNAVAILABLE",
+                    "候选任务预算无法原子预留",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                )
+            )
+        if not reserved:
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_BUDGET_EXCEEDED",
+                    "候选试运行已达到任务预算",
                     candidate_id=manifest.plugin_id,
                     version=manifest.version,
                     run_id=run_id,
@@ -939,38 +1257,39 @@ class CandidateTrialRunner:
             command_profile=CANDIDATE_COMMAND_PROFILE,
             max_output_bytes=CANDIDATE_MAX_OUTPUT_BYTES,
         )
-        with self._lock:
-            try:
-                result = self._backend.run(execution_request)
-            except ExecutionError as exc:
-                return finish(
-                    _failure(
-                        request,
-                        exc.code,
-                        "候选 FC 试运行失败",
-                        candidate_id=manifest.plugin_id,
-                        version=manifest.version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                        cleanup_status=self._cleanup_status(run_id),
-                    )
+        backend = self._backend
+        assert backend is not None
+        try:
+            result = backend.run(execution_request)
+        except ExecutionError as exc:
+            return finish(
+                _failure(
+                    request,
+                    exc.code,
+                    "候选 FC 试运行失败",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    cleanup_status=self._cleanup_status(run_id),
                 )
-            except Exception:
-                return finish(
-                    _failure(
-                        request,
-                        "CANDIDATE_EXECUTION_FAILED",
-                        "候选执行后端返回未分类失败",
-                        candidate_id=manifest.plugin_id,
-                        version=manifest.version,
-                        run_id=run_id,
-                        source_hash=source_hash,
-                        input_hash=input_hash,
-                        cleanup_status=self._cleanup_status(run_id),
-                    )
+            )
+        except Exception:
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_EXECUTION_FAILED",
+                    "候选执行后端返回未分类失败",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    cleanup_status=self._cleanup_status(run_id),
                 )
-            cleanup_status = self._cleanup_status(run_id)
+            )
+        cleanup_status = self._cleanup_status(run_id)
         if cleanup_status != "cleaned":
             return finish(
                 _failure(
@@ -1089,6 +1408,191 @@ class CandidateTrialRunner:
             )
         )
 
+    @staticmethod
+    def _execution_from_mapping(payload: Mapping[str, object]) -> ExecutionResult | None:
+        required = {"backend", "sandbox_id", "exit_code", "stdout", "stderr", "duration_ms"}
+        if not required.issubset(payload):
+            return None
+        if not all(
+            isinstance(payload.get(field), str)
+            for field in ("backend", "sandbox_id", "stdout", "stderr")
+        ):
+            return None
+        if not all(
+            isinstance(payload.get(field), int) and not isinstance(payload.get(field), bool)
+            for field in ("exit_code", "duration_ms")
+        ):
+            return None
+        bundle_bytes = payload.get("bundle_bytes", 0)
+        output_truncated = payload.get("output_truncated", False)
+        optional_strings = ("command_profile", "region", "template", "network_policy")
+        if not isinstance(bundle_bytes, int) or isinstance(bundle_bytes, bool) or bundle_bytes < 0:
+            return None
+        if not isinstance(output_truncated, bool):
+            return None
+        if any(
+            not isinstance(payload.get(field, ""), str) for field in optional_strings
+        ):
+            return None
+        return ExecutionResult(
+            backend=payload["backend"],
+            sandbox_id=payload["sandbox_id"],
+            exit_code=payload["exit_code"],
+            stdout=payload["stdout"],
+            stderr=payload["stderr"],
+            duration_ms=payload["duration_ms"],
+            command_profile=payload.get("command_profile", ""),
+            bundle_bytes=bundle_bytes,
+            region=payload.get("region", ""),
+            template=payload.get("template", ""),
+            network_policy=payload.get("network_policy", ""),
+            output_truncated=output_truncated,
+        )
+
+    def _finalize_execution(
+        self,
+        request: CandidateTrialRequest,
+        operation_key: str,
+        operation_hash: str,
+        candidate_id: str | None,
+        version: str | None,
+        source_hash: str | None,
+        input_hash: str | None,
+        run_id: str,
+        result: ExecutionResult,
+    ) -> CandidateExecutionResult:
+        cleanup_status = self._cleanup_status(run_id)
+        if not cleanup_status:
+            cleanup_status = "unknown"
+        if cleanup_status != "cleaned":
+            return self._complete_operation(
+                request,
+                operation_key,
+                operation_hash,
+                _failure(
+                    request,
+                    "CANDIDATE_CLEANUP_UNCONFIRMED",
+                    "候选沙箱清理状态未确认，结果不能视为成功",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    duration_ms=result.duration_ms,
+                    cleanup_status=cleanup_status,
+                    exit_code=result.exit_code,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    operation_id=operation_key,
+                ),
+            )
+        if result.output_truncated or (
+            len(result.stdout.encode("utf-8")) > CANDIDATE_MAX_OUTPUT_BYTES
+        ):
+            return self._complete_operation(
+                request,
+                operation_key,
+                operation_hash,
+                _failure(
+                    request,
+                    "CANDIDATE_OUTPUT_LIMIT_EXCEEDED",
+                    "候选输出超过 64 KiB 限制",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    duration_ms=result.duration_ms,
+                    cleanup_status=cleanup_status,
+                    exit_code=result.exit_code,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    output_truncated=True,
+                    operation_id=operation_key,
+                ),
+            )
+        if result.exit_code == _CANDIDATE_OUTPUT_LIMIT_EXIT_CODE or result.exit_code != 0:
+            code = (
+                "CANDIDATE_OUTPUT_LIMIT_EXCEEDED"
+                if result.exit_code == _CANDIDATE_OUTPUT_LIMIT_EXIT_CODE
+                else "CANDIDATE_EXECUTION_FAILED"
+            )
+            message = (
+                "候选输出超过 64 KiB 限制"
+                if code == "CANDIDATE_OUTPUT_LIMIT_EXCEEDED"
+                else "候选程序返回非零退出码"
+            )
+            return self._complete_operation(
+                request,
+                operation_key,
+                operation_hash,
+                _failure(
+                    request,
+                    code,
+                    message,
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    duration_ms=result.duration_ms,
+                    cleanup_status=cleanup_status,
+                    exit_code=result.exit_code,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    output_truncated=code == "CANDIDATE_OUTPUT_LIMIT_EXCEEDED",
+                    operation_id=operation_key,
+                ),
+            )
+        try:
+            output = json.loads(result.stdout)
+            json.dumps(output, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return self._complete_operation(
+                request,
+                operation_key,
+                operation_hash,
+                _failure(
+                    request,
+                    "CANDIDATE_OUTPUT_INVALID",
+                    "候选未返回合法 JSON 结果",
+                    candidate_id=candidate_id,
+                    version=version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    duration_ms=result.duration_ms,
+                    cleanup_status=cleanup_status,
+                    exit_code=result.exit_code,
+                    backend=result.backend,
+                    sandbox_id=result.sandbox_id,
+                    operation_id=operation_key,
+                ),
+            )
+        return self._complete_operation(
+            request,
+            operation_key,
+            operation_hash,
+            CandidateExecutionResult(
+                status="passed",
+                candidate_id=candidate_id,
+                version=version,
+                trial_id=request.trial_id,
+                run_id=run_id,
+                backend=result.backend,
+                sandbox_id=result.sandbox_id,
+                exit_code=result.exit_code,
+                output=redact_sensitive_payload(output),
+                error_code=None,
+                error_message=None,
+                duration_ms=result.duration_ms,
+                cleanup_status=cleanup_status,
+                source_hash=source_hash,
+                input_hash=input_hash,
+                operation_id=operation_key,
+            ),
+        )
+
     def _cleanup_status(self, run_id: str) -> str:
         if self._backend is None:
             return "not_started"
@@ -1103,11 +1607,3 @@ class CandidateTrialRunner:
             return "unknown"
         value = state.get("cleanup_status")
         return value if isinstance(value, str) else "unknown"
-
-    def _has_candidate_backend(self) -> bool:
-        backend = self._backend
-        return (
-            backend is not None
-            and getattr(backend, "name", None) == "fc-agent-sandbox"
-            and getattr(backend, "candidate_execution_available", False) is True
-        )

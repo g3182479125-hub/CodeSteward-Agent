@@ -226,6 +226,16 @@ class FCSandboxBackend:
 
         return self.verification_available
 
+    def candidate_execution_contract(self) -> tuple[str, str, str, str]:
+        """Return the immutable contract required by model-candidate trials."""
+
+        return (
+            self.name,
+            "model-candidate",
+            self.config.template,
+            self.config.network_policy_mode,
+        )
+
     def supports_profile(self, profile: str) -> bool:
         return profile in self.supported_profiles
 

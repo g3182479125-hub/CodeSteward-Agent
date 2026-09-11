@@ -1097,6 +1097,17 @@ class ProjectStore:
                 return "new", None
             if record.response_json is None:
                 return "in_progress", None
+            if key.startswith("candidate-operation-"):
+                try:
+                    payload = json.loads(record.response_json)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("candidate operation state is invalid") from exc
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("record_type") == "candidate_trial"
+                    and payload.get("status") == "in_progress"
+                ):
+                    return "in_progress", record.response_json
             return "replay", record.response_json
 
     def complete_idempotency(self, key: str, response_json: str) -> None:
@@ -1162,6 +1173,115 @@ class ProjectStore:
         with self._session_factory() as session:
             record = session.get(IdempotencyRecord, key)
             return None if record is None else (record.request_hash, record.response_json)
+
+    @staticmethod
+    def _candidate_budget_key(task_id: str) -> str:
+        return "candidate-budget-" + hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _candidate_budget_request_hash(task_id: str) -> str:
+        return hashlib.sha256(f"candidate-budget:{task_id}".encode()).hexdigest()
+
+    @staticmethod
+    def _decode_candidate_budget(response_json: str | None) -> tuple[int, int]:
+        if response_json is None:
+            raise ValueError("candidate budget state is incomplete")
+        try:
+            payload = json.loads(response_json)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("candidate budget state is not valid JSON") from exc
+        if not isinstance(payload, dict) or set(payload) != {"trials", "reserved_seconds"}:
+            raise ValueError("candidate budget state has an invalid shape")
+        trials = payload.get("trials")
+        reserved_seconds = payload.get("reserved_seconds")
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (trials, reserved_seconds)
+        ):
+            raise ValueError("candidate budget state has invalid counters")
+        return trials, reserved_seconds
+
+    def reserve_candidate_budget(
+        self,
+        task_id: str,
+        max_trials: int,
+        max_trial_seconds: int,
+        reservation_seconds: int,
+    ) -> tuple[bool, int, int]:
+        """Atomically reserve one bounded candidate trial across processes."""
+
+        if not task_id or not 1 <= max_trials or not 1 <= max_trial_seconds:
+            raise ValueError("candidate budget arguments are invalid")
+        if not 1 <= reservation_seconds <= max_trial_seconds:
+            raise ValueError("candidate reservation is outside the task budget")
+        key = self._candidate_budget_key(task_id)
+        request_hash = self._candidate_budget_request_hash(task_id)
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    select(IdempotencyRecord.request_hash, IdempotencyRecord.response_json).where(
+                        IdempotencyRecord.key == key
+                    )
+                ).first()
+                if row is None:
+                    trials = 0
+                    reserved_seconds = 0
+                    connection.execute(
+                        insert(IdempotencyRecord).values(
+                            key=key,
+                            request_hash=request_hash,
+                            response_json=json.dumps(
+                                {"reserved_seconds": 0, "trials": 0},
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            created_at=utc_now(),
+                        )
+                    )
+                else:
+                    if row.request_hash != request_hash:
+                        raise ValueError("candidate budget key was reused with different content")
+                    trials, reserved_seconds = self._decode_candidate_budget(row.response_json)
+                if trials >= max_trials or (
+                    reserved_seconds + reservation_seconds > max_trial_seconds
+                ):
+                    connection.commit()
+                    return False, trials, reserved_seconds
+                updated = {
+                    "reserved_seconds": reserved_seconds + reservation_seconds,
+                    "trials": trials + 1,
+                }
+                connection.execute(
+                    update(IdempotencyRecord)
+                    .where(
+                        IdempotencyRecord.key == key,
+                        IdempotencyRecord.request_hash == request_hash,
+                    )
+                    .values(response_json=json.dumps(updated, ensure_ascii=False, sort_keys=True))
+                )
+                connection.commit()
+                return True, updated["trials"], updated["reserved_seconds"]
+            except Exception:
+                connection.rollback()
+                raise
+
+    def get_candidate_budget(self, task_id: str) -> tuple[int, int]:
+        """Read the durable candidate budget; malformed state fails closed."""
+
+        key = self._candidate_budget_key(task_id)
+        request_hash = self._candidate_budget_request_hash(task_id)
+        with self.engine.connect() as connection:
+            row = connection.execute(
+                select(IdempotencyRecord.request_hash, IdempotencyRecord.response_json).where(
+                    IdempotencyRecord.key == key
+                )
+            ).first()
+        if row is None:
+            return 0, 0
+        if row.request_hash != request_hash:
+            raise ValueError("candidate budget key was reused with different content")
+        return self._decode_candidate_budget(row.response_json)
 
     def reserve_broker_action(self, payload: dict[str, Any]) -> bool:
         """Atomically consume a gateway confirmation before capability issuance."""
