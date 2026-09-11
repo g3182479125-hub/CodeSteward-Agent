@@ -52,6 +52,7 @@ class PluginSource(_ValueEnum):
 class PluginLifecycle(_ValueEnum):
     INACTIVE = "inactive"
     PREPARING = "preparing"
+    WAITING = "waiting"
     ACTIVE = "active"
     DRAINING = "draining"
     FAILED = "failed"
@@ -97,6 +98,9 @@ class PluginErrorCode(_ValueEnum):
     PLUGIN_OPERATION_CONFLICT = "plugin_operation_conflict"
     UNSUPPORTED_SCOPE = "unsupported_scope"
     PLUGIN_LIMIT_REACHED = "plugin_limit_reached"
+    PLUGIN_DEPENDENCY_UNAVAILABLE = "plugin_dependency_unavailable"
+    PLUGIN_DEPENDENCY_CYCLE = "plugin_dependency_cycle"
+    PLUGIN_DEPENDENCY_CONFLICT = "plugin_dependency_conflict"
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,10 @@ _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 _CONTENT_HASH = re.compile(r"^[0-9a-f]{64}$")
 _API_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$")
+_INTERFACE_ID = re.compile(
+    r"^[a-z][a-z0-9._-]{0,31}:[A-Za-z0-9][A-Za-z0-9._/-]{0,63}"
+    r"@[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$"
+)
 
 
 def _required_string(data: Mapping[str, Any], name: str, code: PluginErrorCode) -> str:
@@ -287,6 +295,26 @@ def _string_list(data: Mapping[str, Any], name: str) -> tuple[str, ...]:
             field=name,
         )
     return cast(tuple[str, ...], items)
+
+
+def _interface_list(data: Mapping[str, Any], name: str) -> tuple[str, ...]:
+    """Validate H4 interfaces while retaining H1's legacy tool IDs."""
+    items = _string_list(data, name)
+    invalid = next(
+        (
+            item
+            for item in items
+            if not item.startswith("tool:") and _INTERFACE_ID.fullmatch(item) is None
+        ),
+        None,
+    )
+    if invalid is not None:
+        raise PluginContractError(
+            PluginErrorCode.INVALID_LIST_FIELD,
+            f"manifest field '{name}' must use versioned interface IDs",
+            field=name,
+        )
+    return items
 
 
 def _validate_relative_entry(entry: str) -> None:
@@ -414,8 +442,8 @@ class PluginManifest:
             api_version=api_version,
             scope=scope,
             entry=entry,
-            requires=_string_list(data, "requires"),
-            provides=_string_list(data, "provides"),
+            requires=_interface_list(data, "requires"),
+            provides=_interface_list(data, "provides"),
             requested_capabilities=_string_list(data, "requested_capabilities"),
             execution_mode=execution_mode,
         )

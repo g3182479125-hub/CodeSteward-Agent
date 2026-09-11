@@ -133,6 +133,8 @@ class PluginManager:
         self._management_busy: set[ScopeKey] = set()
         self._restored_routes: dict[tuple[ScopeKey, str], tuple[_RegisteredPlugin, int]] = {}
         self._restored_retired: dict[RouteKey, dict[str, Any]] = {}
+        self._waiting_routes: dict[ScopeKey, set[RegistrationKey]] = {}
+        self._dependency_busy: set[ScopeKey] = set()
         self._staging_operations: dict[str, ManagedPluginContext] = {}
         self._next_generation = 0
         self._restore_state()
@@ -204,6 +206,17 @@ class PluginManager:
                 }
                 for (scope, binding), routes in self._routes.items()
                 for plugin_id, route in routes.items()
+            ],
+            "waiting_routes": [
+                {
+                    "scope": scope.value,
+                    "binding": binding,
+                    "plugin_id": registration.record.manifest.plugin_id,
+                    "version": registration.record.manifest.version,
+                }
+                for (scope, binding), keys in self._waiting_routes.items()
+                for key in keys
+                if (registration := self._registered.get(key)) is not None
             ],
             "retired_routes": retired_rows,
             "operations": [self._operation_to_dict(operation) for operation in self._operations.values()],
@@ -281,6 +294,22 @@ class PluginManager:
                     "cleanup_started": bool(raw.get("cleanup_started", False)),
                     "operation_id": raw.get("operation_id"),
                 }
+            for raw in data.get("waiting_routes", []):
+                scope_key = (PluginScope(raw["scope"]), raw["binding"])
+                registration = next(
+                    (
+                        item
+                        for item in self._registered.values()
+                        if item.record.manifest.plugin_id == raw["plugin_id"]
+                        and item.record.manifest.version == raw["version"]
+                        and self._registration_key(item.record)[3] == raw["binding"]
+                    ),
+                    None,
+                )
+                if registration is not None:
+                    self._waiting_routes.setdefault(scope_key, set()).add(
+                        registration.registration_key
+                    )
             for raw in data.get("operations", []):
                 scope_key = (PluginScope(raw["scope"]), raw["binding"])
                 raw_result = raw.get("result", {})
@@ -322,6 +351,8 @@ class PluginManager:
             self._lifecycles.clear()
             self._restored_routes.clear()
             self._restored_retired.clear()
+            self._waiting_routes.clear()
+            self._dependency_busy.clear()
             self._operations.clear()
             self._staging_operations.clear()
 
@@ -465,13 +496,50 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
             )
-        active = self._routes.setdefault(scope_key, {}).get(plugin_id)
+        # Do not materialize an empty scope while dependency checks are still
+        # pending. A rejected load must not leave observable route state.
+        active = self._routes.get(scope_key, {}).get(plugin_id)
         if active is not None:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_ALREADY_ACTIVE,
                 "a version of this plugin is already active in this scope",
                 plugin_id=plugin_id,
                 version=version,
+            )
+        cycle = self._dependency_cycle(scope_key, registration.registration_key)
+        if cycle:
+            self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
+            self._save_state()
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_CYCLE,
+                "plugin dependency cycle rejected",
+                plugin_id=plugin_id,
+                version=version,
+                details={"cycle": " -> ".join(cycle)},
+            )
+        missing = self._missing_dependencies(registration, scope_key)
+        if missing:
+            self._waiting_routes.setdefault(scope_key, set()).add(registration.registration_key)
+            self._lifecycles[registration.registration_key] = PluginLifecycle.WAITING
+            self._save_state()
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_UNAVAILABLE,
+                "plugin is waiting for required interfaces",
+                plugin_id=plugin_id,
+                version=version,
+                details={
+                    "state": PluginLifecycle.WAITING.value,
+                    "missing": ",".join(missing),
+                },
+            )
+        conflicts = self._provided_interface_conflicts(registration, scope_key)
+        if conflicts:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_CONFLICT,
+                "another active plugin already provides an interface in this scope",
+                plugin_id=plugin_id,
+                version=version,
+                details={"conflicts": ",".join(conflicts)},
             )
         plugin_context: ManagedPluginContext | None = None
         try:
@@ -498,7 +566,7 @@ class PluginManager:
         route = _ActiveRoute(registration, self._next_generation, proxy, plugin_context)
         route.lease_zero = asyncio.Event()
         route.lease_zero.set()
-        self._routes[scope_key][plugin_id] = route
+        self._routes.setdefault(scope_key, {})[plugin_id] = route
         self._lifecycles[registration.registration_key] = PluginLifecycle.ACTIVE
         operation = self._new_operation(
             action="load",
@@ -519,6 +587,7 @@ class PluginManager:
         )
         operation.event.set()
         self._save_state()
+        self._activate_waiting(scope_key)
         return operation.result
 
     async def update(
@@ -585,7 +654,9 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
             )
-        active = self._routes.setdefault(scope_key, {}).get(plugin_id)
+        # Do not materialize an empty scope while dependency checks are still
+        # pending.  A rejected load must not leave observable route state.
+        active = self._routes.get(scope_key, {}).get(plugin_id)
         if active is None:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_ACTIVE,
@@ -600,6 +671,33 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
                 details={"expected_generation": str(expected_generation), "actual_generation": str(active.generation)},
+            )
+        cycle = self._dependency_cycle(scope_key, registration.registration_key)
+        if cycle:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_CYCLE,
+                "plugin dependency cycle rejected",
+                plugin_id=plugin_id,
+                version=version,
+                details={"cycle": " -> ".join(cycle)},
+            )
+        missing = self._missing_dependencies(registration, scope_key, exclude=active)
+        if missing:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_UNAVAILABLE,
+                "updated plugin is waiting for required interfaces; existing route is unchanged",
+                plugin_id=plugin_id,
+                version=version,
+                details={"state": PluginLifecycle.WAITING.value, "missing": ",".join(missing)},
+            )
+        conflicts = self._provided_interface_conflicts(registration, scope_key, exclude=active)
+        if conflicts:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_CONFLICT,
+                "another active plugin already provides an interface in this scope",
+                plugin_id=plugin_id,
+                version=version,
+                details={"conflicts": ",".join(conflicts)},
             )
         if active.registration.registration_key == registration.registration_key:
             return PluginOperationResult.failure(
@@ -722,6 +820,7 @@ class PluginManager:
             self._retired_operations[active.route_key] = operation
             self._start_retirement(operation, active)
             self._save_state()
+            self._activate_waiting(scope_key)
             return operation.result
         finally:
             self._management_busy.discard(scope_key)
@@ -1039,6 +1138,7 @@ class PluginManager:
             )
         self._routes[scope_key].pop(plugin_id, None)
         self._retire_route(scope_key, route)
+        self._suspend_dependents(scope_key, route)
         self._lifecycles[route.registration.registration_key] = PluginLifecycle.DRAINING
         operation = self._new_operation(
             action="stop",
@@ -1062,6 +1162,7 @@ class PluginManager:
         self._retired_operations[route.route_key] = operation
         self._start_retirement(operation, route)
         self._save_state()
+        self._activate_waiting(scope_key)
         return operation.result
 
     async def wait_operation(
@@ -1258,6 +1359,219 @@ class PluginManager:
         if scope is PluginScope.PROJECT and project_id:
             return (scope, project_id)
         return None
+
+    def _registrations_for_scope(self, scope_key: ScopeKey) -> tuple[_RegisteredPlugin, ...]:
+        scope, binding = scope_key
+        return tuple(
+            item
+            for item in self._registered.values()
+            if item.record.manifest.scope is scope
+            and self._registration_key(item.record)[3] == binding
+        )
+
+    def _active_providers(
+        self,
+        scope_key: ScopeKey,
+        *,
+        exclude: _ActiveRoute | None = None,
+    ) -> dict[str, _ActiveRoute]:
+        providers: dict[str, _ActiveRoute] = {}
+        for route in self._routes.get(scope_key, {}).values():
+            if route is exclude:
+                continue
+            for interface_id in route.registration.record.manifest.provides:
+                providers[interface_id] = route
+        return providers
+
+    def _missing_dependencies(
+        self,
+        registration: _RegisteredPlugin,
+        scope_key: ScopeKey,
+        *,
+        exclude: _ActiveRoute | None = None,
+    ) -> tuple[str, ...]:
+        providers = self._active_providers(scope_key, exclude=exclude)
+        return tuple(
+            required
+            for required in registration.record.manifest.requires
+            if required not in providers
+        )
+
+    def _provided_interface_conflicts(
+        self,
+        registration: _RegisteredPlugin,
+        scope_key: ScopeKey,
+        *,
+        exclude: _ActiveRoute | None = None,
+    ) -> tuple[str, ...]:
+        providers = self._active_providers(scope_key, exclude=exclude)
+        return tuple(
+            interface_id
+            for interface_id in registration.record.manifest.provides
+            if interface_id in providers
+        )
+
+    def _dependency_cycle(
+        self,
+        scope_key: ScopeKey,
+        target: RegistrationKey,
+    ) -> tuple[str, ...]:
+        registrations = {item.registration_key: item for item in self._registrations_for_scope(scope_key)}
+        if target not in registrations:
+            return ()
+        providers: dict[str, list[RegistrationKey]] = {}
+        for key, item in registrations.items():
+            for interface_id in item.record.manifest.provides:
+                providers.setdefault(interface_id, []).append(key)
+        visiting: list[RegistrationKey] = []
+        active: set[RegistrationKey] = set()
+
+        def visit(key: RegistrationKey) -> tuple[str, ...]:
+            if key in active:
+                start = visiting.index(key)
+                return tuple(item[0] for item in visiting[start:] + [key])
+            if key in visiting:
+                return ()
+            visiting.append(key)
+            active.add(key)
+            item = registrations[key]
+            for required in item.record.manifest.requires:
+                for provider_key in providers.get(required, []):
+                    cycle = visit(provider_key)
+                    if cycle:
+                        return cycle
+            active.remove(key)
+            visiting.pop()
+            return ()
+
+        return visit(target)
+
+    def _activate_waiting(self, scope_key: ScopeKey) -> None:
+        """Activate waiting consumers in dependency order after a provider appears."""
+        if scope_key in self._dependency_busy:
+            return
+        self._dependency_busy.add(scope_key)
+        try:
+            progressed = True
+            while progressed:
+                progressed = False
+                waiting = tuple(self._waiting_routes.get(scope_key, set()))
+                for registration_key in waiting:
+                    registration = self._registered.get(registration_key)
+                    if registration is None:
+                        self._waiting_routes[scope_key].discard(registration_key)
+                        continue
+                    if self._missing_dependencies(registration, scope_key):
+                        continue
+                    if self._provided_interface_conflicts(registration, scope_key):
+                        self._lifecycles[registration_key] = PluginLifecycle.FAILED
+                        self._waiting_routes[scope_key].discard(registration_key)
+                        continue
+                    plugin_context: ManagedPluginContext | None = None
+                    try:
+                        tool, plugin_context = self._load_tool(registration)
+                        plugin_context.activate()
+                    except Exception as exc:
+                        if isinstance(exc, _PluginLoadError):
+                            plugin_context = exc.context
+                        self._lifecycles[registration_key] = PluginLifecycle.FAILED
+                        self._waiting_routes[scope_key].discard(registration_key)
+                        self._staging_failure_operation(
+                            action="load",
+                            plugin_id=registration.record.manifest.plugin_id,
+                            version=registration.record.manifest.version,
+                            scope_key=scope_key,
+                            context=plugin_context,
+                            code=PluginErrorCode.PLUGIN_LOAD_FAILED,
+                            message="waiting plugin activation failed",
+                            details={"route_commit": "not_committed", "recovery": "dependency"},
+                        )
+                        continue
+                    self._next_generation += 1
+                    route_key = (
+                        scope_key,
+                        registration.record.manifest.plugin_id,
+                        registration.record.manifest.version,
+                        self._next_generation,
+                    )
+                    route = _ActiveRoute(
+                        registration,
+                        self._next_generation,
+                        ManagedPluginTool(self, route_key, tool),
+                        plugin_context,
+                    )
+                    route.lease_zero = asyncio.Event()
+                    route.lease_zero.set()
+                    self._routes.setdefault(scope_key, {})[route_key[1]] = route
+                    self._waiting_routes[scope_key].discard(registration_key)
+                    self._lifecycles[registration_key] = PluginLifecycle.ACTIVE
+                    operation = self._new_operation(
+                        action="load",
+                        plugin_id=route_key[1],
+                        version=route_key[2],
+                        scope_key=scope_key,
+                        state=PluginLifecycle.ACTIVE.value,
+                        result=PluginOperationResult.success(
+                            "waiting plugin activated after dependencies became available",
+                            plugin_id=route_key[1],
+                            version=route_key[2],
+                            details={
+                                "state": PluginLifecycle.ACTIVE.value,
+                                "generation": str(route.generation),
+                                "dependency_activation": "true",
+                            },
+                        ),
+                    )
+                    operation.event.set()
+                    self._save_state()
+                    progressed = True
+        finally:
+            self._dependency_busy.discard(scope_key)
+
+    def _suspend_dependents(self, scope_key: ScopeKey, provider: _ActiveRoute) -> None:
+        # Walk the affected dependency subgraph, not just direct consumers.
+        # This prevents a second-level consumer from continuing to receive
+        # calls through a provider that has already been withdrawn.
+        pending = [provider]
+        seen: set[RouteKey] = set()
+        while pending:
+            current = pending.pop(0)
+            if current.route_key in seen:
+                continue
+            seen.add(current.route_key)
+            provided = set(current.registration.record.manifest.provides)
+            for plugin_id, dependent in tuple(self._routes.get(scope_key, {}).items()):
+                if dependent.route_key in seen or dependent is current:
+                    continue
+                required = set(dependent.registration.record.manifest.requires)
+                if not provided.intersection(required):
+                    continue
+                self._routes[scope_key].pop(plugin_id, None)
+                self._retire_route(scope_key, dependent)
+                self._waiting_routes.setdefault(scope_key, set()).add(
+                    dependent.registration.registration_key
+                )
+                self._lifecycles[dependent.registration.registration_key] = PluginLifecycle.WAITING
+                operation = self._new_operation(
+                    action="dependency_stop",
+                    plugin_id=plugin_id,
+                    version=dependent.registration.record.manifest.version,
+                    scope_key=scope_key,
+                    state=PluginLifecycle.DRAINING.value,
+                    persist=False,
+                    result=PluginOperationResult.success(
+                        "dependent plugin is waiting for its provider",
+                        plugin_id=plugin_id,
+                        version=dependent.registration.record.manifest.version,
+                        details={
+                            "state": PluginLifecycle.DRAINING.value,
+                            "dependency": "provider_stopped",
+                        },
+                    ),
+                )
+                self._retired_operations[dependent.route_key] = operation
+                self._start_retirement(operation, dependent)
+                pending.append(dependent)
 
     def _find_visible(
         self,
@@ -1706,14 +2020,21 @@ class PluginManager:
         current_route = self._routes.get(route.route_key[0], {}).get(
             route.registration.record.manifest.plugin_id
         )
+        waiting = route.registration.registration_key in self._waiting_routes.get(
+            route.route_key[0], set()
+        )
         self._lifecycles[route.registration.registration_key] = (
-            PluginLifecycle.ACTIVE
-            if (
-                current_route is not None
-                and current_route.registration.registration_key
-                == route.registration.registration_key
+            PluginLifecycle.WAITING
+            if waiting
+            else (
+                PluginLifecycle.ACTIVE
+                if (
+                    current_route is not None
+                    and current_route.registration.registration_key
+                    == route.registration.registration_key
+                )
+                else PluginLifecycle.INACTIVE
             )
-            else PluginLifecycle.INACTIVE
         )
         if operation.action == "update":
             operation.state = PluginLifecycle.ACTIVE.value
@@ -1727,6 +2048,19 @@ class PluginManager:
                     "route_commit": "committed",
                     "old_cleanup": "complete",
                     "generation": str(current_route.generation if current_route is not None else route.generation),
+                },
+            )
+        elif operation.action == "dependency_stop":
+            operation.state = PluginLifecycle.WAITING.value
+            operation.result = PluginOperationResult.success(
+                "dependent plugin is waiting for its provider",
+                plugin_id=operation.plugin_id,
+                version=operation.version,
+                operation_id=operation.operation_id,
+                details={
+                    "state": PluginLifecycle.WAITING.value,
+                    "dependency": "provider_stopped",
+                    "generation": str(route.generation),
                 },
             )
         else:
