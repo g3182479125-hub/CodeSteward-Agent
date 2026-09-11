@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -78,6 +79,7 @@ def _service_record(
     value: str,
     requires: list[str] | None = None,
     consumer: bool = False,
+    blocking: bool = False,
     scope: str = "session",
     session_id: str | None = "cli:direct",
     project_id: str | None = None,
@@ -85,6 +87,12 @@ def _service_record(
     root = tmp_path / f"{plugin_id}-{version}"
     root.mkdir()
     entry = root / "tool.py"
+    blocking_members = (
+        "    started = asyncio.Event()\n"
+        "    release = asyncio.Event()\n"
+        if blocking
+        else ""
+    )
     if consumer:
         create = (
             "    @classmethod\n"
@@ -93,7 +101,10 @@ def _service_record(
             "        tool.context = ctx\n"
             "        return tool\n"
         )
-        execute = "return self.context.get_service(%r)" % interface
+        execute = (
+            ("type(self).started.set()\n        await type(self).release.wait()\n        " if blocking else "")
+            + ("return self.context.get_service(%r)" % interface)
+        )
     else:
         create = (
             "    @classmethod\n"
@@ -103,10 +114,12 @@ def _service_record(
         ) % (interface, value)
         execute = "return %r" % value
     entry.write_text(
-        f'''\nfrom nanobot.agent.tools.base import Tool, tool_parameters
+        f'''\nimport asyncio
+from nanobot.agent.tools.base import Tool, tool_parameters
 
 @tool_parameters({{"type": "object", "properties": {{}}, "additionalProperties": False}})
 class H4ServiceTool(Tool):
+{blocking_members}
     @property
     def name(self):
         return "{plugin_id}-tool"
@@ -297,6 +310,102 @@ async def test_provider_update_switches_the_scoped_service_binding(tmp_path: Pat
     )
     assert updated.ok is True
     assert await view.execute("devflow-service-consumer-tool", {}) == "v2"
+
+
+@pytest.mark.asyncio
+async def test_provider_update_waits_for_the_whole_dependency_lease(tmp_path: Path) -> None:
+    interface = "service:greeting@v1"
+    provider_v1 = _service_record(
+        tmp_path,
+        "devflow-blocking-provider",
+        interface=interface,
+        value="v1",
+    )
+    provider_v2 = _service_record(
+        tmp_path,
+        "devflow-blocking-provider",
+        version="2.0.0",
+        interface=interface,
+        value="v2",
+    )
+    consumer = _service_record(
+        tmp_path,
+        "devflow-blocking-consumer",
+        interface=interface,
+        value="unused",
+        requires=[interface],
+        consumer=True,
+        blocking=True,
+    )
+    manager = PluginManager(ToolRegistry(), drain_timeout_s=1)
+    for item in (provider_v1, provider_v2, consumer):
+        _register(manager, item)
+    manager.authorize("cli:direct")
+    view = manager.tools_for_session(ToolRegistry(), "cli:direct")
+    assert manager.load("devflow-blocking-provider", "1.0.0", session_id="cli:direct").ok
+    assert manager.load("devflow-blocking-consumer", "1.0.0", session_id="cli:direct").ok
+
+    running = asyncio.create_task(view.execute("devflow-blocking-consumer-tool", {}))
+    tool = view.get("devflow-blocking-consumer-tool")
+    assert tool is not None
+    await asyncio.wait_for(tool.started.wait(), timeout=1)  # type: ignore[attr-defined]
+
+    updating = asyncio.create_task(
+        manager.update(
+            "devflow-blocking-provider",
+            "2.0.0",
+            session_id="cli:direct",
+            expected_generation=1,
+        )
+    )
+    await asyncio.sleep(0.05)
+    assert not updating.done()
+    tool.release.set()  # type: ignore[attr-defined]
+    assert await running == "v1"
+    assert (await updating).ok is True
+    assert await view.execute("devflow-blocking-consumer-tool", {}) == "v2"
+
+
+@pytest.mark.asyncio
+async def test_provider_update_rejects_breaking_an_active_consumer(tmp_path: Path) -> None:
+    old_interface = "service:greeting@v1"
+    provider_v1 = _service_record(
+        tmp_path,
+        "devflow-breaking-provider",
+        interface=old_interface,
+        value="v1",
+    )
+    provider_v2 = _service_record(
+        tmp_path,
+        "devflow-breaking-provider",
+        version="2.0.0",
+        interface="service:other@v1",
+        value="v2",
+    )
+    consumer = _service_record(
+        tmp_path,
+        "devflow-breaking-consumer",
+        interface=old_interface,
+        value="unused",
+        requires=[old_interface],
+        consumer=True,
+    )
+    manager = PluginManager(ToolRegistry())
+    for item in (provider_v1, provider_v2, consumer):
+        _register(manager, item)
+    manager.authorize("cli:direct")
+    view = manager.tools_for_session(ToolRegistry(), "cli:direct")
+    assert manager.load("devflow-breaking-provider", "1.0.0", session_id="cli:direct").ok
+    assert manager.load("devflow-breaking-consumer", "1.0.0", session_id="cli:direct").ok
+
+    result = await manager.update(
+        "devflow-breaking-provider",
+        "2.0.0",
+        session_id="cli:direct",
+        expected_generation=1,
+    )
+    assert result.code is PluginErrorCode.PLUGIN_DEPENDENCY_UNAVAILABLE
+    assert await view.execute("devflow-breaking-consumer-tool", {}) == "v1"
 
 
 def test_service_bindings_are_isolated_by_project_scope(tmp_path: Path) -> None:

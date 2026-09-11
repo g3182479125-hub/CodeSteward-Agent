@@ -297,14 +297,23 @@ def _string_list(data: Mapping[str, Any], name: str) -> tuple[str, ...]:
     return cast(tuple[str, ...], items)
 
 
-def _interface_list(data: Mapping[str, Any], name: str) -> tuple[str, ...]:
+def _interface_list(
+    data: Mapping[str, Any],
+    name: str,
+    *,
+    allow_legacy_tool_ids: bool = False,
+) -> tuple[str, ...]:
     """Validate H4 interfaces while retaining H1's legacy tool IDs."""
     items = _string_list(data, name)
     invalid = next(
         (
             item
             for item in items
-            if not item.startswith("tool:") and _INTERFACE_ID.fullmatch(item) is None
+            if not (
+                allow_legacy_tool_ids
+                and item.startswith("tool:")
+            )
+            and _INTERFACE_ID.fullmatch(item) is None
         ),
         None,
     )
@@ -443,7 +452,7 @@ class PluginManifest:
             scope=scope,
             entry=entry,
             requires=_interface_list(data, "requires"),
-            provides=_interface_list(data, "provides"),
+            provides=_interface_list(data, "provides", allow_legacy_tool_ids=True),
             requested_capabilities=_string_list(data, "requested_capabilities"),
             execution_mode=execution_mode,
         )

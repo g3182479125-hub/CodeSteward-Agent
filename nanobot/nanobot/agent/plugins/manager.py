@@ -700,6 +700,30 @@ class PluginManager:
                 version=version,
                 details={"conflicts": ",".join(conflicts)},
             )
+        affected_dependents = self._active_dependents(scope_key, active)
+        old_provides = set(active.registration.record.manifest.provides)
+        new_provides = set(manifest.provides)
+        missing_for_dependents = tuple(
+            sorted(
+                {
+                    required
+                    for dependent in affected_dependents[1:]
+                    for required in dependent.registration.record.manifest.requires
+                    if required in old_provides and required not in new_provides
+                }
+            )
+        )
+        if missing_for_dependents:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_UNAVAILABLE,
+                "provider update would break active dependent plugins; existing composition is unchanged",
+                plugin_id=plugin_id,
+                version=version,
+                details={
+                    "state": PluginLifecycle.ACTIVE.value,
+                    "missing": ",".join(missing_for_dependents),
+                },
+            )
         if active.registration.registration_key == registration.registration_key:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_ALREADY_ACTIVE,
@@ -740,6 +764,25 @@ class PluginManager:
                     message="new plugin version failed staging; the existing route is unchanged",
                     details={
                         "route_commit": "not_committed",
+                        "old_version": active.registration.record.manifest.version,
+                    },
+                )
+
+            affected_routes = self._active_dependents(scope_key, active)
+            if len(affected_routes) > 1 and not await self._wait_for_routes_idle(affected_routes):
+                self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
+                return self._staging_failure_operation(
+                    action="update",
+                    plugin_id=plugin_id,
+                    version=version,
+                    scope_key=scope_key,
+                    operation_id=operation_id,
+                    context=plugin_context,
+                    code=PluginErrorCode.PLUGIN_STOP_TIMEOUT,
+                    message="provider update was not committed while dependent calls were in flight",
+                    details={
+                        "route_commit": "not_committed",
+                        "dependency_switch": "deferred",
                         "old_version": active.registration.record.manifest.version,
                     },
                 )
@@ -823,6 +866,9 @@ class PluginManager:
                         "old_generation": str(active.generation),
                         "generation": str(new_route.generation),
                         "old_cleanup": "pending",
+                        "dependency_switch": "atomic",
+                        "dependency_lease": "group",
+                        "affected_dependents": str(max(0, len(affected_routes) - 1)),
                     },
                 ),
             )
@@ -1409,6 +1455,44 @@ class PluginManager:
             for interface_id in route.registration.record.manifest.provides:
                 providers[interface_id] = route
         return providers
+
+    def _active_dependents(
+        self,
+        scope_key: ScopeKey,
+        provider: _ActiveRoute,
+    ) -> tuple[_ActiveRoute, ...]:
+        """Return a provider and every active consumer in its dependency subgraph."""
+        affected = [provider]
+        seen = {provider.route_key}
+        pending = [provider]
+        while pending:
+            current = pending.pop(0)
+            provided = set(current.registration.record.manifest.provides)
+            for dependent in tuple(self._routes.get(scope_key, {}).values()):
+                if dependent.route_key in seen:
+                    continue
+                required = set(dependent.registration.record.manifest.requires)
+                if not provided.intersection(required):
+                    continue
+                seen.add(dependent.route_key)
+                affected.append(dependent)
+                pending.append(dependent)
+        return tuple(affected)
+
+    async def _wait_for_routes_idle(self, routes: tuple[_ActiveRoute, ...]) -> bool:
+        """Keep one dependency composition together while in-flight calls drain."""
+        waits = tuple(
+            route.lease_zero.wait()
+            for route in routes
+            if route.leases > 0 and route.lease_zero is not None
+        )
+        if not waits:
+            return True
+        try:
+            await asyncio.wait_for(asyncio.gather(*waits), timeout=self._drain_timeout_s)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     def _missing_dependencies(
         self,
@@ -2102,36 +2186,67 @@ class PluginManager:
         operation.event.set()
         self._save_state()
 
-    def _begin_call(self, route_key: RouteKey) -> bool:
+    def _dependency_group(self, route_key: RouteKey) -> tuple[RouteKey, ...] | None:
+        scope_key = route_key[0]
+        route = self._routes.get(scope_key, {}).get(route_key[1])
+        if route is None or route.route_key != route_key:
+            return None
+        group = [route]
+        seen = {route.route_key}
+        pending = [route]
+        while pending:
+            current = pending.pop(0)
+            for required in current.registration.record.manifest.requires:
+                provider = self._active_providers(scope_key).get(required)
+                if provider is None:
+                    return None
+                if provider.route_key not in seen:
+                    seen.add(provider.route_key)
+                    group.append(provider)
+                    pending.append(provider)
+        return tuple(item.route_key for item in group)
+
+    def _begin_call(self, route_key: RouteKey) -> tuple[RouteKey, ...] | None:
         scope_key, plugin_id, version, generation = route_key
         route = self._routes.get(scope_key, {}).get(plugin_id)
         if route is None or route.generation != generation:
-            return False
+            return None
         if route.registration.record.manifest.version != version:
-            return False
-        if route.lease_zero is None:
-            return False
-        if route.leases == 0:
-            route.lease_zero.clear()
-        route.leases += 1
-        return True
+            return None
+        group = self._dependency_group(route_key)
+        if group is None:
+            return None
+        routes: list[_ActiveRoute] = []
+        for member_key in group:
+            member = self._routes.get(member_key[0], {}).get(member_key[1])
+            if member is None or member.route_key != member_key or member.lease_zero is None:
+                return None
+            routes.append(member)
+        for member in routes:
+            lease_zero = member.lease_zero
+            assert lease_zero is not None
+            if member.leases == 0:
+                lease_zero.clear()
+            member.leases += 1
+        return group
 
-    def _end_call(self, route_key: RouteKey) -> None:
-        scope_key, plugin_id, _version, generation = route_key
-        route = self._routes.get(scope_key, {}).get(plugin_id)
-        retired = False
-        if route is None or route.generation != generation:
-            route = self._retired_routes.get(route_key)
-            retired = route is not None
-        if route is None:
-            return
-        route.leases = max(0, route.leases - 1)
-        if route.leases == 0 and route.lease_zero is not None:
-            route.lease_zero.set()
-            if retired:
-                operation = self._retired_operations.get(route_key)
-                if operation is not None:
-                    self._start_retirement(operation, route)
+    def _end_call(self, lease: tuple[RouteKey, ...]) -> None:
+        for route_key in lease:
+            scope_key, plugin_id, _version, generation = route_key
+            route = self._routes.get(scope_key, {}).get(plugin_id)
+            retired = False
+            if route is None or route.generation != generation:
+                route = self._retired_routes.get(route_key)
+                retired = route is not None
+            if route is None:
+                continue
+            route.leases = max(0, route.leases - 1)
+            if route.leases == 0 and route.lease_zero is not None:
+                route.lease_zero.set()
+                if retired:
+                    operation = self._retired_operations.get(route_key)
+                    if operation is not None:
+                        self._start_retirement(operation, route)
 
 
 class ManagedPluginTool(Tool):
@@ -2195,7 +2310,8 @@ class ManagedPluginTool(Tool):
             setter(ctx)
 
     async def execute(self, **kwargs: Any) -> Any:
-        if self._retired or not self._manager._begin_call(self._route_key):
+        lease = None if self._retired else self._manager._begin_call(self._route_key)
+        if lease is None:
             return ToolResult.error(
                 "TOOL_VERSION_RETIRED: this plugin version was stopped before dispatch"
             )
@@ -2205,7 +2321,7 @@ class ManagedPluginTool(Tool):
                 self.set_context(request)
             return await self._wrapped.execute(**kwargs)
         finally:
-            self._manager._end_call(self._route_key)
+            self._manager._end_call(lease)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped, name)
