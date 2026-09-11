@@ -487,6 +487,14 @@ class PluginManager:
             return self._failure_not_authorized(plugin_id, version)
         if policy is not None and not self._policy_allows(policy, manifest, "load"):
             return self._failure_not_authorized(plugin_id, version)
+        if scope_key in self._dependency_switching:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_DEPENDENCY_SWITCHING,
+                "plugin loading is paused while this dependency composition switches",
+                plugin_id=plugin_id,
+                version=version,
+                details={"state": PluginLifecycle.DRAINING.value},
+            )
         self._restore_route_if_needed(scope_key, plugin_id)
         if (
             policy is not None

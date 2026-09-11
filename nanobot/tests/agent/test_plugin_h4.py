@@ -337,8 +337,15 @@ async def test_provider_update_waits_for_the_whole_dependency_lease(tmp_path: Pa
         consumer=True,
         blocking=True,
     )
+    late_consumer = _record(
+        tmp_path,
+        "devflow-late-consumer",
+        provides=[],
+        requires=[interface],
+        result="late",
+    )
     manager = PluginManager(ToolRegistry(), drain_timeout_s=1)
-    for item in (provider_v1, provider_v2, consumer):
+    for item in (provider_v1, provider_v2, consumer, late_consumer):
         _register(manager, item)
     manager.authorize("cli:direct")
     view = manager.tools_for_session(ToolRegistry(), "cli:direct")
@@ -362,10 +369,13 @@ async def test_provider_update_waits_for_the_whole_dependency_lease(tmp_path: Pa
     assert not updating.done()
     blocked = await view.execute("devflow-blocking-consumer-tool", {})
     assert "PLUGIN_DEPENDENCY_SWITCHING" in blocked
+    blocked_load = manager.load("devflow-late-consumer", "1.0.0", session_id="cli:direct")
+    assert blocked_load.code is PluginErrorCode.PLUGIN_DEPENDENCY_SWITCHING
     tool.release.set()  # type: ignore[attr-defined]
     assert await running == "v1"
     assert (await updating).ok is True
     assert await view.execute("devflow-blocking-consumer-tool", {}) == "v2"
+    assert manager.load("devflow-late-consumer", "1.0.0", session_id="cli:direct").ok
 
 
 @pytest.mark.asyncio
