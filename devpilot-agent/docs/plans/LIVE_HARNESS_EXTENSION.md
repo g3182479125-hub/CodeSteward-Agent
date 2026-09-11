@@ -1,9 +1,9 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.3，2026-09-11；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收。
+版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收，H6 正在实现。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6–H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 已完成首批实现，待本节点双轴 Review 与真实场景验收；H7–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -243,6 +243,16 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 5. 工具说明由 manifest 生成并标来源，执行权限由 Host 决定；生成的 read_only 声明不作为可信依据。
 6. 把结果反馈给模型：输入错误/契约错误/执行错误/预算错误分开；最多两次修订，基础设施错误不触发无止境重写。
 
+当前 H6 实现落点：`devpilot-agent/src/devpilot/model_plugins.py` 提供一个 nanobot
+管理 Tool 和动态 FC-proxy Tool；`nanobot/nanobot/agent/plugins/manager.py` 复用 H3
+注册、租约、清理和原子更新。候选工件按 session/plugin/version/content hash 分目录
+不可变保存，宿主只创建代理，不 import `candidate.py`。首次 `activate` 走候选专用加载；
+已激活版本切换到新版本走 `update_candidate` 与原子更新路径，旧路由撤销新派发后再清理，
+因此同一 AgentLoop 可在下一步得到新 schema。候选状态与 trial 的版本/源码/输入哈希绑定
+并写入插件运行状态；重建 manager 后可按已持久路由恢复，但授权仍需当前会话重新明确授予。
+当前离线证据覆盖未授权拒绝、跨会话隔离、工件变更拒绝、v1→v2 无重启切换和持久恢复；
+真实 DeepSeek + 原生 WebUI + 杭州 FC 的 H6-A 仍须按 H6 验收现场完成，不能用 Fake runner 冒领。
+
 验收 H6-A：真实网页同一长任务“缺工具→define→trial→activate→调用→修正版本→再次调用→stop/remove”，PID 不变。H6-B：未授权只生成不激活。H6-C：跨会话更新拒绝。H6-D：中途更新保留任务目标和已完成结果。H6-E：整个演示无需人工编辑注册表或重启。
 补测 H6-F：授权撤销/过期后拒绝新派发，未试运行/内容变化的版本不能 activate；状态成功不代替绑定校验。
 失败恢复：上一版本继续供新调用，或标工具不可用让模型用现有能力继续；不能伪造工具结果。
@@ -327,11 +337,12 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | H3 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h3-plugin-update-cleanup.md`、`docs/reviews/h3-*-review-6159add.md` |
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
-| H6–H10 | 未开始 | H5 已通过，下一节点为 H6 |
+| H6 | 实现批次完成，待双轴 Review 与真实场景验收 | `docs/evidence/live-harness/h6-model-candidates.md`；代码/测试已完成，真实 FC/WebUI 验收待现场执行 |
+| H7–H10 | 未开始 | H6 Review 与现场验收完成后再进入 H7 |
 
 ## 8. 下一条开发指令
 
-“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4/H5 已完成，不要重做。先核对 HEAD 和本地修改，读取 H5 证据与两份 PASS 报告；保留 H4 的版本化依赖、作用域隔离、整组租约和切换阻断，从 H6 开始实现模型侧 `inspect/define/trial/activate/stop/remove`，复用 H5 的 FC 执行边界和 nanobot 原生聊天。H6 按 ADR-0004 一次批量双轴 Review、集中修复、同一对 reviewer 增量复核，不逐个问题循环 Review。”
+“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4/H5 已完成，不要重做。先核对 H6 证据、代码、测试和工作区，再执行 H6 的一次批量 Standards/Spec Review；集中修复有效问题后让同一对 reviewer 只复核增量。现场用原生 nanobot WebUI + DeepSeek + 杭州 FC 验收 H6-A/H6-F；未完成真实验收或双轴结论前不要开始 H7。”
 
 ## 9. 本次一次审查与一轮修订记录
 

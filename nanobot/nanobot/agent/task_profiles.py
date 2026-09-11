@@ -25,6 +25,16 @@ class TaskProfileError(ValueError):
     """A task profile is missing, invalid, or cannot run in this process."""
 
 
+MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
+    enabled=True,
+    allowed_kinds=frozenset({"tool"}),
+    allowed_capabilities=frozenset(),
+    allowed_actions=frozenset({"activate", "stop", "remove"}),
+    allowed_scopes=frozenset({"session", "project"}),
+    max_active_plugins=3,
+)
+
+
 @dataclass(frozen=True)
 class TaskProfile:
     """A developer-owned capability and output contract for one task family."""
@@ -76,6 +86,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_get_run_state",
             "devpilot_watch_run",
             "devpilot_confirmed_action",
+            "devpilot_model_plugin",
         }),
         output_contract=(
             "facts_and_evidence",
@@ -83,6 +94,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "verification_result",
             "next_step",
         ),
+        dynamic_plugins=MODEL_CANDIDATE_POLICY,
     ),
     "bug-fix": TaskProfile(
         name="bug-fix",
@@ -101,6 +113,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_confirmed_action",
             "devpilot_skill_feedback",
             "devpilot_skill_candidate",
+            "devpilot_model_plugin",
         }),
         output_contract=(
             "failure_evidence",
@@ -109,6 +122,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "verification_result",
             "next_step",
         ),
+        dynamic_plugins=MODEL_CANDIDATE_POLICY,
     ),
 }
 

@@ -493,6 +493,17 @@ class AgentLoop:
             self.set_model_preset(model_preset, publish_update=False)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
         plugin_state_path, require_plugin_state_schema = _plugin_state_database(self.workspace)
+        model_candidate_controller: Any | None = None
+        candidate_tool_factory: Callable[..., Any] | None = None
+        try:
+            from devpilot.model_plugins import ModelCandidateController
+
+            model_candidate_controller = ModelCandidateController(self.workspace)
+            candidate_tool_factory = model_candidate_controller.build_proxy
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            # DevPilot is optional for the base nanobot distribution.  A missing
+            # candidate adapter must not prevent the core agent from starting.
+            logger.debug("Model candidate adapter unavailable: {}", type(exc).__name__)
         self.plugin_manager = PluginManager(
             self.tools,
             tool_context=self._plugin_tool_context,
@@ -504,7 +515,14 @@ class AgentLoop:
                 if plugin_state_path is not None
                 else None
             ),
+            candidate_tool_factory=candidate_tool_factory,
         )
+        if model_candidate_controller is not None:
+            model_candidate_controller.bind_plugin_manager(self.plugin_manager)
+            from devpilot.model_plugins import ModelPluginManagementTool
+
+            self.tools.register(ModelPluginManagementTool(model_candidate_controller))
+        self.model_candidate_controller = model_candidate_controller
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
         self.commands = CommandRouter()

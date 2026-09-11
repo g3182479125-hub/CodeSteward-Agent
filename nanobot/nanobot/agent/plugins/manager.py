@@ -19,14 +19,15 @@ import importlib.util
 import json
 import uuid
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from nanobot.agent.plugins.catalog import PluginCatalog, PluginRecord
 from nanobot.agent.plugins.context import ManagedPluginContext, SubscribeImpl
 from nanobot.agent.plugins.contracts import (
     DynamicPluginPolicy,
+    PluginCandidateStatus,
     PluginContractError,
     PluginErrorCode,
     PluginExecutionMode,
@@ -113,6 +114,7 @@ class PluginManager:
         service_registry: dict[str, Any] | None = None,
         state_path: str | Path | None = None,
         state_store: PluginStateStore | None = None,
+        candidate_tool_factory: Callable[[_RegisteredPlugin, ScopeKey], Tool] | None = None,
     ) -> None:
         self._base_registry = base_registry
         self._tool_context = tool_context
@@ -121,6 +123,7 @@ class PluginManager:
         self._service_registry_seed = dict(service_registry or {})
         self._service_registries: dict[ScopeKey, dict[str, Any]] = {}
         self._state_store = state_store
+        self._candidate_tool_factory = candidate_tool_factory
         if self._state_store is None and state_path is not None:
             self._state_store = SqlitePluginStateStore(state_path)
         self._registered: dict[RegistrationKey, _RegisteredPlugin] = {}
@@ -138,6 +141,7 @@ class PluginManager:
         self._dependency_busy: set[ScopeKey] = set()
         self._dependency_switching: dict[ScopeKey, set[RouteKey]] = {}
         self._staging_operations: dict[str, ManagedPluginContext] = {}
+        self._candidate_trials: dict[RegistrationKey, dict[str, str]] = {}
         self._next_generation = 0
         self._restore_state()
 
@@ -193,6 +197,11 @@ class PluginManager:
                     "session_id": item.record.session_id,
                     "project_id": item.record.project_id,
                     "online_lifecycle": item.record.online_lifecycle,
+                    "candidate_status": (
+                        item.record.candidate_status.value
+                        if item.record.candidate_status is not None
+                        else None
+                    ),
                     "artifact_root": str(item.artifact_root),
                     "lifecycle": self._lifecycles[key].value,
                 }
@@ -222,6 +231,16 @@ class PluginManager:
             ],
             "retired_routes": retired_rows,
             "operations": [self._operation_to_dict(operation) for operation in self._operations.values()],
+            "candidate_trials": [
+                {
+                    "plugin_id": key[0],
+                    "version": key[1],
+                    "scope": key[2],
+                    "binding": key[3],
+                    **binding,
+                }
+                for key, binding in self._candidate_trials.items()
+            ],
         }
         self._state_store.save(data)
 
@@ -254,6 +273,11 @@ class PluginManager:
                     PluginSource(raw["source"]),
                     session_id=raw.get("session_id"),
                     project_id=raw.get("project_id"),
+                    candidate_status=(
+                        PluginCandidateStatus(raw["candidate_status"])
+                        if raw.get("candidate_status") is not None
+                        else None
+                    ),
                     online_lifecycle=bool(raw.get("online_lifecycle", False)),
                 )
                 key = self._registration_key(record)
@@ -266,6 +290,18 @@ class PluginManager:
                     healthy = False
                 lifecycle = PluginLifecycle(raw.get("lifecycle", PluginLifecycle.INACTIVE.value))
                 self._lifecycles[key] = lifecycle if healthy else PluginLifecycle.FAILED
+            for raw in data.get("candidate_trials", []):
+                key = (
+                    str(raw["plugin_id"]),
+                    str(raw["version"]),
+                    str(raw["scope"]),
+                    str(raw["binding"]),
+                )
+                self._candidate_trials[key] = {
+                    field: str(raw[field])
+                    for field in ("trial_id", "content_hash", "source_hash", "input_hash")
+                    if raw.get(field) is not None
+                }
             for raw in data.get("active_routes", []):
                 scope = PluginScope(raw["scope"])
                 scope_key = (scope, raw["binding"])
@@ -357,6 +393,7 @@ class PluginManager:
             self._dependency_busy.clear()
             self._dependency_switching.clear()
             self._operations.clear()
+            self._candidate_trials.clear()
             self._staging_operations.clear()
 
     def register_version(
@@ -436,6 +473,208 @@ class PluginManager:
             details={"state": PluginLifecycle.INACTIVE.value},
         )
 
+    def register_candidate_version(
+        self,
+        record: PluginRecord,
+        artifact_root: str | Path,
+    ) -> PluginOperationResult:
+        """Register an immutable model candidate without importing its source."""
+        manifest = record.manifest
+        if record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_SOURCE_UNTRUSTED,
+                "candidate registration requires the model_candidate source",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        if (
+            manifest.kind is not PluginKind.TOOL
+            or manifest.scope is PluginScope.GLOBAL
+            or manifest.execution_mode is not PluginExecutionMode.FC_PROXY
+            or record.candidate_status is not PluginCandidateStatus.DEFINED
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "model candidates must be defined FC-proxy tools in a session or project scope",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        registration_key = self._registration_key(record)
+        if registration_key in self._registered:
+            return PluginOperationResult.failure(
+                PluginErrorCode.DUPLICATE_VERSION,
+                "plugin version is already registered",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        try:
+            root = Path(artifact_root).resolve()
+            entry = manifest.resolve_entry(root)
+            if not entry.is_file() or hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
+                raise ValueError("candidate entry content hash does not match the manifest")
+            catalog = PluginCatalog.from_registry(
+                session_id=record.session_id or "__project__",
+                project_id=record.project_id,
+                registry=self._base_registry,
+            )
+            catalog.register(record)
+        except PluginContractError as exc:
+            return PluginOperationResult.failure(
+                exc.code,
+                str(exc),
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        except (OSError, ValueError):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_LOAD_FAILED,
+                "candidate artifact failed registration checks",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        self._registered[registration_key] = _RegisteredPlugin(record, root, registration_key)
+        self._lifecycles[registration_key] = PluginLifecycle.INACTIVE
+        self._save_state()
+        return PluginOperationResult.success(
+            "model candidate defined and stored",
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            details={"state": PluginLifecycle.INACTIVE.value, "candidate_status": record.candidate_status.value},
+        )
+
+    def mark_candidate_tested(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None,
+        trial_id: str,
+        content_hash: str,
+        input_hash: str,
+    ) -> PluginOperationResult:
+        """Bind one successful FC trial to the exact immutable candidate version."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the model candidate version is not visible in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        record = registration.record
+        if content_hash != record.manifest.content_hash:
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "trial content hash does not match the registered candidate",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if not trial_id or not input_hash:
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "a successful trial must include its trial and input bindings",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        key = registration.registration_key
+        self._registered[key] = _RegisteredPlugin(
+            replace(record, candidate_status=PluginCandidateStatus.TESTED),
+            registration.artifact_root,
+            key,
+        )
+        self._candidate_trials[key] = {
+            "trial_id": trial_id,
+            "content_hash": content_hash,
+            "source_hash": content_hash,
+            "input_hash": input_hash,
+        }
+        self._save_state()
+        return PluginOperationResult.success(
+            "model candidate trial bound",
+            plugin_id=plugin_id,
+            version=version,
+            details={"candidate_status": PluginCandidateStatus.TESTED.value, "trial_id": trial_id},
+        )
+
+    def activate_candidate(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> PluginOperationResult:
+        """Activate only a tested model candidate through the live route."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the model candidate version is not visible in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if (
+            registration.record.candidate_status is not PluginCandidateStatus.TESTED
+            or registration.registration_key not in self._candidate_trials
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "candidate activation requires a successful trial bound to this version",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        return self.load(
+            plugin_id,
+            version,
+            session_id=session_id,
+            project_id=project_id,
+            policy=policy,
+            _candidate_activation=True,
+        )
+
+    async def update_candidate(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        operation_id: str | None = None,
+        expected_generation: int | None = None,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> PluginOperationResult:
+        """Atomically switch an active model candidate to a tested version."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the model candidate version is not visible in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if (
+            registration.record.candidate_status is not PluginCandidateStatus.TESTED
+            or registration.registration_key not in self._candidate_trials
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "candidate activation requires a successful trial bound to this version",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        return await self.update(
+            plugin_id,
+            version,
+            session_id=session_id,
+            project_id=project_id,
+            operation_id=operation_id,
+            expected_generation=expected_generation,
+            policy=policy,
+            _candidate_activation=True,
+        )
+
     def authorize(self, session_id: str, project_id: str | None = None) -> None:
         """Record the explicit user authorization needed for dynamic routing."""
         if session_id:
@@ -471,6 +710,7 @@ class PluginManager:
         session_id: str,
         project_id: str | None = None,
         policy: DynamicPluginPolicy | None = None,
+        _candidate_activation: bool = False,
     ) -> PluginOperationResult:
         """Load one exact registered version into the current scope."""
         registration = self._find_visible(plugin_id, version, session_id, project_id)
@@ -482,10 +722,18 @@ class PluginManager:
                 version=version,
             )
         manifest = registration.record.manifest
+        if registration.record.source is PluginSource.MODEL_CANDIDATE and not _candidate_activation:
+            return PluginOperationResult.failure(
+                PluginErrorCode.MODEL_CANDIDATE_NOT_ACTIVE,
+                "model candidates must be activated only after a successful FC trial",
+                plugin_id=plugin_id,
+                version=version,
+            )
         scope_key = self._scope_key(manifest.scope, session_id, project_id)
         if scope_key is None or scope_key not in self._authorized:
             return self._failure_not_authorized(plugin_id, version)
-        if policy is not None and not self._policy_allows(policy, manifest, "load"):
+        action = "activate" if _candidate_activation else "load"
+        if policy is not None and not self._policy_allows(policy, manifest, action):
             return self._failure_not_authorized(plugin_id, version)
         if scope_key in self._dependency_switching:
             return PluginOperationResult.failure(
@@ -554,7 +802,7 @@ class PluginManager:
             )
         plugin_context: ManagedPluginContext | None = None
         try:
-            tool, plugin_context = self._load_tool(registration, scope_key=scope_key)
+            tool, plugin_context = self._load_registered_tool(registration, scope_key=scope_key)
             plugin_context.activate()
         except Exception as exc:
             if isinstance(exc, _PluginLoadError):
@@ -580,7 +828,7 @@ class PluginManager:
         self._routes.setdefault(scope_key, {})[plugin_id] = route
         self._lifecycles[registration.registration_key] = PluginLifecycle.ACTIVE
         operation = self._new_operation(
-            action="load",
+            action=action,
             plugin_id=plugin_id,
             version=version,
             scope_key=scope_key,
@@ -593,6 +841,7 @@ class PluginManager:
                     "state": PluginLifecycle.ACTIVE.value,
                     "generation": str(route.generation),
                     "tool": tool.name,
+                    "candidate_activation": str(_candidate_activation).lower(),
                 },
             ),
         )
@@ -611,6 +860,7 @@ class PluginManager:
         operation_id: str | None = None,
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
+        _candidate_activation: bool = False,
     ) -> PluginOperationResult:
         """Stage and atomically switch to a registered version.
 
@@ -619,6 +869,7 @@ class PluginManager:
         resources are drained, so an in-flight call can finish without mixing
         parameters or implementation versions.
         """
+        action = "activate" if _candidate_activation else "update"
         if operation_id is not None and (prior := self._operations.get(operation_id)) is not None:
             if not self._operation_visible(prior, session_id, project_id):
                 return PluginOperationResult.failure(
@@ -628,7 +879,7 @@ class PluginManager:
                 )
             return self._reuse_operation(
                 operation_id,
-                action="update",
+                action=action,
                 plugin_id=plugin_id,
                 version=version,
                 scope_key=prior.scope_key,
@@ -641,16 +892,34 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
             )
+        if _candidate_activation:
+            if registration.record.source is not PluginSource.MODEL_CANDIDATE:
+                return PluginOperationResult.failure(
+                    PluginErrorCode.INVALID_CANDIDATE_STATE,
+                    "candidate activation can only switch a model candidate route",
+                    plugin_id=plugin_id,
+                    version=version,
+                )
+            if (
+                registration.record.candidate_status is not PluginCandidateStatus.TESTED
+                or registration.registration_key not in self._candidate_trials
+            ):
+                return PluginOperationResult.failure(
+                    PluginErrorCode.INVALID_CANDIDATE_STATE,
+                    "candidate activation requires a successful trial bound to this version",
+                    plugin_id=plugin_id,
+                    version=version,
+                )
         manifest = registration.record.manifest
         scope_key = self._scope_key(manifest.scope, session_id, project_id)
         if scope_key is None or scope_key not in self._authorized:
             return self._failure_not_authorized(plugin_id, version)
-        if policy is not None and not self._policy_allows(policy, manifest, "update"):
+        if policy is not None and not self._policy_allows(policy, manifest, action):
             return self._failure_not_authorized(plugin_id, version)
         if operation_id is not None:
             existing = self._reuse_operation(
                 operation_id,
-                action="update",
+                action=action,
                 plugin_id=plugin_id,
                 version=version,
                 scope_key=scope_key,
@@ -761,20 +1030,26 @@ class PluginManager:
             await asyncio.sleep(0)
             self._lifecycles[registration.registration_key] = PluginLifecycle.PREPARING
             try:
-                tool, plugin_context = self._load_tool(
-                    registration,
-                    scope_key=scope_key,
-                    allow_service_replacement=True,
-                    replaceable_service_ids=frozenset(
-                        interface_id
-                        for interface_id in active.registration.record.manifest.provides
-                        if not interface_id.startswith("tool:")
-                    ),
-                )
+                if _candidate_activation:
+                    tool, plugin_context = self._load_registered_tool(
+                        registration,
+                        scope_key=scope_key,
+                    )
+                else:
+                    tool, plugin_context = self._load_tool(
+                        registration,
+                        scope_key=scope_key,
+                        allow_service_replacement=True,
+                        replaceable_service_ids=frozenset(
+                            interface_id
+                            for interface_id in active.registration.record.manifest.provides
+                            if not interface_id.startswith("tool:")
+                        ),
+                    )
             except _PluginLoadError as exc:
                 self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
                 return self._staging_failure_operation(
-                    action="update",
+                    action=action,
                     plugin_id=plugin_id,
                     version=version,
                     scope_key=scope_key,
@@ -791,7 +1066,7 @@ class PluginManager:
             if switches_service and not await self._wait_for_routes_idle(affected_routes):
                 self._lifecycles[registration.registration_key] = PluginLifecycle.FAILED
                 return self._staging_failure_operation(
-                    action="update",
+                    action=action,
                     plugin_id=plugin_id,
                     version=version,
                     scope_key=scope_key,
@@ -833,7 +1108,7 @@ class PluginManager:
                     else PluginErrorCode.PLUGIN_UPDATE_FAILED
                 )
                 operation = self._new_operation(
-                    action="update",
+                    action=action,
                     plugin_id=plugin_id,
                     version=version,
                     scope_key=scope_key,
@@ -867,7 +1142,7 @@ class PluginManager:
             self._lifecycles[active.registration.registration_key] = PluginLifecycle.DRAINING
             self._lifecycles[registration.registration_key] = PluginLifecycle.ACTIVE
             operation = self._new_operation(
-                action="update",
+                action=action,
                 plugin_id=plugin_id,
                 version=version,
                 scope_key=scope_key,
@@ -996,6 +1271,7 @@ class PluginManager:
         key = registration.registration_key
         self._registered.pop(key, None)
         self._lifecycles.pop(key, None)
+        self._candidate_trials.pop(key, None)
         operation = self._new_operation(
             action="remove",
             plugin_id=plugin_id,
@@ -1338,6 +1614,37 @@ class PluginManager:
         while isinstance(base_tools, DynamicPluginRegistry):
             base_tools = base_tools._base
         return base_tools
+
+    def _load_registered_tool(
+        self,
+        registration: _RegisteredPlugin,
+        *,
+        scope_key: ScopeKey,
+    ) -> tuple[Tool, ManagedPluginContext]:
+        """Materialize a registered route, keeping model source out of the host importer."""
+        if registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return self._load_tool(registration, scope_key=scope_key)
+        plugin_context = ManagedPluginContext(
+            legacy_context=self._tool_context,
+            subscribe_impl=self._subscribe_impl,
+            service_registry=self._service_registry_for_scope(scope_key),
+        )
+        try:
+            if self._candidate_tool_factory is None:
+                raise RuntimeError("model candidate proxy factory is unavailable")
+            tool = self._candidate_tool_factory(registration, scope_key)
+            declared = [
+                name.removeprefix("tool:")
+                for name in registration.record.manifest.provides
+                if name.startswith("tool:")
+            ]
+            if len(declared) != 1 or declared[0] != tool.name:
+                raise ValueError("candidate tool capability does not match its proxy")
+            if not tool.read_only or tool.exclusive or not tool.concurrency_safe:
+                raise ValueError("candidate proxy must be non-exclusive and read-only")
+            return tool, plugin_context
+        except BaseException as exc:
+            raise _PluginLoadError(exc, plugin_context) from exc
 
     def _load_tool(
         self,
@@ -1774,7 +2081,15 @@ class PluginManager:
         registration, generation = pending
         plugin_context: ManagedPluginContext | None = None
         try:
-            tool, plugin_context = self._load_tool(registration, scope_key=scope_key)
+            if (
+                registration.record.source is PluginSource.MODEL_CANDIDATE
+                and (
+                    registration.record.candidate_status is not PluginCandidateStatus.TESTED
+                    or registration.registration_key not in self._candidate_trials
+                )
+            ):
+                raise ValueError("candidate route has no valid successful trial binding")
+            tool, plugin_context = self._load_registered_tool(registration, scope_key=scope_key)
             plugin_context.activate()
         except Exception as exc:
             if isinstance(exc, _PluginLoadError):
@@ -1850,6 +2165,9 @@ class PluginManager:
             "online_lifecycle": True,
             "content_hash": manifest.content_hash,
         }
+        if record.candidate_status is not None:
+            result["candidate_status"] = record.candidate_status.value
+            result["trial_bound"] = registration.registration_key in self._candidate_trials
         if active is not None:
             result.update({"generation": active.generation, "tool": active.tool.name})
         elif restored is not None:
@@ -2171,10 +2489,14 @@ class PluginManager:
                 else PluginLifecycle.INACTIVE
             )
         )
-        if operation.action == "update":
+        if operation.action in {"update", "activate"}:
             operation.state = PluginLifecycle.ACTIVE.value
             operation.result = PluginOperationResult.success(
-                "plugin update completed and the previous version was cleaned up",
+                (
+                    "model candidate activation completed and the previous version was cleaned up"
+                    if operation.action == "activate"
+                    else "plugin update completed and the previous version was cleaned up"
+                ),
                 plugin_id=operation.plugin_id,
                 version=operation.version,
                 operation_id=operation.operation_id,
@@ -2396,7 +2718,11 @@ class DynamicPluginRegistry(ToolRegistry):
             if self._manager._policy_allows(
                 self._policy,
                 route.registration.record.manifest,
-                "load",
+                (
+                    "activate"
+                    if route.registration.record.source is PluginSource.MODEL_CANDIDATE
+                    else "load"
+                ),
             )
         )
 
