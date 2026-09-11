@@ -107,14 +107,13 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
         plugin_id, separator, version = parts[1].partition("@")
         if not separator or not plugin_id or not version:
             return _text(ctx, f"Usage: `/plugins {action} <plugin-id>@<version>`")
-        if action == "load":
-            result = manager.load(
-                plugin_id,
-                version,
-                session_id=ctx.key,
-                project_id=project_id,
-                policy=policy,
-            )
+        result = manager.load(
+            plugin_id,
+            version,
+            session_id=ctx.key,
+            project_id=project_id,
+            policy=policy,
+        )
         return _text(ctx, _format_result(result))
 
     if action == "remove":
@@ -123,10 +122,10 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
         plugin_id, separator, version = parts[1].partition("@")
         if not separator or not plugin_id or not version:
             return _text(ctx, "Usage: `/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`")
-        expected_generation: int | None = None
+        remove_expected_generation: int | None = None
         if len(parts) == 4:
             try:
-                expected_generation = int(parts[3])
+                remove_expected_generation = int(parts[3])
             except ValueError:
                 return _text(ctx, "expected-generation 必须是整数。")
         result = manager.remove(
@@ -135,7 +134,7 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             session_id=ctx.key,
             project_id=project_id,
             operation_id=parts[2] if len(parts) >= 3 else None,
-            expected_generation=expected_generation,
+            expected_generation=remove_expected_generation,
             policy=policy,
         )
         return _text(ctx, _format_result(result))

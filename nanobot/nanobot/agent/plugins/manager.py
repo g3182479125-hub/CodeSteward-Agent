@@ -703,6 +703,7 @@ class PluginManager:
                 scope_key=scope_key,
                 state=PluginLifecycle.DRAINING.value,
                 operation_id=operation_id,
+                persist=False,
                 result=PluginOperationResult.success(
                     "plugin route updated; the previous version is draining",
                     plugin_id=plugin_id,
@@ -1046,6 +1047,7 @@ class PluginManager:
             scope_key=scope_key,
             state=PluginLifecycle.DRAINING.value,
             operation_id=operation_id,
+            persist=False,
             result=PluginOperationResult.success(
                 "plugin route retired; existing calls are draining",
                 plugin_id=plugin_id,
@@ -1464,6 +1466,7 @@ class PluginManager:
         scope_key: ScopeKey,
         state: str,
         operation_id: str | None = None,
+        persist: bool = True,
         result: PluginOperationResult,
     ) -> _Operation:
         operation_id = operation_id or str(uuid.uuid4())
@@ -1486,7 +1489,8 @@ class PluginManager:
             scope_key=scope_key,
         )
         self._operations[operation_id] = operation
-        self._save_state()
+        if persist:
+            self._save_state()
         return operation
 
     def _retire_route(self, scope_key: ScopeKey, route: _ActiveRoute) -> None:
