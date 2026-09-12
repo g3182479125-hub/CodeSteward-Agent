@@ -54,12 +54,20 @@ uv run --with pytest-asyncio pytest tests/test_h5_candidate_runner.py tests/test
 5. activate v2 返回 `generation=2`、`route_commit=committed`、`old_cleanup=complete`；随后真实调用返回 `{"message":"你好，再见，小明"}`、`version=2.0.0`，证明热替换进入实际调用路径。
 6. stop v2 成功变为 `inactive`，随后 remove v2 和 v1；最终 inspect 返回 `candidates=[]`，无 active 版本，artifact 按设计保留。
 
+### 真实 H6-F 授权撤销验收
+
+在同一 nanobot WebUI 会话中完成了授权撤销边界验证：先执行 `revoke` 返回
+`authorization_revoked`，随后对已定义但未激活的候选发起一次 trial；系统返回
+`PLUGIN_AUTHORIZATION_REQUIRED`，`requires_user_confirmation=true`，没有向 FC
+派发执行，也没有重试。测试产生的三个临时候选随后在明确确认后全部 remove 成功，
+其 artifact 按设计保留。该过程没有重启 nanobot，未产生 ChangeSet 或项目文件修改。
+
 上述热替换和调用期间 nanobot 监听进程 PID 保持为 `29580`，控制面 PID 为 `29524`；候选版本切换没有重启 AgentLoop。FC 试用采用 Host 固定 fixture，模型传入的 trial `input_data` 不作为试用数据执行；正式调用才使用用户提供的结构化参数。全程未改动项目文件，也未把 API Key 写入仓库。
 
 ## 尚未证明的边界
 
 - 代码级部分边界仍以受控 Fake runner 验证管理器、路由和状态语义；真实 H6-A 已补充 FC/WebUI 证据，但不等同于所有异常现场均已云端复现。
-- 尚未在真实 FC 现场复现授权过期、显式 revoke、预算耗尽和云端中断；这些路径已有 H5/H6 自动化契约测试。
+- 尚未在真实 FC 现场复现授权过期、预算耗尽和云端中断；显式 revoke 后的新 trial 拒绝已在 WebUI 现场复现，这些其余路径已有 H5/H6 自动化契约测试。
 - 当前 stop 返回管理操作结果；若 provider 资源仍在排空，最终状态以 operation 查询为准，不应把中间 `draining` 当作已清理。
 - H7 的 Loop Driver 替换和跨 Driver checkpoint 尚未开始，H6 只保证动态工具在同一 nanobot Runtime 内热切换。
 

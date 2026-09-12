@@ -1,9 +1,9 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收，H6 正在实现。
+版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收，H6 实现与现场验收已完成，待形式化双轴 Review 结论。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 已完成首批实现，待本节点双轴 Review 与真实场景验收；H7–H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试及真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收已完成，但本批次 reviewer 接口未返回可用最终结论；H7–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -337,7 +337,7 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | H3 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h3-plugin-update-cleanup.md`、`docs/reviews/h3-*-review-6159add.md` |
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
-| H6 | 实现批次完成，待双轴 Review 与真实场景验收 | `docs/evidence/live-harness/h6-model-candidates.md`；代码/测试已完成，真实 FC/WebUI 验收待现场执行 |
+| H6 | 代码、测试与真实场景验收完成；待双轴 Review 结论 | `docs/evidence/live-harness/h6-model-candidates.md`；包含 H6-A 与 H6-F 现场证据，reviewer 最终文本暂缺 |
 | H7–H10 | 未开始 | H6 Review 与现场验收完成后再进入 H7 |
 
 ## 8. 下一条开发指令

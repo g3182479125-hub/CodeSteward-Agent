@@ -2,13 +2,13 @@
 
 2026-09-10 扩展入口：[运行中可重组 Harness 计划](LIVE_HARNESS_EXTENSION.md)。
 用户要求规划 H1–H10：工具热插拔、模型动态插件、Loop 接续和反馈选择。
-本计划的 P0–P8 完成状态不代表该扩展完成；H1–H5 已完成，H6 已完成代码与离线验收但待双轴 Review/真实场景验收，H7–H10 尚未开始；H 阶段实施以扩展文档的明确范围例外为准，
+本计划的 P0–P8 完成状态不代表该扩展完成；H1–H5 已完成，H6 已完成代码、自动化测试与真实场景验收但待本批次双轴 Review 最终结论，H7–H10 尚未开始；H 阶段实施以扩展文档的明确范围例外为准，
 保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期、H3 版本更新/资源清理、H4 有限依赖组合与 H5 模型候选执行边界已完成专项验收和双轴审查；H5 最新候选为 `e08299e`，H6–H10
 H6 实现落点为 `nanobot/nanobot/agent/plugins/manager.py` 与 `devpilot-agent/src/devpilot/model_plugins.py`，证据见 `devpilot-agent/docs/evidence/live-harness/`；H6 报告待本批次生成，历史报告见
 `devpilot-agent/docs/reviews/h1-*-review-2930119.md`、`h2-*-review-b8141f0.md` 和
 `h3-*-review-6159add.md`、`h4-*-review-78456c6.md`、`h5-*-review-e08299e.md`。
 
-版本：3.6（2026-09-09，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准设计方向，P0–P8 已按本计划完成并通过相应验收；本文继续作为冻结边界与维护依据。H5 已完成，H6 已完成首批实现，下一步是 H6 批量双轴 Review 与真实场景验收；证据见 `devpilot-agent/docs/evidence/live-harness/h5-candidate-execution.md` 和 `h6-model-candidates.md`。
+版本：3.6（2026-09-09，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准设计方向，P0–P8 已按本计划完成并通过相应验收；本文继续作为冻结边界与维护依据。H5 已完成，H6 已完成首批实现、双类真实场景验收，下一步仅剩本批次双轴 Review 最终结论；证据见 `devpilot-agent/docs/evidence/live-harness/h5-candidate-execution.md` 和 `h6-model-candidates.md`。
 生效关系见 [ADR-0006](../adr/ADR-0006-nanobot-first-personal-agent.md) 和
 [ADR-0007](../adr/ADR-0007-controlled-skill-improvement.md)。仅接管未完成工作。
 
