@@ -24,7 +24,8 @@
 
 ## 验收
 
-1. DeepSeek 在新会话中使用 `{field,type,max_length}` 一次完成 define，不再猜测字段名。
+1. DeepSeek 在新会话中使用 `{field,kind,max_length}` 一次完成 define，不再猜测字段名；
+   数值类型按需追加 `min_value` / `max_value`。
 2. 非法规则仍在写入 artifact 前返回定义错误。
 3. H6 现有测试、H5/H3/H4 回归测试和静态检查通过。
 4. 同一对 Standards/Spec reviewer 只复核本次增量及关联风险；未通过前不进入 H7。

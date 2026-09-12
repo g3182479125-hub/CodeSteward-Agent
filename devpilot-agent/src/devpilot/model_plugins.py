@@ -820,11 +820,10 @@ class ModelCandidateProxyTool(Tool):
             "input_rules": {
                 "type": "array",
                 "description": (
-                    "Optional candidate input contract. Each item must use exactly "
-                    "field, kind and max_length; example: "
-                    '[{"field":"name","kind":"string","max_length":64}]. '
-                    "Numeric kinds may also set "
-                    "min_value and max_value."
+                    "Optional candidate input contract. Each item requires field, kind "
+                    "and max_length; numeric kinds may additionally set min_value and "
+                    "max_value. Example: "
+                    '[{"field":"name","kind":"string","max_length":64}].'
                 ),
                 "minItems": 1,
                 "maxItems": 12,

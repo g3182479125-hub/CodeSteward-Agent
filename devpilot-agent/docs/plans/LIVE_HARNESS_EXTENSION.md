@@ -251,7 +251,9 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 因此同一 AgentLoop 可在下一步得到新 schema。候选状态与 trial 的版本/源码/输入哈希绑定
 并写入插件运行状态；重建 manager 后可按已持久路由恢复，但授权仍需当前会话重新明确授予。
 当前离线证据覆盖未授权拒绝、跨会话隔离、工件变更拒绝、v1→v2 无重启切换和持久恢复；
-真实 DeepSeek + 原生 WebUI + 杭州 FC 的 H6-A 仍须按 H6 验收现场完成，不能用 Fake runner 冒领。
+真实 DeepSeek + 原生 WebUI + 杭州 FC 的 H6-A 已完成现场验收，证据见
+`devpilot-agent/docs/evidence/live-harness/h6-model-candidates.md`；该验收采用
+`provider-default`，不等同于严格网络隔离，不能用 Fake runner 冒领。
 
 验收 H6-A：真实网页同一长任务“缺工具→define→trial→activate→调用→修正版本→再次调用→stop/remove”，PID 不变。H6-B：未授权只生成不激活。H6-C：跨会话更新拒绝。H6-D：中途更新保留任务目标和已完成结果。H6-E：整个演示无需人工编辑注册表或重启。
 补测 H6-F：授权撤销/过期后拒绝新派发，未试运行/内容变化的版本不能 activate；状态成功不代替绑定校验。
