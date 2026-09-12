@@ -821,8 +821,8 @@ class ModelCandidateProxyTool(Tool):
                 "type": "array",
                 "description": (
                     "Optional candidate input contract. Each item requires field, kind "
-                    "and max_length; numeric kinds may additionally set min_value and "
-                    "max_value. Example: "
+                    "and max_length; numeric kinds may additionally set integer "
+                    "min_value and max_value. Example: "
                     '[{"field":"name","kind":"string","max_length":64}].'
                 ),
                 "minItems": 1,
@@ -843,8 +843,14 @@ class ModelCandidateProxyTool(Tool):
                             "enum": ["string", "integer", "number", "boolean"],
                         },
                         "max_length": {"type": "integer", "minimum": 1, "maximum": 65536},
-                        "min_value": {"type": "number"},
-                        "max_value": {"type": "number"},
+                        "min_value": {
+                            "type": "integer",
+                            "description": "Optional inclusive lower bound; use an integer.",
+                        },
+                        "max_value": {
+                            "type": "integer",
+                            "description": "Optional inclusive upper bound; use an integer.",
+                        },
                     },
                     "required": ["field", "kind", "max_length"],
                     "additionalProperties": False,

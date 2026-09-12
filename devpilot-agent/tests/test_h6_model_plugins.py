@@ -113,6 +113,8 @@ def test_h6_management_schema_describes_input_rule_contract() -> None:
         "number",
         "boolean",
     ]
+    assert item["properties"]["min_value"]["type"] == "integer"
+    assert item["properties"]["max_value"]["type"] == "integer"
     assert tool.validate_params(
         {
             "action": "define",
