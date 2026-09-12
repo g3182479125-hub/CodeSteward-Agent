@@ -767,6 +767,22 @@ class CandidateTrialRunner:
             "max_trial_seconds": self._max_trial_seconds,
         }
 
+    def can_activate_live(self, task_id: str) -> bool:
+        """Fail closed unless the task has room for one live candidate call.
+
+        Trial and live calls deliberately share the same durable counter.  The
+        trial limit remains stricter while a trial is being requested; a live
+        call uses the larger overall H6 execution allowance.
+        """
+        try:
+            calls, reserved_seconds = self._store.get_candidate_budget(task_id)
+        except Exception:
+            return False
+        return (
+            calls < CANDIDATE_MAX_EXECUTIONS
+            and reserved_seconds + self._timeout_seconds <= CANDIDATE_MAX_EXECUTION_SECONDS
+        )
+
     def operation_status(self, request: CandidateTrialRequest) -> dict[str, object]:
         """Read one durable operation without starting or retrying execution."""
 
@@ -1407,11 +1423,10 @@ class CandidateTrialRunner:
                 "CANDIDATE_EXECUTION_MODE_INVALID",
                 "候选执行模式无效",
             )
-        budget_task_id = (
-            request.task_id
-            if request.execution_mode == "trial"
-            else "candidate-live:" + request.task_id
-        )
+        # A trial retains its tighter H5 allowance, while every trial and live
+        # call consumes this one durable H6 task budget.  This prevents an
+        # activated candidate from resetting its spend simply by changing mode.
+        budget_task_id = request.task_id
         max_calls = (
             self._max_trials
             if request.execution_mode == "trial"

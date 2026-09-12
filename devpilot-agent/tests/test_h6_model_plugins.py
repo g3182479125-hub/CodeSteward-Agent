@@ -78,6 +78,11 @@ class FakeCandidateRunner:
         return self._result(request, output={"echo": request.input_data})
 
 
+class ExhaustedLiveBudgetRunner(FakeCandidateRunner):
+    def can_activate_live(self, _task_id: str) -> bool:
+        return False
+
+
 def _context(
     tmp_path: Path,
     *,
@@ -165,6 +170,58 @@ def test_h6_management_schema_describes_input_rule_contract() -> None:
     )
     assert any("missing required input_rules[0].kind" in error for error in errors)
     assert any("unexpected parameter input_rules[0].type" in error for error in errors)
+
+
+@pytest.mark.asyncio
+async def test_h6_inspect_exposes_candidate_schema_and_live_budget_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    controller = ModelCandidateController(
+        tmp_path, runner=FakeCandidateRunner(), grant_issuer=ISSUER
+    )
+    manager = PluginManager(ToolRegistry(), candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path)):
+        inspected = json.loads(await tool.execute(action="inspect"))
+
+    constraints = inspected["result"]["constraints"]
+    assert constraints["live_execution"] == {"max_calls": 30, "max_seconds": 600}
+    assert constraints["input_rules"]["required"] == ["field", "kind", "max_length"]
+    assert constraints["input_rules"]["oneOf"]
+
+
+@pytest.mark.asyncio
+async def test_h6_activation_fails_closed_when_live_budget_is_exhausted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    controller = ModelCandidateController(
+        tmp_path, runner=ExhaustedLiveBudgetRunner(), grant_issuer=ISSUER
+    )
+    manager = PluginManager(ToolRegistry(), candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path, text="确认试用")):
+        assert json.loads(
+            await tool.execute(
+                action="define", plugin_id="model-budget", version="1.0.0", source=SOURCE
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(action="trial", plugin_id="model-budget", version="1.0.0")
+        )["ok"]
+        activated = json.loads(
+            await tool.execute(action="activate", plugin_id="model-budget", version="1.0.0")
+        )
+
+    assert activated["code"] == "CANDIDATE_LIVE_BUDGET_EXCEEDED"
 
 
 @pytest.mark.asyncio
@@ -271,6 +328,9 @@ async def test_h6_candidate_is_session_scoped_and_cross_session_activation_is_de
             version="1.0.0",
             source=SOURCE,
         )
+        assert manager.is_authorized(
+            "session:two", PluginManager.project_id_for_path(tmp_path)
+        ) is False
 
     other_context = _context(tmp_path, session="session:two", text="确认启用")
     with request_context(other_context):

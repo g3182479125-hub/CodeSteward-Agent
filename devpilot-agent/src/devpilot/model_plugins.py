@@ -36,6 +36,8 @@ from nanobot.agent.tools.context import current_request_context
 from .candidate_runner import (
     CANDIDATE_API_VERSION,
     CANDIDATE_COMMAND_PROFILE,
+    CANDIDATE_MAX_EXECUTION_SECONDS,
+    CANDIDATE_MAX_EXECUTIONS,
     CANDIDATE_NETWORK_POLICY,
     CANDIDATE_TEMPLATE,
     CANDIDATE_TIMEOUT_SECONDS,
@@ -313,7 +315,7 @@ class ModelCandidateController:
             return None
         if grant is not None:
             self._authorizations.pop(key, None)
-            manager.revoke_authorization(session_id, project_id)
+            manager.revoke_authorization(session_id)
         confirmation = (request.original_user_text or "").strip().casefold()
         explicit = confirmation in {
             "确认试用",
@@ -329,7 +331,9 @@ class ModelCandidateController:
                 "请先在 nanobot 对话中明确回复‘确认试用’或‘确认启用’，再执行候选插件动作",
                 requires_user_confirmation=True,
             )
-        manager.authorize(session_id, project_id)
+        # Model candidates are session-scoped.  Do not turn one chat's explicit
+        # confirmation into a project-wide dynamic-routing grant.
+        manager.authorize(session_id)
         self._authorizations[key] = {
             "sender_id": request.sender_id,
             "task_id": _task_id,
@@ -458,6 +462,11 @@ class ModelCandidateController:
                     "max_source_bytes": 65536,
                     "max_trials": 3,
                     "max_trial_seconds": 120,
+                    "live_execution": {
+                        "max_calls": CANDIDATE_MAX_EXECUTIONS,
+                        "max_seconds": CANDIDATE_MAX_EXECUTION_SECONDS,
+                    },
+                    "input_rules": _input_rule_item_schema(),
                     "restart_required_for_plugin_change": False,
                 },
                 "candidates": list(manager.list_view(session_id, project_id=project_id)),
@@ -562,10 +571,25 @@ class ModelCandidateController:
         if not isinstance(plugin_id, str) or not isinstance(version, str):
             return _error("CANDIDATE_REFERENCE_INVALID", "activate 需要 plugin_id 和 version")
         _request, session_id, project_id, _task_id, _workspace = context
+        task_id = context[3]
         manager = self._require_manager()
         registration = self._registration(plugin_id, version, context)
         if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
             return _error("PLUGIN_NOT_FOUND", "候选版本在当前会话不可见")
+        runner = self._ensure_runner()
+        if runner is None:
+            return self._runner_failure()
+        budget_check = getattr(runner, "can_activate_live", None)
+        if callable(budget_check):
+            try:
+                has_budget = budget_check(task_id)
+            except Exception:
+                has_budget = False
+            if has_budget is not True:
+                return _error(
+                    "CANDIDATE_LIVE_BUDGET_EXCEEDED",
+                    "候选已没有可用的任务级 live 执行预算，未激活路由",
+                )
         try:
             _source, _manifest, _rules, contract_hash = self._artifact(registration)
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
@@ -697,7 +721,7 @@ class ModelCandidateController:
             )
         if action == "revoke":
             self._authorizations.pop((context[1], context[2]), None)
-            self._require_manager().revoke_authorization(context[1], context[2])
+            self._require_manager().revoke_authorization(context[1])
             return _result({"status": "authorization_revoked"})
         if action in {"stop", "remove"}:
             if (authorization_error := self._authorize(context)) is not None:

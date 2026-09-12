@@ -666,7 +666,7 @@ def test_trial_budget_is_shared_across_concurrent_calls() -> None:
     assert len(backend.requests) == CANDIDATE_MAX_TRIALS
 
 
-def test_live_execution_uses_a_separate_task_budget() -> None:
+def test_live_execution_shares_the_task_budget_with_trials() -> None:
     backend = RecordingBackend()
     store = MemoryIdempotencyStore()
     runner = runner_for(backend, store=store)
@@ -679,8 +679,7 @@ def test_live_execution_uses_a_separate_task_budget() -> None:
     result = runner.execute(live)
 
     assert result.status == "passed"
-    assert store.get_candidate_budget("task-1")[0] == CANDIDATE_MAX_TRIALS
-    assert store.get_candidate_budget("candidate-live:task-1")[0] == 1
+    assert store.get_candidate_budget("task-1")[0] == CANDIDATE_MAX_TRIALS + 1
 
 
 def test_trial_timeout_and_output_limits_are_bound_into_request() -> None:
