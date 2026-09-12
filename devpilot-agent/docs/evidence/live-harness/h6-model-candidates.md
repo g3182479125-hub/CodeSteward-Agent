@@ -2,7 +2,7 @@
 
 日期：2026-09-12
 节点：H6（模型创建、试用、更新和卸载工具）
-状态：代码修复批次完成；本地测试通过；双轴增量 Review 尚未形成可用 PASS 结论，真实 DeepSeek + nanobot WebUI + 杭州 FC 场景仍待验收。
+状态：代码修复批次完成；本地测试通过；真实 DeepSeek + nanobot WebUI + 杭州 FC 的 H6-A 主链路已通过；双轴增量 Review 尚未形成可用 PASS 结论。
 
 ## 目标和实际落点
 
@@ -42,14 +42,27 @@ uv run --with pytest-asyncio pytest tests/test_h5_candidate_runner.py tests/test
 6. 试用失败会把候选标记为 `rejected`；正式调用使用独立的任务预算，不消耗试用预算。
 7. 已生成旧 schema 的动态视图不会误调用新版本，旧版本会返回 `TOOL_VERSION_RETIRED`。
 
+## 真实 WebUI + DeepSeek + 杭州 FC 验收
+
+2026-09-12 在 nanobot 原生 WebUI、DeepSeek `deepseek-v4-flash` 和杭州 FC
+`provider-default` 配置下完成同一会话的 H6-A：
+
+1. 通过聊天定义 `demo_greeting_v1@1.0.0`，候选保持 `inactive`；源码只做字典取值和字符串拼接。
+2. 真实 FC trial 返回 `passed`，`backend=fc-agent-sandbox`、`exit_code=0`、耗时约 3578ms、`cleanup_status=cleaned`，候选变为 `tested` 并绑定 source/input/contract hash。
+3. 聊天确认后 activate v1，返回 `state=active`、`generation=1`；下一轮直接调用通过 FC 返回 `{"message":"你好，小明"}`，无 nanobot 重启。
+4. 在 v1 运行期间定义并 trial `demo_greeting_v1@2.0.0`，真实 FC 返回 `{"message":"你好，再见，fixture"}`，耗时约 1875ms。
+5. activate v2 返回 `generation=2`、`route_commit=committed`、`old_cleanup=complete`；随后真实调用返回 `{"message":"你好，再见，小明"}`、`version=2.0.0`，证明热替换进入实际调用路径。
+6. stop v2 成功变为 `inactive`，随后 remove v2 和 v1；最终 inspect 返回 `candidates=[]`，无 active 版本，artifact 按设计保留。
+
+上述热替换和调用期间 nanobot 监听进程 PID 保持为 `29580`，控制面 PID 为 `29524`；候选版本切换没有重启 AgentLoop。FC 试用采用 Host 固定 fixture，模型传入的 trial `input_data` 不作为试用数据执行；正式调用才使用用户提供的结构化参数。全程未改动项目文件，也未把 API Key 写入仓库。
+
 ## 尚未证明的边界
 
-- 当前证据使用受控 Fake runner 验证管理器、路由和状态语义，不能替代真实 FC 请求。
-- 尚未完成真实网页长任务 H6-A：同一聊天中展示 define→trial→activate→call→revision→call→stop/remove，并记录 PID 不变。
-- 尚未完成真实 FC 授权撤销/过期、预算耗尽和云端中断现场证据；代码路径仍需按 H5/H6 契约进行现场测试。
+- 代码级部分边界仍以受控 Fake runner 验证管理器、路由和状态语义；真实 H6-A 已补充 FC/WebUI 证据，但不等同于所有异常现场均已云端复现。
+- 尚未在真实 FC 现场复现授权过期、显式 revoke、预算耗尽和云端中断；这些路径已有 H5/H6 自动化契约测试。
 - 当前 stop 返回管理操作结果；若 provider 资源仍在排空，最终状态以 operation 查询为准，不应把中间 `draining` 当作已清理。
 - H7 的 Loop Driver 替换和跨 Driver checkpoint 尚未开始，H6 只保证动态工具在同一 nanobot Runtime 内热切换。
 
 ## 下一步
 
-本批次已经按 ADR-0004 派发同一对 Standards/Spec reviewer；其中 Standards 重试因远程连接失败，Spec 完成但当前接口未返回最终文本，因此不能记为 PASS。明天先恢复可用的双轴增量结论；双轴无待修复项后，再使用用户本地配置完成真实 WebUI + DeepSeek + 杭州 FC H6-A/H6-F 验收；在这些条件满足前，不进入 H7。
+本批次已经按 ADR-0004 派发同一对 Standards/Spec reviewer；其中 Standards 重试因远程连接失败，Spec 完成但当前接口未返回最终文本，因此不能记为 PASS。真实 H6-A 已通过，但 H6 关闭前仍须取得最终双轴 PASS；在此之前不进入 H7。
