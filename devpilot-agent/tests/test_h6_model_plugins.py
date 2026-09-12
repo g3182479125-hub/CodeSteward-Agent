@@ -113,8 +113,13 @@ def test_h6_management_schema_describes_input_rule_contract() -> None:
         "number",
         "boolean",
     ]
-    assert item["properties"]["min_value"]["type"] == "integer"
-    assert item["properties"]["max_value"]["type"] == "integer"
+    variants = {
+        branch["properties"]["kind"]["enum"][0]: branch
+        for branch in item["oneOf"]
+    }
+    assert variants["integer"]["properties"]["min_value"]["type"] == "integer"
+    assert variants["number"]["properties"]["min_value"]["type"] == "number"
+    assert "min_value" not in variants["string"]["properties"]
     assert tool.validate_params(
         {
             "action": "define",
@@ -123,6 +128,33 @@ def test_h6_management_schema_describes_input_rule_contract() -> None:
             ],
         }
     ) == []
+    assert tool.validate_params(
+        {
+            "action": "define",
+            "input_rules": [
+                {
+                    "field": "count",
+                    "kind": "number",
+                    "max_length": 64,
+                    "min_value": 1.5,
+                },
+            ],
+        }
+    ) == []
+    integer_bound_errors = tool.validate_params(
+        {
+            "action": "define",
+            "input_rules": [
+                {
+                    "field": "count",
+                    "kind": "integer",
+                    "max_length": 64,
+                    "min_value": 1.5,
+                },
+            ],
+        }
+    )
+    assert any("integer rule limits must be integers" in error for error in integer_bound_errors)
     errors = tool.validate_params(
         {
             "action": "define",

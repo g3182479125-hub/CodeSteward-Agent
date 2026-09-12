@@ -61,6 +61,7 @@ _DEFAULT_RULES: tuple[CandidateInputRule, ...] = (("value", "string", 4096, None
 _SENSITIVE_FIELDS = frozenset(
     {"api_key", "apikey", "token", "secret", "password", "authorization", "headers", "env"}
 )
+_INPUT_RULE_KINDS = ("string", "integer", "number", "boolean")
 _MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
     enabled=True,
     allowed_kinds=frozenset({"tool"}),
@@ -169,8 +170,8 @@ def _parse_rules(raw: object) -> tuple[CandidateInputRule, ...]:
         if not isinstance(item, Mapping):
             raise ValueError("each input rule must be an object")
         field = item.get("field")
-        kind = item.get("kind", "string")
-        max_length = item.get("max_length", 4096)
+        kind = item.get("kind")
+        max_length = item.get("max_length")
         min_value = item.get("min_value")
         max_value = item.get("max_value")
         if (
@@ -178,7 +179,7 @@ def _parse_rules(raw: object) -> tuple[CandidateInputRule, ...]:
             or _FIELD.fullmatch(field) is None
             or field.casefold() in _SENSITIVE_FIELDS
             or field in seen
-            or kind not in {"string", "integer", "number", "boolean"}
+            or kind not in set(_INPUT_RULE_KINDS)
             or not isinstance(max_length, int)
             or isinstance(max_length, bool)
             or not 1 <= max_length <= 65536
@@ -793,6 +794,61 @@ class ModelCandidateProxyTool(Tool):
         return await self._controller.execute_active(self._registration, self._rules, kwargs)
 
 
+def _input_rule_variant(kind: str) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "field": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Safe payload field name; do not use secrets or credentials.",
+        },
+        "kind": {"type": "string", "enum": [kind]},
+        "max_length": {"type": "integer", "minimum": 1, "maximum": 65536},
+    }
+    if kind in {"integer", "number"}:
+        bound_type = "integer" if kind == "integer" else "number"
+        properties.update(
+            {
+                "min_value": {
+                    "type": bound_type,
+                    "description": "Optional inclusive lower bound.",
+                },
+                "max_value": {
+                    "type": bound_type,
+                    "description": "Optional inclusive upper bound.",
+                },
+            }
+        )
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["field", "kind", "max_length"],
+        "additionalProperties": False,
+    }
+
+
+def _input_rule_item_schema() -> dict[str, Any]:
+    common_properties = {
+        "field": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Safe payload field name; do not use secrets or credentials.",
+        },
+        "kind": {"type": "string", "enum": list(_INPUT_RULE_KINDS)},
+        "max_length": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "min_value": {"type": "number"},
+        "max_value": {"type": "number"},
+    }
+    return {
+        "type": "object",
+        "properties": common_properties,
+        "required": ["field", "kind", "max_length"],
+        "additionalProperties": False,
+        "oneOf": [_input_rule_variant(kind) for kind in _INPUT_RULE_KINDS],
+    }
+
+
 @tool_parameters(
     {
         "type": "object",
@@ -821,40 +877,13 @@ class ModelCandidateProxyTool(Tool):
                 "type": "array",
                 "description": (
                     "Optional candidate input contract. Each item requires field, kind "
-                    "and max_length; numeric kinds may additionally set integer "
-                    "min_value and max_value. Example: "
+                    "and max_length; integer kinds use integer bounds, while number "
+                    "kinds may use decimal bounds. Example: "
                     '[{"field":"name","kind":"string","max_length":64}].'
                 ),
                 "minItems": 1,
                 "maxItems": 12,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "field": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 64,
-                            "description": (
-                                "Safe payload field name; do not use secrets or credentials."
-                            ),
-                        },
-                        "kind": {
-                            "type": "string",
-                            "enum": ["string", "integer", "number", "boolean"],
-                        },
-                        "max_length": {"type": "integer", "minimum": 1, "maximum": 65536},
-                        "min_value": {
-                            "type": "integer",
-                            "description": "Optional inclusive lower bound; use an integer.",
-                        },
-                        "max_value": {
-                            "type": "integer",
-                            "description": "Optional inclusive upper bound; use an integer.",
-                        },
-                    },
-                    "required": ["field", "kind", "max_length"],
-                    "additionalProperties": False,
-                },
+                "items": _input_rule_item_schema(),
             },
             "input_data": {"type": "object", "additionalProperties": True},
             "trial_id": {"type": "string", "minLength": 1},
@@ -882,9 +911,20 @@ class ModelPluginManagementTool(Tool):
             "Manage model-generated candidate tools live: inspect, define, trial, "
             "activate, stop or remove. Candidate source is never imported by "
             "nanobot; trial and calls use the configured FC proxy. For define, "
-            "input_rules items must use field/kind/max_length, for example "
-            "{field: name, kind: string, max_length: 64}."
+            "input_rules items must use field/kind/max_length; integer bounds must be "
+            "integers and number bounds may be decimals, for example {field: name, "
+            "kind: string, max_length: 64}."
         )
+
+    def validate_params(self, params: dict[str, Any]) -> list[str]:
+        errors = super().validate_params(params)
+        if errors or "input_rules" not in params:
+            return errors
+        try:
+            _parse_rules(params["input_rules"])
+        except ValueError as exc:
+            errors.append(str(exc))
+        return errors
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
