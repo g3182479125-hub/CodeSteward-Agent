@@ -2,7 +2,7 @@
 
 日期：2026-09-12
 节点：H6（模型创建、试用、更新和卸载工具）
-状态：代码修复批次完成；本地测试通过；真实 DeepSeek + nanobot WebUI + 杭州 FC 的 H6-A 主链路已通过；双轴增量 Review 尚未形成可用 PASS 结论。
+状态：已完成。最终候选 `b55c027` 通过 Spec 与 Standards 增量复核；真实 DeepSeek + nanobot WebUI + 杭州 FC 的 H6-A/H6-F 已通过。详见 `docs/reviews/h6-final-review-b55c027.md`。
 
 ## 目标和实际落点
 
@@ -76,4 +76,4 @@ uv run --with pytest-asyncio pytest tests/test_h5_candidate_runner.py tests/test
 
 ## 下一步
 
-本批次已经按 ADR-0004 派发同一对 Standards/Spec reviewer；其中 Standards 重试因远程连接失败，Spec 完成但当前接口未返回最终文本，因此不能记为 PASS。真实 H6-A 已通过，但 H6 关闭前仍须取得最终双轴 PASS；在此之前不进入 H7。
+最终修复候选 `b55c027` 的 Spec 与 Standards 增量复核均为 PASS；三项问题（会话授权范围、任务级预算、`inspect` 契约可见性）均已关闭。审查服务曾返回空白/陈旧结果，最终结论和服务降级记录见 `docs/reviews/h6-final-review-b55c027.md`。H6 已关闭，可进入 H7。

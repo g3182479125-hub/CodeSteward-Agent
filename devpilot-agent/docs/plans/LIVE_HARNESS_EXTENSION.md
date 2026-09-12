@@ -1,9 +1,9 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5 已完成节点验收，H6 实现与现场验收已完成，待形式化双轴 Review 结论。
+版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5、H6 已完成节点验收；H6 已完成最终双轴增量复核。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试及真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收已完成，但本批次 reviewer 接口未返回可用最终结论；H7–H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -339,12 +339,12 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 | H3 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h3-plugin-update-cleanup.md`、`docs/reviews/h3-*-review-6159add.md` |
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
-| H6 | 代码、测试与真实场景验收完成；待双轴 Review 结论 | `docs/evidence/live-harness/h6-model-candidates.md`；包含 H6-A 与 H6-F 现场证据，reviewer 最终文本暂缺 |
-| H7–H10 | 未开始 | H6 Review 与现场验收完成后再进入 H7 |
+| H6 | 已完成；最终增量复核 PASS | `docs/evidence/live-harness/h6-model-candidates.md`、`docs/reviews/h6-final-review-b55c027.md`；包含 H6-A/H6-F 现场证据及最终修复 |
+| H7–H10 | 未开始 | 从 H7 开始；不得重做 H1–H6 |
 
 ## 8. 下一条开发指令
 
-“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1/H2/H3/H4/H5 已完成，不要重做。先核对 H6 证据、代码、测试和工作区，再执行 H6 的一次批量 Standards/Spec Review；集中修复有效问题后让同一对 reviewer 只复核增量。现场用原生 nanobot WebUI + DeepSeek + 杭州 FC 验收 H6-A/H6-F；未完成真实验收或双轴结论前不要开始 H7。”
+“读取 AGENTS、CURRENT_PLAN、ADR-0004 和 LIVE_HARNESS_EXTENSION；H1–H6 已完成，不要重做。先核对 H6 证据、代码、测试和工作区，再从 H7 的最小可测契约开始；按 ADR-0004 完成批量 review。”
 
 ## 9. 本次一次审查与一轮修订记录
 
