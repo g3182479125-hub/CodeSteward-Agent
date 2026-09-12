@@ -666,6 +666,23 @@ def test_trial_budget_is_shared_across_concurrent_calls() -> None:
     assert len(backend.requests) == CANDIDATE_MAX_TRIALS
 
 
+def test_live_execution_uses_a_separate_task_budget() -> None:
+    backend = RecordingBackend()
+    store = MemoryIdempotencyStore()
+    runner = runner_for(backend, store=store)
+
+    for index in range(CANDIDATE_MAX_TRIALS):
+        result = runner.trial(request_for(trial_id=f"trial-{index}"))
+        assert result.status == "passed"
+
+    live = replace(request_for(trial_id="call-1"), execution_mode="live")
+    result = runner.execute(live)
+
+    assert result.status == "passed"
+    assert store.get_candidate_budget("task-1")[0] == CANDIDATE_MAX_TRIALS
+    assert store.get_candidate_budget("candidate-live:task-1")[0] == 1
+
+
 def test_trial_timeout_and_output_limits_are_bound_into_request() -> None:
     backend = RecordingBackend()
     request = request_for()

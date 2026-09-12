@@ -264,9 +264,25 @@ class PluginManager:
             return
         try:
             data = self._state_store.load()
-            if data is None:
-                return
-            for raw in data.get("plugins", []):
+        except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        self._restore_plugin_rows(data.get("plugins", []))
+        self._restore_candidate_trial_rows(data.get("candidate_trials", []))
+        self._restore_active_route_rows(data.get("active_routes", []))
+        self._restore_retired_route_rows(data.get("retired_routes", []))
+        self._restore_waiting_route_rows(data.get("waiting_routes", []))
+        self._restore_operation_rows(data.get("operations", []))
+
+    def _restore_plugin_rows(self, rows: Any) -> None:
+        """Restore valid plugin rows while quarantining only malformed rows."""
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 manifest = PluginManifest.from_mapping(raw["manifest"])
                 record = PluginRecord(
                     manifest,
@@ -290,7 +306,16 @@ class PluginManager:
                     healthy = False
                 lifecycle = PluginLifecycle(raw.get("lifecycle", PluginLifecycle.INACTIVE.value))
                 self._lifecycles[key] = lifecycle if healthy else PluginLifecycle.FAILED
-            for raw in data.get("candidate_trials", []):
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError, PluginContractError):
+                continue
+
+    def _restore_candidate_trial_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 key = (
                     str(raw["plugin_id"]),
                     str(raw["version"]),
@@ -299,28 +324,64 @@ class PluginManager:
                 )
                 self._candidate_trials[key] = {
                     field: str(raw[field])
-                    for field in ("trial_id", "content_hash", "source_hash", "input_hash")
+                    for field in (
+                        "trial_id",
+                        "content_hash",
+                        "source_hash",
+                        "input_hash",
+                        "contract_hash",
+                    )
                     if raw.get(field) is not None
                 }
-            for raw in data.get("active_routes", []):
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    def _find_restored_registration(
+        self,
+        plugin_id: str,
+        version: str,
+        binding: str,
+    ) -> _RegisteredPlugin | None:
+        return next(
+            (
+                item
+                for item in self._registered.values()
+                if item.record.manifest.plugin_id == plugin_id
+                and item.record.manifest.version == version
+                and self._registration_key(item.record)[3] == binding
+            ),
+            None,
+        )
+
+    def _restore_active_route_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 scope = PluginScope(raw["scope"])
                 scope_key = (scope, raw["binding"])
                 plugin_id = raw["plugin_id"]
-                registration = next(
-                    (
-                        item
-                        for item in self._registered.values()
-                        if item.record.manifest.plugin_id == plugin_id
-                        and item.record.manifest.version == raw["version"]
-                        and self._registration_key(item.record)[3] == raw["binding"]
-                    ),
-                    None,
+                registration = self._find_restored_registration(
+                    plugin_id,
+                    raw["version"],
+                    raw["binding"],
                 )
                 if registration is not None and self._lifecycles[registration.registration_key] is not PluginLifecycle.FAILED:
                     generation = int(raw["generation"])
                     self._restored_routes[(scope_key, plugin_id)] = (registration, generation)
                     self._next_generation = max(self._next_generation, generation)
-            for raw in data.get("retired_routes", []):
+            except (KeyError, TypeError, ValueError, PluginContractError):
+                continue
+
+    def _restore_retired_route_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 route_key = (
                     (PluginScope(raw["scope"]), raw["binding"]),
                     raw["plugin_id"],
@@ -332,25 +393,40 @@ class PluginManager:
                     "cleanup_started": bool(raw.get("cleanup_started", False)),
                     "operation_id": raw.get("operation_id"),
                 }
-            for raw in data.get("waiting_routes", []):
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    def _restore_waiting_route_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 scope_key = (PluginScope(raw["scope"]), raw["binding"])
-                registration = next(
-                    (
-                        item
-                        for item in self._registered.values()
-                        if item.record.manifest.plugin_id == raw["plugin_id"]
-                        and item.record.manifest.version == raw["version"]
-                        and self._registration_key(item.record)[3] == raw["binding"]
-                    ),
-                    None,
+                registration = self._find_restored_registration(
+                    raw["plugin_id"],
+                    raw["version"],
+                    raw["binding"],
                 )
                 if registration is not None:
                     self._waiting_routes.setdefault(scope_key, set()).add(
                         registration.registration_key
                     )
-            for raw in data.get("operations", []):
+            except (KeyError, TypeError, ValueError, PluginContractError):
+                continue
+
+    def _restore_operation_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            try:
                 scope_key = (PluginScope(raw["scope"]), raw["binding"])
                 raw_result = raw.get("result", {})
+                if not isinstance(raw_result, dict):
+                    continue
                 code_value = raw_result.get("code")
                 code = PluginErrorCode(code_value) if code_value else None
                 if code is None:
@@ -382,19 +458,8 @@ class PluginManager:
                 )
                 operation.event.set()
                 self._operations[operation.operation_id] = operation
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            # Plugin state is recoverable metadata.  Keep the file intact and
-            # start empty rather than risking an unsafe or partial activation.
-            self._registered.clear()
-            self._lifecycles.clear()
-            self._restored_routes.clear()
-            self._restored_retired.clear()
-            self._waiting_routes.clear()
-            self._dependency_busy.clear()
-            self._dependency_switching.clear()
-            self._operations.clear()
-            self._candidate_trials.clear()
-            self._staging_operations.clear()
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError, PluginContractError):
+                continue
 
     def register_version(
         self,
@@ -552,6 +617,7 @@ class PluginManager:
         trial_id: str,
         content_hash: str,
         input_hash: str,
+        contract_hash: str,
     ) -> PluginOperationResult:
         """Bind one successful FC trial to the exact immutable candidate version."""
         registration = self._find_visible(plugin_id, version, session_id, project_id)
@@ -570,7 +636,7 @@ class PluginManager:
                 plugin_id=plugin_id,
                 version=version,
             )
-        if not trial_id or not input_hash:
+        if not trial_id or not input_hash or not contract_hash:
             return PluginOperationResult.failure(
                 PluginErrorCode.INVALID_CANDIDATE_STATE,
                 "a successful trial must include its trial and input bindings",
@@ -588,6 +654,7 @@ class PluginManager:
             "content_hash": content_hash,
             "source_hash": content_hash,
             "input_hash": input_hash,
+            "contract_hash": contract_hash,
         }
         self._save_state()
         return PluginOperationResult.success(
@@ -595,6 +662,59 @@ class PluginManager:
             plugin_id=plugin_id,
             version=version,
             details={"candidate_status": PluginCandidateStatus.TESTED.value, "trial_id": trial_id},
+        )
+
+    def candidate_binding_matches(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None,
+        contract_hash: str,
+    ) -> bool:
+        """Check the exact trial binding before restoring or dispatching a proxy."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return False
+        binding = self._candidate_trials.get(registration.registration_key)
+        return bool(
+            registration.record.candidate_status is PluginCandidateStatus.TESTED
+            and binding is not None
+            and binding.get("content_hash") == registration.record.manifest.content_hash
+            and binding.get("contract_hash") == contract_hash
+        )
+
+    def mark_candidate_rejected(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None,
+    ) -> PluginOperationResult:
+        """Make a candidate with a deterministic validation failure unusable."""
+        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the model candidate version is not visible in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        key = registration.registration_key
+        self._registered[key] = _RegisteredPlugin(
+            replace(registration.record, candidate_status=PluginCandidateStatus.REJECTED),
+            registration.artifact_root,
+            key,
+        )
+        self._candidate_trials.pop(key, None)
+        self._save_state()
+        return PluginOperationResult.success(
+            "model candidate rejected and cannot be activated",
+            plugin_id=plugin_id,
+            version=version,
+            details={"candidate_status": PluginCandidateStatus.REJECTED.value},
         )
 
     def activate_candidate(
@@ -605,6 +725,7 @@ class PluginManager:
         session_id: str,
         project_id: str | None = None,
         policy: DynamicPluginPolicy | None = None,
+        contract_hash: str | None = None,
     ) -> PluginOperationResult:
         """Activate only a tested model candidate through the live route."""
         registration = self._find_visible(plugin_id, version, session_id, project_id)
@@ -622,6 +743,19 @@ class PluginManager:
             return PluginOperationResult.failure(
                 PluginErrorCode.INVALID_CANDIDATE_STATE,
                 "candidate activation requires a successful trial bound to this version",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if contract_hash is None or not self.candidate_binding_matches(
+            plugin_id,
+            version,
+            session_id=session_id,
+            project_id=project_id,
+            contract_hash=contract_hash,
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "candidate activation requires the current manifest and execution contract binding",
                 plugin_id=plugin_id,
                 version=version,
             )
@@ -644,6 +778,7 @@ class PluginManager:
         operation_id: str | None = None,
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
+        contract_hash: str | None = None,
     ) -> PluginOperationResult:
         """Atomically switch an active model candidate to a tested version."""
         registration = self._find_visible(plugin_id, version, session_id, project_id)
@@ -672,6 +807,7 @@ class PluginManager:
             operation_id=operation_id,
             expected_generation=expected_generation,
             policy=policy,
+            _candidate_contract_hash=contract_hash,
             _candidate_activation=True,
         )
 
@@ -681,6 +817,12 @@ class PluginManager:
             self._authorized.add((PluginScope.SESSION, session_id))
         if project_id:
             self._authorized.add((PluginScope.PROJECT, project_id))
+
+    def revoke_authorization(self, session_id: str, project_id: str | None = None) -> None:
+        """Revoke dynamic-routing authorization for one session/project."""
+        self._authorized.discard((PluginScope.SESSION, session_id))
+        if project_id:
+            self._authorized.discard((PluginScope.PROJECT, project_id))
 
     def is_authorized(self, session_id: str, project_id: str | None = None) -> bool:
         return (
@@ -861,6 +1003,7 @@ class PluginManager:
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
         _candidate_activation: bool = False,
+        _candidate_contract_hash: str | None = None,
     ) -> PluginOperationResult:
         """Stage and atomically switch to a registered version.
 
@@ -907,6 +1050,19 @@ class PluginManager:
                 return PluginOperationResult.failure(
                     PluginErrorCode.INVALID_CANDIDATE_STATE,
                     "candidate activation requires a successful trial bound to this version",
+                    plugin_id=plugin_id,
+                    version=version,
+                )
+            if _candidate_contract_hash is None or not self.candidate_binding_matches(
+                plugin_id,
+                version,
+                session_id=session_id,
+                project_id=project_id,
+                contract_hash=_candidate_contract_hash,
+            ):
+                return PluginOperationResult.failure(
+                    PluginErrorCode.INVALID_CANDIDATE_STATE,
+                    "candidate activation requires the current manifest and execution contract binding",
                     plugin_id=plugin_id,
                     version=version,
                 )
@@ -2705,6 +2861,11 @@ class DynamicPluginRegistry(ToolRegistry):
         self._project_id = project_id
         self._policy = policy
         self._known: dict[str, ManagedPluginTool] = {}
+        # A tool schema and the route it describes must be a single snapshot.
+        # The model may answer after another turn has switched the live route;
+        # keep that old proxy long enough for it to return TOOL_VERSION_RETIRED
+        # instead of silently dispatching the new version by name.
+        self._definition_snapshot: dict[str, ManagedPluginTool] = {}
 
     def _visible_routes(self) -> tuple[_ActiveRoute, ...]:
         if not self._manager.is_authorized(self._session_id, self._project_id):
@@ -2738,6 +2899,8 @@ class DynamicPluginRegistry(ToolRegistry):
     def get(self, name: str) -> Tool | None:
         if (tool := self._base.get(name)) is not None:
             return tool
+        if (snapshot := self._definition_snapshot.get(name)) is not None:
+            return snapshot
         for route in self._visible_routes():
             if route.tool.name == name:
                 self._known[name] = route.tool
@@ -2756,12 +2919,18 @@ class DynamicPluginRegistry(ToolRegistry):
 
     def get_definitions(self) -> list[dict[str, Any]]:
         definitions = list(self._base.get_definitions())
+        routes = self._visible_routes()
         dynamic = [
             route.tool.to_schema()
-            for route in self._visible_routes()
+            for route in routes
             if route.tool.name not in self._base.tool_names
         ]
-        for route in self._visible_routes():
+        self._definition_snapshot = {
+            route.tool.name: route.tool
+            for route in routes
+            if route.tool.name not in self._base.tool_names
+        }
+        for route in routes:
             self._known[route.tool.name] = route.tool
         return self._sort_definitions(definitions + dynamic)
 

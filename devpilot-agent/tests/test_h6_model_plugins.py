@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,9 +24,10 @@ ISSUER = CandidateTrialGrantIssuer(b"h6-model-candidate-test-secret-012345")
 
 
 class FakeCandidateRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, reject_trials: bool = False) -> None:
         self.trials: list[CandidateTrialRequest] = []
         self.executions: list[CandidateTrialRequest] = []
+        self.reject_trials = reject_trials
 
     @staticmethod
     def _result(request: CandidateTrialRequest, *, output: object) -> CandidateExecutionResult:
@@ -59,7 +61,17 @@ class FakeCandidateRunner:
 
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         self.trials.append(request)
-        return self._result(request, output={"trial": True})
+        result = self._result(request, output={"trial": True})
+        return (
+            replace(
+                result,
+                status="rejected",
+                error_code="CANDIDATE_SOURCE_INVALID",
+                error_message="fixture rejection",
+            )
+            if self.reject_trials
+            else result
+        )
 
     def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         self.executions.append(request)
@@ -71,6 +83,7 @@ def _context(
     *,
     session: str = "session:one",
     text: str = "define",
+    candidate_enabled: bool | None = True,
 ) -> RequestContext:
     return RequestContext(
         channel="test",
@@ -80,6 +93,11 @@ def _context(
         original_user_text=text,
         turn_id=f"turn:{session}",
         workspace=tmp_path,
+        attributes=(
+            {"devpilot_model_candidates_enabled": candidate_enabled}
+            if candidate_enabled is not None
+            else {}
+        ),
     )
 
 
@@ -151,6 +169,7 @@ async def test_h6_define_trial_activate_and_call_without_restart(
         assert result["result"]["output"] == {"echo": {"name": "Alice"}}
         assert len(runner.trials) == 1
         assert len(runner.executions) == 1
+        assert runner.trials[0].input_data == {"name": "fixture"}
 
         stopped = json.loads(
             await tool.execute(
@@ -198,7 +217,37 @@ async def test_h6_candidate_is_session_scoped_and_cross_session_activation_is_de
                 version="1.0.0",
             )
         )
-        assert result["code"] == "plugin_not_found"
+        assert result["code"] == "PLUGIN_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_h6_profile_gate_cannot_be_bypassed_by_chat_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    controller = ModelCandidateController(
+        tmp_path,
+        runner=FakeCandidateRunner(),
+        grant_issuer=ISSUER,
+    )
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path, text="确认试用", candidate_enabled=None)):
+        result = json.loads(
+            await tool.execute(
+                action="define",
+                plugin_id="model-disabled",
+                version="1.0.0",
+                source=SOURCE,
+            )
+        )
+
+    assert result["code"] == "MODEL_CANDIDATES_PROFILE_DISABLED"
 
 
 @pytest.mark.asyncio
@@ -241,6 +290,108 @@ async def test_h6_candidate_trial_binding_rejects_changed_artifact(
             )
         )
         assert trial["code"] == "CANDIDATE_TRIAL_PREPARATION_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_h6_changed_input_contract_invalidates_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    controller = ModelCandidateController(
+        tmp_path,
+        runner=FakeCandidateRunner(),
+        grant_issuer=ISSUER,
+    )
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path, text="确认试用")):
+        assert json.loads(
+            await tool.execute(
+                action="define",
+                plugin_id="model-contract",
+                version="1.0.0",
+                source=SOURCE,
+                input_rules=[{"field": "name", "kind": "string", "max_length": 64}],
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(
+                action="trial",
+                plugin_id="model-contract",
+                version="1.0.0",
+            )
+        )["ok"]
+        registration = manager._find_visible(
+            "model-contract",
+            "1.0.0",
+            "session:one",
+            PluginManager.project_id_for_path(tmp_path),
+        )
+        assert registration is not None
+        registration.artifact_root.joinpath("input-rules.json").write_text(
+            json.dumps(
+                [{"field": "name", "kind": "string", "max_length": 128}],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        activated = json.loads(
+            await tool.execute(
+                action="activate",
+                plugin_id="model-contract",
+                version="1.0.0",
+            )
+        )
+
+    assert activated["code"] == "invalid_candidate_state"
+
+
+@pytest.mark.asyncio
+async def test_h6_rejected_trial_cannot_be_activated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    controller = ModelCandidateController(
+        tmp_path,
+        runner=FakeCandidateRunner(reject_trials=True),
+        grant_issuer=ISSUER,
+    )
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path, text="确认试用")):
+        await tool.execute(
+            action="define",
+            plugin_id="model-rejected",
+            version="1.0.0",
+            source=SOURCE,
+        )
+        trial = json.loads(
+            await tool.execute(
+                action="trial",
+                plugin_id="model-rejected",
+                version="1.0.0",
+            )
+        )
+        activated = json.loads(
+            await tool.execute(
+                action="activate",
+                plugin_id="model-rejected",
+                version="1.0.0",
+            )
+        )
+
+    assert trial["result"]["candidate_status"] == "rejected"
+    assert activated["code"] == "invalid_candidate_state"
 
 
 @pytest.mark.asyncio
@@ -288,6 +439,8 @@ async def test_h6_tested_revision_replaces_active_route_without_restart(
             )
         )
         assert first_activation["ok"] is True
+        old_view = manager.live_tools_for_session(base, "session:one")
+        old_view.get_definitions()
         second_activation = json.loads(
             await tool.execute(
                 action="activate",
@@ -297,6 +450,9 @@ async def test_h6_tested_revision_replaces_active_route_without_restart(
         )
         assert second_activation["ok"] is True
         assert second_activation["result"]["details"]["route_commit"] == "committed"
+
+        old_result = await old_view.execute("model-revision", {"name": "Alice"})
+        assert "TOOL_VERSION_RETIRED" in str(old_result)
 
         view = manager.live_tools_for_session(base, "session:one")
         assert "model-revision" in view.tool_names

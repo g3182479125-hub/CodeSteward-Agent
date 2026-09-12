@@ -35,6 +35,9 @@ from nanobot.agent.tools.context import current_request_context
 
 from .candidate_runner import (
     CANDIDATE_API_VERSION,
+    CANDIDATE_COMMAND_PROFILE,
+    CANDIDATE_NETWORK_POLICY,
+    CANDIDATE_TEMPLATE,
     CANDIDATE_TIMEOUT_SECONDS,
     CandidateInputRule,
     CandidateTrialGrantIssuer,
@@ -53,6 +56,7 @@ _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _FIELD = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _MAX_RULES = 12
+_AUTH_TTL_SECONDS = 1800
 _DEFAULT_RULES: tuple[CandidateInputRule, ...] = (("value", "string", 4096, None, None),)
 _SENSITIVE_FIELDS = frozenset(
     {"api_key", "apikey", "token", "secret", "password", "authorization", "headers", "env"}
@@ -117,6 +121,39 @@ def _rules_view(rules: tuple[CandidateInputRule, ...]) -> list[dict[str, object]
         }
         for field, kind, max_length, min_value, max_value in rules
     ]
+
+
+def _candidate_contract_hash(
+    manifest: Mapping[str, object],
+    rules: tuple[CandidateInputRule, ...],
+) -> str:
+    """Hash every sidecar and fixed execution setting that trial approves."""
+    payload = {
+        "manifest": dict(manifest),
+        "input_rules": _rules_view(rules),
+        "execution": {
+            "profile": CANDIDATE_COMMAND_PROFILE,
+            "template": CANDIDATE_TEMPLATE,
+            "network_policy": CANDIDATE_NETWORK_POLICY,
+        },
+    }
+    return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+
+
+def _fixture_value(rule: CandidateInputRule) -> object:
+    _field, kind, _max_length, min_value, _max_value = rule
+    if kind == "string":
+        return "fixture"
+    if kind == "boolean":
+        return False
+    if min_value is not None:
+        return min_value
+    return 1 if kind == "integer" else 1.0
+
+
+def _fixed_trial_input(rules: tuple[CandidateInputRule, ...]) -> dict[str, object]:
+    """Create deterministic fixture data; model-supplied trial data is ignored."""
+    return {rule[0]: _fixture_value(rule) for rule in rules}
 
 
 def _parse_rules(raw: object) -> tuple[CandidateInputRule, ...]:
@@ -184,6 +221,7 @@ class ModelCandidateController:
         self._issuer: CandidateTrialGrantIssuer | None = grant_issuer
         self._runner_error: tuple[str, str] | None = None
         self._runner_lock = threading.Lock()
+        self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
 
     def bind_plugin_manager(self, manager: PluginManager) -> None:
         self._manager = manager
@@ -199,7 +237,7 @@ class ModelCandidateController:
             project_id = PluginManager.project_id_for_path(workspace)
         task_id = request.attributes.get("devpilot_task_id")
         if not isinstance(task_id, str) or not task_id:
-            task_id = request.turn_id or session_id
+            task_id = "session-task-" + hashlib.sha256(session_id.encode()).hexdigest()[:16]
         return request, session_id, project_id, task_id, str(workspace)
 
     def _ensure_runner(self) -> CandidateTrialRunner | None:
@@ -255,9 +293,26 @@ class ModelCandidateController:
 
     def _authorize(self, context: tuple[Any, str, str, str, str]) -> str | None:
         request, session_id, project_id, _task_id, _workspace = context
+        if request.attributes.get("devpilot_model_candidates_enabled") is not True:
+            return _error(
+                "MODEL_CANDIDATES_PROFILE_DISABLED",
+                "当前任务 Profile 未启用模型候选插件；不能仅靠聊天确认绕过配置",
+            )
         manager = self._require_manager()
-        if manager.is_authorized(session_id, project_id):
+        key = (session_id, project_id)
+        grant = self._authorizations.get(key)
+        now = int(time.time())
+        if (
+            grant is not None
+            and grant.get("sender_id") == request.sender_id
+            and grant.get("task_id") == _task_id
+            and isinstance(grant.get("expires_at"), int)
+            and int(grant["expires_at"]) > now
+        ):
             return None
+        if grant is not None:
+            self._authorizations.pop(key, None)
+            manager.revoke_authorization(session_id, project_id)
         confirmation = (request.original_user_text or "").strip().casefold()
         explicit = confirmation in {
             "确认试用",
@@ -274,12 +329,17 @@ class ModelCandidateController:
                 requires_user_confirmation=True,
             )
         manager.authorize(session_id, project_id)
+        self._authorizations[key] = {
+            "sender_id": request.sender_id,
+            "task_id": _task_id,
+            "expires_at": now + _AUTH_TTL_SECONDS,
+        }
         return None
 
     def _artifact(
         self,
         registration: _RegisteredPlugin,
-    ) -> tuple[str, dict[str, object], tuple[CandidateInputRule, ...]]:
+    ) -> tuple[str, dict[str, object], tuple[CandidateInputRule, ...], str]:
         root = registration.artifact_root
         manifest = registration.record.manifest
         entry = manifest.resolve_entry(root)
@@ -288,10 +348,23 @@ class ModelCandidateController:
             raise ValueError("candidate source hash changed")
         raw_manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         raw_rules = json.loads((root / "input-rules.json").read_text(encoding="utf-8"))
-        return source, cast(dict[str, object], raw_manifest), _parse_rules(raw_rules)
+        if not isinstance(raw_manifest, dict) or raw_manifest != manifest.to_dict():
+            raise ValueError("candidate manifest sidecar changed")
+        rules = _parse_rules(raw_rules)
+        contract_hash = _candidate_contract_hash(raw_manifest, rules)
+        return source, cast(dict[str, object], raw_manifest), rules, contract_hash
 
     def build_proxy(self, registration: _RegisteredPlugin, _scope_key: ScopeKey) -> Tool:
-        _source, _manifest, rules = self._artifact(registration)
+        _source, _manifest, rules, contract_hash = self._artifact(registration)
+        manager = self._require_manager()
+        if not manager.candidate_binding_matches(
+            registration.record.manifest.plugin_id,
+            registration.record.manifest.version,
+            session_id=registration.record.session_id or "",
+            project_id=registration.record.project_id,
+            contract_hash=contract_hash,
+        ):
+            raise ValueError("candidate trial binding is stale")
         return ModelCandidateProxyTool(self, registration, rules)
 
     def _manifest(self, plugin_id: str, version: str, source: str) -> PluginManifest:
@@ -407,7 +480,7 @@ class ModelCandidateController:
         if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
             return _error("PLUGIN_NOT_FOUND", "候选版本在当前会话不可见")
         try:
-            source, manifest, rules = self._artifact(registration)
+            source, manifest, rules, contract_hash = self._artifact(registration)
             issuer = self._issuer
             if issuer is None:
                 return self._runner_failure()
@@ -433,7 +506,7 @@ class ModelCandidateController:
                 grant=grant,
                 manifest=manifest,
                 source=source,
-                input_data=kwargs.get("input_data", {}),
+                input_data=_fixed_trial_input(rules),
                 timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
             )
             result = await asyncio.to_thread(runner.trial, request)
@@ -447,9 +520,26 @@ class ModelCandidateController:
                     trial_id=trial_ref,
                     content_hash=result.source_hash,
                     input_hash=result.input_hash,
+                    contract_hash=contract_hash,
                 )
                 payload["candidate_status"] = "tested" if binding.ok else "defined"
                 payload["trial_binding"] = binding.to_dict()
+                payload["trial_input_source"] = "host_fixed_fixture"
+            elif result.status == "rejected":
+                rejection = self._require_manager().mark_candidate_rejected(
+                    plugin_id,
+                    version,
+                    session_id=session_id,
+                    project_id=project_id,
+                )
+                payload["candidate_status"] = (
+                    "rejected" if rejection.ok else "defined"
+                )
+                payload["rejection"] = rejection.to_dict()
+                payload["trial_input_source"] = "host_fixed_fixture"
+            elif result.status != "passed":
+                payload["candidate_status"] = "defined"
+                payload["trial_input_source"] = "host_fixed_fixture"
             return (
                 _result(payload)
                 if result.status == "passed"
@@ -472,6 +562,16 @@ class ModelCandidateController:
             return _error("CANDIDATE_REFERENCE_INVALID", "activate 需要 plugin_id 和 version")
         _request, session_id, project_id, _task_id, _workspace = context
         manager = self._require_manager()
+        registration = self._registration(plugin_id, version, context)
+        if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
+            return _error("PLUGIN_NOT_FOUND", "候选版本在当前会话不可见")
+        try:
+            _source, _manifest, _rules, contract_hash = self._artifact(registration)
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return _error(
+                "CANDIDATE_CONTRACT_CHANGED",
+                "候选工件或执行契约已变化，必须重新定义并试用",
+            )
         active, _scope_key = manager._find_active(plugin_id, session_id, project_id)
         if active is not None and active.registration.record.manifest.version != version:
             result = await manager.update_candidate(
@@ -480,6 +580,7 @@ class ModelCandidateController:
                 session_id=session_id,
                 project_id=project_id,
                 policy=_MODEL_CANDIDATE_POLICY,
+                contract_hash=contract_hash,
             )
         else:
             result = manager.activate_candidate(
@@ -488,6 +589,7 @@ class ModelCandidateController:
                 session_id=session_id,
                 project_id=project_id,
                 policy=_MODEL_CANDIDATE_POLICY,
+                contract_hash=contract_hash,
             )
         payload = result.to_dict()
         if result.ok:
@@ -513,7 +615,21 @@ class ModelCandidateController:
         if runner is None:
             return self._runner_failure()
         try:
-            source, manifest, _artifact_rules = self._artifact(registration)
+            source, manifest, artifact_rules, contract_hash = self._artifact(registration)
+            manager = self._require_manager()
+            if not manager.candidate_binding_matches(
+                registration.record.manifest.plugin_id,
+                registration.record.manifest.version,
+                session_id=registration.record.session_id or "",
+                project_id=registration.record.project_id,
+                contract_hash=contract_hash,
+            ):
+                return _error(
+                    "INVALID_CANDIDATE_STATE",
+                    "候选版本的试用绑定已失效，必须重新试用后才能调用",
+                )
+            if artifact_rules != rules:
+                return _error("CANDIDATE_CONTRACT_CHANGED", "候选输入契约已变化，必须重新试用")
             issuer = self._issuer
             if issuer is None:
                 return self._runner_failure()
@@ -536,6 +652,7 @@ class ModelCandidateController:
                 source=source,
                 input_data=dict(input_data),
                 timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
+                execution_mode="live",
             )
             result = await asyncio.to_thread(runner.execute, request)
             return _json({"ok": result.status == "passed", "result": result.to_dict()})
@@ -546,6 +663,11 @@ class ModelCandidateController:
         context = self._context()
         if context is None:
             return _error("CANDIDATE_CONTEXT_INVALID", "模型候选动作需要可信请求上下文")
+        if context[0].attributes.get("devpilot_model_candidates_enabled") is not True:
+            return _error(
+                "MODEL_CANDIDATES_PROFILE_DISABLED",
+                "当前任务 Profile 未启用模型候选插件；不能仅靠聊天确认绕过配置",
+            )
         action = kwargs.get("action")
         if action == "inspect":
             return self.inspect(context)
@@ -558,6 +680,24 @@ class ModelCandidateController:
             return await self.trial(kwargs, context)
         if action == "activate":
             return await self.activate(kwargs, context)
+        if action == "status":
+            operation_id = kwargs.get("operation_id")
+            if not isinstance(operation_id, str) or not operation_id:
+                return _error("OPERATION_REFERENCE_INVALID", "status 需要 operation_id")
+            status = self._require_manager().operation_status(
+                operation_id,
+                session_id=context[1],
+                project_id=context[2],
+            )
+            return (
+                _result(status)
+                if status is not None
+                else _error("OPERATION_NOT_FOUND", "该操作不属于当前会话或已不存在")
+            )
+        if action == "revoke":
+            self._authorizations.pop((context[1], context[2]), None)
+            self._require_manager().revoke_authorization(context[1], context[2])
+            return _result({"status": "authorization_revoked"})
         if action in {"stop", "remove"}:
             if (authorization_error := self._authorize(context)) is not None:
                 return authorization_error
@@ -589,6 +729,11 @@ class ModelCandidateController:
                     session_id=session_id,
                     project_id=project_id,
                     policy=_MODEL_CANDIDATE_POLICY,
+                    operation_id=(
+                        kwargs.get("operation_id")
+                        if isinstance(kwargs.get("operation_id"), str)
+                        else None
+                    ),
                 )
             else:
                 result = self._require_manager().remove(
@@ -597,11 +742,16 @@ class ModelCandidateController:
                     session_id=session_id,
                     project_id=project_id,
                     policy=_MODEL_CANDIDATE_POLICY,
+                    operation_id=(
+                        kwargs.get("operation_id")
+                        if isinstance(kwargs.get("operation_id"), str)
+                        else None
+                    ),
                 )
             return _result(result.to_dict()) if result.ok else _json(result.to_dict())
         return _error(
             "CANDIDATE_ACTION_INVALID",
-            "action 必须是 inspect/define/trial/activate/stop/remove",
+            "action 必须是 inspect/define/trial/activate/stop/remove/status/revoke",
         )
 
 
@@ -649,7 +799,16 @@ class ModelCandidateProxyTool(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["inspect", "define", "trial", "activate", "stop", "remove"],
+                "enum": [
+                    "inspect",
+                    "define",
+                    "trial",
+                    "activate",
+                    "stop",
+                    "remove",
+                    "status",
+                    "revoke",
+                ],
                 "description": (
                     "Inspect or manage one model candidate; activation never imports "
                     "candidate code."
@@ -665,6 +824,7 @@ class ModelCandidateProxyTool(Tool):
             },
             "input_data": {"type": "object", "additionalProperties": True},
             "trial_id": {"type": "string", "minLength": 1},
+            "operation_id": {"type": "string", "minLength": 1},
         },
         "required": ["action"],
         "additionalProperties": False,

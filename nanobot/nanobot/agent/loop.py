@@ -498,8 +498,18 @@ class AgentLoop:
         try:
             from devpilot.model_plugins import ModelCandidateController
 
-            model_candidate_controller = ModelCandidateController(self.workspace)
-            candidate_tool_factory = model_candidate_controller.build_proxy
+            if (
+                os.environ.get("DEVPILOT_ENABLE_MODEL_CANDIDATES") == "1"
+                and plugin_state_path is None
+            ):
+                logger.warning(
+                    "Model candidates are enabled but no durable DevPilot state store is configured; "
+                    "candidate management is disabled until DEVPILOT_DATA_DIR or "
+                    "DEVPILOT_DATABASE_URL is set"
+                )
+            else:
+                model_candidate_controller = ModelCandidateController(self.workspace)
+                candidate_tool_factory = model_candidate_controller.build_proxy
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             # DevPilot is optional for the base nanobot distribution.  A missing
             # candidate adapter must not prevent the core agent from starting.
@@ -1163,18 +1173,27 @@ class AgentLoop:
         task_context = TaskContextState.from_metadata(
             ctx.session.metadata.get(TASK_CONTEXT_METADATA_KEY)
         )
+        profile = self.task_profile_for_session(ctx.session)
+        if task_context is not None:
+            attributes.update(
+                {
+                    "devpilot_task_id": task_context.task_id,
+                    "devpilot_project_id": "local-"
+                    + hashlib.sha256(str(scope.project_path.resolve()).encode()).hexdigest()[:16],
+                }
+            )
+        # This is a server-owned attribute, written after inbound metadata is
+        # copied, so a user message cannot enable model-candidate routing.
+        attributes["devpilot_model_candidates_enabled"] = bool(
+            profile is not None and profile.dynamic_plugins.enabled
+        )
         if (
             os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") == "1"
             and task_context is not None
             and task_context.profile_binding.startswith("bug-fix@")
         ):
-            project_id = "local-" + hashlib.sha256(
-                str(scope.project_path.resolve()).encode()
-            ).hexdigest()[:16]
             attributes.update(
                 {
-                    "devpilot_task_id": task_context.task_id,
-                    "devpilot_project_id": project_id,
                     "devpilot_skill_id": "bug-fix",
                     "devpilot_evidence_refs": list(task_context.evidence_refs),
                 }

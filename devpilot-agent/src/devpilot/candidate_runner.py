@@ -32,6 +32,8 @@ from .redaction import is_sensitive_field_name, redact_sensitive_payload, redact
 
 CANDIDATE_MAX_TRIALS = 3
 CANDIDATE_MAX_TRIAL_SECONDS = 120
+CANDIDATE_MAX_EXECUTIONS = 30
+CANDIDATE_MAX_EXECUTION_SECONDS = 600
 CANDIDATE_TIMEOUT_SECONDS = 30
 CANDIDATE_MAX_OUTPUT_BYTES = 64 * 1024
 CANDIDATE_MAX_SOURCE_BYTES = 64 * 1024
@@ -220,6 +222,7 @@ class CandidateTrialRequest:
     source: str
     input_data: object
     timeout_seconds: int = CANDIDATE_TIMEOUT_SECONDS
+    execution_mode: str = "trial"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1084,7 +1087,7 @@ class CandidateTrialRunner:
         return all(
             payload.get(field) == getattr(request, field)
             for field in ("task_id", "session_id", "project_id", "trial_id")
-        )
+        ) and payload.get("execution_mode", "trial") == request.execution_mode
 
     @staticmethod
     def _operation_envelope_matches(
@@ -1158,6 +1161,7 @@ class CandidateTrialRunner:
             "session_id": request.session_id,
             "task_id": request.task_id,
             "trial_id": request.trial_id,
+            "execution_mode": request.execution_mode,
             "grant_id": grant.grant_id,
             "candidate_id": manifest.plugin_id,
             "version": manifest.version,
@@ -1177,6 +1181,7 @@ class CandidateTrialRunner:
         run_id: str,
         source_hash: str,
         input_hash: str,
+        budget_task_id: str,
     ) -> tuple[CandidateExecutionResult | None, bool]:
         try:
             state, response_json = self._store.reserve_idempotency(
@@ -1286,6 +1291,8 @@ class CandidateTrialRunner:
                 "session_id": request.session_id,
                 "project_id": request.project_id,
                 "trial_id": request.trial_id,
+                "execution_mode": request.execution_mode,
+                "budget_task_id": budget_task_id,
                 "candidate_id": candidate_id,
                 "version": version,
                 "source_hash": source_hash,
@@ -1366,7 +1373,14 @@ class CandidateTrialRunner:
             if not self._store.compare_and_set_idempotency(operation_key, record[1], serialized):
                 raise RuntimeError("candidate operation completion lost its compare-and-set")
             if result.status != "unknown":
-                self._store.settle_candidate_budget(request.task_id, operation_key, lease_token)
+                budget_task_id = progress.get("budget_task_id", request.task_id)
+                if not isinstance(budget_task_id, str) or not budget_task_id:
+                    raise ValueError("candidate budget binding is invalid")
+                self._store.settle_candidate_budget(
+                    budget_task_id,
+                    operation_key,
+                    lease_token,
+                )
         except Exception:
             return _failure(
                 request,
@@ -1387,6 +1401,27 @@ class CandidateTrialRunner:
         return result
 
     def _run(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        if request.execution_mode not in {"trial", "live"}:
+            return _failure(
+                request,
+                "CANDIDATE_EXECUTION_MODE_INVALID",
+                "候选执行模式无效",
+            )
+        budget_task_id = (
+            request.task_id
+            if request.execution_mode == "trial"
+            else "candidate-live:" + request.task_id
+        )
+        max_calls = (
+            self._max_trials
+            if request.execution_mode == "trial"
+            else CANDIDATE_MAX_EXECUTIONS
+        )
+        max_seconds = (
+            self._max_trial_seconds
+            if request.execution_mode == "trial"
+            else CANDIDATE_MAX_EXECUTION_SECONDS
+        )
         if not request.task_id or not request.project_id or not request.trial_id:
             return _failure(request, "CANDIDATE_SCOPE_INVALID", "候选任务作用域不完整")
         if not isinstance(request.source, str):
@@ -1501,6 +1536,7 @@ class CandidateTrialRunner:
             run_id=run_id,
             source_hash=source_hash,
             input_hash=input_hash,
+            budget_task_id=budget_task_id,
         )
         if replay is not None:
             return replay
@@ -1528,9 +1564,9 @@ class CandidateTrialRunner:
                 _reserved_seconds,
                 lease_token,
             ) = self._store.reserve_candidate_budget(
-                request.task_id,
-                self._max_trials,
-                self._max_trial_seconds,
+                budget_task_id,
+                max_calls,
+                max_seconds,
                 self._timeout_seconds,
                 operation_key,
             )
@@ -1561,7 +1597,7 @@ class CandidateTrialRunner:
                 )
             )
         if not self._store.validate_candidate_lease(
-            request.task_id, operation_key, lease_token
+            budget_task_id, operation_key, lease_token
         ):
             return finish(
                 _failure(
@@ -1642,7 +1678,7 @@ class CandidateTrialRunner:
             )
         receipt_error = _execution_receipt_error(result)
         if not self._store.validate_candidate_lease(
-            request.task_id, operation_key, lease_token
+            budget_task_id, operation_key, lease_token
         ):
             return finish(
                 _failure(
