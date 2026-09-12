@@ -819,8 +819,37 @@ class ModelCandidateProxyTool(Tool):
             "source": {"type": "string", "maxLength": 65536},
             "input_rules": {
                 "type": "array",
+                "description": (
+                    "Optional candidate input contract. Each item must use exactly "
+                    "field, kind and max_length; example: "
+                    '[{"field":"name","kind":"string","max_length":64}]. '
+                    "Numeric kinds may also set "
+                    "min_value and max_value."
+                ),
+                "minItems": 1,
                 "maxItems": 12,
-                "items": {"type": "object", "additionalProperties": True},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "description": (
+                                "Safe payload field name; do not use secrets or credentials."
+                            ),
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": ["string", "integer", "number", "boolean"],
+                        },
+                        "max_length": {"type": "integer", "minimum": 1, "maximum": 65536},
+                        "min_value": {"type": "number"},
+                        "max_value": {"type": "number"},
+                    },
+                    "required": ["field", "kind", "max_length"],
+                    "additionalProperties": False,
+                },
             },
             "input_data": {"type": "object", "additionalProperties": True},
             "trial_id": {"type": "string", "minLength": 1},
@@ -831,7 +860,7 @@ class ModelCandidateProxyTool(Tool):
     }
 )
 class ModelPluginManagementTool(Tool):
-    """Expose the six H6 model-candidate actions through nanobot chat."""
+    """Expose the eight H6 model-candidate actions through nanobot chat."""
 
     _scopes = {"core"}
 
@@ -847,7 +876,9 @@ class ModelPluginManagementTool(Tool):
         return (
             "Manage model-generated candidate tools live: inspect, define, trial, "
             "activate, stop or remove. Candidate source is never imported by "
-            "nanobot; trial and calls use the configured FC proxy."
+            "nanobot; trial and calls use the configured FC proxy. For define, "
+            "input_rules items must use field/kind/max_length, for example "
+            "{field: name, kind: string, max_length: 64}."
         )
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:

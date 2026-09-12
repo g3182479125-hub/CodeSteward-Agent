@@ -14,10 +14,10 @@
 在 `ModelPluginManagementTool` 的参数 schema 中完整描述规则对象：
 
 - `field` 为安全字段名且必填；
-- `type` 为 `string/integer/number/boolean` 之一且必填；
+- `kind` 为 `string/integer/number/boolean` 之一且必填；
 - `max_length` 为 1–65536 的整数；
 - `min_value/max_value` 仅用于数值类型；
-- 通过 description 提供合法示例。
+- 通过 description 提供合法示例：`{"field":"name","kind":"string","max_length":64}`。
 
 保留现有 `_parse_rules` 作为唯一运行时校验器，不增加新工具、不改变授权、FC proxy、
 候选生命周期或持久化语义。

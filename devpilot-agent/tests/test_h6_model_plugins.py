@@ -101,6 +101,38 @@ def _context(
     )
 
 
+def test_h6_management_schema_describes_input_rule_contract() -> None:
+    tool = ModelPluginManagementTool(None)  # type: ignore[arg-type]
+    schema = tool.parameters["properties"]["input_rules"]
+    item = schema["items"]
+
+    assert item["required"] == ["field", "kind", "max_length"]
+    assert item["properties"]["kind"]["enum"] == [
+        "string",
+        "integer",
+        "number",
+        "boolean",
+    ]
+    assert tool.validate_params(
+        {
+            "action": "define",
+            "input_rules": [
+                {"field": "name", "kind": "string", "max_length": 64},
+            ],
+        }
+    ) == []
+    errors = tool.validate_params(
+        {
+            "action": "define",
+            "input_rules": [
+                {"field": "name", "type": "string", "max_length": 64},
+            ],
+        }
+    )
+    assert any("missing required input_rules[0].kind" in error for error in errors)
+    assert any("unexpected parameter input_rules[0].type" in error for error in errors)
+
+
 @pytest.mark.asyncio
 async def test_h6_define_trial_activate_and_call_without_restart(
     tmp_path: Path,

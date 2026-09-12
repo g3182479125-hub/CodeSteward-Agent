@@ -53,6 +53,9 @@ uv run --with pytest-asyncio pytest tests/test_h5_candidate_runner.py tests/test
 4. 在 v1 运行期间定义并 trial `demo_greeting_v1@2.0.0`，真实 FC 返回 `{"message":"你好，再见，fixture"}`，耗时约 1875ms。
 5. activate v2 返回 `generation=2`、`route_commit=committed`、`old_cleanup=complete`；随后真实调用返回 `{"message":"你好，再见，小明"}`、`version=2.0.0`，证明热替换进入实际调用路径。
 6. stop v2 成功变为 `inactive`，随后 remove v2 和 v1；最终 inspect 返回 `candidates=[]`，无 active 版本，artifact 按设计保留。
+7. 更新工具 schema 后，在新 nanobot WebUI 会话中由 DeepSeek 按
+   `[{"field":"name","kind":"string","max_length":64}]` 一次 define
+   `h6_schema_probe@1.0.0` 成功；未发生规则字段探测，也未执行 trial/activate/call。
 
 ### 真实 H6-F 授权撤销验收
 
