@@ -658,8 +658,42 @@ def test_restore_h7_uncertain_operation_pauses_without_interrupted_tool_result()
     assert loop._restore_runtime_checkpoint(session) is True
     assert session.messages == []
     assert AgentLoop._RUNTIME_CHECKPOINT_KEY not in session.metadata
-    paused = LoopCheckpoint.from_dict(session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY])
+    paused_state = session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY]
+    paused = LoopCheckpoint.from_dict(paused_state["h7_loop_checkpoint"])
     assert paused.business_references["run_id"] == "run-1"
+    assert paused_state["checkpoint"]["assistant_message"]["content"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_h7_paused_handoff_blocks_new_message_dispatch(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    session = loop.sessions.get_or_create("websocket:paused")
+    session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
+        "checkpoint": {"assistant_message": {"role": "assistant", "content": "working"}},
+        "h7_loop_checkpoint": {
+            "checkpoint_schema": "h7-v1",
+            "session_id": session.key,
+            "task_id": "task-1",
+            "project_id": "project-1",
+            "step": 1,
+            "message_position": 2,
+            "remaining_iterations": 3,
+            "completed_tool_results": [],
+            "pending_tool_calls": ["call-1"],
+            "versions": {"loop_driver": "default-react@1"},
+            "business_references": {"run_id": "run-1"},
+            "uncertain_side_effect_refs": ["run_id:run-1"],
+        },
+    }
+    loop.sessions.save(session)
+
+    response = await loop._process_message(
+        InboundMessage(channel="websocket", sender_id="user", chat_id="paused", content="continue")
+    )
+
+    assert response is not None
+    assert "任务已暂停" in response.content
+    loop.provider.chat_with_retry.assert_not_awaited()
 
 
 def test_restore_final_response_checkpoint_preserves_matching_provider_state() -> None:

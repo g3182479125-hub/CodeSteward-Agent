@@ -2127,6 +2127,9 @@ class AgentLoop:
             ctx.on_stream_end = _tracked_stream_end
 
         await self._run_turn_stage(ctx, "restore", self._restore_turn)
+        if ctx.stop_reason == "h7_handoff_paused":
+            await self._run_turn_stage(ctx, "respond", self._prepare_outbound)
+            return ctx.outbound
         await self._run_turn_stage(ctx, "compact", self._compact_session)
         if await self._run_turn_stage(ctx, "command", self._dispatch_command):
             return ctx.outbound
@@ -2255,6 +2258,13 @@ class AgentLoop:
 
         if self._restore_runtime_checkpoint(session):
             self.sessions.save(session)
+        if self._H7_HANDOFF_PAUSE_KEY in session.metadata:
+            ctx.final_content = (
+                "任务已暂停：上一次操作的结果尚未确认。"
+                "系统已保留运行引用，后续只能查询或恢复，不能重放执行。"
+            )
+            ctx.stop_reason = "h7_handoff_paused"
+            return
         if self._restore_pending_user_turn(session):
             self.sessions.save(session)
 
@@ -2521,7 +2531,12 @@ class AgentLoop:
                 )
             )
         self._clear_pending_user_turn(session)
-        self._clear_runtime_checkpoint(session)
+        preserve_h7_pause = (
+            ctx.stop_reason == "driver_paused"
+            and isinstance(session.metadata.get(self._RUNTIME_CHECKPOINT_KEY), dict)
+        )
+        if not preserve_h7_pause:
+            self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
         if not ctx.ephemeral:
             await self.runtime_event_publisher.session_turn_persisted(
@@ -2781,7 +2796,10 @@ class AgentLoop:
                 # A managed handoff never becomes an ordinary interrupted tool
                 # result.  Preserve the durable facts for the H8 coordinator;
                 # it must query unknown operations rather than replay them.
-                session.metadata[self._H7_HANDOFF_PAUSE_KEY] = h7_checkpoint.to_dict()
+                session.metadata[self._H7_HANDOFF_PAUSE_KEY] = {
+                    "checkpoint": dict(checkpoint_data),
+                    "h7_loop_checkpoint": h7_checkpoint.to_dict(),
+                }
                 self._clear_pending_user_turn(session)
                 self._clear_runtime_checkpoint(session)
                 return True

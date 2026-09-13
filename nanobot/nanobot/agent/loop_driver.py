@@ -104,7 +104,7 @@ def merge_business_facts(
             if isinstance((item := value.get(key)), str) and item
         }
         for key, item in identifiers.items():
-            merged[key] = item[:256]
+            merged[f"{key}:{item[:256]}"] = item[:256]
         status = value.get("status")
         if isinstance(status, str) and status.lower() in _UNCERTAIN_STATUSES:
             for key, item in identifiers.items():
@@ -113,6 +113,8 @@ def merge_business_facts(
             record(item)
 
     for result in completed_results:
+        if isinstance(result, Mapping) and isinstance(result.get("tool_call_id"), str):
+            uncertain.discard(f"tool_call:{result['tool_call_id'][:256]}")
         record(result.get("content") if isinstance(result, Mapping) else result)
     for call in pending_calls:
         if isinstance(call, Mapping) and isinstance(call.get("id"), str):

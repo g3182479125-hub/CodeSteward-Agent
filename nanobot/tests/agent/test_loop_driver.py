@@ -117,8 +117,21 @@ def test_business_facts_keep_unknown_operation_across_later_checkpoints() -> Non
     )
     references, uncertain = merge_business_facts(references, uncertain, [], [])
 
-    assert references == {"run_id": "run-1", "change_set_id": "cs-1"}
+    assert references == {"run_id:run-1": "run-1", "change_set_id:cs-1": "cs-1"}
     assert uncertain == ("change_set_id:cs-1", "run_id:run-1")
+
+
+def test_business_facts_settle_completed_pending_tool_without_losing_unknown_run() -> None:
+    references, uncertain = merge_business_facts({}, (), [], [{"id": "tool-1"}])
+    references, uncertain = merge_business_facts(
+        references,
+        uncertain,
+        [{"tool_call_id": "tool-1", "content": '{"status":"unknown","run_id":"run-1"}'}],
+        [],
+    )
+
+    assert references == {"run_id:run-1": "run-1"}
+    assert uncertain == ("run_id:run-1",)
 
 
 @pytest.mark.asyncio
