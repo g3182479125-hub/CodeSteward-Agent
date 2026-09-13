@@ -30,7 +30,17 @@ from nanobot.agent.automation_turns import publish_next_deferred_turn
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
-from nanobot.agent.loop_driver import LoopCheckpoint, merge_business_facts
+from nanobot.agent.loop_driver import (
+    DefaultReactDriver,
+    LoopCheckpoint,
+    LoopDriver,
+    merge_business_facts,
+)
+from nanobot.agent.loop_handoff import (
+    LoopHandoffManager,
+    ManagedLoopDriver,
+    SqliteLoopHandoffStore,
+)
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.plugins.manager import PluginManager
@@ -529,6 +539,19 @@ class AgentLoop:
             ),
             candidate_tool_factory=candidate_tool_factory,
         )
+        self.loop_handoff_manager: LoopHandoffManager | None = None
+        if os.environ.get("DEVPILOT_ENABLE_LOOP_HANDOFF") == "1" and plugin_state_path is not None:
+            try:
+                self.loop_handoff_manager = LoopHandoffManager(
+                    SqliteLoopHandoffStore(
+                        plugin_state_path,
+                        require_schema=require_plugin_state_schema,
+                    )
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                # H8 is additive. A database awaiting its migration must not
+                # turn a working nanobot session into a startup failure.
+                logger.warning("Live loop handoff is disabled: {}", exc)
         if model_candidate_controller is not None:
             model_candidate_controller.bind_plugin_manager(self.plugin_manager)
             from devpilot.model_plugins import ModelPluginManagementTool
@@ -1332,6 +1355,21 @@ class AgentLoop:
         budget = runtime.context_window_tokens - max(1, reserved_output) - 1024
         return budget if budget > 0 else max(128, runtime.context_window_tokens // 2)
 
+    def request_loop_driver_switch(
+        self,
+        session_id: str,
+        driver_name: str,
+        driver_version: str = "1",
+    ) -> str:
+        """Queue an H8 switch; it commits only after the next safe boundary."""
+        if self.loop_handoff_manager is None:
+            raise RuntimeError("live loop handoff is disabled")
+        record = self.loop_handoff_manager.request_switch(
+            session_id, driver_name, driver_version
+        )
+        assert record.operation_id is not None
+        return record.operation_id
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict[str, Any]],
@@ -1372,6 +1410,7 @@ class AgentLoop:
         self._sync_subagent_runtime_limits()
         h7_business_references: dict[str, str] = {}
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
+        h8_driver: LoopDriver = DefaultReactDriver()
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
             nonlocal h7_business_references, h7_uncertain_side_effect_refs
@@ -1407,7 +1446,7 @@ class AgentLoop:
                 completed,
                 pending,
             )
-            public_payload["h7_loop_checkpoint"] = LoopCheckpoint(
+            checkpoint = LoopCheckpoint(
                 session_id=session.key,
                 task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
                 project_id=str(
@@ -1435,7 +1474,17 @@ class AgentLoop:
                 versions={"loop_driver": f"{driver_name}@{driver_version}"},
                 business_references=h7_business_references,
                 uncertain_side_effect_refs=h7_uncertain_side_effect_refs,
-            ).to_dict()
+            )
+            public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
+            if self.loop_handoff_manager is not None:
+                try:
+                    self.loop_handoff_manager.ensure(checkpoint, h8_driver)
+                    self.loop_handoff_manager.commit_boundary(session.key, checkpoint)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    # Keep the exact Host checkpoint even when optional H8
+                    # handoff persistence cannot advance.  A later restore
+                    # therefore pauses rather than replaying unknown work.
+                    logger.warning("Loop handoff checkpoint was not committed: {}", exc)
             self._set_runtime_checkpoint(session, public_payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
@@ -1564,6 +1613,14 @@ class AgentLoop:
             metadata=dict(metadata or {}),
             workspace=effective_scope.project_path,
         )
+        if self.loop_handoff_manager is not None and session is not None:
+            try:
+                # A first turn has no durable handoff record yet.  It gets the
+                # default Driver; subsequent turns resolve at every action.
+                self.loop_handoff_manager.recover_driver(session.key)
+                h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
+            except RuntimeError:
+                h8_driver = DefaultReactDriver()
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
@@ -1668,6 +1725,7 @@ class AgentLoop:
                     if session is not None and profile is not None
                     else None
                 ),
+                loop_driver=h8_driver,
              ))
         finally:
             turn_scope_stack.close()

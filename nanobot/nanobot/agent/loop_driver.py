@@ -59,6 +59,11 @@ class LoopDriver(Protocol):
 
     def next_action(self, step: StepInput) -> DriverAction: ...
 
+    def export_state(self) -> Mapping[str, object]: ...
+
+    @classmethod
+    def restore_state(cls, state: Mapping[str, object]) -> "LoopDriver": ...
+
 
 @dataclass(frozen=True, slots=True)
 class DefaultReactDriver:
@@ -73,6 +78,56 @@ class DefaultReactDriver:
         if step.remaining_iterations <= 0:
             return DriverAction(DriverActionKind.PAUSE, "iteration_budget_exhausted")
         return DriverAction(DriverActionKind.REQUEST_MODEL, "next_model_step")
+
+    def export_state(self) -> Mapping[str, object]:
+        """Return an immutable, serializable driver artifact."""
+        return {"driver_state_schema": "default-react-v1"}
+
+    @classmethod
+    def restore_state(cls, state: Mapping[str, object]) -> "DefaultReactDriver":
+        if state != {"driver_state_schema": "default-react-v1"}:
+            raise ValueError("incompatible default-react driver state")
+        return cls()
+
+
+@dataclass(frozen=True, slots=True)
+class PlanThenActDriver:
+    """A deliberately finite planning driver that still uses the one Host executor.
+
+    The plan is an execution *view* only.  It cannot directly call a model,
+    tool, filesystem, or sandbox; the Host validates and performs each action.
+    """
+
+    plan: tuple[str, ...] = ("understand", "act", "verify")
+    name: str = "plan-then-act"
+    version: str = "1"
+
+    def __post_init__(self) -> None:
+        if not self.plan or any(not isinstance(item, str) or not item for item in self.plan):
+            raise ValueError("plan-then-act requires non-empty structured plan steps")
+
+    def next_action(self, step: StepInput) -> DriverAction:
+        if step.pending_tool_calls:
+            return DriverAction(DriverActionKind.DISPATCH_TOOLS, "plan_pending_tools")
+        if step.remaining_iterations <= 0:
+            return DriverAction(DriverActionKind.PAUSE, "plan_iteration_budget_exhausted")
+        phase = self.plan[step.step % len(self.plan)]
+        return DriverAction(DriverActionKind.REQUEST_MODEL, f"plan_step:{phase}")
+
+    def export_state(self) -> Mapping[str, object]:
+        return {
+            "driver_state_schema": "plan-then-act-v1",
+            "plan": list(self.plan),
+        }
+
+    @classmethod
+    def restore_state(cls, state: Mapping[str, object]) -> "PlanThenActDriver":
+        if state.get("driver_state_schema") != "plan-then-act-v1":
+            raise ValueError("incompatible plan-then-act driver state")
+        plan = state.get("plan")
+        if not isinstance(plan, list) or any(not isinstance(item, str) for item in plan):
+            raise ValueError("invalid plan-then-act plan")
+        return cls(plan=tuple(plan))
 
 
 def merge_business_facts(

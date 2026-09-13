@@ -38,6 +38,7 @@ def _usage() -> str:
         "`/plugins update <plugin-id>@<version> [operation-id] [expected-generation]`; "
         "`/plugins stop <plugin-id> [operation-id] [expected-generation]`; "
         "`/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`; "
+        "`/plugins switch-loop <default-react|plan-then-act>`; "
         "`/plugins cleanup-retry <operation-id>`; "
         "`/plugins status <operation-id>`"
     )
@@ -91,7 +92,32 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             session_id=ctx.key,
             project_id=project_id,
         )
-        return _text(ctx, str(status) if status is not None else "Unknown plugin operation.")
+        if status is not None:
+            return _text(ctx, str(status))
+        handoff = ctx.loop.loop_handoff_manager
+        loop_status = handoff.operation_status(ctx.key, parts[1]) if handoff is not None else None
+        if loop_status is not None:
+            return _text(
+                ctx,
+                "Loop switch status: "
+                f"{loop_status.status}; driver={loop_status.driver_name}@{loop_status.driver_version}; "
+                f"generation={loop_status.owner_generation}",
+            )
+        return _text(ctx, "Unknown plugin or loop-switch operation.")
+    if action == "switch-loop":
+        if len(parts) != 2:
+            return _text(ctx, "Usage: `/plugins switch-loop <default-react|plan-then-act>`")
+        if not ctx.is_user_turn:
+            return _text(ctx, "Only a direct user message can request a loop switch.")
+        try:
+            operation_id = ctx.loop.request_loop_driver_switch(ctx.key, parts[1])
+        except (RuntimeError, ValueError) as exc:
+            return _text(ctx, f"Loop switch was not accepted: {exc}")
+        return _text(
+            ctx,
+            "Loop switch is pending at the next safe Host boundary. "
+            f"operation_id: `{operation_id}`. The current task will not be restarted.",
+        )
     if action not in {"load", "update", "stop", "remove", "cleanup-retry"}:
         return _text(ctx, _usage())
     if not ctx.is_user_turn:

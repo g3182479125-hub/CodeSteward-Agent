@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nanobot.agent.loop_driver import LoopCheckpoint
+from nanobot.agent.loop_handoff import SqliteLoopHandoffStore
 from nanobot.agent.plugins import PluginManifest, PluginRecord, PluginSource
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus.queue import MessageBus
@@ -134,6 +136,28 @@ async def test_native_plugin_commands_update_and_remove_versions(tmp_path: Path)
     assert stopped is not None and "plugin stopped" in stopped.content
     removed_new = await loop.process_direct("/plugins remove devflow-math@0.2.0", session_key="cli:direct")
     assert removed_new is not None and "plugin version removed" in removed_new.content
+
+
+@pytest.mark.asyncio
+async def test_plugins_switch_loop_queues_boundary_handoff(tmp_path: Path, monkeypatch) -> None:
+    database_path = tmp_path / "devpilot.db"
+    SqliteLoopHandoffStore(database_path).load("missing")
+    monkeypatch.setenv("DEVPILOT_ENABLE_LOOP_HANDOFF", "1")
+    monkeypatch.setenv("DEVPILOT_DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
+    loop = _make_loop(tmp_path)
+    assert loop.loop_handoff_manager is not None
+    checkpoint = LoopCheckpoint("cli:direct", "task", "project", 0, 0, 3)
+    loop.loop_handoff_manager.ensure(checkpoint)
+
+    response = await loop.process_direct("/plugins switch-loop plan-then-act", session_key="cli:direct")
+
+    assert response is not None
+    assert "pending" in response.content
+    record = loop.loop_handoff_manager.store.load("cli:direct")
+    assert record is not None and record.status == "switch_pending"
+
+    status = await loop.process_direct(f"/plugins status {record.operation_id}", session_key="cli:direct")
+    assert status is not None and "Loop switch status: switch_pending" in status.content
 
 
 def test_plugins_command_is_visible_in_help_and_palette() -> None:

@@ -43,12 +43,13 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             "file_changes",
             "project_locks",
             "skill_improvement_records",
+            "loop_handoff_state",
         }.issubset(tables)
         with engine.connect() as connection:
             version = connection.execute(
                 text("select version_num from alembic_version")
             ).scalar_one()
-        assert version == "0012_h3_plugin_runtime_state"
+        assert version == "0013_h8_loop_handoff_state"
     finally:
         engine.dispose()
 
