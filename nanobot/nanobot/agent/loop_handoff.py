@@ -24,6 +24,7 @@ from nanobot.agent.loop_driver import (
     LoopCheckpoint,
     LoopDriver,
     PlanThenActDriver,
+    RemoteStrategyDriver,
     StepInput,
 )
 
@@ -37,6 +38,7 @@ class DriverRegistry:
         self._drivers: dict[tuple[str, str], type[LoopDriver]] = {
             ("default-react", "1"): DefaultReactDriver,
             ("plan-then-act", "1"): PlanThenActDriver,
+            ("remote-strategy", "1"): RemoteStrategyDriver,
         }
 
     def restore(self, name: str, version: str, state: Mapping[str, object]) -> LoopDriver:

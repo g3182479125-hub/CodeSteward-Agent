@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.runner_helpers import make_run_spec
-from nanobot.agent.loop_driver import DriverActionKind, LoopCheckpoint, PlanThenActDriver, StepInput
+from nanobot.agent.loop_driver import (
+    DriverActionKind,
+    LoopCheckpoint,
+    PlanThenActDriver,
+    RemoteStrategyDriver,
+    StepInput,
+)
 from nanobot.agent.loop_driver_projection import build_remote_projection, validate_remote_decision
 from nanobot.agent.loop_handoff import (
     DriverRegistry,
@@ -325,3 +331,66 @@ async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> 
         item.get("content", "").startswith("Host execution phase: act")
         for item in second_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_h8_remote_strategy_uses_redacted_callback_and_host_validation() -> None:
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="finished", tool_calls=[]))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    received: list[dict[str, object]] = []
+
+    async def remote_decision(projection: dict[str, object]) -> dict[str, object]:
+        received.append(projection)
+        return {"schema": projection["schema"], "action": "request_model", "reason": "approved"}
+
+    result = await AgentRunner().run(
+        make_run_spec(
+            provider,
+            initial_messages=[{"role": "user", "content": "private prompt"}],
+            tools=tools,
+            model="test-model",
+            max_iterations=1,
+            max_tool_result_chars=4_000,
+            loop_driver=RemoteStrategyDriver("strategy-1", "a" * 64),
+            remote_decision_callback=remote_decision,
+            session_key="private-session",
+            task_id="private-task",
+            project_id="E:/private/project",
+        )
+    )
+
+    assert result.final_content == "finished"
+    assert len(received) == 1
+    assert "private prompt" not in str(received[0])
+    assert "private-session" not in str(received[0])
+
+
+@pytest.mark.asyncio
+async def test_h8_remote_strategy_stops_when_callback_is_missing_or_invalid() -> None:
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    base = dict(
+        initial_messages=[{"role": "user", "content": "do work"}],
+        tools=tools,
+        model="test-model",
+        max_iterations=1,
+        max_tool_result_chars=4_000,
+        loop_driver=RemoteStrategyDriver("strategy-1", "b" * 64),
+    )
+    unavailable = await AgentRunner().run(make_run_spec(provider, **base))
+    assert unavailable.stop_reason == "remote_driver_unavailable"
+
+    async def invalid(_projection: dict[str, object]) -> dict[str, object]:
+        return {"schema": "wrong", "action": "dispatch_tools"}
+
+    invalid_result = await AgentRunner().run(
+        make_run_spec(provider, **base, remote_decision_callback=invalid)
+    )
+    assert invalid_result.stop_reason == "remote_driver_invalid_decision"

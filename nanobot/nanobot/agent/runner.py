@@ -19,6 +19,7 @@ from nanobot.agent.context_governance import (
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.loop_driver import DefaultReactDriver, DriverActionKind, LoopDriver, StepInput
+from nanobot.agent.loop_driver_projection import build_remote_projection, validate_remote_decision
 from nanobot.agent.task_profiles import TaskLoopGuard
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
@@ -67,6 +68,7 @@ RetryWaitCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
 TaskContextEvidenceCallback = Callable[[str, Mapping[str, Any], Any], None]
+RemoteDecisionCallback = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
@@ -126,6 +128,7 @@ class AgentRunSpec:
     task_context_evidence_callback: TaskContextEvidenceCallback | None = None
     loop_driver: LoopDriver | None = None
     initial_step: int = 0
+    remote_decision_callback: RemoteDecisionCallback | None = None
 
 
 @dataclass(slots=True)
@@ -484,6 +487,26 @@ class AgentRunner:
                     remaining_iterations=spec.max_iterations - iteration,
                 )
             )
+            if action.kind is DriverActionKind.REQUEST_REMOTE_DECISION:
+                if spec.remote_decision_callback is None:
+                    stop_reason = "remote_driver_unavailable"
+                    break
+                remote_step = StepInput(
+                    session_id=spec.session_key or "",
+                    task_id=spec.task_id or spec.session_key or "",
+                    project_id=spec.project_id or "",
+                    step=host_step,
+                    message_position=len(messages),
+                    remaining_iterations=spec.max_iterations - iteration,
+                )
+                try:
+                    remote_result = await spec.remote_decision_callback(
+                        build_remote_projection(remote_step)
+                    )
+                    action = validate_remote_decision(remote_result, remote_step)
+                except (TypeError, ValueError):
+                    stop_reason = "remote_driver_invalid_decision"
+                    break
             if action.kind is DriverActionKind.PAUSE:
                 stop_reason = "driver_paused"
                 break

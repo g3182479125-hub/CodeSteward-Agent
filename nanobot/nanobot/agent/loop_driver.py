@@ -27,6 +27,7 @@ class DriverActionKind(StrEnum):
     DISPATCH_TOOLS = "dispatch_tools"
     FINISH = "finish"
     PAUSE = "pause"
+    REQUEST_REMOTE_DECISION = "request_remote_decision"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +129,46 @@ class PlanThenActDriver:
         if not isinstance(plan, list) or any(not isinstance(item, str) for item in plan):
             raise ValueError("invalid plan-then-act plan")
         return cls(plan=tuple(plan))
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteStrategyDriver:
+    """An immutable remote strategy artifact with no local execution power."""
+
+    strategy_id: str
+    source_hash: str
+    name: str = "remote-strategy"
+    version: str = "1"
+
+    def __post_init__(self) -> None:
+        if not self.strategy_id or len(self.strategy_id) > 64:
+            raise ValueError("remote strategy identifier is invalid")
+        if len(self.source_hash) != 64 or any(char not in "0123456789abcdef" for char in self.source_hash):
+            raise ValueError("remote strategy source hash is invalid")
+
+    def next_action(self, step: StepInput) -> DriverAction:
+        if step.pending_tool_calls:
+            return DriverAction(DriverActionKind.DISPATCH_TOOLS, "remote_pending_tools")
+        if step.remaining_iterations <= 0:
+            return DriverAction(DriverActionKind.PAUSE, "remote_iteration_budget_exhausted")
+        return DriverAction(DriverActionKind.REQUEST_REMOTE_DECISION, "remote_strategy_decision")
+
+    def export_state(self) -> Mapping[str, object]:
+        return {
+            "driver_state_schema": "remote-strategy-v1",
+            "strategy_id": self.strategy_id,
+            "source_hash": self.source_hash,
+        }
+
+    @classmethod
+    def restore_state(cls, state: Mapping[str, object]) -> "RemoteStrategyDriver":
+        if state.get("driver_state_schema") != "remote-strategy-v1":
+            raise ValueError("incompatible remote strategy state")
+        strategy_id = state.get("strategy_id")
+        source_hash = state.get("source_hash")
+        if not isinstance(strategy_id, str) or not isinstance(source_hash, str):
+            raise ValueError("invalid remote strategy state")
+        return cls(strategy_id=strategy_id, source_hash=str(source_hash))
 
 
 def merge_business_facts(
