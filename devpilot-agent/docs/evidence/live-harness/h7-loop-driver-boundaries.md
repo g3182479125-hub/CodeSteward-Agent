@@ -41,3 +41,18 @@ H7 does not yet expose a switch command, transfer Driver ownership, or execute a
 second Driver.  Those changes are H8.  A pending tool is recorded as an
 uncertain side-effect reference and is therefore not eligible for a Driver
 switch; it is not replayed by this H7 code.
+
+## Review-fix verification
+
+The two review rounds produced candidate `0cdb1eb`: strict persisted-input
+validation, 64 KiB read/write enforcement, named business-reference
+accumulation, Host-consumed `finish`/`pause`, and an H7 managed-handoff pause
+path.  The final regression command on 2026-09-13 reported **24 passed in
+1.48s**.  A separate real `AgentLoop` main-chain test then ran the default
+Driver through `repo-analysis`, `feature-delivery`, and `bug-fix`: **3 passed
+in 4.55s**.
+
+The pause test sends a new WebSocket message after an unknown run has been
+persisted and proves the model has zero calls; the Host returns a pause notice
+instead of replaying the operation.  These are automated local facts, not a
+claim of a cloud, browser, or H8 loop-switch demonstration.

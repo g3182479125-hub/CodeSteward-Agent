@@ -696,6 +696,31 @@ async def test_h7_paused_handoff_blocks_new_message_dispatch(tmp_path: Path) -> 
     loop.provider.chat_with_retry.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile_name", ["repo-analysis", "feature-delivery", "bug-fix"])
+async def test_h7_default_driver_runs_each_task_profile_main_chain(
+    tmp_path: Path,
+    profile_name: str,
+) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    loop.set_session_task_profile("websocket:h7-profile", profile_name)
+    loop.provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="completed"))
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="h7-profile",
+            content="complete the assigned task",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "completed"
+    assert loop.provider.chat_with_retry.await_count == 1
+
+
 def test_restore_final_response_checkpoint_preserves_matching_provider_state() -> None:
     loop = _mk_loop()
     state = _provider_state()
