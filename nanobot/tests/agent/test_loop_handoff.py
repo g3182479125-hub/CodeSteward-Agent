@@ -4,6 +4,7 @@ import pytest
 
 from agent.runner_helpers import make_run_spec
 from nanobot.agent.loop_driver import DriverActionKind, LoopCheckpoint, PlanThenActDriver, StepInput
+from nanobot.agent.loop_driver_projection import build_remote_projection, validate_remote_decision
 from nanobot.agent.loop_handoff import (
     DriverRegistry,
     LoopHandoffManager,
@@ -194,6 +195,44 @@ def test_h8_managed_driver_pauses_for_durable_unknown_or_exhausted_budget(tmp_pa
     )
     assert action.kind is DriverActionKind.PAUSE
     assert action.reason == "uncertain_side_effect_requires_recovery"
+
+
+def test_h8_plan_driver_uses_durable_step_after_restart(tmp_path) -> None:
+    store = SqliteLoopHandoffStore(tmp_path / "devpilot.db")
+    first = LoopHandoffManager(store)
+    first.ensure(LoopCheckpoint("session-1", "task-1", "project-1", 4, 9, 5))
+    first.request_switch("session-1", "plan-then-act", "1")
+    first.commit_boundary(
+        "session-1", LoopCheckpoint("session-1", "task-1", "project-1", 4, 9, 5)
+    )
+
+    restarted = ManagedLoopDriver(LoopHandoffManager(store), "session-1")
+    action = restarted.next_action(
+        StepInput("session-1", "task-1", "project-1", 4, 9, 5)
+    )
+
+    assert restarted.name == "plan-then-act"
+    assert action.reason == "plan_step:act"
+
+
+def test_h8_remote_projection_is_redacted_and_host_validates_action() -> None:
+    step = StepInput(
+        "private-session", "task-with-secret-context", "E:/private/project", 2, 5, 4,
+        completed_tool_results=("call-1",), pending_tool_calls=(),
+    )
+    projection = build_remote_projection(step)
+    serialized = str(projection)
+
+    assert "private-session" not in serialized
+    assert "task-with-secret-context" not in serialized
+    assert "E:/private/project" not in serialized
+    assert validate_remote_decision(
+        {"schema": projection["schema"], "action": "request_model", "reason": "continue"}, step
+    ).kind is DriverActionKind.REQUEST_MODEL
+    with pytest.raises(ValueError, match="not allowed"):
+        validate_remote_decision(
+            {"schema": projection["schema"], "action": "dispatch_tools"}, step
+        )
 
 
 def test_h8_restore_uses_durable_unknown_facts_over_older_session_checkpoint(tmp_path) -> None:
