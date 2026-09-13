@@ -10,6 +10,7 @@ from nanobot.agent.loop_handoff import (
     ManagedLoopDriver,
     SqliteLoopHandoffStore,
 )
+from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
@@ -193,6 +194,28 @@ def test_h8_managed_driver_pauses_for_durable_unknown_or_exhausted_budget(tmp_pa
     )
     assert action.kind is DriverActionKind.PAUSE
     assert action.reason == "uncertain_side_effect_requires_recovery"
+
+
+def test_h8_restore_uses_durable_unknown_facts_over_older_session_checkpoint(tmp_path) -> None:
+    from nanobot.agent.loop import AgentLoop
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test-model"
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    loop.loop_handoff_manager = manager
+    session = loop.sessions.get_or_create("cli:durable")
+    old = LoopCheckpoint("cli:durable", "task", "project", 1, 1, 4)
+    durable = LoopCheckpoint(
+        "cli:durable", "task", "project", 2, 2, 3,
+        uncertain_side_effect_refs=("run_id:unknown",),
+    )
+    manager.ensure(durable)
+    session.metadata[loop._RUNTIME_CHECKPOINT_KEY] = {"h7_loop_checkpoint": old.to_dict()}
+
+    assert loop._restore_runtime_checkpoint(session) is True
+    paused = LoopCheckpoint.from_dict(session.metadata[loop._H7_HANDOFF_PAUSE_KEY]["h7_loop_checkpoint"])
+    assert paused.uncertain_side_effect_refs == ("run_id:unknown",)
 
 
 @pytest.mark.asyncio

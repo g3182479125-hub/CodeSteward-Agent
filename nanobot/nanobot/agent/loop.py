@@ -2865,6 +2865,32 @@ class AgentLoop:
         checkpoint_data = cast(dict[str, Any], checkpoint)
 
         h7_raw = checkpoint_data.get("h7_loop_checkpoint")
+        # The session checkpoint is written before the H8 ownership record.
+        # Still reconcile an older/partially-written session against durable
+        # handoff facts left by an earlier process version.  Unknown business
+        # work always wins and becomes an explicit pause, never a replay.
+        handoff_manager = getattr(self, "loop_handoff_manager", None)
+        if handoff_manager is not None:
+            try:
+                handoff = handoff_manager.store.load(session.key)
+            except (OSError, RuntimeError, ValueError):
+                handoff = None
+            if handoff is not None:
+                session_checkpoint: LoopCheckpoint | None = None
+                if isinstance(h7_raw, Mapping):
+                    try:
+                        session_checkpoint = LoopCheckpoint.from_dict(h7_raw)
+                    except ValueError:
+                        pass
+                durable = handoff.checkpoint
+                if (
+                    session_checkpoint is None
+                    or durable.step > session_checkpoint.step
+                    or durable.message_position > session_checkpoint.message_position
+                    or bool(durable.uncertain_side_effect_refs)
+                ):
+                    checkpoint_data["h7_loop_checkpoint"] = durable.to_dict()
+                    h7_raw = checkpoint_data["h7_loop_checkpoint"]
         if isinstance(h7_raw, Mapping):
             try:
                 h7_checkpoint = LoopCheckpoint.from_dict(h7_raw)
