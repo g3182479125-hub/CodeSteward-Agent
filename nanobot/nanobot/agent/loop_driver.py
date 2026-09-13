@@ -6,6 +6,7 @@ calls, tools, persistence, permissions, budgets and cancellation.
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping, Protocol
@@ -81,13 +82,19 @@ class LoopCheckpoint:
     uncertain_side_effect_refs: tuple[str, ...] = ()
     checkpoint_schema: str = "h7-v1"
 
+    _MAX_SERIALIZED_BYTES = 64 * 1024
+
     @property
     def switch_safe(self) -> bool:
         """Only a committed, fully-known boundary may change Driver ownership."""
         return not self.pending_tool_calls and not self.uncertain_side_effect_refs
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > self._MAX_SERIALIZED_BYTES:
+            raise ValueError("loop checkpoint exceeds 64 KiB")
+        return value
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "LoopCheckpoint":
@@ -96,13 +103,26 @@ class LoopCheckpoint:
         required = ("session_id", "task_id", "project_id", "step", "message_position", "remaining_iterations")
         if any(not isinstance(value.get(key), str if key.endswith("_id") else int) for key in required):
             raise ValueError("invalid loop checkpoint identity")
+        versions = value.get("versions", {})
+        business_references = value.get("business_references", {})
+        collections = (
+            value.get("completed_tool_results", ()),
+            value.get("pending_tool_calls", ()),
+            value.get("uncertain_side_effect_refs", ()),
+        )
+        if (
+            not isinstance(versions, Mapping)
+            or not isinstance(business_references, Mapping)
+            or any(not isinstance(items, (list, tuple)) for items in collections)
+        ):
+            raise ValueError("invalid loop checkpoint state")
         return cls(
             session_id=str(value["session_id"]), task_id=str(value["task_id"]), project_id=str(value["project_id"]),
             step=int(value["step"]), message_position=int(value["message_position"]), remaining_iterations=int(value["remaining_iterations"]),
             completed_tool_results=tuple(str(item) for item in value.get("completed_tool_results", ())),
             pending_tool_calls=tuple(str(item) for item in value.get("pending_tool_calls", ())),
-            versions={str(key): str(item) for key, item in dict(value.get("versions", {})).items()},
-            business_references={str(key): str(item) for key, item in dict(value.get("business_references", {})).items()},
+            versions={str(key): str(item) for key, item in versions.items()},
+            business_references={str(key): str(item) for key, item in business_references.items()},
             uncertain_side_effect_refs=tuple(
                 str(item) for item in value.get("uncertain_side_effect_refs", ())
             ),

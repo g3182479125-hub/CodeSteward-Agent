@@ -42,6 +42,32 @@ def test_checkpoint_rejects_unknown_schema() -> None:
         LoopCheckpoint.from_dict({"checkpoint_schema": "unknown"})
 
 
+def test_checkpoint_rejects_malformed_or_oversized_public_state() -> None:
+    valid = LoopCheckpoint(
+        session_id="s",
+        task_id="t",
+        project_id="p",
+        step=1,
+        message_position=2,
+        remaining_iterations=3,
+    ).to_dict()
+    valid["pending_tool_calls"] = "not-a-list"
+    with pytest.raises(ValueError, match="invalid loop checkpoint state"):
+        LoopCheckpoint.from_dict(valid)
+
+    oversized = LoopCheckpoint(
+        session_id="s",
+        task_id="t",
+        project_id="p",
+        step=1,
+        message_position=2,
+        remaining_iterations=3,
+        business_references={"payload": "x" * (64 * 1024)},
+    )
+    with pytest.raises(ValueError, match="64 KiB"):
+        oversized.to_dict()
+
+
 def test_checkpoint_blocks_driver_switch_for_pending_or_uncertain_side_effects() -> None:
     base = dict(
         session_id="s",
