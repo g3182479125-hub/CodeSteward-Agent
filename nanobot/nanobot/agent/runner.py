@@ -18,6 +18,7 @@ from nanobot.agent.context_governance import (
     ContextGovernor,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
+from nanobot.agent.loop_driver import DefaultReactDriver, DriverActionKind, LoopDriver, StepInput
 from nanobot.agent.task_profiles import TaskLoopGuard
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
@@ -121,6 +122,7 @@ class AgentRunSpec:
     request_context: RequestContext | None = None
     loop_guard: TaskLoopGuard | None = None
     task_context_evidence_callback: TaskContextEvidenceCallback | None = None
+    loop_driver: LoopDriver | None = None
 
 
 @dataclass(slots=True)
@@ -445,6 +447,7 @@ class AgentRunner:
         injection_cycles = 0
         compacted_tool_call_ids: set[str] = set()
         pending_stream_content: str | None = None
+        driver = spec.loop_driver or DefaultReactDriver()
         conversation_state = ProviderConversationStateController(
             provider=spec.runtime.provider,
             model=spec.runtime.model,
@@ -465,6 +468,23 @@ class AgentRunner:
         )
 
         for iteration in range(spec.max_iterations):
+            # Driver decisions occur only before a new model request.  Tool
+            # execution, permissions and persistence remain Host-owned below.
+            action = driver.next_action(
+                StepInput(
+                    session_id=spec.session_key or "",
+                    task_id=spec.session_key or "",
+                    project_id="",
+                    step=iteration,
+                    message_position=len(messages),
+                    remaining_iterations=spec.max_iterations - iteration,
+                )
+            )
+            if action.kind is DriverActionKind.PAUSE:
+                stop_reason = "driver_paused"
+                break
+            if action.kind is not DriverActionKind.REQUEST_MODEL:
+                raise RuntimeError(f"unsupported driver action at model boundary: {action.kind}")
             # Keep the persisted conversation untouched. Context governance
             # may repair or compact historical messages for the model, but
             # those synthetic edits must not shift the append boundary used
