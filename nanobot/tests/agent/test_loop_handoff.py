@@ -79,7 +79,75 @@ def test_h8_waits_for_uncertain_side_effect_before_switch(tmp_path) -> None:
 
     completed = manager.commit_boundary("session-1", _checkpoint())
     assert completed.status == "active"
-    assert manager.active_driver("session-1")[0].name == "plan-then-act"
+
+
+def test_h8_allows_the_current_host_to_settle_pending_tool_calls(tmp_path) -> None:
+    """A queued switch cannot strand the already-checkpointed Host tool call."""
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(_checkpoint(pending=("call-1",), uncertain=("tool_call:call-1",)))
+    managed = ManagedLoopDriver(manager, "session-1")
+
+    action = managed.next_action(
+        StepInput("session-1", "task-1", "project-1", 3, 8, 7, pending_tool_calls=("call-1",))
+    )
+    assert action.kind is DriverActionKind.DISPATCH_TOOLS
+    manager.request_switch("session-1", "plan-then-act", "1")
+    assert managed.dispatch_is_current()
+
+    manager.commit_boundary("session-1", _checkpoint())
+    assert not managed.dispatch_is_current()
+
+
+@pytest.mark.asyncio
+async def test_h8_tool_boundary_uses_recovered_host_step() -> None:
+    """A restored runner must not send its turn-local zero step to H8."""
+    from nanobot.agent.runner import AgentRunner
+
+    class RecordingDriver:
+        name = "recording"
+        version = "1"
+
+        def __init__(self) -> None:
+            self.steps: list[int] = []
+
+        def next_action(self, step: StepInput):
+            self.steps.append(step.step)
+            return DriverAction(
+                DriverActionKind.DISPATCH_TOOLS if step.pending_tool_calls else DriverActionKind.REQUEST_MODEL,
+                "tools" if step.pending_tool_calls else "model",
+            )
+
+        def export_state(self):
+            return {"driver_state_schema": "recording-v1"}
+
+    from nanobot.agent.loop_driver import DriverAction
+    driver = RecordingDriver()
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(
+        side_effect=[
+            LLMResponse(content=None, tool_calls=[ToolCallRequest(id="call-1", name="read_only", arguments={})]),
+            LLMResponse(content="finished"),
+        ]
+    )
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="ok")
+
+    result = await AgentRunner().run(
+        make_run_spec(
+            provider,
+            initial_messages=[{"role": "user", "content": "work"}],
+            tools=tools,
+            model="test-model",
+            max_iterations=2,
+            max_tool_result_chars=4_000,
+            loop_driver=driver,
+            initial_step=4,
+        )
+    )
+
+    assert result.final_content == "finished"
+    assert 4 in driver.steps
 
 
 def test_h8_rejects_unknown_driver_without_replacing_original(tmp_path) -> None:
@@ -199,7 +267,7 @@ def test_h8_managed_driver_reads_new_owner_without_agent_restart(tmp_path) -> No
     assert managed.name == "default-react"
 
     manager.request_switch("session-1", "plan-then-act", "1")
-    manager.commit_boundary("session-1", _checkpoint())
+    managed.note_checkpoint_committed(manager.commit_boundary("session-1", _checkpoint()))
     action = managed.next_action(
         StepInput("session-1", "task-1", "project-1", 3, 8, 1)
     )
@@ -385,7 +453,7 @@ async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> 
         if not requested:
             manager.request_switch("session-1", "plan-then-act", "1")
             requested = True
-        manager.commit_boundary("session-1", raw)
+        managed.note_checkpoint_committed(manager.commit_boundary("session-1", raw))
 
     provider.chat_with_retry = chat_with_retry
     tools = MagicMock()

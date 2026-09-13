@@ -14,7 +14,7 @@ import hmac
 import json
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from threading import RLock
 from time import time
@@ -225,6 +225,9 @@ class CandidateTrialRequest:
     input_data: object
     timeout_seconds: int = CANDIDATE_TIMEOUT_SECONDS
     execution_mode: str = "trial"
+    # Host-only cancellation probe. It is intentionally excluded from the
+    # manifest/input hashes and never crosses the FC data boundary.
+    cancel_requested: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1672,6 +1675,20 @@ class CandidateTrialRunner:
         )
         backend = self._backend
         assert backend is not None
+        if request.cancel_requested is not None and request.cancel_requested():
+            return finish(
+                _failure(
+                    request,
+                    "CANDIDATE_CANCELLED",
+                    "候选执行在派发 FC 前已取消",
+                    candidate_id=manifest.plugin_id,
+                    version=manifest.version,
+                    run_id=run_id,
+                    source_hash=source_hash,
+                    input_hash=input_hash,
+                    status="cancelled",
+                )
+            )
         try:
             result = backend.run(execution_request)
         except ExecutionError as exc:

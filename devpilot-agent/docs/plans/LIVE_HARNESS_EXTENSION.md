@@ -3,7 +3,7 @@
 版本：0.3，2026-09-12；状态：计划初稿已完成一次独立审查并集中修订一轮，H5、H6 已完成节点验收；H6 已完成最终双轴增量复核。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8–H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8 已进入实现与验证阶段，H9–H10 尚未开始。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -350,7 +350,8 @@ Driver，避免未授权投影和本机执行。
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
 | H6 | 已完成；最终增量复核 PASS | `docs/evidence/live-harness/h6-model-candidates.md`、`docs/reviews/h6-final-review-b55c027.md`；包含 H6-A/H6-F 现场证据及最终修复 |
 | H7 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h7-loop-driver-boundaries.md`、`docs/reviews/h7-final-review-0cdb1eb.md` |
-| H8–H10 | 未开始 | 从 H8 开始；不得重做 H1–H7 |
+| H8 | 实现/验证中 | 完成 H8-A–I 的真实验收、证据与双轴审查后才能进入 H9 |
+| H9–H10 | 未开始 | H8 完成后再开始；不得重做 H1–H7 |
 
 ## 8. 下一条开发指令
 

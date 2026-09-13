@@ -63,6 +63,7 @@ class HandoffRecord:
     requested_driver_name: str | None = None
     requested_driver_version: str | None = None
     requested_driver_state: Mapping[str, object] | None = None
+    switch_generation: int | None = None
 
 
 class LoopHandoffStore(Protocol):
@@ -109,6 +110,7 @@ class SqliteLoopHandoffStore:
                 requested_driver_name text,
                 requested_driver_version text,
                 requested_driver_state_json text,
+                switch_generation integer,
                 updated_at text not null
             )
             """
@@ -140,13 +142,14 @@ class SqliteLoopHandoffStore:
             requested_driver_name=str(row[10]) if row[10] is not None else None,
             requested_driver_version=str(row[11]) if row[11] is not None else None,
             requested_driver_state=requested_state,
+            switch_generation=int(row[13]) if row[13] is not None else None,
         )
 
     def load(self, session_id: str) -> HandoffRecord | None:
         with closing(self._connect()) as connection:
             self._check_table(connection)
             row = connection.execute(
-                f"select session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json from {_TABLE} where session_id = ?",
+                f"select session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json, switch_generation from {_TABLE} where session_id = ?",
                 (session_id,),
             ).fetchone()
         return self._row_to_record(row) if row is not None else None
@@ -163,6 +166,7 @@ class SqliteLoopHandoffStore:
                 if record.requested_driver_state is not None
                 else None
             ),
+            record.switch_generation,
         )
         with closing(self._connect()) as connection:
             self._check_table(connection)
@@ -175,12 +179,12 @@ class SqliteLoopHandoffStore:
                     if existing is not None:
                         raise RuntimeError("loop handoff record already exists")
                     connection.execute(
-                        f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                        f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json, switch_generation, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
                         payload,
                     )
                 else:
                     result = connection.execute(
-                        f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, requested_driver_state_json=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
+                        f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, requested_driver_state_json=?, switch_generation=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
                         (*payload[1:], record.session_id, expected_generation),
                     )
                     if result.rowcount != 1:
@@ -226,12 +230,16 @@ class LoopHandoffManager:
             raise RuntimeError("a loop switch is already pending")
         requested = replace(
             current,
+            # Persist the queue transition so stale raw writes are rejected.
+            # The managed driver recognizes exactly this one-generation
+            # pending window as belonging to the still-active old driver.
             owner_generation=current.owner_generation + 1,
             status="switch_pending",
             operation_id=str(uuid.uuid4()),
             requested_driver_name=driver_name,
             requested_driver_version=driver_version,
             requested_driver_state=dict(requested_state),
+            switch_generation=current.owner_generation + 1,
         )
         return self.store.save(requested, expected_generation=current.owner_generation)
 
@@ -249,18 +257,31 @@ class LoopHandoffManager:
             return PlanThenActDriver().export_state()
         raise ValueError("unknown loop driver artifact")
 
-    def commit_boundary(self, session_id: str, checkpoint: LoopCheckpoint) -> HandoffRecord:
+    def commit_boundary(
+        self,
+        session_id: str,
+        checkpoint: LoopCheckpoint,
+        *,
+        expected_generation: int | None = None,
+    ) -> HandoffRecord:
         current = self.store.load(session_id)
         if current is None:
             raise RuntimeError("loop handoff record does not exist")
         if checkpoint.session_id != current.session_id or checkpoint.task_id != current.task_id:
             raise RuntimeError("checkpoint ownership does not match handoff")
+        if expected_generation is not None and current.owner_generation != expected_generation:
+            raise RuntimeError("loop handoff ownership changed")
         self._require_forward_checkpoint(current.checkpoint, checkpoint)
         if not checkpoint.switch_safe:
             # Persist latest facts but retain the original owner until safe.
             updated = replace(
                 current,
-                checkpoint=checkpoint, owner_generation=current.owner_generation + 1,
+                checkpoint=checkpoint,
+                # Facts such as an uncertain external run are an ownership
+                # boundary too. Advancing the CAS generation prevents another
+                # producer that observed the previous safe checkpoint from
+                # clearing or replacing those facts.
+                owner_generation=current.owner_generation + 1,
             )
             return self.store.save(updated, expected_generation=current.owner_generation)
         if current.status != "switch_pending":
@@ -285,6 +306,7 @@ class LoopHandoffManager:
                 requested_driver_name=None,
                 requested_driver_version=None,
                 requested_driver_state=None,
+                switch_generation=None,
             )
             return self.store.save(failed, expected_generation=current.owner_generation)
         updated = HandoffRecord(
@@ -292,6 +314,7 @@ class LoopHandoffManager:
             driver_name=current.requested_driver_name, driver_version=current.requested_driver_version,
             driver_state=state, checkpoint=checkpoint, owner_generation=current.owner_generation + 1,
             status="active", operation_id=current.operation_id,
+            switch_generation=None,
         )
         return self.store.save(updated, expected_generation=current.owner_generation)
 
@@ -336,6 +359,7 @@ class LoopHandoffManager:
                 requested_driver_name=None,
                 requested_driver_version=None,
                 requested_driver_state=None,
+                switch_generation=None,
             )
             return fallback, self.store.save(recovered, expected_generation=record.owner_generation)
 
@@ -352,10 +376,17 @@ class ManagedLoopDriver:
         self.manager = manager
         self.session_id = session_id
         self._last_record: HandoffRecord | None = None
+        self._dispatch_generation: int | None = None
+        self._dispatch_driver_identity: tuple[str, str] | None = None
 
     def _active(self) -> LoopDriver:
         driver, record = self.manager.recover_driver(self.session_id)
-        self._last_record = record
+        # This is intentionally *not* a token refresh. A stale runner may
+        # read name/version while a different owner has already switched the
+        # durable record; only its own successful checkpoint may advance the
+        # producer token through ``note_checkpoint_committed``.
+        if self._last_record is None:
+            self._last_record = record
         return driver
 
     @property
@@ -369,11 +400,35 @@ class ManagedLoopDriver:
     def next_action(self, step: StepInput) -> DriverAction:
         driver = self._active()
         assert self._last_record is not None
+        current = self.manager.store.load(self.session_id)
+        if current is None:
+            return DriverAction(DriverActionKind.PAUSE, "handoff_record_missing")
+        held = self._last_record
+        owns_current_route = (
+            current.owner_generation == held.owner_generation
+            or (
+                current.status == "switch_pending"
+                and current.owner_generation == held.owner_generation + 1
+                and (current.driver_name, current.driver_version)
+                == (held.driver_name, held.driver_version)
+            )
+        )
+        if not owns_current_route:
+            # No model or remote-strategy call may be made by a stale actor.
+            # It has to observe the committed route on a new Host boundary.
+            return DriverAction(DriverActionKind.PAUSE, "stale_driver_owner_rejected")
         checkpoint = self._last_record.checkpoint
-        if checkpoint.uncertain_side_effect_refs:
+        # ``tool_call:`` entries mean the current Host process has persisted
+        # an intent and is about to settle that exact in-process tool call.
+        # They are not an externally unknown side effect, so pausing here
+        # would make every H8 tool turn impossible. All real business refs
+        # (run/operation/sandbox/approval) still require query-only recovery.
+        unresolved_external_refs = tuple(
+            ref for ref in checkpoint.uncertain_side_effect_refs
+            if not ref.startswith("tool_call:")
+        )
+        if unresolved_external_refs:
             return DriverAction(DriverActionKind.PAUSE, "uncertain_side_effect_requires_recovery")
-        if checkpoint.remaining_iterations <= 0:
-            return DriverAction(DriverActionKind.PAUSE, "durable_iteration_budget_exhausted")
         if step.step < checkpoint.step or step.message_position < checkpoint.message_position:
             return DriverAction(DriverActionKind.PAUSE, "stale_step_input_rejected")
         bounded = StepInput(
@@ -386,7 +441,80 @@ class ManagedLoopDriver:
             completed_tool_results=step.completed_tool_results,
             pending_tool_calls=step.pending_tool_calls,
         )
-        return driver.next_action(bounded)
+        # A model response produced within the final permitted iteration is
+        # still allowed to settle the tools it already requested. The budget
+        # only prevents another model decision after that settlement.
+        if checkpoint.remaining_iterations <= 0 and not bounded.pending_tool_calls:
+            return DriverAction(DriverActionKind.PAUSE, "durable_iteration_budget_exhausted")
+        action = driver.next_action(bounded)
+        self._dispatch_generation = (
+            self._last_record.owner_generation
+            if action.kind is DriverActionKind.DISPATCH_TOOLS
+            else None
+        )
+        self._dispatch_driver_identity = (
+            (self._last_record.driver_name, self._last_record.driver_version)
+            if action.kind is DriverActionKind.DISPATCH_TOOLS
+            else None
+        )
+        return action
+
+    def checkpoint_generation(self) -> int | None:
+        """Return the generation held by this runner's durable producer."""
+        if self._last_record is not None:
+            try:
+                current = self.manager.store.load(self.session_id)
+            except (OSError, RuntimeError, ValueError):
+                current = None
+            # A single queued switch is still owned by the old active driver
+            # until it settles pending work. Do not accept a later ABA return.
+            if (
+                current is not None
+                and current.status == "switch_pending"
+                and current.owner_generation == self._last_record.owner_generation + 1
+                and current.switch_generation == current.owner_generation
+                and (current.driver_name, current.driver_version)
+                == (self._last_record.driver_name, self._last_record.driver_version)
+            ):
+                return current.owner_generation
+            return self._last_record.owner_generation
+        try:
+            record = self.manager.store.load(self.session_id)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return record.owner_generation if record is not None else None
+
+    def note_checkpoint_committed(self, record: HandoffRecord) -> None:
+        """Advance this producer's token only after its CAS write succeeds."""
+        self._last_record = record
+
+    def dispatch_is_current(self) -> bool:
+        """Confirm that the owner which chose dispatch still owns the record."""
+        generation = self._dispatch_generation
+        identity = self._dispatch_driver_identity
+        if generation is None or identity is None:
+            return False
+        try:
+            record = self.manager.store.load(self.session_id)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return (
+            record is not None
+            # A queued switch increments the generation but deliberately
+            # retains the old driver until its pending tools have settled.
+            # The driver identity, rather than that queue-only generation,
+            # is the authority for this already-approved in-flight dispatch.
+            and (
+                record.owner_generation == generation
+                or (
+                    record.status == "switch_pending"
+                    and record.owner_generation == generation + 1
+                    and record.switch_generation == record.owner_generation
+                )
+            )
+            and (record.driver_name, record.driver_version) == identity
+            and record.status not in {"switch_failed", "failed"}
+        )
 
     def export_state(self) -> Mapping[str, object]:
         return self._active().export_state()

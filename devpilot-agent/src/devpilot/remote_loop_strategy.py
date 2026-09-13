@@ -12,9 +12,10 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, RLock
 from time import time
 from typing import Protocol
 
@@ -46,6 +47,8 @@ class _CandidateExecutor(Protocol):
 
     def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult: ...
 
+    def cancel(self, request: CandidateTrialRequest) -> CandidateExecutionResult: ...
+
 
 @dataclass(frozen=True, slots=True)
 class RemoteStrategyArtifact:
@@ -71,6 +74,8 @@ class RemoteStrategyCatalog:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self._runner = runner
         self._grant_issuer = grant_issuer
+        self._cancel_lock = RLock()
+        self._cancellations: dict[str, Event] = {}
 
     def define(
         self, session_id: str, strategy_id: str, version: str, source: str
@@ -156,23 +161,62 @@ class RemoteStrategyCatalog:
         """Ask FC for a pure decision after verifying the exact passed artifact."""
         if artifact.session_id != session_id:
             raise ValueError("remote strategy is not visible in this session")
+        request = self.decision_request(
+            artifact,
+            session_id=session_id,
+            task_id=task_id,
+            project_id=project_id,
+            projection=projection,
+        )
+        return self.execute_decision(request)
+
+    def decision_request(
+        self,
+        artifact: RemoteStrategyArtifact,
+        *,
+        session_id: str,
+        task_id: str,
+        project_id: str,
+        projection: Mapping[str, object],
+    ) -> CandidateTrialRequest:
+        """Build one cancellable, FC-only request for a redacted decision."""
+        if artifact.session_id != session_id:
+            raise ValueError("remote strategy is not visible in this session")
         source, manifest = self._read_artifact(artifact)
         self.require_trialled(artifact)
-        input_data = self._candidate_projection(projection)
-        result = self._runner.execute(
-            self._request(
-                artifact,
-                task_id=task_id,
-                project_id=project_id,
-                source=source,
-                manifest=manifest,
-                input_data=input_data,
-                execution_mode="live",
-            )
+        cancelled = Event()
+        request = self._request(
+            artifact,
+            task_id=task_id,
+            project_id=project_id,
+            source=source,
+            manifest=manifest,
+            input_data=self._candidate_projection(projection),
+            execution_mode="live",
+            cancel_requested=cancelled.is_set,
         )
+        with self._cancel_lock:
+            self._cancellations[request.trial_id] = cancelled
+        return request
+
+    def execute_decision(self, request: CandidateTrialRequest) -> Mapping[str, object]:
+        """Execute a previously built request; the host may cancel the same request."""
+        try:
+            result = self._runner.execute(request)
+        finally:
+            with self._cancel_lock:
+                self._cancellations.pop(request.trial_id, None)
         if result.status != "passed" or not isinstance(result.output, Mapping):
             raise ValueError("remote strategy execution did not return a decision")
         return dict(result.output)
+
+    def cancel_decision(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        """Forward cancellation through the Candidate runner to FC's run receipt."""
+        with self._cancel_lock:
+            cancelled = self._cancellations.get(request.trial_id)
+            if cancelled is not None:
+                cancelled.set()
+        return self._runner.cancel(request)
 
     def require_trialled(self, artifact: RemoteStrategyArtifact) -> None:
         """Reject selection when no passed FC receipt binds this exact source hash."""
@@ -196,6 +240,7 @@ class RemoteStrategyCatalog:
         manifest: Mapping[str, object],
         input_data: Mapping[str, object],
         execution_mode: str,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> CandidateTrialRequest:
         grant = self._grant_issuer.issue(
             session_id=artifact.session_id,
@@ -215,6 +260,7 @@ class RemoteStrategyCatalog:
             input_data=input_data,
             timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
             execution_mode=execution_mode,
+            cancel_requested=cancel_requested,
         )
 
     @staticmethod

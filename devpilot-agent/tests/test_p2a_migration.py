@@ -49,7 +49,7 @@ def test_p2a01_migration_creates_domain_tables(tmp_path: Path) -> None:
             version = connection.execute(
                 text("select version_num from alembic_version")
             ).scalar_one()
-        assert version == "0014_h8_requested_driver_state"
+        assert version == "0015_h8_switch_generation"
     finally:
         engine.dispose()
 

@@ -333,14 +333,23 @@ class ModelCandidateController:
         _request, session_id, project_id, task_id, _workspace = context
         catalog = self._remote_catalog()
         artifact = catalog.load(session_id, strategy_id, strategy_version, source_hash)
-        return await asyncio.to_thread(
-            catalog.decide,
+        decision_request = catalog.decision_request(
             artifact,
             session_id=session_id,
             task_id=task_id,
             project_id=project_id,
             projection=projection,
         )
+        try:
+            return await asyncio.to_thread(catalog.execute_decision, decision_request)
+        except asyncio.CancelledError:
+            # ``to_thread`` does not cancel synchronous FC work itself. Send
+            # the exact durable candidate request to the runner so it can use
+            # its persisted operation/run receipt and call FC cancel/cleanup.
+            await asyncio.shield(
+                asyncio.to_thread(catalog.cancel_decision, decision_request)
+            )
+            raise
 
     def _require_manager(self) -> PluginManager:
         if self._manager is None:

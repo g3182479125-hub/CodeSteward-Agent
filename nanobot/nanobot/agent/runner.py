@@ -609,7 +609,11 @@ class AgentRunner:
                         session_id=spec.session_key or "",
                         task_id=spec.task_id or spec.session_key or "",
                         project_id=spec.project_id or "",
-                        step=iteration,
+                        # ``iteration`` is local to this runner invocation.
+                        # A recovered H8 turn has a non-zero ``initial_step``;
+                        # driver ownership must therefore see the durable Host
+                        # step, not a stale turn-local counter.
+                        step=host_step,
                         message_position=len(messages),
                         remaining_iterations=spec.max_iterations - iteration - 1,
                         pending_tool_calls=tuple(tool_call.id for tool_call in response.tool_calls),
@@ -636,6 +640,19 @@ class AgentRunner:
                     )
 
                 await hook.before_execute_tools(context)
+
+                # A H8 managed driver records the generation that authorized
+                # this dispatch. Re-check immediately before any tool side
+                # effect so a concurrently committed switch/cancel cannot let
+                # the stale owner execute work after its boundary.
+                dispatch_is_current = getattr(driver, "dispatch_is_current", None)
+                if callable(dispatch_is_current) and not dispatch_is_current():
+                    final_content = "driver ownership changed before tool dispatch"
+                    stop_reason = "driver_paused"
+                    context.final_content = final_content
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
 
                 results, new_events, fatal_error = await self._execute_tools(
                     spec,
@@ -1605,6 +1622,13 @@ class AgentRunner:
                 RuntimeError(prep_error) if spec.fail_on_tool_error else None
             )
         await hook.before_execute_tool(context, tool_call, tool, params)
+        # Hooks can await approval/stream work. Re-check ownership after that
+        # wait and immediately before *each* actual tool invocation, including
+        # later calls in a serial batch.
+        dispatch_is_current = getattr(spec.loop_driver, "dispatch_is_current", None)
+        if callable(dispatch_is_current) and not dispatch_is_current():
+            error = "driver ownership changed before tool execution"
+            return error, {"name": tool_call.name, "status": "error", "detail": error}, RuntimeError(error)
         try:
             if tool is not None:
                 if spec.request_context is not None and hasattr(tool, "set_context"):

@@ -1457,6 +1457,7 @@ class AgentLoop:
         self._sync_subagent_runtime_limits()
         h7_business_references: dict[str, str] = {}
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
+        h8_completed_tool_result_ids: set[str] = set()
         h8_driver: LoopDriver = DefaultReactDriver()
         h8_initial_step = 0
         h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
@@ -1495,6 +1496,11 @@ class AgentLoop:
                 completed,
                 pending,
             )
+            h8_completed_tool_result_ids.update(
+                str(item.get("tool_call_id"))
+                for item in completed
+                if isinstance(item, dict) and item.get("tool_call_id")
+            )
             checkpoint = LoopCheckpoint(
                 session_id=session.key,
                 task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
@@ -1511,11 +1517,7 @@ class AgentLoop:
                     - 1,
                 ),
                 session_prefix_hash=session_message_prefix_hash(session.messages),
-                completed_tool_results=tuple(
-                    str(item.get("tool_call_id"))
-                    for item in completed
-                    if isinstance(item, dict) and item.get("tool_call_id")
-                ),
+                completed_tool_results=tuple(sorted(h8_completed_tool_result_ids)),
                 pending_tool_calls=tuple(
                     str(item.get("id"))
                     for item in pending
@@ -1530,7 +1532,18 @@ class AgentLoop:
             if self.loop_handoff_manager is not None:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
-                    self.loop_handoff_manager.commit_boundary(session.key, checkpoint)
+                    generation_getter = getattr(h8_driver, "checkpoint_generation", None)
+                    expected_generation = (
+                        generation_getter() if callable(generation_getter) else None
+                    )
+                    committed = self.loop_handoff_manager.commit_boundary(
+                        session.key,
+                        checkpoint,
+                        expected_generation=expected_generation,
+                    )
+                    note_committed = getattr(h8_driver, "note_checkpoint_committed", None)
+                    if callable(note_committed):
+                        note_committed(committed)
                 except (OSError, RuntimeError, ValueError) as exc:
                     # Keep the exact Host checkpoint even when optional H8
                     # handoff persistence cannot advance.  A later restore
@@ -1680,11 +1693,23 @@ class AgentLoop:
                 )
                 self.loop_handoff_manager.ensure(initial_checkpoint)
                 _driver, record = self.loop_handoff_manager.recover_driver(session.key)
-                h8_initial_step = record.checkpoint.step
+                # Pending tools belong to the already-started step. A fully
+                # settled checkpoint resumes at the next driver phase.
+                h8_initial_step = record.checkpoint.step + (
+                    0 if record.checkpoint.pending_tool_calls else 1
+                )
                 h8_iteration_budget = min(
                     h8_iteration_budget,
                     record.checkpoint.remaining_iterations,
                 )
+                # Continue the durable monotonic facts after a resumed runner;
+                # otherwise the next checkpoint would omit old completed calls
+                # and be rejected as a stale producer by the CAS boundary.
+                h7_business_references = dict(record.checkpoint.business_references)
+                h7_uncertain_side_effect_refs = tuple(
+                    record.checkpoint.uncertain_side_effect_refs
+                )
+                h8_completed_tool_result_ids.update(record.checkpoint.completed_tool_results)
                 h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
             except RuntimeError:
                 h8_driver = DefaultReactDriver()
@@ -2919,7 +2944,52 @@ class AgentLoop:
             session.metadata.get(self._RUNTIME_CHECKPOINT_KEY),
         )
         if not isinstance(checkpoint, dict):
-            return False
+            # SQLite is the durable H8 owner record. A missing/older JSONL
+            # session snapshot cannot prove that its checkpointed side effect
+            # was reflected in the visible transcript, so never start a new
+            # turn from it or silently replay work.
+            handoff_manager = getattr(self, "loop_handoff_manager", None)
+            if handoff_manager is None:
+                return False
+            try:
+                handoff = handoff_manager.store.load(session.key)
+            except (OSError, RuntimeError, ValueError):
+                handoff = None
+            if handoff is None:
+                return False
+            durable = handoff.checkpoint
+            if durable.session_prefix_hash:
+                prefix = session.messages[: durable.message_position]
+                if (
+                    len(prefix) != durable.message_position
+                    or session_message_prefix_hash(prefix) != durable.session_prefix_hash
+                ):
+                    session.metadata[self._H7_HANDOFF_PAUSE_KEY] = {
+                        "reason": "session_prefix_hash_mismatch",
+                        "checkpoint": {},
+                        "h7_loop_checkpoint": durable.to_dict(),
+                    }
+                    self._clear_pending_user_turn(session)
+                    return True
+            has_unsettled_durable_work = any(
+                (
+                    bool(durable.pending_tool_calls),
+                    bool(durable.uncertain_side_effect_refs),
+                )
+            )
+            # A normal finished turn intentionally clears its transient
+            # runtime checkpoint. Missing JSONL is unsafe only when SQLite
+            # shows unfinished work, or when its committed prefix is newer
+            # than the visible session history.
+            if not has_unsettled_durable_work and len(session.messages) >= durable.message_position:
+                return False
+            session.metadata[self._H7_HANDOFF_PAUSE_KEY] = {
+                "reason": "session_checkpoint_missing",
+                "checkpoint": {},
+                "h7_loop_checkpoint": handoff.checkpoint.to_dict(),
+            }
+            self._clear_pending_user_turn(session)
+            return True
         checkpoint_data = cast(dict[str, Any], checkpoint)
 
         h7_raw = checkpoint_data.get("h7_loop_checkpoint")
@@ -2961,12 +3031,25 @@ class AgentLoop:
                         return True
                 if (
                     session_checkpoint is None
-                    or durable.step > session_checkpoint.step
-                    or durable.message_position > session_checkpoint.message_position
+                    or durable.step != session_checkpoint.step
+                    or durable.message_position != session_checkpoint.message_position
+                    or set(durable.completed_tool_results)
+                    != set(session_checkpoint.completed_tool_results)
+                    or set(durable.pending_tool_calls)
+                    != set(session_checkpoint.pending_tool_calls)
                     or bool(durable.uncertain_side_effect_refs)
                 ):
-                    checkpoint_data["h7_loop_checkpoint"] = durable.to_dict()
-                    h7_raw = checkpoint_data["h7_loop_checkpoint"]
+                    # The public payload and its message list are one unit.
+                    # Replacing only H8 metadata would mix a new durable fact
+                    # with old tool messages and could replay or invent work.
+                    session.metadata[self._H7_HANDOFF_PAUSE_KEY] = {
+                        "reason": "durable_session_checkpoint_mismatch",
+                        "checkpoint": dict(checkpoint_data),
+                        "h7_loop_checkpoint": durable.to_dict(),
+                    }
+                    self._clear_pending_user_turn(session)
+                    self._clear_runtime_checkpoint(session)
+                    return True
         if isinstance(h7_raw, Mapping):
             try:
                 h7_checkpoint = LoopCheckpoint.from_dict(h7_raw)

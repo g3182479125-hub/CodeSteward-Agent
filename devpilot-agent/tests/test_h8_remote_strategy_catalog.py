@@ -28,6 +28,7 @@ class FakeCandidateRunner:
     def __init__(self) -> None:
         self.trials: list[CandidateTrialRequest] = []
         self.executions: list[CandidateTrialRequest] = []
+        self.cancellations: list[CandidateTrialRequest] = []
 
     @staticmethod
     def _result(request: CandidateTrialRequest, output: object) -> CandidateExecutionResult:
@@ -67,6 +68,10 @@ class FakeCandidateRunner:
                 "reason": "continue",
             },
         )
+
+    def cancel(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        self.cancellations.append(request)
+        return self._result(request, {"cancelled": True})
 
 
 def _projection() -> dict[str, object]:
@@ -137,6 +142,25 @@ def test_h8_remote_strategy_rejects_untrialed_or_hash_mismatched_artifact(tmp_pa
             project_id="project-private",
             projection=_projection(),
         )
+
+
+def test_h8_remote_strategy_cancels_the_exact_durable_candidate_request(tmp_path: Path) -> None:
+    runner = FakeCandidateRunner()
+    catalog = RemoteStrategyCatalog(tmp_path, runner=runner, grant_issuer=ISSUER)
+    artifact = catalog.define("session-private", "strategy-one", "1.0.0", SOURCE)
+    catalog.trial(artifact, task_id="task-private", project_id="project-private")
+    request = catalog.decision_request(
+        artifact,
+        session_id="session-private",
+        task_id="task-private",
+        project_id="project-private",
+        projection=_projection(),
+    )
+
+    result = catalog.cancel_decision(request)
+
+    assert result.status == "passed"
+    assert runner.cancellations == [request]
 
 
 @pytest.mark.asyncio
