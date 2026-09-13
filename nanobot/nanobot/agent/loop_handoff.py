@@ -12,6 +12,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -19,6 +20,7 @@ from typing import Protocol
 from nanobot.agent.loop_driver import (
     DefaultReactDriver,
     DriverAction,
+    DriverActionKind,
     LoopCheckpoint,
     LoopDriver,
     PlanThenActDriver,
@@ -82,8 +84,9 @@ class SqliteLoopHandoffStore:
         return connection
 
     def _ensure_table(self) -> None:
-        with self._connect() as connection:
-            self._ensure_table_on(connection)
+        with closing(self._connect()) as connection:
+            with connection:
+                self._ensure_table_on(connection)
 
     @staticmethod
     def _ensure_table_on(connection: sqlite3.Connection) -> None:
@@ -132,7 +135,7 @@ class SqliteLoopHandoffStore:
         )
 
     def load(self, session_id: str) -> HandoffRecord | None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             self._check_table(connection)
             row = connection.execute(
                 f"select session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version from {_TABLE} where session_id = ?",
@@ -148,26 +151,27 @@ class SqliteLoopHandoffStore:
             record.owner_generation, record.status, record.operation_id,
             record.requested_driver_name, record.requested_driver_version,
         )
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             self._check_table(connection)
-            connection.execute("begin immediate")
-            if expected_generation is None:
-                existing = connection.execute(
-                    f"select 1 from {_TABLE} where session_id = ?", (record.session_id,)
-                ).fetchone()
-                if existing is not None:
-                    raise RuntimeError("loop handoff record already exists")
-                connection.execute(
-                    f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-                    payload,
-                )
-            else:
-                result = connection.execute(
-                    f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
-                    (*payload[1:], record.session_id, expected_generation),
-                )
-                if result.rowcount != 1:
-                    raise RuntimeError("loop handoff ownership changed")
+            with connection:
+                connection.execute("begin immediate")
+                if expected_generation is None:
+                    existing = connection.execute(
+                        f"select 1 from {_TABLE} where session_id = ?", (record.session_id,)
+                    ).fetchone()
+                    if existing is not None:
+                        raise RuntimeError("loop handoff record already exists")
+                    connection.execute(
+                        f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                        payload,
+                    )
+                else:
+                    result = connection.execute(
+                        f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
+                        (*payload[1:], record.session_id, expected_generation),
+                    )
+                    if result.rowcount != 1:
+                        raise RuntimeError("loop handoff ownership changed")
         return record
 
 
@@ -229,6 +233,7 @@ class LoopHandoffManager:
             raise RuntimeError("loop handoff record does not exist")
         if checkpoint.session_id != current.session_id or checkpoint.task_id != current.task_id:
             raise RuntimeError("checkpoint ownership does not match handoff")
+        self._require_forward_checkpoint(current.checkpoint, checkpoint)
         if not checkpoint.switch_safe:
             # Persist latest facts but retain the original owner until safe.
             updated = replace(
@@ -245,7 +250,18 @@ class LoopHandoffManager:
         assert current.requested_driver_name is not None and current.requested_driver_version is not None
         state = self._initial_state(current.requested_driver_name, current.requested_driver_version)
         # Dry restore before committing; a failed init leaves the old artifact active.
-        self.registry.restore(current.requested_driver_name, current.requested_driver_version, state)
+        try:
+            self.registry.restore(current.requested_driver_name, current.requested_driver_version, state)
+        except ValueError:
+            failed = replace(
+                current,
+                checkpoint=checkpoint,
+                owner_generation=current.owner_generation + 1,
+                status="switch_failed",
+                requested_driver_name=None,
+                requested_driver_version=None,
+            )
+            return self.store.save(failed, expected_generation=current.owner_generation)
         updated = HandoffRecord(
             session_id=current.session_id, task_id=current.task_id, project_id=current.project_id,
             driver_name=current.requested_driver_name, driver_version=current.requested_driver_version,
@@ -253,6 +269,18 @@ class LoopHandoffManager:
             status="active", operation_id=current.operation_id,
         )
         return self.store.save(updated, expected_generation=current.owner_generation)
+
+    @staticmethod
+    def _require_forward_checkpoint(previous: LoopCheckpoint, current: LoopCheckpoint) -> None:
+        """Reject delayed writers before they can replace authoritative facts."""
+        if (
+            current.step < previous.step
+            or current.message_position < previous.message_position
+            or current.remaining_iterations > previous.remaining_iterations
+            or not set(previous.completed_tool_results).issubset(current.completed_tool_results)
+            or not set(previous.business_references.items()).issubset(current.business_references.items())
+        ):
+            raise RuntimeError("loop checkpoint regressed; stale producer rejected")
 
     def active_driver(self, session_id: str) -> tuple[LoopDriver, HandoffRecord]:
         record = self.store.load(session_id)
@@ -297,9 +325,12 @@ class ManagedLoopDriver:
     def __init__(self, manager: LoopHandoffManager, session_id: str) -> None:
         self.manager = manager
         self.session_id = session_id
+        self._last_record: HandoffRecord | None = None
 
     def _active(self) -> LoopDriver:
-        return self.manager.recover_driver(self.session_id)[0]
+        driver, record = self.manager.recover_driver(self.session_id)
+        self._last_record = record
+        return driver
 
     @property
     def name(self) -> str:
@@ -310,7 +341,26 @@ class ManagedLoopDriver:
         return self._active().version
 
     def next_action(self, step: StepInput) -> DriverAction:
-        return self._active().next_action(step)
+        driver = self._active()
+        assert self._last_record is not None
+        checkpoint = self._last_record.checkpoint
+        if checkpoint.uncertain_side_effect_refs:
+            return DriverAction(DriverActionKind.PAUSE, "uncertain_side_effect_requires_recovery")
+        if checkpoint.remaining_iterations <= 0:
+            return DriverAction(DriverActionKind.PAUSE, "durable_iteration_budget_exhausted")
+        if step.step < checkpoint.step or step.message_position < checkpoint.message_position:
+            return DriverAction(DriverActionKind.PAUSE, "stale_step_input_rejected")
+        bounded = StepInput(
+            session_id=step.session_id,
+            task_id=step.task_id,
+            project_id=step.project_id,
+            step=step.step,
+            message_position=step.message_position,
+            remaining_iterations=min(step.remaining_iterations, checkpoint.remaining_iterations),
+            completed_tool_results=step.completed_tool_results,
+            pending_tool_calls=step.pending_tool_calls,
+        )
+        return driver.next_action(bounded)
 
     def export_state(self) -> Mapping[str, object]:
         return self._active().export_state()

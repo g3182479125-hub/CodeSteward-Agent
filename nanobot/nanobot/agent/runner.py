@@ -125,6 +125,7 @@ class AgentRunSpec:
     loop_guard: TaskLoopGuard | None = None
     task_context_evidence_callback: TaskContextEvidenceCallback | None = None
     loop_driver: LoopDriver | None = None
+    initial_step: int = 0
 
 
 @dataclass(slots=True)
@@ -470,6 +471,7 @@ class AgentRunner:
         )
 
         for iteration in range(spec.max_iterations):
+            host_step = spec.initial_step + iteration
             # Driver decisions occur only before a new model request.  Tool
             # execution, permissions and persistence remain Host-owned below.
             action = driver.next_action(
@@ -477,7 +479,7 @@ class AgentRunner:
                     session_id=spec.session_key or "",
                     task_id=spec.task_id or spec.session_key or "",
                     project_id=spec.project_id or "",
-                    step=iteration,
+                    step=host_step,
                     message_position=len(messages),
                     remaining_iterations=spec.max_iterations - iteration,
                 )
@@ -501,6 +503,18 @@ class AgentRunner:
                 messages,
                 compacted_tool_call_ids,
             )
+            if action.reason.startswith("plan_step:"):
+                messages_for_model = [
+                    *messages_for_model,
+                    {
+                        "role": "system",
+                        "content": (
+                            "Host execution phase: "
+                            f"{action.reason.removeprefix('plan_step:')}. "
+                            "Keep the current task and use only authorized Host tools."
+                        ),
+                    },
+                ]
             context = AgentHookContext(
                 iteration=iteration,
                 messages=messages,

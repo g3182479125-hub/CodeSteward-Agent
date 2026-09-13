@@ -4,7 +4,12 @@ import pytest
 
 from agent.runner_helpers import make_run_spec
 from nanobot.agent.loop_driver import DriverActionKind, LoopCheckpoint, PlanThenActDriver, StepInput
-from nanobot.agent.loop_handoff import LoopHandoffManager, ManagedLoopDriver, SqliteLoopHandoffStore
+from nanobot.agent.loop_handoff import (
+    DriverRegistry,
+    LoopHandoffManager,
+    ManagedLoopDriver,
+    SqliteLoopHandoffStore,
+)
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
@@ -31,6 +36,27 @@ def test_h8_switches_at_safe_boundary_without_replacing_session(tmp_path) -> Non
     assert restored.session_id == initial.session_id
     assert restored.task_id == initial.task_id
     assert restored.owner_generation > pending.owner_generation
+
+
+def test_h8_can_switch_back_to_default_in_same_task_without_replaying_facts(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(_checkpoint())
+    manager.request_switch("session-1", "plan-then-act", "1")
+    planned = manager.commit_boundary("session-1", _checkpoint())
+    assert planned.driver_name == "plan-then-act"
+
+    continued = LoopCheckpoint(
+        "session-1", "task-1", "project-1", 4, 10, 6,
+        completed_tool_results=("call-1",),
+        business_references={"run_id:run-1": "run-1"},
+    )
+    manager.request_switch("session-1", "default-react", "1")
+    restored = manager.commit_boundary("session-1", continued)
+
+    assert restored.driver_name == "default-react"
+    assert restored.task_id == "task-1"
+    assert restored.checkpoint.completed_tool_results == ("call-1",)
+    assert restored.checkpoint.business_references == {"run_id:run-1": "run-1"}
 
 
 def test_h8_waits_for_uncertain_side_effect_before_switch(tmp_path) -> None:
@@ -77,6 +103,30 @@ def test_h8_restores_default_when_persisted_driver_is_incompatible(tmp_path) -> 
     assert recovered.checkpoint == original.checkpoint
 
 
+def test_h8_failed_switch_keeps_original_driver_and_latest_checkpoint(tmp_path) -> None:
+    class FailingRegistry(DriverRegistry):
+        fail = False
+
+        def restore(self, name, version, state):
+            if self.fail and name == "plan-then-act":
+                raise ValueError("simulated initialization failure")
+            return super().restore(name, version, state)
+
+    registry = FailingRegistry()
+    manager = LoopHandoffManager(
+        SqliteLoopHandoffStore(tmp_path / "devpilot.db"), registry
+    )
+    manager.ensure(_checkpoint())
+    manager.request_switch("session-1", "plan-then-act", "1")
+    registry.fail = True
+    latest = LoopCheckpoint("session-1", "task-1", "project-1", 4, 9, 6)
+
+    result = manager.commit_boundary("session-1", latest)
+    assert result.status == "switch_failed"
+    assert result.driver_name == "default-react"
+    assert result.checkpoint == latest
+
+
 def test_h8_generation_prevents_stale_owner_overwrite(tmp_path) -> None:
     store = SqliteLoopHandoffStore(tmp_path / "devpilot.db")
     manager = LoopHandoffManager(store)
@@ -85,6 +135,24 @@ def test_h8_generation_prevents_stale_owner_overwrite(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="ownership changed"):
         store.save(first, expected_generation=first.owner_generation)
+
+
+def test_h8_rejects_checkpoint_that_regresses_authoritative_facts(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    authoritative = LoopCheckpoint(
+        "session-1", "task-1", "project-1", 10, 20, 2,
+        uncertain_side_effect_refs=("run_id:unknown",),
+    )
+    manager.ensure(authoritative)
+    manager.request_switch("session-1", "plan-then-act", "1")
+
+    with pytest.raises(RuntimeError, match="checkpoint regressed"):
+        manager.commit_boundary("session-1", _checkpoint())
+
+    driver, record = manager.active_driver("session-1")
+    assert driver.name == "default-react"
+    assert record.checkpoint == authoritative
+    assert record.status == "switch_pending"
 
 
 def test_h8_plan_driver_round_trips_only_structured_state() -> None:
@@ -104,12 +172,27 @@ def test_h8_managed_driver_reads_new_owner_without_agent_restart(tmp_path) -> No
     manager.request_switch("session-1", "plan-then-act", "1")
     manager.commit_boundary("session-1", _checkpoint())
     action = managed.next_action(
-        StepInput("session-1", "task-1", "project-1", 0, 0, 1)
+        StepInput("session-1", "task-1", "project-1", 3, 8, 1)
     )
 
     assert managed.name == "plan-then-act"
     assert action.kind is DriverActionKind.REQUEST_MODEL
     assert action.reason == "plan_step:understand"
+
+
+def test_h8_managed_driver_pauses_for_durable_unknown_or_exhausted_budget(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(
+        LoopCheckpoint(
+            "session-1", "task-1", "project-1", 2, 4, 0,
+            uncertain_side_effect_refs=("run_id:unknown",),
+        )
+    )
+    action = ManagedLoopDriver(manager, "session-1").next_action(
+        StepInput("session-1", "task-1", "project-1", 3, 5, 9)
+    )
+    assert action.kind is DriverActionKind.PAUSE
+    assert action.reason == "uncertain_side_effect_requires_recovery"
 
 
 @pytest.mark.asyncio
@@ -118,14 +201,15 @@ async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> 
     from nanobot.agent.runner import AgentRunner
 
     manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
-    manager.ensure(_checkpoint())
+    manager.ensure(LoopCheckpoint("session-1", "task-1", "project-1", 0, 0, 3))
     managed = ManagedLoopDriver(manager, "session-1")
     provider = MagicMock(spec=LLMProvider)
     calls = 0
+    second_messages: list[dict] = []
     checkpoints: list[dict] = []
     requested = False
 
-    async def chat_with_retry(**_kwargs):
+    async def chat_with_retry(**kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -133,6 +217,7 @@ async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> 
                 content=None,
                 tool_calls=[ToolCallRequest(id="call-1", name="read_only", arguments={})],
             )
+        second_messages[:] = kwargs["messages"]
         return LLMResponse(content="finished", tool_calls=[])
 
     async def checkpoint(payload: dict) -> None:
@@ -174,3 +259,7 @@ async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> 
     assert calls == 2
     assert tools.execute.await_count == 1
     assert managed.name == "plan-then-act"
+    assert any(
+        item.get("content", "").startswith("Host execution phase: act")
+        for item in second_messages
+    )

@@ -1411,6 +1411,8 @@ class AgentLoop:
         h7_business_references: dict[str, str] = {}
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
         h8_driver: LoopDriver = DefaultReactDriver()
+        h8_initial_step = 0
+        h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
             nonlocal h7_business_references, h7_uncertain_side_effect_refs
@@ -1453,11 +1455,11 @@ class AgentLoop:
                     request_ctx.attributes.get("devpilot_project_id")
                     or self.plugin_manager.project_id_for_path(effective_scope.project_path)
                 ),
-                step=int(public_payload.get("iteration") or 0),
+                step=h8_initial_step + int(public_payload.get("iteration") or 0),
                 message_position=len(session.messages),
                 remaining_iterations=max(
                     0,
-                    (max_iterations if max_iterations is not None else self.max_iterations)
+                    h8_iteration_budget
                     - int(public_payload.get("iteration") or 0)
                     - 1,
                 ),
@@ -1476,6 +1478,7 @@ class AgentLoop:
                 uncertain_side_effect_refs=h7_uncertain_side_effect_refs,
             )
             public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
+            self._set_runtime_checkpoint(session, public_payload)
             if self.loop_handoff_manager is not None:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
@@ -1485,7 +1488,6 @@ class AgentLoop:
                     # handoff persistence cannot advance.  A later restore
                     # therefore pauses rather than replaying unknown work.
                     logger.warning("Loop handoff checkpoint was not committed: {}", exc)
-            self._set_runtime_checkpoint(session, public_payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
             """Drain follow-up messages from the pending queue.
@@ -1615,9 +1617,26 @@ class AgentLoop:
         )
         if self.loop_handoff_manager is not None and session is not None:
             try:
-                # A first turn has no durable handoff record yet.  It gets the
-                # default Driver; subsequent turns resolve at every action.
-                self.loop_handoff_manager.recover_driver(session.key)
+                initial_checkpoint = LoopCheckpoint(
+                    session_id=session.key,
+                    task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
+                    project_id=str(
+                        request_ctx.attributes.get("devpilot_project_id")
+                        or self.plugin_manager.project_id_for_path(effective_scope.project_path)
+                    ),
+                    step=0,
+                    message_position=len(session.messages),
+                    remaining_iterations=(
+                        max_iterations if max_iterations is not None else self.max_iterations
+                    ),
+                )
+                self.loop_handoff_manager.ensure(initial_checkpoint)
+                _driver, record = self.loop_handoff_manager.recover_driver(session.key)
+                h8_initial_step = record.checkpoint.step
+                h8_iteration_budget = min(
+                    h8_iteration_budget,
+                    record.checkpoint.remaining_iterations,
+                )
                 h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
             except RuntimeError:
                 h8_driver = DefaultReactDriver()
@@ -1674,7 +1693,7 @@ class AgentLoop:
                 tools=effective_tools,
                 runtime=runtime,
                 max_iterations=(
-                    max_iterations if max_iterations is not None else self.max_iterations
+                    h8_iteration_budget
                 ),
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=hook,
@@ -1726,6 +1745,7 @@ class AgentLoop:
                     else None
                 ),
                 loop_driver=h8_driver,
+                initial_step=h8_initial_step,
              ))
         finally:
             turn_scope_stack.close()
