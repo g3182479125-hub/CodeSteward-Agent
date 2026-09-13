@@ -30,6 +30,7 @@ from nanobot.agent.automation_turns import publish_next_deferred_turn
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
+from nanobot.agent.loop_driver import LoopCheckpoint
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.plugins.manager import PluginManager
@@ -1383,6 +1384,51 @@ class AgentLoop:
                 public_payload[self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY] = (
                     self._PROVIDER_STATE_CHECKPOINT_VERSION
                 )
+            driver_data = public_payload.get("loop_driver")
+            driver_name = (
+                str(driver_data.get("name"))
+                if isinstance(driver_data, dict) and driver_data.get("name")
+                else "default-react"
+            )
+            driver_version = (
+                str(driver_data.get("version"))
+                if isinstance(driver_data, dict) and driver_data.get("version")
+                else "1"
+            )
+            completed = public_payload.get("completed_tool_results") or []
+            pending = public_payload.get("pending_tool_calls") or []
+            public_payload["h7_loop_checkpoint"] = LoopCheckpoint(
+                session_id=session.key,
+                task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
+                project_id=str(
+                    request_ctx.attributes.get("devpilot_project_id")
+                    or self.plugin_manager.project_id_for_path(effective_scope.project_path)
+                ),
+                step=int(public_payload.get("iteration") or 0),
+                message_position=len(session.messages),
+                remaining_iterations=max(
+                    0,
+                    (max_iterations if max_iterations is not None else self.max_iterations)
+                    - int(public_payload.get("iteration") or 0)
+                    - 1,
+                ),
+                completed_tool_results=tuple(
+                    str(item.get("tool_call_id"))
+                    for item in completed
+                    if isinstance(item, dict) and item.get("tool_call_id")
+                ),
+                pending_tool_calls=tuple(
+                    str(item.get("id"))
+                    for item in pending
+                    if isinstance(item, dict) and item.get("id")
+                ),
+                versions={"loop_driver": f"{driver_name}@{driver_version}"},
+                uncertain_side_effect_refs=tuple(
+                    str(item.get("id"))
+                    for item in pending
+                    if isinstance(item, dict) and item.get("id")
+                ),
+            ).to_dict()
             self._set_runtime_checkpoint(session, public_payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
@@ -1572,6 +1618,11 @@ class AgentLoop:
                 concurrent_tools=True,
                 workspace=effective_scope.project_path,
                 session_key=session.key if session else None,
+                task_id=str(request_ctx.attributes.get("devpilot_task_id") or active_session_key or ""),
+                project_id=str(
+                    request_ctx.attributes.get("devpilot_project_id")
+                    or self.plugin_manager.project_id_for_path(effective_scope.project_path)
+                ),
                 context_block_limit=self.context_block_limit,
                 provider_retry_mode=self.provider_retry_mode,
                 progress_callback=on_progress,

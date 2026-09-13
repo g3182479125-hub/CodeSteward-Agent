@@ -78,7 +78,13 @@ class LoopCheckpoint:
     pending_tool_calls: tuple[str, ...] = ()
     versions: Mapping[str, str] = field(default_factory=dict)
     business_references: Mapping[str, str] = field(default_factory=dict)
+    uncertain_side_effect_refs: tuple[str, ...] = ()
     checkpoint_schema: str = "h7-v1"
+
+    @property
+    def switch_safe(self) -> bool:
+        """Only a committed, fully-known boundary may change Driver ownership."""
+        return not self.pending_tool_calls and not self.uncertain_side_effect_refs
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -97,4 +103,7 @@ class LoopCheckpoint:
             pending_tool_calls=tuple(str(item) for item in value.get("pending_tool_calls", ())),
             versions={str(key): str(item) for key, item in dict(value.get("versions", {})).items()},
             business_references={str(key): str(item) for key, item in dict(value.get("business_references", {})).items()},
+            uncertain_side_effect_refs=tuple(
+                str(item) for item in value.get("uncertain_side_effect_refs", ())
+            ),
         )

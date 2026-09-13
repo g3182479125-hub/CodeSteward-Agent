@@ -180,6 +180,10 @@ async def test_runner_replays_provider_state_without_chat_projection_duplicates(
     }]
     assert checkpoints[2]["phase"] == "final_response"
     assert checkpoints[2]["provider_state"].payload == second_state.payload
+    assert checkpoints[0]["loop_driver"] == {
+        "name": "default-react",
+        "version": "1",
+    }
 
 
 @pytest.mark.asyncio

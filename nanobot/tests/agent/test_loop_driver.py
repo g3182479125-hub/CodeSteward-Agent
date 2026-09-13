@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+from agent.runner_helpers import make_run_spec
 from nanobot.agent.loop_driver import (
     DefaultReactDriver,
+    DriverAction,
     DriverActionKind,
     LoopCheckpoint,
     StepInput,
 )
+from nanobot.agent.runner import AgentRunner
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
 def test_default_react_driver_only_decides_safe_next_action() -> None:
@@ -34,3 +40,71 @@ def test_checkpoint_round_trips_only_serializable_handoff_facts() -> None:
 def test_checkpoint_rejects_unknown_schema() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         LoopCheckpoint.from_dict({"checkpoint_schema": "unknown"})
+
+
+def test_checkpoint_blocks_driver_switch_for_pending_or_uncertain_side_effects() -> None:
+    base = dict(
+        session_id="s",
+        task_id="t",
+        project_id="p",
+        step=2,
+        message_position=4,
+        remaining_iterations=3,
+    )
+
+    assert LoopCheckpoint(**base).switch_safe is True
+    assert LoopCheckpoint(**base, pending_tool_calls=("tool-1",)).switch_safe is False
+    assert LoopCheckpoint(**base, uncertain_side_effect_refs=("fc-run-1",)).switch_safe is False
+
+
+@pytest.mark.asyncio
+async def test_runner_calls_driver_at_model_and_tool_boundaries() -> None:
+    class RecordingDriver:
+        name = "recording"
+        version = "1"
+
+        def __init__(self) -> None:
+            self.steps: list[StepInput] = []
+
+        def next_action(self, step: StepInput) -> DriverAction:
+            self.steps.append(step)
+            if step.pending_tool_calls:
+                return DriverAction(DriverActionKind.DISPATCH_TOOLS)
+            return DriverAction(DriverActionKind.REQUEST_MODEL)
+
+    provider = MagicMock(spec=LLMProvider)
+    calls = 0
+
+    async def chat_with_retry(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(id="tool-1", name="echo", arguments={})]
+            )
+        return LLMResponse(content="done")
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="ok")
+    driver = RecordingDriver()
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "run"}],
+        tools=tools,
+        model="test",
+        max_iterations=2,
+        max_tool_result_chars=10_000,
+        session_key="session-1",
+        task_id="task-1",
+        project_id="project-1",
+        loop_driver=driver,
+    ))
+
+    assert result.final_content == "done"
+    assert driver.steps[0].task_id == "task-1"
+    assert driver.steps[0].project_id == "project-1"
+    assert driver.steps[1].pending_tool_calls == ("tool-1",)

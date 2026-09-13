@@ -9,6 +9,7 @@ from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.loop_driver import LoopCheckpoint
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
@@ -595,6 +596,38 @@ def test_restore_runtime_checkpoint_rehydrates_completed_and_pending_tools() -> 
     assert session.provider_state is None
 
 
+def test_restore_runtime_checkpoint_accepts_h7_driver_provenance() -> None:
+    """New handoff data remains metadata-only and does not alter recovery."""
+    loop = _mk_loop()
+    session = Session(
+        key="test:h7-checkpoint",
+        metadata={
+            AgentLoop._RUNTIME_CHECKPOINT_KEY: {
+                "phase": "final_response",
+                "assistant_message": {"role": "assistant", "content": "finished"},
+                "completed_tool_results": [],
+                "pending_tool_calls": [],
+                "h7_loop_checkpoint": {
+                    "checkpoint_schema": "h7-v1",
+                    "session_id": "test:h7-checkpoint",
+                    "task_id": "task-1",
+                    "project_id": "project-1",
+                    "step": 2,
+                    "message_position": 4,
+                    "remaining_iterations": 3,
+                    "completed_tool_results": [],
+                    "pending_tool_calls": [],
+                    "versions": {"loop_driver": "default-react@1"},
+                    "business_references": {},
+                },
+            }
+        },
+    )
+
+    assert loop._restore_runtime_checkpoint(session) is True
+    assert session.messages[-1]["content"] == "finished"
+
+
 def test_restore_final_response_checkpoint_preserves_matching_provider_state() -> None:
     loop = _mk_loop()
     state = _provider_state()
@@ -808,6 +841,10 @@ async def test_runtime_checkpoint_keeps_provider_state_out_of_public_metadata(
         AgentLoop._PROVIDER_STATE_CHECKPOINT_VERSION
     )
     assert "private-checkpoint-blob" not in json.dumps(session.metadata)
+    h7_checkpoint = LoopCheckpoint.from_dict(checkpoint["h7_loop_checkpoint"])
+    assert h7_checkpoint.session_id == session.key
+    assert h7_checkpoint.versions["loop_driver"] == "default-react@1"
+    assert h7_checkpoint.switch_safe is True
 
     public_payload = loop.sessions.read_session_file(session.key)
     assert public_payload is not None

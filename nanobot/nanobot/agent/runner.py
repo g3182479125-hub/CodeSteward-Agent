@@ -107,6 +107,8 @@ class AgentRunSpec:
     fail_on_tool_error: bool = False
     workspace: Path | None = None
     session_key: str | None = None
+    task_id: str | None = None
+    project_id: str | None = None
     context_block_limit: int | None = None
     provider_retry_mode: str = "standard"
     progress_callback: ProgressCallback | None = None
@@ -473,8 +475,8 @@ class AgentRunner:
             action = driver.next_action(
                 StepInput(
                     session_id=spec.session_key or "",
-                    task_id=spec.session_key or "",
-                    project_id="",
+                    task_id=spec.task_id or spec.session_key or "",
+                    project_id=spec.project_id or "",
                     step=iteration,
                     message_position=len(messages),
                     remaining_iterations=spec.max_iterations - iteration,
@@ -560,6 +562,23 @@ class AgentRunner:
                         "pending_tool_calls": [tc.to_openai_tool_call() for tc in response.tool_calls],
                     },
                 )
+
+                tool_action = driver.next_action(
+                    StepInput(
+                        session_id=spec.session_key or "",
+                        task_id=spec.task_id or spec.session_key or "",
+                        project_id=spec.project_id or "",
+                        step=iteration,
+                        message_position=len(messages),
+                        remaining_iterations=spec.max_iterations - iteration - 1,
+                        pending_tool_calls=tuple(tool_call.id for tool_call in response.tool_calls),
+                    )
+                )
+                if tool_action.kind is not DriverActionKind.DISPATCH_TOOLS:
+                    raise RuntimeError(
+                        "unsupported driver action at tool boundary: "
+                        f"{tool_action.kind}"
+                    )
 
                 await hook.before_execute_tools(context)
 
@@ -1724,7 +1743,16 @@ class AgentRunner:
     ) -> None:
         callback = spec.checkpoint_callback
         if callback is not None:
-            await callback(payload)
+            driver = spec.loop_driver or DefaultReactDriver()
+            checkpoint_payload = dict(payload)
+            # This is host-authored provenance, not driver-supplied state.  It
+            # lets a later handoff prove which decision policy owned an
+            # unfinished turn without serializing a live driver instance.
+            checkpoint_payload["loop_driver"] = {
+                "name": driver.name,
+                "version": driver.version,
+            }
+            await callback(checkpoint_payload)
 
     @staticmethod
     def _append_final_message(messages: list[dict[str, Any]], content: str | None) -> None:
