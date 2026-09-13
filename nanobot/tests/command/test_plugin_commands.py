@@ -160,6 +160,22 @@ async def test_plugins_switch_loop_queues_boundary_handoff(tmp_path: Path, monke
     assert status is not None and "Loop switch status: switch_pending" in status.content
 
 
+@pytest.mark.asyncio
+async def test_plugins_switch_loop_accepts_a_hash_pinned_remote_strategy(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path)
+    loop.request_remote_loop_driver_switch = MagicMock(return_value="remote-operation")
+
+    response = await loop.process_direct(
+        "/plugins switch-loop remote strategy-one@1.2.3 " + "a" * 64,
+        session_key="cli:direct",
+    )
+
+    assert response is not None and "pending" in response.content
+    loop.request_remote_loop_driver_switch.assert_called_once_with(
+        "cli:direct", "strategy-one", "1.2.3", "a" * 64
+    )
+
+
 def test_plugins_command_is_visible_in_help_and_palette() -> None:
     from nanobot.command.builtin import build_help_text, builtin_command_palette
 

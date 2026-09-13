@@ -39,6 +39,7 @@ def _usage() -> str:
         "`/plugins stop <plugin-id> [operation-id] [expected-generation]`; "
         "`/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`; "
         "`/plugins switch-loop <default-react|plan-then-act>`; "
+        "`/plugins switch-loop remote <strategy-id>@<version> <source-hash>`; "
         "`/plugins cleanup-retry <operation-id>`; "
         "`/plugins status <operation-id>`"
     )
@@ -105,12 +106,27 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             )
         return _text(ctx, "Unknown plugin or loop-switch operation.")
     if action == "switch-loop":
-        if len(parts) != 2:
-            return _text(ctx, "Usage: `/plugins switch-loop <default-react|plan-then-act>`")
         if not ctx.is_user_turn:
             return _text(ctx, "Only a direct user message can request a loop switch.")
         try:
-            operation_id = ctx.loop.request_loop_driver_switch(ctx.key, parts[1])
+            if len(parts) == 2:
+                operation_id = ctx.loop.request_loop_driver_switch(ctx.key, parts[1])
+            elif len(parts) == 4 and parts[1] == "remote":
+                strategy_id, separator, strategy_version = parts[2].partition("@")
+                if not separator or not strategy_id or not strategy_version:
+                    return _text(
+                        ctx,
+                        "Usage: `/plugins switch-loop remote <strategy-id>@<version> <source-hash>`",
+                    )
+                operation_id = ctx.loop.request_remote_loop_driver_switch(
+                    ctx.key, strategy_id, strategy_version, parts[3]
+                )
+            else:
+                return _text(
+                    ctx,
+                    "Usage: `/plugins switch-loop <default-react|plan-then-act>` or "
+                    "`/plugins switch-loop remote <strategy-id>@<version> <source-hash>`",
+                )
         except (RuntimeError, ValueError) as exc:
             return _text(ctx, f"Loop switch was not accepted: {exc}")
         return _text(

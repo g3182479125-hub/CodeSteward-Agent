@@ -74,6 +74,11 @@ record them separately. A local self-review may supplement this process but
 must never be presented as a substitute. If subagent tooling is unavailable,
 the review is blocked and the final report must say so explicitly.
 
+Use subagents attached to the current development task for these reviews. Do
+not create a new user-visible chat/task merely to run a Standards or Spec
+review: doing so fragments the implementation context and is not a substitute
+for the required subagent workflow.
+
 Apply ADR-0004 to scheduling and follow-up: batch fixes, validate once per changed
 scope, then dispatch both axes against one immutable candidate. Reuse the same
 reviewers for documented incremental rechecks. Only the main agent dispatches the

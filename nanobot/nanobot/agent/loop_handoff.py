@@ -62,6 +62,7 @@ class HandoffRecord:
     operation_id: str | None = None
     requested_driver_name: str | None = None
     requested_driver_version: str | None = None
+    requested_driver_state: Mapping[str, object] | None = None
 
 
 class LoopHandoffStore(Protocol):
@@ -107,6 +108,7 @@ class SqliteLoopHandoffStore:
                 operation_id text,
                 requested_driver_name text,
                 requested_driver_version text,
+                requested_driver_state_json text,
                 updated_at text not null
             )
             """
@@ -127,6 +129,9 @@ class SqliteLoopHandoffStore:
         state = json.loads(str(row[5]))
         if not isinstance(state, dict):
             raise RuntimeError("loop handoff driver state must be an object")
+        requested_state = json.loads(str(row[12])) if row[12] is not None else None
+        if requested_state is not None and not isinstance(requested_state, dict):
+            raise RuntimeError("requested loop driver state must be an object")
         return HandoffRecord(
             session_id=str(row[0]), task_id=str(row[1]), project_id=str(row[2]),
             driver_name=str(row[3]), driver_version=str(row[4]), driver_state=state,
@@ -134,13 +139,14 @@ class SqliteLoopHandoffStore:
             operation_id=str(row[9]) if row[9] is not None else None,
             requested_driver_name=str(row[10]) if row[10] is not None else None,
             requested_driver_version=str(row[11]) if row[11] is not None else None,
+            requested_driver_state=requested_state,
         )
 
     def load(self, session_id: str) -> HandoffRecord | None:
         with closing(self._connect()) as connection:
             self._check_table(connection)
             row = connection.execute(
-                f"select session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version from {_TABLE} where session_id = ?",
+                f"select session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json from {_TABLE} where session_id = ?",
                 (session_id,),
             ).fetchone()
         return self._row_to_record(row) if row is not None else None
@@ -152,6 +158,11 @@ class SqliteLoopHandoffStore:
             json.dumps(record.checkpoint.to_dict(), ensure_ascii=False, sort_keys=True),
             record.owner_generation, record.status, record.operation_id,
             record.requested_driver_name, record.requested_driver_version,
+            (
+                json.dumps(dict(record.requested_driver_state), ensure_ascii=False, sort_keys=True)
+                if record.requested_driver_state is not None
+                else None
+            ),
         )
         with closing(self._connect()) as connection:
             self._check_table(connection)
@@ -164,12 +175,12 @@ class SqliteLoopHandoffStore:
                     if existing is not None:
                         raise RuntimeError("loop handoff record already exists")
                     connection.execute(
-                        f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+                        f"insert into {_TABLE} (session_id, task_id, project_id, driver_name, driver_version, driver_state_json, checkpoint_json, owner_generation, status, operation_id, requested_driver_name, requested_driver_version, requested_driver_state_json, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
                         payload,
                     )
                 else:
                     result = connection.execute(
-                        f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
+                        f"update {_TABLE} set task_id=?, project_id=?, driver_name=?, driver_version=?, driver_state_json=?, checkpoint_json=?, owner_generation=?, status=?, operation_id=?, requested_driver_name=?, requested_driver_version=?, requested_driver_state_json=?, updated_at=datetime('now') where session_id=? and owner_generation=?",
                         (*payload[1:], record.session_id, expected_generation),
                     )
                     if result.rowcount != 1:
@@ -198,11 +209,19 @@ class LoopHandoffManager:
         )
         return self.store.save(record)
 
-    def request_switch(self, session_id: str, driver_name: str, driver_version: str) -> HandoffRecord:
+    def request_switch(
+        self,
+        session_id: str,
+        driver_name: str,
+        driver_version: str,
+        *,
+        driver_state: Mapping[str, object] | None = None,
+    ) -> HandoffRecord:
         current = self.store.load(session_id)
         if current is None:
             raise RuntimeError("loop handoff record does not exist")
-        self.registry.restore(driver_name, driver_version, self._initial_state(driver_name, driver_version))
+        requested_state = driver_state or self._initial_state(driver_name, driver_version)
+        self.registry.restore(driver_name, driver_version, requested_state)
         if current.status == "switch_pending":
             raise RuntimeError("a loop switch is already pending")
         requested = replace(
@@ -212,6 +231,7 @@ class LoopHandoffManager:
             operation_id=str(uuid.uuid4()),
             requested_driver_name=driver_name,
             requested_driver_version=driver_version,
+            requested_driver_state=dict(requested_state),
         )
         return self.store.save(requested, expected_generation=current.owner_generation)
 
@@ -250,7 +270,9 @@ class LoopHandoffManager:
             )
             return self.store.save(updated, expected_generation=current.owner_generation)
         assert current.requested_driver_name is not None and current.requested_driver_version is not None
-        state = self._initial_state(current.requested_driver_name, current.requested_driver_version)
+        state = current.requested_driver_state or self._initial_state(
+            current.requested_driver_name, current.requested_driver_version
+        )
         # Dry restore before committing; a failed init leaves the old artifact active.
         try:
             self.registry.restore(current.requested_driver_name, current.requested_driver_version, state)
@@ -262,6 +284,7 @@ class LoopHandoffManager:
                 status="switch_failed",
                 requested_driver_name=None,
                 requested_driver_version=None,
+                requested_driver_state=None,
             )
             return self.store.save(failed, expected_generation=current.owner_generation)
         updated = HandoffRecord(
@@ -312,6 +335,7 @@ class LoopHandoffManager:
                 status="recovered_default",
                 requested_driver_name=None,
                 requested_driver_version=None,
+                requested_driver_state=None,
             )
             return fallback, self.store.save(recovered, expected_generation=record.owner_generation)
 

@@ -6,7 +6,9 @@ calls, tools, persistence, permissions, budgets and cancellation.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -137,6 +139,7 @@ class RemoteStrategyDriver:
 
     strategy_id: str
     source_hash: str
+    strategy_version: str = "1.0.0"
     name: str = "remote-strategy"
     version: str = "1"
 
@@ -145,6 +148,8 @@ class RemoteStrategyDriver:
             raise ValueError("remote strategy identifier is invalid")
         if len(self.source_hash) != 64 or any(char not in "0123456789abcdef" for char in self.source_hash):
             raise ValueError("remote strategy source hash is invalid")
+        if not self.strategy_version or len(self.strategy_version) > 64:
+            raise ValueError("remote strategy version is invalid")
 
     def next_action(self, step: StepInput) -> DriverAction:
         if step.pending_tool_calls:
@@ -158,6 +163,7 @@ class RemoteStrategyDriver:
             "driver_state_schema": "remote-strategy-v1",
             "strategy_id": self.strategy_id,
             "source_hash": self.source_hash,
+            "strategy_version": self.strategy_version,
         }
 
     @classmethod
@@ -166,9 +172,18 @@ class RemoteStrategyDriver:
             raise ValueError("incompatible remote strategy state")
         strategy_id = state.get("strategy_id")
         source_hash = state.get("source_hash")
-        if not isinstance(strategy_id, str) or not isinstance(source_hash, str):
+        strategy_version = state.get("strategy_version")
+        if (
+            not isinstance(strategy_id, str)
+            or not isinstance(source_hash, str)
+            or not isinstance(strategy_version, str)
+        ):
             raise ValueError("invalid remote strategy state")
-        return cls(strategy_id=strategy_id, source_hash=str(source_hash))
+        return cls(
+            strategy_id=strategy_id,
+            source_hash=str(source_hash),
+            strategy_version=strategy_version,
+        )
 
 
 def merge_business_facts(
@@ -228,6 +243,7 @@ class LoopCheckpoint:
     step: int
     message_position: int
     remaining_iterations: int
+    session_prefix_hash: str = ""
     completed_tool_results: tuple[str, ...] = ()
     pending_tool_calls: tuple[str, ...] = ()
     versions: Mapping[str, str] = field(default_factory=dict)
@@ -258,6 +274,7 @@ class LoopCheckpoint:
             raise ValueError("invalid loop checkpoint identity")
         versions = value.get("versions", {})
         business_references = value.get("business_references", {})
+        session_prefix_hash = value.get("session_prefix_hash", "")
         collections = (
             value.get("completed_tool_results", ()),
             value.get("pending_tool_calls", ()),
@@ -266,6 +283,8 @@ class LoopCheckpoint:
         if (
             not isinstance(versions, Mapping)
             or not isinstance(business_references, Mapping)
+            or not isinstance(session_prefix_hash, str)
+            or (session_prefix_hash and not re.fullmatch(r"[0-9a-f]{64}", session_prefix_hash))
             or any(not isinstance(items, (list, tuple)) for items in collections)
             or any(not isinstance(item, str) for items in collections for item in items)
             or any(
@@ -278,6 +297,7 @@ class LoopCheckpoint:
         checkpoint = cls(
             session_id=str(value["session_id"]), task_id=str(value["task_id"]), project_id=str(value["project_id"]),
             step=int(value["step"]), message_position=int(value["message_position"]), remaining_iterations=int(value["remaining_iterations"]),
+            session_prefix_hash=session_prefix_hash,
             completed_tool_results=tuple(value.get("completed_tool_results", ())),
             pending_tool_calls=tuple(value.get("pending_tool_calls", ())),
             versions=dict(versions),
@@ -286,3 +306,14 @@ class LoopCheckpoint:
         )
         checkpoint.to_dict()
         return checkpoint
+
+
+def session_message_prefix_hash(messages: Iterable[Mapping[str, object]]) -> str:
+    """Hash the committed JSON-safe message prefix without hashing private metadata."""
+    digest = hashlib.sha256()
+    for message in messages:
+        digest.update(
+            json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()

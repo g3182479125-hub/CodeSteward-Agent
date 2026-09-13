@@ -39,6 +39,7 @@ CANDIDATE_MAX_OUTPUT_BYTES = 64 * 1024
 CANDIDATE_MAX_SOURCE_BYTES = 64 * 1024
 CANDIDATE_MAX_INPUT_BYTES = 64 * 1024
 CANDIDATE_API_VERSION = "nanobot.tool/v1"
+CANDIDATE_LOOP_API_VERSION = "nanobot.loop-driver/v1"
 CANDIDATE_COMMAND_PROFILE = "model-candidate"
 CANDIDATE_TEMPLATE = "code-interpreter-v1"
 CANDIDATE_NETWORK_POLICY = "provider-default"
@@ -55,6 +56,7 @@ _LOCAL_REFERENCE_PATTERN = re.compile(r"(?i)(?:file://|[A-Za-z]:[\\/]|\\\\|(?<![
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _TOOL_CAPABILITY_PATTERN = re.compile(r"^tool:[a-z][a-z0-9._-]{0,63}$")
+_LOOP_CAPABILITY = "loop:remote-strategy"
 _FORBIDDEN_AST_NODES = (
     ast.AsyncFor,
     ast.AsyncFunctionDef,
@@ -355,9 +357,17 @@ def _validate_manifest(
         and re.fullmatch(r"[0-9a-f]{64}", content_hash)
     ):
         return None, ("CANDIDATE_MANIFEST_INVALID", "候选标识、版本或内容哈希无效")
-    if manifest.get("kind") != "tool":
-        return None, ("CANDIDATE_KIND_INVALID", "模型候选首版仅支持纯计算 tool")
-    if manifest.get("api_version") != CANDIDATE_API_VERSION:
+    kind = manifest.get("kind")
+    api_version = manifest.get("api_version")
+    if kind == "tool":
+        expected_api_version = CANDIDATE_API_VERSION
+        expected_provides: tuple[str, ...] | None = None
+    elif kind == "loop":
+        expected_api_version = CANDIDATE_LOOP_API_VERSION
+        expected_provides = (_LOOP_CAPABILITY,)
+    else:
+        return None, ("CANDIDATE_KIND_INVALID", "模型候选仅支持纯计算 tool 或受限 loop")
+    if api_version != expected_api_version:
         return None, ("CANDIDATE_API_VERSION_INVALID", "候选接口版本不受支持")
     if manifest.get("scope") not in {"session", "project"}:
         return None, ("CANDIDATE_SCOPE_INVALID", "模型候选不能使用 global 作用域")
@@ -368,11 +378,12 @@ def _validate_manifest(
     capabilities = _mapping_sequence(manifest.get("requested_capabilities"))
     if requires != ():
         return None, ("CANDIDATE_DEPENDENCY_DENIED", "纯计算候选不能依赖宿主服务")
-    if (
-        provides is None
-        or len(provides) != 1
-        or not _TOOL_CAPABILITY_PATTERN.fullmatch(provides[0])
-    ):
+    if provides is None or len(provides) != 1:
+        return None, ("CANDIDATE_MANIFEST_INVALID", "候选必须提供一个显式能力")
+    if expected_provides is not None:
+        if provides != expected_provides:
+            return None, ("CANDIDATE_MANIFEST_INVALID", "受限 loop 只能提供 remote-strategy 能力")
+    elif not _TOOL_CAPABILITY_PATTERN.fullmatch(provides[0]):
         return None, ("CANDIDATE_MANIFEST_INVALID", "候选必须提供一个显式 tool 能力")
     if capabilities != ():
         return None, ("CANDIDATE_CAPABILITY_DENIED", "纯计算候选不能申请宿主权限")

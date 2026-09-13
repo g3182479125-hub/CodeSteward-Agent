@@ -34,7 +34,9 @@ from nanobot.agent.loop_driver import (
     DefaultReactDriver,
     LoopCheckpoint,
     LoopDriver,
+    RemoteStrategyDriver,
     merge_business_facts,
+    session_message_prefix_hash,
 )
 from nanobot.agent.loop_handoff import (
     LoopHandoffManager,
@@ -1370,6 +1372,51 @@ class AgentLoop:
         assert record.operation_id is not None
         return record.operation_id
 
+    def request_remote_loop_driver_switch(
+        self,
+        session_id: str,
+        strategy_id: str,
+        strategy_version: str,
+        source_hash: str,
+    ) -> str:
+        """Queue one passed, immutable FC strategy at the next safe boundary."""
+        if self.loop_handoff_manager is None:
+            raise RuntimeError("live loop handoff is disabled")
+        if self.model_candidate_controller is None:
+            raise RuntimeError("remote loop strategies are unavailable")
+        self.model_candidate_controller.remote_strategy_artifact(
+            session_id, strategy_id, strategy_version, source_hash
+        )
+        strategy = RemoteStrategyDriver(
+            strategy_id,
+            source_hash,
+            strategy_version=strategy_version,
+        )
+        record = self.loop_handoff_manager.request_switch(
+            session_id,
+            strategy.name,
+            strategy.version,
+            driver_state=strategy.export_state(),
+        )
+        assert record.operation_id is not None
+        return record.operation_id
+
+    async def _remote_loop_strategy_decision(
+        self, session_id: str, projection: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Run only the active immutable strategy through the FC H5 executor."""
+        if self.loop_handoff_manager is None or self.model_candidate_controller is None:
+            raise ValueError("remote loop strategy execution is unavailable")
+        driver, _record = self.loop_handoff_manager.active_driver(session_id)
+        if not isinstance(driver, RemoteStrategyDriver):
+            raise ValueError("active loop driver is not a remote strategy")
+        return await self.model_candidate_controller.execute_remote_strategy(
+            driver.strategy_id,
+            driver.strategy_version,
+            driver.source_hash,
+            projection,
+        )
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict[str, Any]],
@@ -1463,6 +1510,7 @@ class AgentLoop:
                     - int(public_payload.get("iteration") or 0)
                     - 1,
                 ),
+                session_prefix_hash=session_message_prefix_hash(session.messages),
                 completed_tool_results=tuple(
                     str(item.get("tool_call_id"))
                     for item in completed
@@ -1478,7 +1526,7 @@ class AgentLoop:
                 uncertain_side_effect_refs=h7_uncertain_side_effect_refs,
             )
             public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
-            self._set_runtime_checkpoint(session, public_payload)
+            self._set_runtime_checkpoint(session, public_payload, fsync=True)
             if self.loop_handoff_manager is not None:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
@@ -1746,7 +1794,15 @@ class AgentLoop:
                 ),
                 loop_driver=h8_driver,
                 initial_step=h8_initial_step,
-             ))
+                remote_decision_callback=(
+                    partial(self._remote_loop_strategy_decision, session.key)
+                    if session is not None
+                    and self.loop_handoff_manager is not None
+                    and self.model_candidate_controller is not None
+                    else None
+                ),
+            )
+        )
         finally:
             turn_scope_stack.close()
             reset_workspace_scope(workspace_token)
@@ -2825,10 +2881,12 @@ class AgentLoop:
         )
         return True
 
-    def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
+    def _set_runtime_checkpoint(
+        self, session: Session, payload: dict[str, Any], *, fsync: bool = False
+    ) -> None:
         """Persist the latest in-flight turn state into session metadata."""
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
-        self.sessions.save(session)
+        self.sessions.save(session, fsync=fsync)
 
     def _mark_pending_user_turn(self, session: Session) -> None:
         session.metadata[self._PENDING_USER_TURN_KEY] = True
@@ -2883,6 +2941,24 @@ class AgentLoop:
                     except ValueError:
                         pass
                 durable = handoff.checkpoint
+                if durable.session_prefix_hash:
+                    prefix = session.messages[: durable.message_position]
+                    if (
+                        len(prefix) != durable.message_position
+                        or session_message_prefix_hash(prefix) != durable.session_prefix_hash
+                    ):
+                        # SQLite may have committed while a session file was
+                        # restored from an older prefix. There is no safe way
+                        # to infer whether its omitted action ran, so surface
+                        # the durable fact as a pause rather than replaying.
+                        session.metadata[self._H7_HANDOFF_PAUSE_KEY] = {
+                            "reason": "session_prefix_hash_mismatch",
+                            "checkpoint": dict(checkpoint_data),
+                            "h7_loop_checkpoint": durable.to_dict(),
+                        }
+                        self._clear_pending_user_turn(session)
+                        self._clear_runtime_checkpoint(session)
+                        return True
                 if (
                     session_checkpoint is None
                     or durable.step > session_checkpoint.step

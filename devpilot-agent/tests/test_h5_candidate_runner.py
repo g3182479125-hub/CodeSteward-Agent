@@ -370,6 +370,32 @@ def test_execute_uses_the_same_fc_proxy_path_as_trial() -> None:
     assert backend.requests[0].network_allowed is False
 
 
+def test_loop_strategy_candidate_uses_the_same_bounded_fc_executor() -> None:
+    source = (
+        "def transform(payload):\n"
+        "    return {'schema': 'h8-remote-driver-projection-v1', "
+        "'action': 'request_model', 'reason': 'continue'}\n"
+    )
+    grant = ISSUER.issue(
+        session_id="session-1",
+        task_id="task-1",
+        project_id="project-1",
+        allowed_input_rules=(("step", "integer", 8, 0, 1000),),
+    )
+    result = runner_for(RecordingBackend()).trial(
+        request_for(
+            source=source,
+            input_data={"step": 1},
+            grant=grant,
+            kind="loop",
+            api_version="nanobot.loop-driver/v1",
+            provides=["loop:remote-strategy"],
+        )
+    )
+
+    assert result.status == "passed"
+
+
 @pytest.mark.parametrize(
     ("source", "manifest_overrides", "error_code"),
     [

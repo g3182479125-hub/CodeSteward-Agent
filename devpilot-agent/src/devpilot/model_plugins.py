@@ -48,6 +48,7 @@ from .candidate_runner import (
     _validate_source,
 )
 from .fc_sandbox import build_fc_backend_from_environment
+from .remote_loop_strategy import RemoteStrategyArtifact, RemoteStrategyCatalog
 from .storage import ProjectStore
 
 if TYPE_CHECKING:
@@ -225,6 +226,7 @@ class ModelCandidateController:
         self._runner_error: tuple[str, str] | None = None
         self._runner_lock = threading.Lock()
         self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
+        self._remote_strategy_catalog: RemoteStrategyCatalog | None = None
 
     def bind_plugin_manager(self, manager: PluginManager) -> None:
         self._manager = manager
@@ -279,6 +281,66 @@ class ModelCandidateController:
             "模型候选插件未绑定可用的 FC 试用执行器；未执行本机回退",
         )
         return _error(code, message)
+
+    def _remote_catalog(self) -> RemoteStrategyCatalog:
+        """Return the H8 catalog backed by the same FC-only H5 executor."""
+        runner = self._ensure_runner()
+        issuer = self._issuer
+        if runner is None or issuer is None:
+            raise ValueError("remote loop strategy runner is unavailable")
+        if self._remote_strategy_catalog is None:
+            self._remote_strategy_catalog = RemoteStrategyCatalog(
+                self.data_dir,
+                runner=runner,
+                grant_issuer=issuer,
+            )
+        return self._remote_strategy_catalog
+
+    def define_remote_strategy(
+        self, session_id: str, strategy_id: str, version: str, source: str
+    ) -> RemoteStrategyArtifact:
+        """Define an immutable H8 decision artifact without importing it locally."""
+        return self._remote_catalog().define(session_id, strategy_id, version, source)
+
+    def trial_remote_strategy(
+        self, artifact: RemoteStrategyArtifact, *, task_id: str, project_id: str
+    ) -> None:
+        """Require the same FC trial path before a remote Driver can be selected."""
+        result = self._remote_catalog().trial(artifact, task_id=task_id, project_id=project_id)
+        if result.status != "passed":
+            raise ValueError("remote loop strategy trial failed")
+
+    def remote_strategy_artifact(
+        self, session_id: str, strategy_id: str, version: str, source_hash: str
+    ) -> RemoteStrategyArtifact:
+        """Resolve a passed strategy before it can enter a Host handoff record."""
+        catalog = self._remote_catalog()
+        artifact = catalog.load(session_id, strategy_id, version, source_hash)
+        catalog.require_trialled(artifact)
+        return artifact
+
+    async def execute_remote_strategy(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+        source_hash: str,
+        projection: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        """Execute a session-pinned H8 strategy through FC using only projection data."""
+        context = self._context()
+        if context is None:
+            raise ValueError("remote loop strategy lacks trusted request context")
+        _request, session_id, project_id, task_id, _workspace = context
+        catalog = self._remote_catalog()
+        artifact = catalog.load(session_id, strategy_id, strategy_version, source_hash)
+        return await asyncio.to_thread(
+            catalog.decide,
+            artifact,
+            session_id=session_id,
+            task_id=task_id,
+            project_id=project_id,
+            projection=projection,
+        )
 
     def _require_manager(self) -> PluginManager:
         if self._manager is None:

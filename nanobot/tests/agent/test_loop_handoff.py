@@ -9,6 +9,7 @@ from nanobot.agent.loop_driver import (
     PlanThenActDriver,
     RemoteStrategyDriver,
     StepInput,
+    session_message_prefix_hash,
 )
 from nanobot.agent.loop_driver_projection import build_remote_projection, validate_remote_decision
 from nanobot.agent.loop_handoff import (
@@ -89,6 +90,26 @@ def test_h8_rejects_unknown_driver_without_replacing_original(tmp_path) -> None:
         manager.request_switch("session-1", "unknown", "1")
 
     assert manager.active_driver("session-1")[0].name == "default-react"
+
+
+def test_h8_remote_switch_commits_the_exact_immutable_strategy_state(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(_checkpoint())
+    strategy = RemoteStrategyDriver("strategy-one", "a" * 64, strategy_version="1.2.3")
+
+    manager.request_switch(
+        "session-1",
+        strategy.name,
+        strategy.version,
+        driver_state=strategy.export_state(),
+    )
+    manager.commit_boundary("session-1", _checkpoint())
+    driver, record = manager.active_driver("session-1")
+
+    assert isinstance(driver, RemoteStrategyDriver)
+    assert driver.strategy_id == "strategy-one"
+    assert driver.strategy_version == "1.2.3"
+    assert record.driver_state == strategy.export_state()
 
 
 def test_h8_restores_default_when_persisted_driver_is_incompatible(tmp_path) -> None:
@@ -261,6 +282,69 @@ def test_h8_restore_uses_durable_unknown_facts_over_older_session_checkpoint(tmp
     assert loop._restore_runtime_checkpoint(session) is True
     paused = LoopCheckpoint.from_dict(session.metadata[loop._H7_HANDOFF_PAUSE_KEY]["h7_loop_checkpoint"])
     assert paused.uncertain_side_effect_refs == ("run_id:unknown",)
+
+
+def test_h8_restore_pauses_when_sqlite_checkpoint_prefix_is_not_the_saved_session(tmp_path) -> None:
+    from nanobot.agent.loop import AgentLoop
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test-model"
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    loop.loop_handoff_manager = manager
+    session = loop.sessions.get_or_create("cli:prefix")
+    session.add_message("user", "different saved prefix")
+    durable = LoopCheckpoint(
+        "cli:prefix",
+        "task",
+        "project",
+        2,
+        1,
+        3,
+        session_prefix_hash=session_message_prefix_hash(
+            [{"role": "user", "content": "expected prefix"}]
+        ),
+    )
+    manager.ensure(durable)
+    session.metadata[loop._RUNTIME_CHECKPOINT_KEY] = {"h7_loop_checkpoint": durable.to_dict()}
+
+    assert loop._restore_runtime_checkpoint(session) is True
+    assert session.metadata[loop._H7_HANDOFF_PAUSE_KEY]["reason"] == "session_prefix_hash_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_h8_loop_delegates_only_the_active_remote_strategy(tmp_path) -> None:
+    from nanobot.agent.loop import AgentLoop
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test-model"
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(_checkpoint())
+    strategy = RemoteStrategyDriver("strategy-one", "c" * 64, strategy_version="1.2.3")
+    manager.request_switch(
+        "session-1", strategy.name, strategy.version, driver_state=strategy.export_state()
+    )
+    manager.commit_boundary("session-1", _checkpoint())
+    controller = MagicMock()
+    controller.execute_remote_strategy = AsyncMock(
+        return_value={
+            "schema": "h8-remote-driver-projection-v1",
+            "action": "request_model",
+            "reason": "continue",
+        }
+    )
+    loop.loop_handoff_manager = manager
+    loop.model_candidate_controller = controller
+
+    decision = await loop._remote_loop_strategy_decision(
+        "session-1", {"schema": "h8-remote-driver-projection-v1"}
+    )
+
+    assert decision["action"] == "request_model"
+    controller.execute_remote_strategy.assert_awaited_once_with(
+        "strategy-one", "1.2.3", "c" * 64, {"schema": "h8-remote-driver-projection-v1"}
+    )
 
 
 @pytest.mark.asyncio
