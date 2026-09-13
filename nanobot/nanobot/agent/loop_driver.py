@@ -7,9 +7,19 @@ calls, tools, persistence, permissions, budgets and cancellation.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping, Protocol
+
+_BUSINESS_REFERENCE_KEYS = (
+    "operation_id",
+    "run_id",
+    "change_set_id",
+    "sandbox_id",
+    "approval_id",
+)
+_UNCERTAIN_STATUSES = frozenset({"unknown", "pending", "running", "in_progress"})
 
 
 class DriverActionKind(StrEnum):
@@ -65,6 +75,51 @@ class DefaultReactDriver:
         return DriverAction(DriverActionKind.REQUEST_MODEL, "next_model_step")
 
 
+def merge_business_facts(
+    references: Mapping[str, str],
+    uncertain_refs: Iterable[str],
+    completed_results: Iterable[object],
+    pending_calls: Iterable[object],
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Accumulate named business facts without storing arbitrary tool output."""
+    merged = dict(references)
+    uncertain = set(uncertain_refs)
+
+    def record(value: object) -> None:
+        if isinstance(value, str):
+            try:
+                record(json.loads(value))
+            except json.JSONDecodeError:
+                return
+            return
+        if isinstance(value, list):
+            for item in value:
+                record(item)
+            return
+        if not isinstance(value, Mapping):
+            return
+        identifiers = {
+            key: item
+            for key in _BUSINESS_REFERENCE_KEYS
+            if isinstance((item := value.get(key)), str) and item
+        }
+        for key, item in identifiers.items():
+            merged[key] = item[:256]
+        status = value.get("status")
+        if isinstance(status, str) and status.lower() in _UNCERTAIN_STATUSES:
+            for key, item in identifiers.items():
+                uncertain.add(f"{key}:{item[:256]}")
+        for item in value.values():
+            record(item)
+
+    for result in completed_results:
+        record(result.get("content") if isinstance(result, Mapping) else result)
+    for call in pending_calls:
+        if isinstance(call, Mapping) and isinstance(call.get("id"), str):
+            uncertain.add(f"tool_call:{call['id'][:256]}")
+    return merged, tuple(sorted(uncertain))
+
+
 @dataclass(frozen=True, slots=True)
 class LoopCheckpoint:
     """Public, JSON-safe handoff facts; never stores handles, tokens or coroutines."""
@@ -114,16 +169,22 @@ class LoopCheckpoint:
             not isinstance(versions, Mapping)
             or not isinstance(business_references, Mapping)
             or any(not isinstance(items, (list, tuple)) for items in collections)
+            or any(not isinstance(item, str) for items in collections for item in items)
+            or any(
+                not isinstance(key, str) or not isinstance(item, str)
+                for mapping in (versions, business_references)
+                for key, item in mapping.items()
+            )
         ):
             raise ValueError("invalid loop checkpoint state")
-        return cls(
+        checkpoint = cls(
             session_id=str(value["session_id"]), task_id=str(value["task_id"]), project_id=str(value["project_id"]),
             step=int(value["step"]), message_position=int(value["message_position"]), remaining_iterations=int(value["remaining_iterations"]),
-            completed_tool_results=tuple(str(item) for item in value.get("completed_tool_results", ())),
-            pending_tool_calls=tuple(str(item) for item in value.get("pending_tool_calls", ())),
-            versions={str(key): str(item) for key, item in versions.items()},
-            business_references={str(key): str(item) for key, item in business_references.items()},
-            uncertain_side_effect_refs=tuple(
-                str(item) for item in value.get("uncertain_side_effect_refs", ())
-            ),
+            completed_tool_results=tuple(value.get("completed_tool_results", ())),
+            pending_tool_calls=tuple(value.get("pending_tool_calls", ())),
+            versions=dict(versions),
+            business_references=dict(business_references),
+            uncertain_side_effect_refs=tuple(value.get("uncertain_side_effect_refs", ())),
         )
+        checkpoint.to_dict()
+        return checkpoint

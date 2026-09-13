@@ -30,7 +30,7 @@ from nanobot.agent.automation_turns import publish_next_deferred_turn
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
-from nanobot.agent.loop_driver import LoopCheckpoint
+from nanobot.agent.loop_driver import LoopCheckpoint, merge_business_facts
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.plugins.manager import PluginManager
@@ -286,6 +286,7 @@ class AgentLoop:
         return self.runtime_resolver.resolve_preset(self.dream_model_preset)
 
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
+    _H7_HANDOFF_PAUSE_KEY = "h7_handoff_pause"
     _PENDING_USER_TURN_KEY = "pending_user_turn"
     _PROVIDER_STATE_CHECKPOINT_VERSION_KEY = "provider_state_checkpoint_version"
     _PROVIDER_STATE_CHECKPOINT_VERSION = "v1"
@@ -1369,8 +1370,11 @@ class AgentLoop:
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
         self._sync_subagent_runtime_limits()
+        h7_business_references: dict[str, str] = {}
+        h7_uncertain_side_effect_refs: tuple[str, ...] = ()
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
+            nonlocal h7_business_references, h7_uncertain_side_effect_refs
             if session is None:
                 return
             public_payload = dict(payload)
@@ -1397,6 +1401,12 @@ class AgentLoop:
             )
             completed = public_payload.get("completed_tool_results") or []
             pending = public_payload.get("pending_tool_calls") or []
+            h7_business_references, h7_uncertain_side_effect_refs = merge_business_facts(
+                h7_business_references,
+                h7_uncertain_side_effect_refs,
+                completed,
+                pending,
+            )
             public_payload["h7_loop_checkpoint"] = LoopCheckpoint(
                 session_id=session.key,
                 task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
@@ -1423,11 +1433,8 @@ class AgentLoop:
                     if isinstance(item, dict) and item.get("id")
                 ),
                 versions={"loop_driver": f"{driver_name}@{driver_version}"},
-                uncertain_side_effect_refs=tuple(
-                    str(item.get("id"))
-                    for item in pending
-                    if isinstance(item, dict) and item.get("id")
-                ),
+                business_references=h7_business_references,
+                uncertain_side_effect_refs=h7_uncertain_side_effect_refs,
             ).to_dict()
             self._set_runtime_checkpoint(session, public_payload)
 
@@ -2763,6 +2770,21 @@ class AgentLoop:
         if not isinstance(checkpoint, dict):
             return False
         checkpoint_data = cast(dict[str, Any], checkpoint)
+
+        h7_raw = checkpoint_data.get("h7_loop_checkpoint")
+        if isinstance(h7_raw, Mapping):
+            try:
+                h7_checkpoint = LoopCheckpoint.from_dict(h7_raw)
+            except ValueError:
+                h7_checkpoint = None
+            if h7_checkpoint is not None and not h7_checkpoint.switch_safe:
+                # A managed handoff never becomes an ordinary interrupted tool
+                # result.  Preserve the durable facts for the H8 coordinator;
+                # it must query unknown operations rather than replay them.
+                session.metadata[self._H7_HANDOFF_PAUSE_KEY] = h7_checkpoint.to_dict()
+                self._clear_pending_user_turn(session)
+                self._clear_runtime_checkpoint(session)
+                return True
 
         assistant_message = cast(object, checkpoint_data.get("assistant_message"))
         completed_tool_results = cast(

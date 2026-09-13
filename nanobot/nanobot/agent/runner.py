@@ -485,6 +485,10 @@ class AgentRunner:
             if action.kind is DriverActionKind.PAUSE:
                 stop_reason = "driver_paused"
                 break
+            if action.kind is DriverActionKind.FINISH:
+                stop_reason = "driver_finished"
+                final_content = action.reason or None
+                break
             if action.kind is not DriverActionKind.REQUEST_MODEL:
                 raise RuntimeError(f"unsupported driver action at model boundary: {action.kind}")
             # Keep the persisted conversation untouched. Context governance
@@ -574,6 +578,20 @@ class AgentRunner:
                         pending_tool_calls=tuple(tool_call.id for tool_call in response.tool_calls),
                     )
                 )
+                if tool_action.kind is DriverActionKind.PAUSE:
+                    final_content = tool_action.reason or None
+                    stop_reason = "driver_paused"
+                    context.final_content = final_content
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
+                if tool_action.kind is DriverActionKind.FINISH:
+                    final_content = tool_action.reason or None
+                    stop_reason = "driver_finished"
+                    context.final_content = final_content
+                    context.stop_reason = stop_reason
+                    await hook.after_iteration(context)
+                    break
                 if tool_action.kind is not DriverActionKind.DISPATCH_TOOLS:
                     raise RuntimeError(
                         "unsupported driver action at tool boundary: "

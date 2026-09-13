@@ -628,6 +628,40 @@ def test_restore_runtime_checkpoint_accepts_h7_driver_provenance() -> None:
     assert session.messages[-1]["content"] == "finished"
 
 
+def test_restore_h7_uncertain_operation_pauses_without_interrupted_tool_result() -> None:
+    loop = _mk_loop()
+    session = Session(
+        key="test:h7-pause",
+        metadata={
+            AgentLoop._RUNTIME_CHECKPOINT_KEY: {
+                "assistant_message": {"role": "assistant", "content": "working"},
+                "completed_tool_results": [],
+                "pending_tool_calls": [{"id": "call-1", "function": {"name": "apply"}}],
+                "h7_loop_checkpoint": {
+                    "checkpoint_schema": "h7-v1",
+                    "session_id": "test:h7-pause",
+                    "task_id": "task-1",
+                    "project_id": "project-1",
+                    "step": 1,
+                    "message_position": 2,
+                    "remaining_iterations": 3,
+                    "completed_tool_results": [],
+                    "pending_tool_calls": ["call-1"],
+                    "versions": {"loop_driver": "default-react@1"},
+                    "business_references": {"run_id": "run-1"},
+                    "uncertain_side_effect_refs": ["run_id:run-1"],
+                },
+            }
+        },
+    )
+
+    assert loop._restore_runtime_checkpoint(session) is True
+    assert session.messages == []
+    assert AgentLoop._RUNTIME_CHECKPOINT_KEY not in session.metadata
+    paused = LoopCheckpoint.from_dict(session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY])
+    assert paused.business_references["run_id"] == "run-1"
+
+
 def test_restore_final_response_checkpoint_preserves_matching_provider_state() -> None:
     loop = _mk_loop()
     state = _provider_state()

@@ -11,6 +11,7 @@ from nanobot.agent.loop_driver import (
     DriverActionKind,
     LoopCheckpoint,
     StepInput,
+    merge_business_facts,
 )
 from nanobot.agent.runner import AgentRunner
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -55,6 +56,14 @@ def test_checkpoint_rejects_malformed_or_oversized_public_state() -> None:
     with pytest.raises(ValueError, match="invalid loop checkpoint state"):
         LoopCheckpoint.from_dict(valid)
 
+    valid = LoopCheckpoint(
+        session_id="s", task_id="t", project_id="p", step=1, message_position=2,
+        remaining_iterations=3,
+    ).to_dict()
+    valid["pending_tool_calls"] = [None]
+    with pytest.raises(ValueError, match="invalid loop checkpoint state"):
+        LoopCheckpoint.from_dict(valid)
+
     oversized = LoopCheckpoint(
         session_id="s",
         task_id="t",
@@ -66,6 +75,22 @@ def test_checkpoint_rejects_malformed_or_oversized_public_state() -> None:
     )
     with pytest.raises(ValueError, match="64 KiB"):
         oversized.to_dict()
+    oversized_input = {
+        "checkpoint_schema": "h7-v1",
+        "session_id": "s",
+        "task_id": "t",
+        "project_id": "p",
+        "step": 1,
+        "message_position": 2,
+        "remaining_iterations": 3,
+        "completed_tool_results": [],
+        "pending_tool_calls": [],
+        "versions": {},
+        "business_references": {"payload": "x" * (64 * 1024)},
+        "uncertain_side_effect_refs": [],
+    }
+    with pytest.raises(ValueError, match="64 KiB"):
+        LoopCheckpoint.from_dict(oversized_input)
 
 
 def test_checkpoint_blocks_driver_switch_for_pending_or_uncertain_side_effects() -> None:
@@ -81,6 +106,19 @@ def test_checkpoint_blocks_driver_switch_for_pending_or_uncertain_side_effects()
     assert LoopCheckpoint(**base).switch_safe is True
     assert LoopCheckpoint(**base, pending_tool_calls=("tool-1",)).switch_safe is False
     assert LoopCheckpoint(**base, uncertain_side_effect_refs=("fc-run-1",)).switch_safe is False
+
+
+def test_business_facts_keep_unknown_operation_across_later_checkpoints() -> None:
+    references, uncertain = merge_business_facts(
+        {},
+        (),
+        [{"content": '{"status":"unknown","run_id":"run-1","change_set_id":"cs-1"}'}],
+        [],
+    )
+    references, uncertain = merge_business_facts(references, uncertain, [], [])
+
+    assert references == {"run_id": "run-1", "change_set_id": "cs-1"}
+    assert uncertain == ("change_set_id:cs-1", "run_id:run-1")
 
 
 @pytest.mark.asyncio
@@ -134,3 +172,45 @@ async def test_runner_calls_driver_at_model_and_tool_boundaries() -> None:
     assert driver.steps[0].task_id == "task-1"
     assert driver.steps[0].project_id == "project-1"
     assert driver.steps[1].pending_tool_calls == ("tool-1",)
+
+
+@pytest.mark.asyncio
+async def test_host_honors_driver_pause_before_tool_dispatch() -> None:
+    class PauseBeforeToolsDriver:
+        name = "pause-before-tools"
+        version = "1"
+
+        def next_action(self, step: StepInput) -> DriverAction:
+            if step.pending_tool_calls:
+                return DriverAction(DriverActionKind.PAUSE, "awaiting approved handoff")
+            return DriverAction(DriverActionKind.REQUEST_MODEL)
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
+        content=None,
+        tool_calls=[ToolCallRequest(id="tool-1", name="echo", arguments={})],
+    ))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="must not run")
+    checkpoints: list[dict] = []
+
+    async def checkpoint(payload: dict) -> None:
+        checkpoints.append(payload)
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "run"}],
+        tools=tools,
+        model="test",
+        max_iterations=1,
+        max_tool_result_chars=10_000,
+        loop_driver=PauseBeforeToolsDriver(),
+        checkpoint_callback=checkpoint,
+    ))
+
+    assert result.stop_reason == "driver_paused"
+    assert result.final_content == "awaiting approved handoff"
+    tools.execute.assert_not_awaited()
+    assert checkpoints[-1]["phase"] == "awaiting_tools"
+    assert checkpoints[-1]["pending_tool_calls"][0]["id"] == "tool-1"
