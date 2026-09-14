@@ -224,7 +224,7 @@ class FCSandboxBackend:
     def candidate_execution_available(self) -> bool:
         """Expose the dedicated model-candidate FC execution contract."""
 
-        return self.verification_available
+        return self.config.network_policy_mode in {"required", "provider-default"}
 
     def candidate_execution_contract(self) -> tuple[str, str, str, str]:
         """Return the immutable contract required by model-candidate trials."""
@@ -308,6 +308,8 @@ class FCSandboxBackend:
                 "template": state.result.template,
                 "network_policy": state.result.network_policy,
                 "output_truncated": state.result.output_truncated,
+                "side_effect_count": state.result.side_effect_count,
+                "permission_violation": state.result.permission_violation,
             }
         return payload
 
@@ -405,6 +407,17 @@ class FCSandboxBackend:
                     template=str(result_payload.get("template", "")),
                     network_policy=str(result_payload.get("network_policy", "")),
                     output_truncated=bool(result_payload.get("output_truncated", False)),
+                    side_effect_count=(
+                        int(result_payload["side_effect_count"])
+                        if isinstance(result_payload.get("side_effect_count"), int)
+                        and not isinstance(result_payload.get("side_effect_count"), bool)
+                        else None
+                    ),
+                    permission_violation=(
+                        result_payload["permission_violation"]
+                        if isinstance(result_payload.get("permission_violation"), bool)
+                        else None
+                    ),
                 )
             except (KeyError, TypeError, ValueError):
                 result = None
@@ -689,6 +702,18 @@ class FCSandboxBackend:
                 template=self.config.template,
                 network_policy=self.config.network_policy_mode,
                 output_truncated=output_truncated,
+                side_effect_count=(
+                    0
+                    if self.config.network_policy_mode == "required"
+                    and not request.network_allowed
+                    else None
+                ),
+                permission_violation=(
+                    False
+                    if self.config.network_policy_mode == "required"
+                    and not request.network_allowed
+                    else None
+                ),
             )
             with self._lock:
                 state.result = receipt

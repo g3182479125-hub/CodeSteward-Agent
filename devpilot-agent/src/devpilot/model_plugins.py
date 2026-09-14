@@ -49,6 +49,7 @@ from .candidate_runner import (
     _validate_source,
 )
 from .fc_sandbox import build_fc_backend_from_environment
+from .harness_oracle import HarnessOracleContractError
 from .remote_loop_strategy import RemoteStrategyArtifact, RemoteStrategyCatalog
 from .storage import ProjectStore
 
@@ -60,6 +61,30 @@ HarnessCaseOracle = Callable[
     [str, str, int, int, Mapping[str, object], CandidateExecutionResult],
     Mapping[str, object],
 ]
+
+
+def _target_case_oracle(oracle: HarnessCaseOracle, target_id: str) -> HarnessCaseOracle:
+    """Resolve a host registry while retaining the existing injected test seam."""
+    resolver = getattr(oracle, "for_target", None)
+    if callable(resolver):
+        return cast(HarnessCaseOracle, resolver(target_id))
+    return oracle
+
+
+def _fixed_harness_input(
+    oracle: HarnessCaseOracle,
+    fixture: Mapping[str, object],
+    rules: tuple[CandidateInputRule, ...],
+) -> dict[str, object]:
+    fixed_input = getattr(oracle, "fixed_input", None)
+    if callable(fixed_input):
+        return dict(fixed_input(fixture, rules))
+    return _fixed_trial_input(rules)
+
+
+def _fixture_contract_hash(oracle: HarnessCaseOracle, fixture: Mapping[str, object]) -> str | None:
+    contract_hash = getattr(oracle, "fixture_contract_hash", None)
+    return str(contract_hash(fixture)) if callable(contract_hash) else None
 
 
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
@@ -416,10 +441,19 @@ class ModelCandidateController:
                 "HARNESS_EVALUATOR_UNAVAILABLE",
                 "H9 需要已配置的 Host 固定用例判定器；未执行 Loop 评测",
             )
+        strategy_id = kwargs.get("strategy_id")
+        if not isinstance(strategy_id, str) or not strategy_id:
+            return _error("HARNESS_CANDIDATE_REFERENCE_INVALID", "evaluate_loop 需要 strategy_id")
+        try:
+            target_oracle = _target_case_oracle(oracle, strategy_id)
+        except HarnessOracleContractError:
+            return _error(
+                "HARNESS_EVALUATOR_UNAVAILABLE",
+                "当前 Loop 没有 Host 固定用例契约；未执行评测",
+            )
         runner = self._ensure_runner()
         if runner is None:
             return self._runner_failure()
-        strategy_id = kwargs.get("strategy_id")
         candidate_version = kwargs.get("version")
         baseline_version = kwargs.get("baseline_version")
         candidate_hash = kwargs.get("source_hash")
@@ -482,8 +516,6 @@ class ModelCandidateController:
                 round_id=round_id,
                 budget=budget,
             )
-            projection = catalog.fixed_evaluation_projection()
-
             def host_trial(
                 category: str,
                 version: str,
@@ -499,15 +531,16 @@ class ModelCandidateController:
                     session_id=session_id,
                     task_id=task_id,
                     project_id=project_id,
-                    projection=projection,
+                    projection=catalog.fixed_evaluation_projection(fixture),
                     trial_id=f"remote-eval-{uuid.uuid4().hex}",
                 )
                 result = runner.execute(request)
                 oracle_result = dict(
-                    oracle(category, version, scenario, repeat, fixture, result)
+                    target_oracle(category, version, scenario, repeat, fixture, result)
                 )
                 return {
                     **oracle_result,
+                    "fixture_contract_hash": _fixture_contract_hash(target_oracle, fixture),
                     "contract_passed": oracle_result.get(
                         "contract_passed", result.status == "passed"
                     ),
@@ -1001,11 +1034,20 @@ class ModelCandidateController:
                 "HARNESS_EVALUATOR_UNAVAILABLE",
                 "H9 需要已配置的 Host 固定用例判定器；未执行候选评测",
             )
+        plugin_id = kwargs.get("plugin_id")
+        if not isinstance(plugin_id, str) or not plugin_id:
+            return _error("HARNESS_CANDIDATE_REFERENCE_INVALID", "evaluate 需要 plugin_id")
+        try:
+            target_oracle = _target_case_oracle(oracle, plugin_id)
+        except HarnessOracleContractError:
+            return _error(
+                "HARNESS_EVALUATOR_UNAVAILABLE",
+                "当前插件没有 Host 固定用例契约；未执行评测",
+            )
         runner = self._ensure_runner()
         issuer = self._issuer
         if runner is None or issuer is None:
             return self._runner_failure()
-        plugin_id = kwargs.get("plugin_id")
         candidate_version = kwargs.get("version")
         baseline_version = kwargs.get("baseline_version")
         if not all(
@@ -1099,7 +1141,7 @@ class ModelCandidateController:
                     if version == "baseline"
                     else (candidate_source, candidate_manifest)
                 )
-                input_data = _fixed_trial_input(candidate_rules)
+                input_data = _fixed_harness_input(target_oracle, fixture, candidate_rules)
                 if any(rule[0] == "case" and rule[1] == "string" for rule in candidate_rules):
                     input_data["case"] = fixture["case"]
                 grant = issuer.issue(
@@ -1126,10 +1168,11 @@ class ModelCandidateController:
                 )
                 result = runner.execute(request)
                 oracle_result = dict(
-                    oracle(category, version, scenario, repeat, fixture, result)
+                    target_oracle(category, version, scenario, repeat, fixture, result)
                 )
                 return {
                     **oracle_result,
+                    "fixture_contract_hash": _fixture_contract_hash(target_oracle, fixture),
                     "contract_passed": oracle_result.get(
                         "contract_passed", result.status == "passed"
                     ),

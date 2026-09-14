@@ -45,6 +45,31 @@ _PROJECTION_RULES = (
 )
 
 
+def h9_fixed_evaluation_projection(fixture: Mapping[str, object]) -> dict[str, object]:
+    """Return the exact host projection bound to one H9 Loop fixture."""
+    case_name = fixture.get("case")
+    cases = {
+        "target-1": (1, 7, 0),
+        "target-2": (2, 6, 1),
+        "holdout-1": (3, 5, 1),
+        "holdout-2": (4, 4, 2),
+        "regression-1": (5, 3, 2),
+        "regression-2": (6, 2, 3),
+    }
+    if not isinstance(case_name, str) or case_name not in cases:
+        raise ValueError("H9 loop fixture is invalid")
+    step, remaining_iterations, completed_results = cases[case_name]
+    return {
+        "schema": _PROJECTION_SCHEMA,
+        "task_ref": f"h9-{case_name}",
+        "project_ref": f"h9-project-{case_name}",
+        "step": step,
+        "remaining_iterations": remaining_iterations,
+        "completed_result_count": completed_results,
+        "pending_tool_count": 0,
+    }
+
+
 class _CandidateExecutor(Protocol):
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult: ...
 
@@ -627,9 +652,14 @@ class RemoteStrategyCatalog:
         }
 
     @staticmethod
-    def fixed_evaluation_projection() -> dict[str, object]:
-        """Return the immutable projection used by H9 Loop comparisons."""
-        return RemoteStrategyCatalog._fixed_projection()
+    def fixed_evaluation_projection(
+        fixture: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Return one host-owned, case-bound projection for H9 comparisons."""
+        projection = RemoteStrategyCatalog._fixed_projection()
+        if fixture is None:
+            return projection
+        return h9_fixed_evaluation_projection(fixture)
 
     @staticmethod
     def _candidate_projection(projection: Mapping[str, object]) -> dict[str, object]:

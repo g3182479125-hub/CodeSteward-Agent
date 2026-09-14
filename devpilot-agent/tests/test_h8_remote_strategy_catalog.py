@@ -16,6 +16,7 @@ from devpilot.candidate_runner import (
     CandidateTrialGrantIssuer,
     CandidateTrialRequest,
 )
+from devpilot.harness_oracle import build_default_harness_case_oracle
 from devpilot.harness_selection import HarnessSelectionStore
 from devpilot.model_plugins import ModelCandidateController
 from devpilot.remote_loop_strategy import RemoteStrategyCatalog
@@ -56,6 +57,8 @@ class FakeCandidateRunner:
             cleanup_status="cleaned",
             source_hash=source_hash,
             input_hash=input_hash,
+            side_effect_count=0,
+            permission_violation=False,
         )
 
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
@@ -80,6 +83,17 @@ class FakeCandidateRunner:
     def recover(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         return self._result(request, {"recovered": True})
 
+
+class SourceExecutingCandidateRunner(FakeCandidateRunner):
+    """Test-only FC double that executes a remote strategy's immutable source."""
+
+    def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        self.executions.append(request)
+        namespace: dict[str, object] = {}
+        exec(request.source, namespace)
+        transform = namespace["transform"]
+        assert callable(transform)
+        return self._result(request, transform(dict(request.input_data)))
 
 def _projection() -> dict[str, object]:
     return {
@@ -368,6 +382,90 @@ async def test_h9_remote_loop_candidate_uses_the_same_fixed_selection_gate(
     assert evaluated["result"]["eligible"] is True
     assert evaluated["result"]["total_runs"] == 24
     assert len(runner.executions) == 24
+
+
+@pytest.mark.asyncio
+async def test_h9_default_host_oracle_evaluates_a_remote_loop_repair(tmp_path: Path) -> None:
+    """H9-C: a remote Driver uses the same host-owned fixed selection gate."""
+    harness_db = tmp_path / "harness.db"
+    with sqlite3.connect(harness_db) as connection:
+        connection.execute(
+            "create table harness_selection_records ("
+            "record_id text primary key, record_type text not null, payload_json text not null, "
+            "record_mac text not null, created_at text not null)"
+        )
+    harness = HarnessSelectionStore(harness_db, integrity_key=b"h9-default-loop-test-key")
+    runner = SourceExecutingCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    controller.bind_plugin_manager(PluginManager(ToolRegistry()))
+    controller.bind_harness_selection(harness, case_oracle=build_default_harness_case_oracle())
+    baseline_source = SOURCE.replace("'request_model'", "'stop'")
+    baseline = controller.define_remote_strategy(
+        "session-h9-default", "h9.loop-decision", "1.0.0", baseline_source
+    )
+    candidate = controller.define_remote_strategy(
+        "session-h9-default", "h9.loop-decision", "1.1.0", SOURCE
+    )
+    controller.trial_remote_strategy(
+        baseline, task_id="task-h9-default-loop", project_id="project-h9-default-loop"
+    )
+    controller.trial_remote_strategy(
+        candidate, task_id="task-h9-default-loop", project_id="project-h9-default-loop"
+    )
+    context = RequestContext(
+        channel="test",
+        chat_id="session-h9-default",
+        session_key="session-h9-default",
+        sender_id="user:one",
+        original_user_text="确认试用",
+        workspace=tmp_path,
+        attributes={
+            "devpilot_task_id": "task-h9-default-loop",
+            "devpilot_project_id": "project-h9-default-loop",
+            "devpilot_model_candidates_enabled": True,
+        },
+    )
+    evidence_id = harness.record_evidence(
+        task_id="task-h9-default-loop",
+        project_id="project-h9-default-loop",
+        workspace=str(tmp_path.resolve()),
+        version_hash=baseline.source_hash,
+        source_type="task_result",
+        summary="loop stopped instead of requesting the host model",
+        usage={"calls": 1},
+    )
+    context.attributes["devpilot_harness_evidence_refs"] = [evidence_id]
+
+    with request_context(context):
+        evaluated = json.loads(
+            await controller.evaluate_loop(
+                {
+                    "strategy_id": "h9.loop-decision",
+                    "baseline_version": "1.0.0",
+                    "version": "1.1.0",
+                    "baseline_source_hash": baseline.source_hash,
+                    "source_hash": candidate.source_hash,
+                    "round_id": "round-h9-default-loop",
+                    "max_candidates": 2,
+                    "max_evaluations": 48,
+                    "max_tokens": 1000,
+                },
+                controller._context(),
+            )
+        )
+
+    assert evaluated["ok"] is True
+    assert evaluated["result"]["eligible"] is True
+    assert evaluated["result"]["total_runs"] == 24
+    assert evaluated["result"]["baseline_successes"] == 0
+    assert evaluated["result"]["candidate_successes"] == 12
+    assert len(runner.executions) == 24
+    assert len(
+        {
+            json.dumps(request.input_data, sort_keys=True)
+            for request in runner.executions
+        }
+    ) == 6
 
 
 @pytest.mark.asyncio

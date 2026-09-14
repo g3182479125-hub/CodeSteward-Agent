@@ -588,6 +588,128 @@ async def test_h9_agent_loop_uses_selection_only_when_creating_a_new_owner(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_h9_persisted_loop_selection_starts_only_a_new_task_owner(tmp_path) -> None:
+    """H9-D: durable selection affects a new owner, never an active H8 owner."""
+    import sqlite3
+
+    from devpilot.harness_selection import HarnessSelectionStore
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.agent.task_profiles import DynamicPluginPolicy, TaskProfile, TaskProfileCatalog
+
+    database = tmp_path / "devpilot.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "create table harness_selection_records (record_id text primary key, "
+            "record_type text not null, payload_json text not null, record_mac text not null, "
+            "created_at text not null)"
+        )
+    selection = HarnessSelectionStore(database, integrity_key=b"h9-loop-boundary-test-key")
+    project_id = "project-h9-boundary"
+    workspace = str(tmp_path.resolve())
+    evidence = selection.record_evidence(
+        task_id="task-evidence",
+        project_id=project_id,
+        workspace=workspace,
+        version_hash="a" * 64,
+        source_type="task_result",
+        summary="host-selected loop should plan before acting",
+        usage={"calls": 1},
+    )
+    candidate = selection.create_candidate(
+        kind="loop",
+        target_id="plan-then-act",
+        baseline_version="0",
+        candidate_version="1",
+        baseline_hash="a" * 64,
+        candidate_hash="b" * 64,
+        scope={"project_id": project_id, "workspace": workspace},
+        evidence_refs=(evidence,),
+        round_id="h9-boundary",
+        budget={"max_candidates": 2, "max_evaluations": 48, "max_tokens": 1000},
+    )
+    report = selection.run_fixed_evaluation(
+        candidate.candidate_id,
+        lambda category, version, _scenario, _repeat, _fixture: {
+            "success": version == "candidate",
+            "contract_passed": True,
+            "side_effect_count": 0,
+            "permission_violation": False,
+            "usage": {"calls": 1, "input_tokens": 0, "output_tokens": 0},
+            "category": category,
+        },
+    )
+    confirmation = selection.issue_confirmation(
+        candidate.candidate_id, user_id="user-1", session_id="selection-session"
+    )
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test-model"
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="done", tool_calls=[]))
+    loop = AgentLoop(
+        bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model",
+        loop_driver_selector=lambda selected_project, selected_workspace: (
+            selection.active_loop_driver(
+                {"project_id": selected_project, "workspace": str(selected_workspace.resolve())}
+            )
+        ),
+    )
+    loop.tools.get_definitions = MagicMock(return_value=[])
+    loop.plugin_manager.project_id_for_path = MagicMock(return_value=project_id)
+    loop.loop_handoff_manager = LoopHandoffManager(SqliteLoopHandoffStore(database))
+    loop.task_profiles = TaskProfileCatalog(
+        {"h9-loop": TaskProfile(
+            name="h9-loop", skill_names=("my",), allowed_tools=frozenset(loop.tools.tool_names),
+            output_contract=("complete",), dynamic_plugins=DynamicPluginPolicy(
+                enabled=True, allowed_kinds=frozenset({"loop"}),
+                allowed_actions=frozenset({"activate"}), allowed_scopes=frozenset({"session"}),
+            ),
+        )}
+    )
+    old_session = loop.sessions.get_or_create("cli:h9-existing-loop")
+    old_session.metadata["task_profile"] = "h9-loop"
+    old_session.add_message("user", "before-selection")
+    await loop._run_agent_loop(
+        [{"role": "user", "content": "before-selection"}],
+        runtime=loop.llm_runtime(), session=old_session, channel="cli",
+        chat_id="h9-existing-loop", original_user_text="before-selection",
+    )
+    _driver, old_record = loop.loop_handoff_manager.active_driver(old_session.key)
+    assert old_record.driver_name == "default-react"
+
+    selection.consume_confirmation(
+        confirmation.confirmation_id,
+        user_id="user-1",
+        session_id="selection-session",
+        evaluation_id=report.evaluation_id,
+    )
+    old_session.add_message("user", "after-selection")
+    await loop._run_agent_loop(
+        [{"role": "user", "content": "after-selection"}],
+        runtime=loop.llm_runtime(), session=old_session, channel="cli",
+        chat_id="h9-existing-loop", original_user_text="after-selection",
+    )
+    _driver, old_record = loop.loop_handoff_manager.active_driver(old_session.key)
+    assert old_record.driver_name == "default-react"
+
+    new_session = loop.sessions.get_or_create("cli:h9-new-loop")
+    new_session.metadata["task_profile"] = "h9-loop"
+    new_session.add_message("user", "after-selection")
+    await loop._run_agent_loop(
+        [{"role": "user", "content": "after-selection"}],
+        runtime=loop.llm_runtime(), session=new_session, channel="cli",
+        chat_id="h9-new-loop", original_user_text="after-selection",
+    )
+
+    driver, record = loop.loop_handoff_manager.active_driver(new_session.key)
+    assert isinstance(driver, PlanThenActDriver)
+    assert record.driver_name == "plan-then-act"
+    assert selection.active_loop_driver({"project_id": project_id, "workspace": workspace}) == (
+        "plan-then-act", "1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_h9_task_evidence_records_runner_usage_at_the_task_boundary(tmp_path) -> None:
     from nanobot.agent.loop import AgentLoop
     from nanobot.agent.task_profiles import DynamicPluginPolicy, TaskProfile, TaskProfileCatalog

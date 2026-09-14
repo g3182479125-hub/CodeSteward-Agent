@@ -71,6 +71,10 @@ class ExecutionResult:
     template: str = ""
     network_policy: str = ""
     output_truncated: bool = False
+    # Backends must attest explicitly; None means the provider did not expose
+    # enough information for a safety-sensitive promotion decision.
+    side_effect_count: int | None = None
+    permission_violation: bool | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -250,6 +254,8 @@ class FakeExecutionBackend:
             command_profile=request.command_profile,
             bundle_bytes=execution_bundle_bytes(request),
             output_truncated=output_truncated,
+            side_effect_count=0,
+            permission_violation=False,
         )
 
 

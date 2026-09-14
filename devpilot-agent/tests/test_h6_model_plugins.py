@@ -17,6 +17,7 @@ from devpilot.candidate_runner import (
     CandidateTrialGrantIssuer,
     CandidateTrialRequest,
 )
+from devpilot.harness_oracle import build_default_harness_case_oracle
 from devpilot.harness_selection import HarnessSelectionStore
 from devpilot.model_plugins import ModelCandidateController, ModelPluginManagementTool
 
@@ -59,6 +60,8 @@ class FakeCandidateRunner:
             source_hash=source_hash,
             input_hash=input_hash,
             operation_id="fake-operation",
+            side_effect_count=0,
+            permission_violation=False,
         )
 
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
@@ -78,6 +81,18 @@ class FakeCandidateRunner:
     def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         self.executions.append(request)
         return self._result(request, output={"echo": request.input_data})
+
+
+class SourceExecutingCandidateRunner(FakeCandidateRunner):
+    """Test-only FC double that executes the immutable candidate source."""
+
+    def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
+        self.executions.append(request)
+        namespace: dict[str, object] = {}
+        exec(request.source, namespace)
+        transform = namespace["transform"]
+        assert callable(transform)
+        return self._result(request, output=transform(dict(request.input_data)))
 
 
 class ExhaustedLiveBudgetRunner(FakeCandidateRunner):
@@ -815,3 +830,100 @@ async def test_h9_model_candidate_action_runs_the_host_fixed_suite_before_confir
     assert evaluated["result"]["total_runs"] == 24
     assert len(runner.executions) == 24
     assert {tuple(request.input_data) for request in runner.executions} == {("name",)}
+
+
+@pytest.mark.asyncio
+async def test_h9_default_host_oracle_rejects_buggy_calculator_and_accepts_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H9-A: only the host's six immutable calculator cases can promote a repair."""
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    harness_db = tmp_path / "harness.db"
+    with sqlite3.connect(harness_db) as connection:
+        connection.execute(
+            "create table harness_selection_records ("
+            "record_id text primary key, record_type text not null, payload_json text not null, "
+            "record_mac text not null, created_at text not null)"
+        )
+    harness = HarnessSelectionStore(harness_db, integrity_key=b"h9-default-oracle-test-key")
+    runner = SourceExecutingCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    controller.bind_harness_selection(harness, case_oracle=build_default_harness_case_oracle())
+    tool = ModelPluginManagementTool(controller)
+    context = _context(tmp_path, text="确认试用")
+    project_id = PluginManager.project_id_for_path(tmp_path)
+    context.attributes.update(
+        {
+            "devpilot_project_id": project_id,
+            "devpilot_task_id": "task-h9-default-calculator",
+        }
+    )
+    buggy = (
+        "def transform(payload):\n"
+        "    return {'discounted_price': payload['price'] - payload['price'] * "
+        "payload['discount_percent'] * 0.1}\n"
+    )
+    repaired = buggy.replace("* 0.1", "* 0.01")
+    rules = [
+        {"field": "price", "kind": "number", "max_length": 16},
+        {"field": "discount_percent", "kind": "number", "max_length": 16},
+    ]
+    baseline_hash = hashlib.sha256(buggy.encode()).hexdigest()
+    evidence_id = harness.record_evidence(
+        task_id="task-h9-default-calculator",
+        project_id=project_id,
+        workspace=str(tmp_path.resolve()),
+        version_hash=baseline_hash,
+        source_type="user_correction",
+        summary="discount result is ten times too large",
+        usage={"calls": 1},
+    )
+    context.attributes["devpilot_harness_evidence_refs"] = [evidence_id]
+
+    with request_context(context):
+        for version, source in (("1.0.0", buggy), ("1.1.0", repaired)):
+            defined = json.loads(
+                await tool.execute(
+                    action="define",
+                    plugin_id="h9.discount-calculator",
+                    version=version,
+                    source=source,
+                    input_rules=rules,
+                )
+            )
+            assert defined["ok"], defined
+        assert json.loads(
+            await tool.execute(
+                action="trial", plugin_id="h9.discount-calculator", version="1.0.0"
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(
+                action="activate", plugin_id="h9.discount-calculator", version="1.0.0"
+            )
+        )["ok"]
+        evaluated = json.loads(
+            await tool.execute(
+                action="evaluate",
+                plugin_id="h9.discount-calculator",
+                baseline_version="1.0.0",
+                version="1.1.0",
+                round_id="round-h9-default-calculator",
+                max_candidates=2,
+                max_evaluations=48,
+                max_tokens=1000,
+            )
+        )
+
+    assert evaluated["ok"] is True
+    assert evaluated["result"]["eligible"] is True
+    assert evaluated["result"]["total_runs"] == 24
+    assert evaluated["result"]["baseline_successes"] == 2
+    assert evaluated["result"]["candidate_successes"] == 12
+    assert {tuple(sorted(request.input_data)) for request in runner.executions[-24:]} == {
+        ("discount_percent", "price")
+    }

@@ -42,7 +42,11 @@ CANDIDATE_API_VERSION = "nanobot.tool/v1"
 CANDIDATE_LOOP_API_VERSION = "nanobot.loop-driver/v1"
 CANDIDATE_COMMAND_PROFILE = "model-candidate"
 CANDIDATE_TEMPLATE = "code-interpreter-v1"
+# FC may either enforce the candidate's no-network request itself (required)
+# or expose its provider-default mode. Only the former can produce the H9
+# safety receipt, but both remain valid execution contracts for H6 trials.
 CANDIDATE_NETWORK_POLICY = "provider-default"
+CANDIDATE_NETWORK_POLICIES = frozenset({"required", "provider-default"})
 _CANDIDATE_ENTRY = "candidate.py"
 _CANDIDATE_RUNNER = "candidate_runner.py"
 _INPUT_FILE = "input.json"
@@ -257,6 +261,11 @@ class CandidateExecutionResult:
     input_hash: str | None
     output_truncated: bool = False
     operation_id: str | None = None
+    # An execution backend must supply this receipt before H9 may promote a
+    # candidate. ``None`` means the backend did not attest to the fact and is
+    # intentionally rejected by the H9 oracle instead of being treated safe.
+    side_effect_count: int | None = None
+    permission_violation: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a bounded result without source code or raw input."""
@@ -278,6 +287,8 @@ class CandidateExecutionResult:
             "input_hash": self.input_hash,
             "output_truncated": self.output_truncated,
             "operation_id": self.operation_id,
+            "side_effect_count": self.side_effect_count,
+            "permission_violation": self.permission_violation,
         }
 
 
@@ -521,6 +532,19 @@ def _result_from_dict(payload: object) -> CandidateExecutionResult | None:
         return None
     if payload["duration_ms"] < 0 or not isinstance(payload.get("output_truncated"), bool):
         return None
+    side_effect_count = payload.get("side_effect_count")
+    permission_violation = payload.get("permission_violation")
+    if (
+        side_effect_count is not None
+        and (
+            not isinstance(side_effect_count, int)
+            or isinstance(side_effect_count, bool)
+            or side_effect_count < 0
+        )
+    ) or (
+        permission_violation is not None and not isinstance(permission_violation, bool)
+    ):
+        return None
     optional_strings = {
         "candidate_id",
         "version",
@@ -574,6 +598,8 @@ def _result_from_dict(payload: object) -> CandidateExecutionResult | None:
         operation_id=payload.get("operation_id")
         if isinstance(payload.get("operation_id"), str)
         else None,
+        side_effect_count=side_effect_count,
+        permission_violation=permission_violation,
     )
 
 
@@ -715,26 +741,26 @@ def _candidate_backend_error(backend: ExecutionBackend | None) -> tuple[str, str
         actual = contract()
     except Exception:
         return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端能力检查失败"
-    expected = (
+    expected_prefix = (
         "fc-agent-sandbox",
         CANDIDATE_COMMAND_PROFILE,
         CANDIDATE_TEMPLATE,
-        CANDIDATE_NETWORK_POLICY,
     )
-    if actual != expected:
+    if actual[:3] != expected_prefix or actual[3] not in CANDIDATE_NETWORK_POLICIES:
         return "CANDIDATE_BACKEND_CONTRACT_INVALID", "候选后端未绑定固定 FC profile、模板和策略"
     return None
 
 
-def _execution_receipt_error(result: ExecutionResult) -> tuple[str, str] | None:
-    expected = (
+def _execution_receipt_error(
+    result: ExecutionResult, expected_network_policy: str
+) -> tuple[str, str] | None:
+    expected_prefix = (
         "fc-agent-sandbox",
         CANDIDATE_COMMAND_PROFILE,
         CANDIDATE_TEMPLATE,
-        CANDIDATE_NETWORK_POLICY,
     )
     actual = (result.backend, result.command_profile, result.template, result.network_policy)
-    if actual != expected:
+    if actual[:3] != expected_prefix or actual[3] != expected_network_policy:
         return "CANDIDATE_RESULT_CONTRACT_INVALID", "FC 返回结果未满足固定候选执行契约"
     return None
 
@@ -765,6 +791,19 @@ class CandidateTrialRunner:
         self._store = store
         self._grant_issuer = grant_issuer
         self._lock = RLock()
+
+    def _receipt_error(self, result: ExecutionResult) -> tuple[str, str] | None:
+        backend = self._backend
+        contract = getattr(backend, "candidate_execution_contract", None)
+        if not callable(contract):
+            return "CANDIDATE_RESULT_CONTRACT_INVALID", "FC 返回结果缺少候选执行契约"
+        try:
+            policy = contract()[3]
+        except (IndexError, TypeError):
+            return "CANDIDATE_RESULT_CONTRACT_INVALID", "FC 返回结果缺少候选执行契约"
+        if policy not in CANDIDATE_NETWORK_POLICIES:
+            return "CANDIDATE_RESULT_CONTRACT_INVALID", "FC 返回结果使用未允许的网络策略"
+        return _execution_receipt_error(result, policy)
 
     def trial(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         """Validate and trial one candidate without executing it on the host."""
@@ -1725,7 +1764,7 @@ class CandidateTrialRunner:
                     cleanup_status=self._cleanup_status(run_id),
                 )
             )
-        receipt_error = _execution_receipt_error(result)
+        receipt_error = self._receipt_error(result)
         if not self._store.validate_candidate_lease(
             budget_task_id, operation_key, lease_token
         ):
@@ -1894,6 +1933,8 @@ class CandidateTrialRunner:
                 cleanup_status=cleanup_status,
                 source_hash=source_hash,
                 input_hash=input_hash,
+                side_effect_count=result.side_effect_count,
+                permission_violation=result.permission_violation,
             )
         )
 
@@ -1923,6 +1964,17 @@ class CandidateTrialRunner:
             not isinstance(payload.get(field, ""), str) for field in optional_strings
         ):
             return None
+        side_effect_count = payload.get("side_effect_count")
+        permission_violation = payload.get("permission_violation")
+        if (
+            side_effect_count is not None
+            and (
+                not isinstance(side_effect_count, int)
+                or isinstance(side_effect_count, bool)
+                or side_effect_count < 0
+            )
+        ) or (permission_violation is not None and not isinstance(permission_violation, bool)):
+            return None
         return ExecutionResult(
             backend=payload["backend"],
             sandbox_id=payload["sandbox_id"],
@@ -1936,6 +1988,8 @@ class CandidateTrialRunner:
             template=payload.get("template", ""),
             network_policy=payload.get("network_policy", ""),
             output_truncated=output_truncated,
+            side_effect_count=side_effect_count,
+            permission_violation=permission_violation,
         )
 
     def _finalize_execution(
@@ -1950,7 +2004,7 @@ class CandidateTrialRunner:
         run_id: str,
         result: ExecutionResult,
     ) -> CandidateExecutionResult:
-        receipt_error = _execution_receipt_error(result)
+        receipt_error = self._receipt_error(result)
         if receipt_error is not None:
             return self._complete_operation(
                 request,
@@ -2099,6 +2153,8 @@ class CandidateTrialRunner:
                 source_hash=source_hash,
                 input_hash=input_hash,
                 operation_id=operation_key,
+                side_effect_count=result.side_effect_count,
+                permission_violation=result.permission_violation,
             ),
         )
 

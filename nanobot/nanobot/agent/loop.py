@@ -636,7 +636,12 @@ class AgentLoop:
         if model_candidate_controller is not None:
             model_candidate_controller.bind_plugin_manager(self.plugin_manager)
             if self.harness_selection_store is not None:
-                model_candidate_controller.bind_harness_selection(self.harness_selection_store)
+                from devpilot.harness_oracle import build_default_harness_case_oracle
+
+                model_candidate_controller.bind_harness_selection(
+                    self.harness_selection_store,
+                    case_oracle=build_default_harness_case_oracle(),
+                )
             from devpilot.model_plugins import ModelPluginManagementTool
 
             self.tools.register(ModelPluginManagementTool(model_candidate_controller))

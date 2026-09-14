@@ -558,9 +558,16 @@ class HarnessSelectionStore:
                 for version in _VERSIONS:
                     for repeat in _REPEATS:
                         fixture = _FIXTURE_INPUTS[category, scenario]
-                        fixture_hash = hashlib.sha256(_json(fixture).encode()).hexdigest()
                         try:
                             result = dict(host_trial(category, version, scenario, repeat, fixture))
+                            contract_hash = result.get("fixture_contract_hash")
+                            fixture_hash = hashlib.sha256(
+                                _json(
+                                    {"fixture": fixture, "contract_hash": contract_hash}
+                                    if contract_hash is not None
+                                    else fixture
+                                ).encode()
+                            ).hexdigest()
                             case = self._case(
                                 {
                                     **result,
@@ -572,6 +579,7 @@ class HarnessSelectionStore:
                                 }
                             )
                         except Exception as exc:
+                            fixture_hash = hashlib.sha256(_json(fixture).encode()).hexdigest()
                             phase = f"{category}:{scenario}:{version}:{repeat}"
                             self._record_infrastructure_failure(
                                 candidate_id,
@@ -928,8 +936,20 @@ class HarnessSelectionStore:
             or repeat not in _REPEATS
         ):
             raise HarnessSelectionError("evaluation case identity is invalid")
+        contract_hash = raw.get("fixture_contract_hash")
+        if contract_hash is not None and (
+            not isinstance(contract_hash, str) or not HarnessSelectionStore._hash(contract_hash)
+        ):
+            raise HarnessSelectionError("evaluation fixture contract binding is invalid")
         expected_fixture_hash = hashlib.sha256(
-            _json(_FIXTURE_INPUTS[category, scenario]).encode()
+            _json(
+                {
+                    "fixture": _FIXTURE_INPUTS[category, scenario],
+                    "contract_hash": contract_hash,
+                }
+                if contract_hash is not None
+                else _FIXTURE_INPUTS[category, scenario]
+            ).encode()
         ).hexdigest()
         if raw.get("fixture_hash") != expected_fixture_hash:
             raise HarnessSelectionError("evaluation fixture binding is invalid")
@@ -964,6 +984,7 @@ class HarnessSelectionStore:
             "version": version,
             "repeat": repeat,
             "fixture_hash": expected_fixture_hash,
+            "fixture_contract_hash": contract_hash,
             "success": raw["success"],
             "contract_passed": raw["contract_passed"],
             "side_effect_count": side_effect_count,
