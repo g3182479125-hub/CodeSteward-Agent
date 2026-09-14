@@ -159,6 +159,12 @@ class CandidateTrialGrantIssuer:
             return False
         return hmac.compare_digest(grant.signature, expected)
 
+    def resign(self, grant: CandidateTrialGrant) -> CandidateTrialGrant:
+        """Re-sign a persisted, non-secret grant envelope during recovery."""
+        if not isinstance(grant, CandidateTrialGrant):
+            raise TypeError("candidate grant must be a CandidateTrialGrant")
+        return replace(grant, signature=self._sign(grant))
+
     def _sign(self, grant: CandidateTrialGrant) -> str:
         payload = json.dumps(
             {

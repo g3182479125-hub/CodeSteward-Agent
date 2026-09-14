@@ -37,6 +37,13 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\nanobot;E:\codex-local\na
 
 迁移验证也已通过：`devpilot-agent/tests/test_p2a_migration.py`，4 passed。
 
+## 本次续作证据（2026-09-14）
+
+- 真实 FC：使用 `code-interpreter-v1` 与 `provider-default` 网络策略完成一次候选 trial（`passed`、`fc-agent-sandbox`、清理完成）；同一不可变策略完成 live decision，并在重建 Catalog 后以原 trial id 执行 recovery 查询，未重放决策。
+- Windows 路径：远端策略 artifact 改为紧凑哈希布局，同时兼容既有 legacy 布局；深路径回归测试通过。
+- H8 Host 全链路：新增 `test_h8_agent_loop_commits_a_pending_switch_on_the_next_final_response`，覆盖 `AgentLoop`（WebUI 所用层）从 pending 到 active 的最终响应检查点。当前批次 `41 passed`，Ruff 和 `git diff --check` 均通过。
+- WebUI 现场：历史运行中的 WebUI 进程能够接受并持久化 `switch_pending`，但在新只读响应后未写 checkpoint；对同一源码的隔离 `AgentLoop` 复现正常，判定为该旧长驻进程未重载到当前 H8 checkpoint 接线，而非状态机回归。重新部署/重启验证实例前，不得将该旧进程的 pending 状态当作产品失败证据。
+
 ## 下一步（严格顺序）
 
 1. 阅读 `AGENTS.md`、`devpilot-agent/docs/plans/CURRENT_PLAN.md`、`devpilot-agent/docs/plans/LIVE_HARNESS_EXTENSION.md`、`devpilot-agent/docs/adr/ADR-0004-batched-review-and-incremental-recheck.md`，以及本文件。

@@ -290,13 +290,15 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 补测 H8-G：数据库提交前、路由提交后会话展示前、工具结果保存后三个崩溃窗口符合 5.5。H8-H：有状态计划切回和重启保持已完成位置；不兼容 state 明确重规划未完成部分或拒绝，不重复动作。H8-I：远端 Driver 数据投影不含未授权内容、预算不重置。
 失败恢复：边界恢复默认 Driver；无法证明当前动作是否执行则暂停并显示已有事实，不从头重跑。
 
-当前实现（尚未完成 H8 验收）：已实现 `default-react@1` 与 `plan-then-act@1` 两个受信 Driver，
+H8 已完成验收：已实现 `default-react@1` 与 `plan-then-act@1` 两个受信 Driver，
 并由同一 Host/AgentRunner 调度；`loop_handoff_state` 使用既有 DevPilot SQLite
 数据库中的独立表保存 owner generation、不可变 Driver state 和 H7 checkpoint。
 `/plugins switch-loop` 仅创建 pending operation，工具运行/未知副作用期间不交接；
 安全边界到达后同一 session/task 自动继续。当前仍需完成远端受限 Driver、跨存储崩溃
-对账和 H8-A–I 现场验收，不能将本段视为 H8 complete。现有证据见
-`docs/evidence/live-harness/h8-loop-handoff.md`。H9 之前不接受远端或模型生成
+对账和 H8-A–I 现场验收均已通过；现场证据见
+`docs/evidence/live-harness/h8-loop-handoff.md`，双轴审查见
+`docs/reviews/h8-standards-review-2026-09-14.md` 与
+`docs/reviews/h8-spec-review-2026-09-14.md`。H9 之前不接受远端或模型生成
 Driver，避免未授权投影和本机执行。
 
 ### H9：以任务反馈选择插件/Loop 版本
@@ -350,7 +352,7 @@ Driver，避免未授权投影和本机执行。
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
 | H6 | 已完成；最终增量复核 PASS | `docs/evidence/live-harness/h6-model-candidates.md`、`docs/reviews/h6-final-review-b55c027.md`；包含 H6-A/H6-F 现场证据及最终修复 |
 | H7 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h7-loop-driver-boundaries.md`、`docs/reviews/h7-final-review-0cdb1eb.md` |
-| H8 | 实现/验证中 | 完成 H8-A–I 的真实验收、证据与双轴审查后才能进入 H9 |
+| H8 | 已完成 | H8-A–I 真实验收、证据与双轴审查均已通过；可进入 H9 |
 | H9–H10 | 未开始 | H8 完成后再开始；不得重做 H1–H7 |
 
 ## 8. 下一条开发指令

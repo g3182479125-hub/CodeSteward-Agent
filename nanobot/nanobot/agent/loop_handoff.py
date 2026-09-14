@@ -69,7 +69,9 @@ class HandoffRecord:
 class LoopHandoffStore(Protocol):
     def load(self, session_id: str) -> HandoffRecord | None: ...
 
-    def save(self, record: HandoffRecord, *, expected_generation: int | None = None) -> HandoffRecord: ...
+    def save(
+        self, record: HandoffRecord, *, expected_generation: int | None = None
+    ) -> HandoffRecord: ...
 
 
 class SqliteLoopHandoffStore:
@@ -135,9 +137,15 @@ class SqliteLoopHandoffStore:
         if requested_state is not None and not isinstance(requested_state, dict):
             raise RuntimeError("requested loop driver state must be an object")
         return HandoffRecord(
-            session_id=str(row[0]), task_id=str(row[1]), project_id=str(row[2]),
-            driver_name=str(row[3]), driver_version=str(row[4]), driver_state=state,
-            checkpoint=checkpoint, owner_generation=int(row[7]), status=str(row[8]),
+            session_id=str(row[0]),
+            task_id=str(row[1]),
+            project_id=str(row[2]),
+            driver_name=str(row[3]),
+            driver_version=str(row[4]),
+            driver_state=state,
+            checkpoint=checkpoint,
+            owner_generation=int(row[7]),
+            status=str(row[8]),
             operation_id=str(row[9]) if row[9] is not None else None,
             requested_driver_name=str(row[10]) if row[10] is not None else None,
             requested_driver_version=str(row[11]) if row[11] is not None else None,
@@ -154,13 +162,22 @@ class SqliteLoopHandoffStore:
             ).fetchone()
         return self._row_to_record(row) if row is not None else None
 
-    def save(self, record: HandoffRecord, *, expected_generation: int | None = None) -> HandoffRecord:
+    def save(
+        self, record: HandoffRecord, *, expected_generation: int | None = None
+    ) -> HandoffRecord:
         payload = (
-            record.session_id, record.task_id, record.project_id, record.driver_name, record.driver_version,
+            record.session_id,
+            record.task_id,
+            record.project_id,
+            record.driver_name,
+            record.driver_version,
             json.dumps(dict(record.driver_state), ensure_ascii=False, sort_keys=True),
             json.dumps(record.checkpoint.to_dict(), ensure_ascii=False, sort_keys=True),
-            record.owner_generation, record.status, record.operation_id,
-            record.requested_driver_name, record.requested_driver_version,
+            record.owner_generation,
+            record.status,
+            record.operation_id,
+            record.requested_driver_name,
+            record.requested_driver_version,
             (
                 json.dumps(dict(record.requested_driver_state), ensure_ascii=False, sort_keys=True)
                 if record.requested_driver_state is not None
@@ -202,16 +219,28 @@ class LoopHandoffManager:
     def ensure(self, checkpoint: LoopCheckpoint, driver: LoopDriver | None = None) -> HandoffRecord:
         existing = self.store.load(checkpoint.session_id)
         if existing is not None:
-            if existing.task_id != checkpoint.task_id or existing.project_id != checkpoint.project_id:
+            if (
+                existing.task_id != checkpoint.task_id
+                or existing.project_id != checkpoint.project_id
+            ):
                 raise RuntimeError("session is already owned by a different task")
             return existing
         active = driver or DefaultReactDriver()
         record = HandoffRecord(
-            session_id=checkpoint.session_id, task_id=checkpoint.task_id, project_id=checkpoint.project_id,
-            driver_name=active.name, driver_version=active.version, driver_state=active.export_state(),
-            checkpoint=checkpoint, owner_generation=1,
+            session_id=checkpoint.session_id,
+            task_id=checkpoint.task_id,
+            project_id=checkpoint.project_id,
+            driver_name=active.name,
+            driver_version=active.version,
+            driver_state=active.export_state(),
+            checkpoint=checkpoint,
+            owner_generation=1,
         )
         return self.store.save(record)
+
+    def initial_driver(self, name: str, version: str) -> LoopDriver:
+        """Resolve a trusted H9 selection only when a task has no owner yet."""
+        return self.registry.restore(name, version, self._initial_state(name, version))
 
     def request_switch(
         self,
@@ -287,16 +316,22 @@ class LoopHandoffManager:
         if current.status != "switch_pending":
             updated = replace(
                 current,
-                checkpoint=checkpoint, owner_generation=current.owner_generation + 1,
+                checkpoint=checkpoint,
+                owner_generation=current.owner_generation + 1,
             )
             return self.store.save(updated, expected_generation=current.owner_generation)
-        assert current.requested_driver_name is not None and current.requested_driver_version is not None
+        assert (
+            current.requested_driver_name is not None
+            and current.requested_driver_version is not None
+        )
         state = current.requested_driver_state or self._initial_state(
             current.requested_driver_name, current.requested_driver_version
         )
         # Dry restore before committing; a failed init leaves the old artifact active.
         try:
-            self.registry.restore(current.requested_driver_name, current.requested_driver_version, state)
+            self.registry.restore(
+                current.requested_driver_name, current.requested_driver_version, state
+            )
         except ValueError:
             failed = replace(
                 current,
@@ -310,10 +345,16 @@ class LoopHandoffManager:
             )
             return self.store.save(failed, expected_generation=current.owner_generation)
         updated = HandoffRecord(
-            session_id=current.session_id, task_id=current.task_id, project_id=current.project_id,
-            driver_name=current.requested_driver_name, driver_version=current.requested_driver_version,
-            driver_state=state, checkpoint=checkpoint, owner_generation=current.owner_generation + 1,
-            status="active", operation_id=current.operation_id,
+            session_id=current.session_id,
+            task_id=current.task_id,
+            project_id=current.project_id,
+            driver_name=current.requested_driver_name,
+            driver_version=current.requested_driver_version,
+            driver_state=state,
+            checkpoint=checkpoint,
+            owner_generation=current.owner_generation + 1,
+            status="active",
+            operation_id=current.operation_id,
             switch_generation=None,
         )
         return self.store.save(updated, expected_generation=current.owner_generation)
@@ -326,7 +367,9 @@ class LoopHandoffManager:
             or current.message_position < previous.message_position
             or current.remaining_iterations > previous.remaining_iterations
             or not set(previous.completed_tool_results).issubset(current.completed_tool_results)
-            or not set(previous.business_references.items()).issubset(current.business_references.items())
+            or not set(previous.business_references.items()).issubset(
+                current.business_references.items()
+            )
         ):
             raise RuntimeError("loop checkpoint regressed; stale producer rejected")
 
@@ -334,7 +377,9 @@ class LoopHandoffManager:
         record = self.store.load(session_id)
         if record is None:
             raise RuntimeError("loop handoff record does not exist")
-        return self.registry.restore(record.driver_name, record.driver_version, record.driver_state), record
+        return self.registry.restore(
+            record.driver_name, record.driver_version, record.driver_state
+        ), record
 
     def recover_driver(self, session_id: str) -> tuple[LoopDriver, HandoffRecord]:
         """Restore a driver or atomically return the task to default-react.
@@ -346,7 +391,9 @@ class LoopHandoffManager:
         if record is None:
             raise RuntimeError("loop handoff record does not exist")
         try:
-            return self.registry.restore(record.driver_name, record.driver_version, record.driver_state), record
+            return self.registry.restore(
+                record.driver_name, record.driver_version, record.driver_state
+            ), record
         except ValueError:
             fallback = DefaultReactDriver()
             recovered = replace(
@@ -376,6 +423,7 @@ class ManagedLoopDriver:
         self.manager = manager
         self.session_id = session_id
         self._last_record: HandoffRecord | None = None
+        self._last_decision_step: StepInput | None = None
         self._dispatch_generation: int | None = None
         self._dispatch_driver_identity: tuple[str, str] | None = None
 
@@ -404,14 +452,11 @@ class ManagedLoopDriver:
         if current is None:
             return DriverAction(DriverActionKind.PAUSE, "handoff_record_missing")
         held = self._last_record
-        owns_current_route = (
-            current.owner_generation == held.owner_generation
-            or (
-                current.status == "switch_pending"
-                and current.owner_generation == held.owner_generation + 1
-                and (current.driver_name, current.driver_version)
-                == (held.driver_name, held.driver_version)
-            )
+        owns_current_route = current.owner_generation == held.owner_generation or (
+            current.status == "switch_pending"
+            and current.owner_generation == held.owner_generation + 1
+            and (current.driver_name, current.driver_version)
+            == (held.driver_name, held.driver_version)
         )
         if not owns_current_route:
             # No model or remote-strategy call may be made by a stale actor.
@@ -424,8 +469,7 @@ class ManagedLoopDriver:
         # would make every H8 tool turn impossible. All real business refs
         # (run/operation/sandbox/approval) still require query-only recovery.
         unresolved_external_refs = tuple(
-            ref for ref in checkpoint.uncertain_side_effect_refs
-            if not ref.startswith("tool_call:")
+            ref for ref in checkpoint.uncertain_side_effect_refs if not ref.startswith("tool_call:")
         )
         if unresolved_external_refs:
             return DriverAction(DriverActionKind.PAUSE, "uncertain_side_effect_requires_recovery")
@@ -441,6 +485,7 @@ class ManagedLoopDriver:
             completed_tool_results=step.completed_tool_results,
             pending_tool_calls=step.pending_tool_calls,
         )
+        self._last_decision_step = bounded
         # A model response produced within the final permitted iteration is
         # still allowed to settle the tools it already requested. The budget
         # only prevents another model decision after that settlement.
@@ -458,6 +503,10 @@ class ManagedLoopDriver:
             else None
         )
         return action
+
+    def decision_step(self) -> StepInput | None:
+        """Return the Host-bounded facts used for the latest Driver decision."""
+        return self._last_decision_step
 
     def checkpoint_generation(self) -> int | None:
         """Return the generation held by this runner's durable producer."""

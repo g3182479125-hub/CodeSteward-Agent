@@ -15,7 +15,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,6 +41,7 @@ from .candidate_runner import (
     CANDIDATE_NETWORK_POLICY,
     CANDIDATE_TEMPLATE,
     CANDIDATE_TIMEOUT_SECONDS,
+    CandidateExecutionResult,
     CandidateInputRule,
     CandidateTrialGrantIssuer,
     CandidateTrialRequest,
@@ -52,7 +53,13 @@ from .remote_loop_strategy import RemoteStrategyArtifact, RemoteStrategyCatalog
 from .storage import ProjectStore
 
 if TYPE_CHECKING:
-    pass
+    from .harness_selection import HarnessSelectionStore
+
+
+HarnessCaseOracle = Callable[
+    [str, str, int, int, Mapping[str, object], CandidateExecutionResult],
+    Mapping[str, object],
+]
 
 
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
@@ -67,9 +74,9 @@ _SENSITIVE_FIELDS = frozenset(
 _INPUT_RULE_KINDS = ("string", "integer", "number", "boolean")
 _MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
     enabled=True,
-    allowed_kinds=frozenset({"tool"}),
+    allowed_kinds=frozenset({"tool", "loop"}),
     allowed_capabilities=frozenset(),
-    allowed_actions=frozenset({"activate", "stop", "remove"}),
+    allowed_actions=frozenset({"activate", "stop", "remove", "switch-loop"}),
     allowed_scopes=frozenset({"session", "project"}),
     max_active_plugins=3,
 )
@@ -215,6 +222,8 @@ class ModelCandidateController:
         workspace: Path,
         runner: CandidateTrialRunner | None = None,
         grant_issuer: CandidateTrialGrantIssuer | None = None,
+        harness_selection_store: HarnessSelectionStore | None = None,
+        harness_case_oracle: HarnessCaseOracle | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
         self.data_dir = Path(
@@ -227,9 +236,21 @@ class ModelCandidateController:
         self._runner_lock = threading.Lock()
         self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
         self._remote_strategy_catalog: RemoteStrategyCatalog | None = None
+        self._harness_selection_store = harness_selection_store
+        self._harness_case_oracle = harness_case_oracle
 
     def bind_plugin_manager(self, manager: PluginManager) -> None:
         self._manager = manager
+
+    def bind_harness_selection(
+        self,
+        store: HarnessSelectionStore,
+        *,
+        case_oracle: HarnessCaseOracle | None = None,
+    ) -> None:
+        """Bind the durable H9 gate and a Host-owned fixed-case oracle."""
+        self._harness_selection_store = store
+        self._harness_case_oracle = case_oracle
 
     def _context(self) -> tuple[Any, str, str, str, str] | None:
         request = current_request_context()
@@ -310,14 +331,247 @@ class ModelCandidateController:
         if result.status != "passed":
             raise ValueError("remote loop strategy trial failed")
 
+    async def define_loop_candidate(
+        self,
+        kwargs: Mapping[str, object],
+        context: tuple[Any, str, str, str, str],
+    ) -> str:
+        """Persist a remote Loop candidate without executing its source locally."""
+        if os.environ.get("DEVPILOT_ENABLE_MODEL_CANDIDATES") != "1":
+            return self._runner_failure()
+        strategy_id = kwargs.get("strategy_id")
+        version = kwargs.get("version")
+        source = kwargs.get("source")
+        if not isinstance(strategy_id, str) or not isinstance(version, str) or not isinstance(
+            source, str
+        ):
+            return _error(
+                "LOOP_CANDIDATE_REFERENCE_INVALID",
+                "define_loop 需要 strategy_id、version 和 source",
+            )
+        try:
+            _request, session_id, _project_id, _task_id, _workspace = context
+            artifact = await asyncio.to_thread(
+                self.define_remote_strategy, session_id, strategy_id, version, source
+            )
+            return _result(
+                {
+                    "strategy_id": artifact.strategy_id,
+                    "version": artifact.version,
+                    "source_hash": artifact.source_hash,
+                    "execution": "fc_proxy",
+                }
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _error("LOOP_CANDIDATE_DEFINITION_FAILED", "Loop 候选工件无法安全保存")
+
+    async def trial_loop_candidate(
+        self,
+        kwargs: Mapping[str, object],
+        context: tuple[Any, str, str, str, str],
+    ) -> str:
+        """Run one Loop candidate trial through the existing FC proxy."""
+        if (authorization_error := self._authorize(context)) is not None:
+            return authorization_error
+        strategy_id = kwargs.get("strategy_id")
+        version = kwargs.get("version")
+        source_hash = kwargs.get("source_hash")
+        if not all(
+            isinstance(value, str) and value
+            for value in (strategy_id, version, source_hash)
+        ):
+            return _error(
+                "LOOP_CANDIDATE_REFERENCE_INVALID",
+                "trial_loop 需要 strategy_id、version 和 source_hash",
+            )
+        try:
+            _request, session_id, project_id, task_id, _workspace = context
+            artifact = self._remote_catalog().load(
+                session_id, strategy_id, version, source_hash
+            )
+            result = await asyncio.to_thread(
+                self._remote_catalog().trial,
+                artifact,
+                task_id=task_id,
+                project_id=project_id,
+            )
+            return _result(result.to_dict()) if result.status == "passed" else _json(
+                {"ok": False, "result": result.to_dict()}
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _error("LOOP_CANDIDATE_TRIAL_FAILED", "Loop 候选试用未通过")
+
+    async def evaluate_loop(
+        self,
+        kwargs: Mapping[str, object],
+        context: tuple[Any, str, str, str, str],
+    ) -> str:
+        """Compare one trialled remote Loop candidate with its fixed baseline."""
+        if (authorization_error := self._authorize(context)) is not None:
+            return authorization_error
+        store = self._harness_selection_store
+        oracle = self._harness_case_oracle
+        if store is None or oracle is None:
+            return _error(
+                "HARNESS_EVALUATOR_UNAVAILABLE",
+                "H9 需要已配置的 Host 固定用例判定器；未执行 Loop 评测",
+            )
+        runner = self._ensure_runner()
+        if runner is None:
+            return self._runner_failure()
+        strategy_id = kwargs.get("strategy_id")
+        candidate_version = kwargs.get("version")
+        baseline_version = kwargs.get("baseline_version")
+        candidate_hash = kwargs.get("source_hash")
+        baseline_hash = kwargs.get("baseline_source_hash")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                strategy_id,
+                candidate_version,
+                baseline_version,
+                candidate_hash,
+                baseline_hash,
+            )
+        ):
+            return _error(
+                "HARNESS_CANDIDATE_REFERENCE_INVALID",
+                "evaluate_loop 需要 strategy_id、baseline_version、version 和两个 source_hash",
+            )
+        budget = {
+            key: kwargs.get(key)
+            for key in ("max_candidates", "max_evaluations", "max_tokens")
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in budget.values()
+        ):
+            return _error(
+                "HARNESS_BUDGET_INVALID",
+                "H9 评测必须在开始前设置 max_candidates、max_evaluations、max_tokens",
+            )
+        _request, session_id, project_id, task_id, workspace = context
+        raw_refs = context[0].attributes.get("devpilot_harness_evidence_refs", [])
+        if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, (str, bytes, bytearray)):
+            return _error("HARNESS_EVIDENCE_MISSING", "当前任务没有可引用的 H9 反馈证据")
+        evidence_refs = tuple(item for item in raw_refs if isinstance(item, str) and item)
+        if not evidence_refs:
+            return _error("HARNESS_EVIDENCE_MISSING", "当前任务没有可引用的 H9 反馈证据")
+        try:
+            catalog = self._remote_catalog()
+            candidate_artifact = catalog.load(
+                session_id, strategy_id, candidate_version, candidate_hash
+            )
+            baseline_artifact = catalog.load(
+                session_id, strategy_id, baseline_version, baseline_hash
+            )
+            catalog.require_trialled(candidate_artifact)
+            catalog.require_trialled(baseline_artifact)
+            round_id = kwargs.get("round_id")
+            if not isinstance(round_id, str) or not round_id:
+                round_id = f"h9-{task_id}"
+            candidate = store.create_candidate(
+                kind="loop",
+                target_id=strategy_id,
+                baseline_version=baseline_version,
+                candidate_version=candidate_version,
+                baseline_hash=baseline_hash,
+                candidate_hash=candidate_hash,
+                scope={"project_id": project_id, "workspace": workspace},
+                evidence_refs=evidence_refs,
+                round_id=round_id,
+                budget=budget,
+            )
+            projection = catalog.fixed_evaluation_projection()
+
+            def host_trial(
+                category: str,
+                version: str,
+                scenario: int,
+                repeat: int,
+                fixture: Mapping[str, object],
+            ) -> Mapping[str, object]:
+                artifact = (
+                    baseline_artifact if version == "baseline" else candidate_artifact
+                )
+                request = catalog.evaluation_request(
+                    artifact,
+                    session_id=session_id,
+                    task_id=task_id,
+                    project_id=project_id,
+                    projection=projection,
+                    trial_id=f"remote-eval-{uuid.uuid4().hex}",
+                )
+                result = runner.execute(request)
+                oracle_result = dict(
+                    oracle(category, version, scenario, repeat, fixture, result)
+                )
+                return {
+                    **oracle_result,
+                    "contract_passed": oracle_result.get(
+                        "contract_passed", result.status == "passed"
+                    ),
+                    "side_effect_count": oracle_result.get("side_effect_count", 0),
+                    "permission_violation": oracle_result.get("permission_violation", False),
+                    "usage": {
+                        "calls": 1,
+                        "input_tokens": oracle_result.get("input_tokens"),
+                        "output_tokens": oracle_result.get("output_tokens"),
+                    },
+                }
+
+            report = store.run_fixed_evaluation(candidate.candidate_id, host_trial)
+            return _result(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "evaluation_id": report.evaluation_id,
+                    "status": report.status,
+                    "eligible": report.eligible,
+                    "total_runs": report.total_runs,
+                    "baseline_successes": report.baseline_successes,
+                    "candidate_successes": report.candidate_successes,
+                    "result_hash": report.result_hash,
+                }
+            )
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            return _error(
+                "HARNESS_EVALUATION_FAILED",
+                "H9 Loop 固定评测未完成；本轮已停止，未晋升候选",
+            )
+
     def remote_strategy_artifact(
-        self, session_id: str, strategy_id: str, version: str, source_hash: str
+        self,
+        session_id: str,
+        strategy_id: str,
+        version: str,
+        source_hash: str,
+        *,
+        project_id: str | None = None,
     ) -> RemoteStrategyArtifact:
         """Resolve a passed strategy before it can enter a Host handoff record."""
         catalog = self._remote_catalog()
-        artifact = catalog.load(session_id, strategy_id, version, source_hash)
+        artifact = (
+            catalog.load_for_scope(session_id, project_id, strategy_id, version, source_hash)
+            if project_id is not None
+            else catalog.load(session_id, strategy_id, version, source_hash)
+        )
         catalog.require_trialled(artifact)
         return artifact
+
+    def promote_remote_strategy_to_project(
+        self,
+        session_id: str,
+        strategy_id: str,
+        version: str,
+        source_hash: str,
+        *,
+        project_id: str,
+    ) -> None:
+        """Persist one confirmed remote Loop artifact for future project tasks."""
+        catalog = self._remote_catalog()
+        artifact = catalog.load(session_id, strategy_id, version, source_hash)
+        catalog.require_trialled(artifact)
+        catalog.promote_to_project(artifact, project_id=project_id)
 
     async def execute_remote_strategy(
         self,
@@ -325,19 +579,24 @@ class ModelCandidateController:
         strategy_version: str,
         source_hash: str,
         projection: Mapping[str, object],
+        *,
+        project_id: str | None = None,
     ) -> Mapping[str, object]:
         """Execute a session-pinned H8 strategy through FC using only projection data."""
         context = self._context()
         if context is None:
             raise ValueError("remote loop strategy lacks trusted request context")
-        _request, session_id, project_id, task_id, _workspace = context
+        _request, session_id, context_project_id, task_id, _workspace = context
+        effective_project_id = project_id or context_project_id
         catalog = self._remote_catalog()
-        artifact = catalog.load(session_id, strategy_id, strategy_version, source_hash)
+        artifact = catalog.load_for_scope(
+            session_id, effective_project_id, strategy_id, strategy_version, source_hash
+        )
         decision_request = catalog.decision_request(
             artifact,
             session_id=session_id,
             task_id=task_id,
-            project_id=project_id,
+            project_id=effective_project_id,
             projection=projection,
         )
         try:
@@ -350,6 +609,27 @@ class ModelCandidateController:
                 asyncio.to_thread(catalog.cancel_decision, decision_request)
             )
             raise
+
+    async def recover_remote_strategy(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+        source_hash: str,
+        trial_id: str,
+    ) -> CandidateExecutionResult:
+        """Query one durable remote decision after restart; never replay it."""
+        context = self._context()
+        if context is None:
+            raise ValueError("remote loop strategy lacks trusted request context")
+        _request, session_id, _project_id, _task_id, _workspace = context
+        return await asyncio.to_thread(
+            self._remote_catalog().recover_decision,
+            session_id,
+            strategy_id,
+            strategy_version,
+            source_hash,
+            trial_id,
+        )
 
     def _require_manager(self) -> PluginManager:
         if self._manager is None:
@@ -424,7 +704,18 @@ class ModelCandidateController:
             raise ValueError("candidate source hash changed")
         raw_manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         raw_rules = json.loads((root / "input-rules.json").read_text(encoding="utf-8"))
-        if not isinstance(raw_manifest, dict) or raw_manifest != manifest.to_dict():
+        expected_manifest = manifest.to_dict()
+        # H9 may carry an already-tested FC artifact into a project selection.
+        # Scope is host routing metadata, not candidate code or its FC contract;
+        # every other immutable manifest field must still match the sidecar.
+        scope_only_projection = {
+            **expected_manifest,
+            "scope": PluginScope.SESSION.value,
+        }
+        if not isinstance(raw_manifest, dict) or _json(raw_manifest) not in {
+            _json(expected_manifest),
+            _json(scope_only_projection),
+        }:
             raise ValueError("candidate manifest sidecar changed")
         rules = _parse_rules(raw_rules)
         contract_hash = _candidate_contract_hash(raw_manifest, rules)
@@ -695,6 +986,202 @@ class ModelCandidateController:
             )
         return _result(payload) if result.ok else _json(payload)
 
+    async def evaluate(
+        self,
+        kwargs: Mapping[str, object],
+        context: tuple[Any, str, str, str, str],
+    ) -> str:
+        """Evaluate one defined plugin candidate through H9's fixed suite."""
+        if (authorization_error := self._authorize(context)) is not None:
+            return authorization_error
+        store = self._harness_selection_store
+        oracle = self._harness_case_oracle
+        if store is None or oracle is None:
+            return _error(
+                "HARNESS_EVALUATOR_UNAVAILABLE",
+                "H9 需要已配置的 Host 固定用例判定器；未执行候选评测",
+            )
+        runner = self._ensure_runner()
+        issuer = self._issuer
+        if runner is None or issuer is None:
+            return self._runner_failure()
+        plugin_id = kwargs.get("plugin_id")
+        candidate_version = kwargs.get("version")
+        baseline_version = kwargs.get("baseline_version")
+        if not all(
+            isinstance(value, str) and value
+            for value in (plugin_id, candidate_version, baseline_version)
+        ):
+            return _error(
+                "HARNESS_CANDIDATE_REFERENCE_INVALID",
+                "evaluate 需要 plugin_id、baseline_version 和 version",
+            )
+        budget = {
+            key: kwargs.get(key)
+            for key in ("max_candidates", "max_evaluations", "max_tokens")
+        }
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in budget.values()
+        ):
+            return _error(
+                "HARNESS_BUDGET_INVALID",
+                "H9 评测必须在开始前设置 max_candidates、max_evaluations、max_tokens",
+            )
+        _request, session_id, project_id, task_id, workspace = context
+        manager = self._require_manager()
+        candidate_registration = self._registration(plugin_id, candidate_version, context)
+        baseline_registration = self._registration(plugin_id, baseline_version, context)
+        if candidate_registration is None or baseline_registration is None:
+            return _error("PLUGIN_NOT_FOUND", "基线或候选版本在当前会话不可见")
+        if (
+            candidate_registration.record.source is not PluginSource.MODEL_CANDIDATE
+            or baseline_registration.record.source is not PluginSource.MODEL_CANDIDATE
+        ):
+            return _error(
+                "HARNESS_BASELINE_INVALID",
+                "H9 仅允许比较同一 FC 代理模型候选族的基线和候选版本",
+            )
+        if candidate_registration.record.candidate_status is not PluginCandidateStatus.DEFINED:
+            return _error(
+                "HARNESS_CANDIDATE_STATE_INVALID",
+                "候选必须处于 defined 状态才能开始 H9 评测",
+            )
+        try:
+            candidate_source, candidate_manifest, candidate_rules, candidate_contract = (
+                self._artifact(candidate_registration)
+            )
+            baseline_source, baseline_manifest, baseline_rules, _baseline_contract = (
+                self._artifact(baseline_registration)
+            )
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return _error(
+                "HARNESS_ARTIFACT_INVALID",
+                "基线或候选工件发生变化，未启动 H9 评测",
+            )
+        if candidate_rules != baseline_rules:
+            return _error(
+                "HARNESS_INPUT_CONTRACT_CHANGED",
+                "基线与候选输入契约不同，不能进行同输入对照",
+            )
+        raw_refs = context[0].attributes.get("devpilot_harness_evidence_refs", [])
+        if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, (str, bytes, bytearray)):
+            return _error("HARNESS_EVIDENCE_MISSING", "当前任务没有可引用的 H9 反馈证据")
+        evidence_refs = tuple(item for item in raw_refs if isinstance(item, str) and item)
+        if not evidence_refs:
+            return _error("HARNESS_EVIDENCE_MISSING", "当前任务没有可引用的 H9 反馈证据")
+        round_id = kwargs.get("round_id")
+        if not isinstance(round_id, str) or not round_id:
+            round_id = f"h9-{task_id}"
+        try:
+            candidate = store.create_candidate(
+                kind="plugin",
+                target_id=plugin_id,
+                baseline_version=baseline_version,
+                candidate_version=candidate_version,
+                baseline_hash=baseline_manifest["content_hash"],
+                candidate_hash=candidate_manifest["content_hash"],
+                scope={"project_id": project_id, "workspace": workspace},
+                evidence_refs=evidence_refs,
+                round_id=round_id,
+                budget=budget,
+            )
+
+            def host_trial(
+                category: str,
+                version: str,
+                scenario: int,
+                repeat: int,
+                fixture: Mapping[str, object],
+            ) -> Mapping[str, object]:
+                source, manifest = (
+                    (baseline_source, baseline_manifest)
+                    if version == "baseline"
+                    else (candidate_source, candidate_manifest)
+                )
+                input_data = _fixed_trial_input(candidate_rules)
+                if any(rule[0] == "case" and rule[1] == "string" for rule in candidate_rules):
+                    input_data["case"] = fixture["case"]
+                grant = issuer.issue(
+                    session_id=session_id,
+                    task_id=task_id,
+                    project_id=project_id,
+                    allowed_input_rules=candidate_rules,
+                    expires_at_epoch=int(time.time()) + 180,
+                )
+                request = CandidateTrialRequest(
+                    task_id=task_id,
+                    project_id=project_id,
+                    trial_id=(
+                        f"h9-{category}-{scenario}-{version}-{repeat}-"
+                        f"{uuid.uuid4().hex[:8]}"
+                    ),
+                    session_id=session_id,
+                    grant=grant,
+                    manifest=manifest,
+                    source=source,
+                    input_data=input_data,
+                    timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
+                    execution_mode="live",
+                )
+                result = runner.execute(request)
+                oracle_result = dict(
+                    oracle(category, version, scenario, repeat, fixture, result)
+                )
+                return {
+                    **oracle_result,
+                    "contract_passed": oracle_result.get(
+                        "contract_passed", result.status == "passed"
+                    ),
+                    "side_effect_count": oracle_result.get("side_effect_count", 0),
+                    "permission_violation": oracle_result.get("permission_violation", False),
+                    "usage": {
+                        "calls": 1,
+                        "input_tokens": oracle_result.get("input_tokens"),
+                        "output_tokens": oracle_result.get("output_tokens"),
+                    },
+                }
+
+            report = store.run_fixed_evaluation(candidate.candidate_id, host_trial)
+            binding = None
+            if report.eligible:
+                binding = manager.mark_candidate_tested(
+                    plugin_id,
+                    candidate_version,
+                    session_id=session_id,
+                    project_id=project_id,
+                    trial_id=report.evaluation_id,
+                    content_hash=candidate_manifest["content_hash"],
+                    input_hash=hashlib.sha256(
+                        _json(_fixed_trial_input(candidate_rules)).encode("utf-8")
+                    ).hexdigest(),
+                    contract_hash=candidate_contract,
+                )
+                if not binding.ok:
+                    store.retire_candidate(candidate.candidate_id)
+                    return _error(
+                        "HARNESS_BINDING_FAILED",
+                        "H9 评测通过但候选试用绑定失败；候选已停用",
+                    )
+            return _result(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "evaluation_id": report.evaluation_id,
+                    "status": report.status,
+                    "eligible": report.eligible,
+                    "total_runs": report.total_runs,
+                    "baseline_successes": report.baseline_successes,
+                    "candidate_successes": report.candidate_successes,
+                    "result_hash": report.result_hash,
+                    "candidate_status": "tested" if binding is not None else "defined",
+                }
+            )
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            return _error(
+                "HARNESS_EVALUATION_FAILED",
+                "H9 固定评测未完成；本轮已停止，未晋升候选",
+            )
+
     async def execute_active(
         self,
         registration: _RegisteredPlugin,
@@ -776,6 +1263,14 @@ class ModelCandidateController:
             return await self.trial(kwargs, context)
         if action == "activate":
             return await self.activate(kwargs, context)
+        if action == "evaluate":
+            return await self.evaluate(kwargs, context)
+        if action == "define_loop":
+            return await self.define_loop_candidate(kwargs, context)
+        if action == "trial_loop":
+            return await self.trial_loop_candidate(kwargs, context)
+        if action == "evaluate_loop":
+            return await self.evaluate_loop(kwargs, context)
         if action == "status":
             operation_id = kwargs.get("operation_id")
             if not isinstance(operation_id, str) or not operation_id:
@@ -847,7 +1342,8 @@ class ModelCandidateController:
             return _result(result.to_dict()) if result.ok else _json(result.to_dict())
         return _error(
             "CANDIDATE_ACTION_INVALID",
-            "action 必须是 inspect/define/trial/activate/stop/remove/status/revoke",
+            "action 必须是 inspect/define/trial/evaluate/define_loop/trial_loop/"
+            "evaluate_loop/activate/stop/remove/status/revoke",
         )
 
 
@@ -954,6 +1450,10 @@ def _input_rule_item_schema() -> dict[str, Any]:
                     "inspect",
                     "define",
                     "trial",
+                    "evaluate",
+                    "define_loop",
+                    "trial_loop",
+                    "evaluate_loop",
                     "activate",
                     "stop",
                     "remove",
@@ -966,7 +1466,18 @@ def _input_rule_item_schema() -> dict[str, Any]:
                 ),
             },
             "plugin_id": {"type": "string", "minLength": 1},
+            "strategy_id": {"type": "string", "minLength": 1},
             "version": {"type": "string", "minLength": 1},
+            "baseline_version": {"type": "string", "minLength": 1},
+            "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "baseline_source_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "round_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "max_candidates": {"type": "integer", "minimum": 1, "maximum": 2},
+            "max_evaluations": {"type": "integer", "minimum": 1, "maximum": 48},
+            "max_tokens": {"type": "integer", "minimum": 1},
             "source": {"type": "string", "maxLength": 65536},
             "input_rules": {
                 "type": "array",
@@ -989,7 +1500,7 @@ def _input_rule_item_schema() -> dict[str, Any]:
     }
 )
 class ModelPluginManagementTool(Tool):
-    """Expose the eight H6 model-candidate actions through nanobot chat."""
+    """Expose H6 lifecycle and the H9 fixed-evaluation action through chat."""
 
     _scopes = {"core"}
 
@@ -1003,7 +1514,8 @@ class ModelPluginManagementTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Manage model-generated candidate tools live: inspect, define, trial, "
+            "Manage model-generated candidate tools and FC-only Loop candidates live: "
+            "inspect, define, trial, evaluate, define_loop, trial_loop, evaluate_loop, "
             "activate, stop or remove. Candidate source is never imported by "
             "nanobot; trial and calls use the configured FC proxy. For define, "
             "input_rules items must use field/kind/max_length; integer bounds must be "

@@ -27,9 +27,9 @@ class TaskProfileError(ValueError):
 
 MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
     enabled=True,
-    allowed_kinds=frozenset({"tool"}),
+    allowed_kinds=frozenset({"tool", "loop"}),
     allowed_capabilities=frozenset(),
-    allowed_actions=frozenset({"activate", "stop", "remove"}),
+    allowed_actions=frozenset({"activate", "stop", "remove", "switch-loop"}),
     allowed_scopes=frozenset({"session", "project"}),
     max_active_plugins=3,
 )

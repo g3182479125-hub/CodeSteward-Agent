@@ -438,7 +438,7 @@ class AgentRunner:
     ) -> AgentRunResult:
         final_content: str | None = None
         tools_used: list[str] = []
-        usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
         error: str | None = None
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
@@ -477,28 +477,25 @@ class AgentRunner:
             host_step = spec.initial_step + iteration
             # Driver decisions occur only before a new model request.  Tool
             # execution, permissions and persistence remain Host-owned below.
-            action = driver.next_action(
-                StepInput(
-                    session_id=spec.session_key or "",
-                    task_id=spec.task_id or spec.session_key or "",
-                    project_id=spec.project_id or "",
-                    step=host_step,
-                    message_position=len(messages),
-                    remaining_iterations=spec.max_iterations - iteration,
-                )
+            step_input = StepInput(
+                session_id=spec.session_key or "",
+                task_id=spec.task_id or spec.session_key or "",
+                project_id=spec.project_id or "",
+                step=host_step,
+                message_position=len(messages),
+                remaining_iterations=spec.max_iterations - iteration,
             )
+            action = driver.next_action(step_input)
             if action.kind is DriverActionKind.REQUEST_REMOTE_DECISION:
                 if spec.remote_decision_callback is None:
                     stop_reason = "remote_driver_unavailable"
                     break
-                remote_step = StepInput(
-                    session_id=spec.session_key or "",
-                    task_id=spec.task_id or spec.session_key or "",
-                    project_id=spec.project_id or "",
-                    step=host_step,
-                    message_position=len(messages),
-                    remaining_iterations=spec.max_iterations - iteration,
-                )
+                remote_step = step_input
+                decision_step = getattr(driver, "decision_step", None)
+                if callable(decision_step):
+                    bounded_step = decision_step()
+                    if isinstance(bounded_step, StepInput):
+                        remote_step = bounded_step
                 try:
                     remote_result = await spec.remote_decision_callback(
                         build_remote_projection(remote_step)
@@ -557,6 +554,7 @@ class AgentRunner:
                 conversation_state=conversation_state,
                 provider_context=provider_context,
             )
+            usage["calls"] += 1
             conversation_state.observe_response(response, messages)
             context.response = response
             context.tool_calls = list(response.tool_calls)
@@ -576,8 +574,11 @@ class AgentRunner:
                 await hook.emit_reasoning_end()
                 context.streamed_reasoning = True
 
-            if response.should_execute_tools:
-                context.tool_calls = list(response.tool_calls)
+            # The concrete normalized call list is the dispatch authority. A
+            # compatibility adapter may expose a truthy flag while returning
+            # no calls; entering the tool branch then creates an invalid H8
+            # ownership boundary instead of finishing the response.
+            if context.tool_calls:
                 if hook.wants_streaming():
                     await hook.on_stream_end(context, resuming=True)
 
@@ -780,6 +781,7 @@ class AgentRunner:
                     transcript=messages,
                     conversation_state=conversation_state,
                 )
+                usage["calls"] += 1
                 retry_usage = self._usage_or_estimate(spec, retry_messages, response)
                 self._accumulate_usage(usage, retry_usage)
                 raw_usage = self._merge_usage(raw_usage, retry_usage)

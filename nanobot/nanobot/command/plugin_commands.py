@@ -40,6 +40,9 @@ def _usage() -> str:
         "`/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`; "
         "`/plugins switch-loop <default-react|plan-then-act>`; "
         "`/plugins switch-loop remote <strategy-id>@<version> <source-hash>`; "
+        "`/plugins selection status <candidate-id>`; "
+        "`/plugins selection prepare <candidate-id>`; "
+        "`/plugins selection confirm <confirmation-id> <evaluation-id>`; "
         "`/plugins cleanup-retry <operation-id>`; "
         "`/plugins status <operation-id>`"
     )
@@ -62,9 +65,7 @@ def _format_list(rows: tuple[dict[str, Any], ...]) -> str:
 
 def _format_result(result: Any) -> str:
     operation_line = (
-        f"\n- operation_id: `{result.operation_id}`"
-        if result.operation_id is not None
-        else ""
+        f"\n- operation_id: `{result.operation_id}`" if result.operation_id is not None else ""
     )
     if result.ok:
         details = result.details_dict
@@ -85,6 +86,133 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
         return _text(ctx, _usage())
     parts = args.split()
     action = parts[0].lower()
+    if action == "selection":
+        if not ctx.is_user_turn:
+            return _text(
+                ctx, "Only a direct user message can manage a persistent Harness selection."
+            )
+        store = getattr(ctx.loop, "harness_selection_store", None)
+        if store is None:
+            return _text(ctx, "Persistent Harness selection is not enabled for this runtime.")
+        profile = ctx.loop.task_profile_for_session(ctx.session) if ctx.session is not None else None
+        if profile is None:
+            return _text(ctx, "Harness selection requires an authorized task profile.")
+        if len(parts) < 3:
+            return _text(ctx, _usage())
+        selection_action = parts[1].lower()
+        try:
+            expected_scope = {
+                "project_id": project_id,
+                "workspace": str((ctx.workspace or ctx.loop.workspace).resolve()),
+            }
+            if selection_action == "confirm" and len(parts) == 4:
+                confirmation = store.get_confirmation(parts[2])
+                if confirmation.scope != expected_scope:
+                    return _text(ctx, "Harness confirmation is outside this project scope.")
+                candidate_before_confirmation = store.get_candidate(confirmation.candidate_id)
+                if not profile.dynamic_plugins.allows(
+                    kind="tool" if candidate_before_confirmation.kind == "plugin" else "loop",
+                    capabilities=set(),
+                    action="activate",
+                    scope="session",
+                ):
+                    return _text(ctx, "Harness selection is not authorized by this task profile.")
+                candidate = store.consume_confirmation(
+                    parts[2],
+                    user_id=ctx.msg.sender_id or "",
+                    session_id=ctx.key,
+                    evaluation_id=parts[3],
+                )
+                if candidate.status == "already_consumed":
+                    return _text(ctx, "Harness selection: already_consumed.")
+                if candidate_before_confirmation.kind == "plugin":
+                    promoted = ctx.loop.plugin_manager.promote_candidate_to_project(
+                        candidate_before_confirmation.target_id,
+                        candidate_before_confirmation.candidate_version,
+                        session_id=ctx.key,
+                        project_id=project_id,
+                    )
+                    if not promoted.ok:
+                        try:
+                            store.rollback_confirmation_consumption(
+                                parts[2], candidate_id=candidate.candidate_id
+                            )
+                        except (RuntimeError, ValueError):
+                            # Keep the failure closed if another task has
+                            # already referenced the durable selection claim.
+                            pass
+                        return _text(ctx, f"Harness selection activation stopped: {promoted.message}")
+                elif candidate_before_confirmation.target_id not in {
+                    "default-react",
+                    "plan-then-act",
+                }:
+                    controller = getattr(ctx.loop, "model_candidate_controller", None)
+                    promote_remote = getattr(
+                        controller, "promote_remote_strategy_to_project", None
+                    )
+                    if not callable(promote_remote):
+                        try:
+                            store.rollback_confirmation_consumption(
+                                parts[2], candidate_id=candidate.candidate_id
+                            )
+                        except (RuntimeError, ValueError):
+                            pass
+                        return _text(
+                            ctx,
+                            "Harness selection activation stopped: remote Loop artifact is unavailable",
+                        )
+                    try:
+                        promote_remote(
+                            ctx.key,
+                            candidate_before_confirmation.target_id,
+                            candidate_before_confirmation.candidate_version,
+                            candidate_before_confirmation.candidate_hash,
+                            project_id=project_id,
+                        )
+                    except (RuntimeError, ValueError):
+                        try:
+                            store.rollback_confirmation_consumption(
+                                parts[2], candidate_id=candidate.candidate_id
+                            )
+                        except (RuntimeError, ValueError):
+                            pass
+                        return _text(
+                            ctx,
+                            "Harness selection activation stopped: remote Loop artifact promotion failed",
+                        )
+                return _text(ctx, f"Harness selection: {candidate.status}.")
+            candidate_id = parts[2]
+            candidate = store.get_candidate(candidate_id)
+            if candidate.scope != expected_scope:
+                return _text(ctx, "Harness candidate is outside this project scope.")
+            if not profile.dynamic_plugins.allows(
+                kind="tool" if candidate.kind == "plugin" else "loop",
+                capabilities=set(),
+                action="activate",
+                scope="session",
+            ):
+                return _text(ctx, "Harness selection is not authorized by this task profile.")
+            if selection_action == "status" and len(parts) == 3:
+                return _text(
+                    ctx,
+                    f"Harness candidate: {candidate.status}; kind={candidate.kind}; "
+                    f"target={candidate.target_id}@{candidate.candidate_version}; "
+                    f"evaluation={candidate.evaluation_id or 'none'}",
+                )
+            if selection_action == "prepare" and len(parts) == 3:
+                confirmation = store.issue_confirmation(
+                    candidate_id,
+                    user_id=ctx.msg.sender_id or "",
+                    session_id=ctx.key,
+                )
+                return _text(
+                    ctx,
+                    "Harness candidate is eligible. Confirm it with `/plugins selection confirm "
+                    f"{confirmation.confirmation_id} {confirmation.evaluation_id}`.",
+                )
+        except (RuntimeError, ValueError) as exc:
+            return _text(ctx, f"Harness selection was not accepted: {exc}")
+        return _text(ctx, _usage())
     if action == "list" and len(parts) == 1:
         return _text(ctx, _format_list(manager.list_view(ctx.key, project_id=project_id)))
     if action == "status" and len(parts) == 2:
@@ -108,6 +236,14 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
     if action == "switch-loop":
         if not ctx.is_user_turn:
             return _text(ctx, "Only a direct user message can request a loop switch.")
+        _profile, policy = _profile_policy(ctx)
+        if policy is None or not policy.allows(
+            kind="loop",
+            capabilities=set(),
+            action="switch-loop",
+            scope="session",
+        ):
+            return _text(ctx, "当前任务 Profile 未授权 Loop Driver 切换。")
         try:
             if len(parts) == 2:
                 operation_id = ctx.loop.request_loop_driver_switch(ctx.key, parts[1])
@@ -163,7 +299,10 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             return _text(ctx, _usage())
         plugin_id, separator, version = parts[1].partition("@")
         if not separator or not plugin_id or not version:
-            return _text(ctx, "Usage: `/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`")
+            return _text(
+                ctx,
+                "Usage: `/plugins remove <plugin-id>@<version> [operation-id] [expected-generation]`",
+            )
         remove_expected_generation: int | None = None
         if len(parts) == 4:
             try:
@@ -186,7 +325,10 @@ async def cmd_plugins(ctx: CommandContext) -> OutboundMessage:
             return _text(ctx, _usage())
         plugin_id, separator, version = parts[1].partition("@")
         if not separator or not plugin_id or not version:
-            return _text(ctx, "Usage: `/plugins update <plugin-id>@<version> [operation-id] [expected-generation]`")
+            return _text(
+                ctx,
+                "Usage: `/plugins update <plugin-id>@<version> [operation-id] [expected-generation]`",
+            )
         expected_generation: int | None = None
         if len(parts) == 4:
             try:

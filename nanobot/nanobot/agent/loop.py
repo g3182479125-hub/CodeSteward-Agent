@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, TypeVar, cast
 
 from loguru import logger
 
@@ -47,7 +47,12 @@ from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.plugins.manager import PluginManager
 from nanobot.agent.plugins.store import SqlitePluginStateStore
-from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from nanobot.agent.runner import (
+    _MAX_INJECTIONS_PER_TURN,
+    AgentRunner,
+    AgentRunResult,
+    AgentRunSpec,
+)
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.task_profiles import (
     TASK_CONTEXT_METADATA_KEY,
@@ -145,6 +150,35 @@ _T = TypeVar("_T")
 _SUBAGENT_PROVIDER_TASK_META = "subagent_provider_task_id"
 
 
+class HarnessSelectionStorePort(Protocol):
+    """Minimal optional H9 port kept outside nanobot's core persistence type."""
+
+    def active_loop_driver(self, scope: Mapping[str, object]) -> tuple[str, str] | None: ...
+
+    def active_loop_candidate(self, scope: Mapping[str, object]) -> ActiveLoopSelection | None: ...
+
+    def active_plugin_version(self, scope: Mapping[str, object]) -> tuple[str, str] | None: ...
+
+    def record_evidence(
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        workspace: str,
+        version_hash: str,
+        source_type: str,
+        summary: str,
+        usage: Mapping[str, object] | None = None,
+        infrastructure_failure: bool = False,
+    ) -> str: ...
+
+
+class ActiveLoopSelection(Protocol):
+    target_id: str
+    candidate_version: str
+    candidate_hash: str
+
+
 class TurnKind(Enum):
     USER = auto()
     SYSTEM = auto()
@@ -211,7 +245,9 @@ class TurnContext:
     def require_session(self) -> Session:
         """Return the session established by the RESTORE stage."""
         if self.session is None:
-            raise RuntimeError("turn session is not initialized; RESTORE must run before this stage")
+            raise RuntimeError(
+                "turn session is not initialized; RESTORE must run before this stage"
+            )
         return self.session
 
 
@@ -346,12 +382,15 @@ class AgentLoop:
         local_trigger_store: LocalTriggerStore | None = None,
         idle_compact_check_interval_seconds: int = 0,
         task_profiles: TaskProfileCatalog | None = None,
+        loop_driver_selector: Callable[[str, Path], tuple[str, str] | LoopDriver | None]
+        | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
         self.bus = bus
+        self._loop_driver_selector = loop_driver_selector
         if turn_delivery_factory is not None:
             if turn_delivery_factory.bus is not bus:
                 raise ValueError("turn delivery factory must use the agent message bus")
@@ -402,7 +441,8 @@ class AgentLoop:
         )
         self.provider_retry_mode = provider_retry_mode
         self.tool_hint_max_length = (
-            tool_hint_max_length if tool_hint_max_length is not None
+            tool_hint_max_length
+            if tool_hint_max_length is not None
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
@@ -554,8 +594,49 @@ class AgentLoop:
                 # H8 is additive. A database awaiting its migration must not
                 # turn a working nanobot session into a startup failure.
                 logger.warning("Live loop handoff is disabled: {}", exc)
+        self.harness_selection_store: HarnessSelectionStorePort | None = None
+        if (
+            os.environ.get("DEVPILOT_ENABLE_HARNESS_SELECTION") == "1"
+            and plugin_state_path is not None
+        ):
+            try:
+                from devpilot.harness_selection import HarnessSelectionStore
+
+                integrity_key = os.environ.get("DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY", "")
+                selection_store = cast(
+                    HarnessSelectionStorePort,
+                    HarnessSelectionStore(
+                        plugin_state_path, integrity_key=integrity_key.encode("utf-8")
+                    ),
+                )
+                self.harness_selection_store = selection_store
+                if self._loop_driver_selector is None:
+                    def select_h9_loop_driver(
+                        project_id: str, project_path: Path
+                    ) -> tuple[str, str] | LoopDriver | None:
+                        selection = selection_store.active_loop_candidate(
+                            {
+                                "project_id": project_id,
+                                "workspace": str(project_path.resolve()),
+                            }
+                        )
+                        if selection is None:
+                            return None
+                        if selection.target_id in {"default-react", "plan-then-act"}:
+                            return selection.target_id, selection.candidate_version
+                        return RemoteStrategyDriver(
+                            selection.target_id,
+                            selection.candidate_hash,
+                            strategy_version=selection.candidate_version,
+                        )
+
+                    self._loop_driver_selector = select_h9_loop_driver
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                logger.warning("Persistent Harness selection is disabled: {}", exc)
         if model_candidate_controller is not None:
             model_candidate_controller.bind_plugin_manager(self.plugin_manager)
+            if self.harness_selection_store is not None:
+                model_candidate_controller.bind_harness_selection(self.harness_selection_store)
             from devpilot.model_plugins import ModelPluginManagementTool
 
             self.tools.register(ModelPluginManagementTool(model_candidate_controller))
@@ -586,9 +667,13 @@ class AgentLoop:
         provider = extra.pop("provider", None) or make_provider(config)
         resolved = config.resolve_preset()
         model = extra.pop("model", None) or resolved.model
-        context_window_tokens = extra.pop("context_window_tokens", None) or resolved.context_window_tokens
+        context_window_tokens = (
+            extra.pop("context_window_tokens", None) or resolved.context_window_tokens
+        )
         provider_snapshot_loader = extra.pop("provider_snapshot_loader", None)
-        preset_snapshot_loader = extra.pop("preset_snapshot_loader", None) or preset_helpers.make_preset_snapshot_loader(
+        preset_snapshot_loader = extra.pop(
+            "preset_snapshot_loader", None
+        ) or preset_helpers.make_preset_snapshot_loader(
             config,
             provider_snapshot_loader,
         )
@@ -797,14 +882,14 @@ class AgentLoop:
         if not turn_continuation.should_persist_user_message(msg.metadata):
             return False
         media_paths = [
-            path
-            for path in (msg.media or [])
-            if isinstance(cast(object, path), str) and path
+            path for path in (msg.media or []) if isinstance(cast(object, path), str) and path
         ]
         content_value = cast(object, msg.content)
         has_text = isinstance(content_value, str) and content_value.strip()
         if has_text or media_paths or runtime_context_blocks:
-            extra: dict[str, Any] = ({"media": list(media_paths)} if media_paths else {}) | agent_context.session_extra(msg.metadata)
+            extra: dict[str, Any] = (
+                {"media": list(media_paths)} if media_paths else {}
+            ) | agent_context.session_extra(msg.metadata)
             extra.update(kwargs)
             text = content_value if isinstance(content_value, str) else ""
             text_override, automation_extra = automation_history_overrides(msg.metadata)
@@ -918,14 +1003,15 @@ class AgentLoop:
         session = self.sessions.get_or_create(session_key)
         profile = self.task_profiles.get(name)
         existing_name = session.metadata.get(TASK_PROFILE_METADATA_KEY)
-        if existing_name and existing_name != profile.name and (session.messages or self._RUNTIME_CHECKPOINT_KEY in session.metadata):
+        if (
+            existing_name
+            and existing_name != profile.name
+            and (session.messages or self._RUNTIME_CHECKPOINT_KEY in session.metadata)
+        ):
             raise TaskProfileError(
                 f"task profile '{existing_name}' is bound to this unfinished session; use /new before switching"
             )
-        skills = {
-            item["name"]
-            for item in self.context.skills.list_skills(filter_unavailable=True)
-        }
+        skills = {item["name"] for item in self.context.skills.list_skills(filter_unavailable=True)}
         self.task_profiles.validate_runtime(profile, set(self.tools.tool_names), skills)
         session.metadata[TASK_PROFILE_METADATA_KEY] = profile.name
         session.metadata[TASK_PROFILE_VERSION_METADATA_KEY] = profile.version
@@ -945,7 +1031,9 @@ class AgentLoop:
         if session.metadata.get(TASK_PROFILE_METADATA_KEY) and (
             session.messages or self._RUNTIME_CHECKPOINT_KEY in session.metadata
         ):
-            raise ValueError("an active task profile cannot be cleared for an unfinished session; use /new")
+            raise ValueError(
+                "an active task profile cannot be cleared for an unfinished session; use /new"
+            )
         session.metadata.pop(TASK_PROFILE_METADATA_KEY, None)
         session.metadata.pop(TASK_PROFILE_VERSION_METADATA_KEY, None)
         session.metadata.pop(TASK_LOOP_GUARD_METADATA_KEY, None)
@@ -973,10 +1061,7 @@ class AgentLoop:
                     task_profile=None,
                 )
             return None
-        skills = {
-            item["name"]
-            for item in self.context.skills.list_skills(filter_unavailable=True)
-        }
+        skills = {item["name"] for item in self.context.skills.list_skills(filter_unavailable=True)}
         stored_version = session.metadata.get(TASK_PROFILE_VERSION_METADATA_KEY)
         if stored_version != profile.version:
             raise TaskProfileError(
@@ -1018,7 +1103,9 @@ class AgentLoop:
                 return previous
             constraints = list(previous.constraints)
             if changed_files:
-                constraints.append("external file change detected; re-inspect before proposing or writing")
+                constraints.append(
+                    "external file change detected; re-inspect before proposing or writing"
+                )
             state = dataclasses.replace(
                 previous,
                 constraints=tuple(dict.fromkeys(constraints)),
@@ -1088,7 +1175,9 @@ class AgentLoop:
         validated_hashes = tuple(
             (path, digest.lower())
             for path, digest in file_hashes
-            if path and len(digest) == 64 and all(char in "0123456789abcdefABCDEF" for char in digest)
+            if path
+            and len(digest) == 64
+            and all(char in "0123456789abcdefABCDEF" for char in digest)
         )[:20]
         updated = dataclasses.replace(
             state,
@@ -1112,9 +1201,7 @@ class AgentLoop:
         """Persist safe evidence emitted by the real DevPilot tool boundary."""
         if not isinstance(result, str):
             return
-        state = TaskContextState.from_metadata(
-            session.metadata.get(TASK_CONTEXT_METADATA_KEY)
-        )
+        state = TaskContextState.from_metadata(session.metadata.get(TASK_CONTEXT_METADATA_KEY))
         if state is None or state.profile_binding != f"{profile.name}@{profile.version}":
             return
         try:
@@ -1130,14 +1217,17 @@ class AgentLoop:
         change_set_id = payload.get("change_set_id")
         if isinstance(run_id, str) and run_id:
             evidence_refs.append(run_id)
-        for key in ("evidence_run_id", "evidence_ids", "analysis_evidence_ids", "failure_evidence_ids"):
+        for key in (
+            "evidence_run_id",
+            "evidence_ids",
+            "analysis_evidence_ids",
+            "failure_evidence_ids",
+        ):
             value = params.get(key)
             if isinstance(value, str) and value:
                 evidence_refs.append(value)
             elif isinstance(value, (list, tuple)):
-                evidence_refs.extend(
-                    item for item in value if isinstance(item, str) and item
-                )
+                evidence_refs.extend(item for item in value if isinstance(item, str) and item)
         if tool_name == "devpilot_read_code":
             path = payload.get("path")
             digest = payload.get("sha256")
@@ -1173,13 +1263,91 @@ class AgentLoop:
         )
         request_context = current_request_context()
         if request_context is not None:
-            latest = TaskContextState.from_metadata(
-                session.metadata.get(TASK_CONTEXT_METADATA_KEY)
-            )
+            latest = TaskContextState.from_metadata(session.metadata.get(TASK_CONTEXT_METADATA_KEY))
             if latest is not None:
-                request_context.attributes["devpilot_evidence_refs"] = list(
-                    latest.evidence_refs
-                )
+                request_context.attributes["devpilot_evidence_refs"] = list(latest.evidence_refs)
+            if self.harness_selection_store is not None:
+                try:
+                    workspace = str(request_context.workspace.resolve())
+                    project_id = str(
+                        request_context.attributes.get("devpilot_project_id")
+                        or self.plugin_manager.project_id_for_path(request_context.workspace)
+                    )
+                    version_hash = hashlib.sha256(
+                        f"{profile.name}@{profile.version}".encode("utf-8")
+                    ).hexdigest()
+                    evidence_id = self.harness_selection_store.record_evidence(
+                        task_id=str(request_context.attributes.get("devpilot_task_id") or session.key),
+                        project_id=project_id,
+                        workspace=workspace,
+                        version_hash=version_hash,
+                        source_type="tool_result",
+                        summary=(
+                            f"{tool_name}: result_sha256="
+                            f"{hashlib.sha256(result.encode('utf-8')).hexdigest()}; "
+                            f"bytes={len(result.encode('utf-8'))}"
+                        ),
+                        usage={"calls": 1},
+                    )
+                    request_context.attributes.setdefault("devpilot_harness_evidence_refs", []).append(
+                        evidence_id
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.warning("H9 feedback evidence was not recorded: {}", exc)
+
+    def _record_h9_task_result_evidence(
+        self,
+        request_context: RequestContext,
+        session: Session | None,
+        profile: TaskProfile | None,
+        result: AgentRunResult,
+        *,
+        task_id: str,
+        project_id: str,
+        workspace: Path,
+    ) -> None:
+        """Persist one bounded task outcome with the runner's actual usage facts."""
+        if self.harness_selection_store is None or session is None or profile is None:
+            return
+        usage = result.usage if isinstance(getattr(result, "usage", None), Mapping) else {}
+
+        def _nonnegative_int(value: object) -> int | None:
+            return (
+                value
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                else None
+            )
+
+        calls = _nonnegative_int(usage.get("calls"))
+        input_tokens = _nonnegative_int(usage.get("prompt_tokens"))
+        output_tokens = _nonnegative_int(usage.get("completion_tokens"))
+        version_hash = hashlib.sha256(
+            f"{profile.name}@{profile.version}".encode("utf-8")
+        ).hexdigest()
+        summary = (
+            f"task result: stop_reason={result.stop_reason}; "
+            f"error={'yes' if result.error is not None else 'no'}; "
+            f"tools={','.join(result.tools_used[:20])}"
+        )
+        try:
+            evidence_id = self.harness_selection_store.record_evidence(
+                task_id=task_id or session.key,
+                project_id=project_id,
+                workspace=str(workspace.resolve()),
+                version_hash=version_hash,
+                source_type="task_result",
+                summary=summary,
+                usage={
+                    "calls": calls if calls is not None else 0,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+            )
+            request_context.attributes.setdefault("devpilot_harness_evidence_refs", []).append(
+                evidence_id
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("H9 task-result evidence was not recorded: {}", exc)
 
     @staticmethod
     def _task_loop_guard(session: Session, profile: TaskProfile) -> TaskLoopGuard:
@@ -1279,9 +1447,7 @@ class AgentLoop:
             raw=raw,
             loop=self,
             is_user_turn=(
-                not automation_metadata
-                and msg.channel != "system"
-                and msg.sender_id != "subagent"
+                not automation_metadata and msg.channel != "system" and msg.sender_id != "subagent"
             ),
             workspace=self.workspace_scopes.for_message(
                 msg,
@@ -1366,9 +1532,7 @@ class AgentLoop:
         """Queue an H8 switch; it commits only after the next safe boundary."""
         if self.loop_handoff_manager is None:
             raise RuntimeError("live loop handoff is disabled")
-        record = self.loop_handoff_manager.request_switch(
-            session_id, driver_name, driver_version
-        )
+        record = self.loop_handoff_manager.request_switch(session_id, driver_name, driver_version)
         assert record.operation_id is not None
         return record.operation_id
 
@@ -1407,7 +1571,7 @@ class AgentLoop:
         """Run only the active immutable strategy through the FC H5 executor."""
         if self.loop_handoff_manager is None or self.model_candidate_controller is None:
             raise ValueError("remote loop strategy execution is unavailable")
-        driver, _record = self.loop_handoff_manager.active_driver(session_id)
+        driver, record = self.loop_handoff_manager.active_driver(session_id)
         if not isinstance(driver, RemoteStrategyDriver):
             raise ValueError("active loop driver is not a remote strategy")
         return await self.model_candidate_controller.execute_remote_strategy(
@@ -1415,6 +1579,7 @@ class AgentLoop:
             driver.strategy_version,
             driver.source_hash,
             projection,
+            project_id=record.project_id,
         )
 
     async def _run_agent_loop(
@@ -1461,17 +1626,30 @@ class AgentLoop:
         h8_driver: LoopDriver = DefaultReactDriver()
         h8_initial_step = 0
         h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
+        # A handoff record establishes task/project ownership for its whole
+        # lifetime.  Commands do not carry a DevPilot task context, whereas a
+        # later Profile turn can.  Do not let that later, derived task id turn
+        # the same session into a different owner at its next checkpoint.
+        h8_task_id = session.key if session is not None else ""
+        h8_project_id = ""
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
             nonlocal h7_business_references, h7_uncertain_side_effect_refs
             if session is None:
                 return
+            # A real Session always has a stable string key.  Test doubles or
+            # an invalid adapter must not create a durable H7/H8 record under
+            # an opaque identity: that record could not safely be restored.
+            # Skip the optional handoff checkpoint rather than crashing an
+            # otherwise read-only/direct turn or inventing a replacement key.
+            if not isinstance(session.key, str) or not session.key:
+                logger.warning("Skipped loop handoff checkpoint without a stable session key")
+                return
             public_payload = dict(payload)
             private_state = public_payload.pop("provider_state", None)
             public_payload.pop(self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY, None)
             if "provider_state" in payload and (
-                private_state is None
-                or isinstance(private_state, ProviderConversationState)
+                private_state is None or isinstance(private_state, ProviderConversationState)
             ):
                 session.provider_state = private_state
                 public_payload[self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY] = (
@@ -1503,18 +1681,13 @@ class AgentLoop:
             )
             checkpoint = LoopCheckpoint(
                 session_id=session.key,
-                task_id=str(request_ctx.attributes.get("devpilot_task_id") or session.key),
-                project_id=str(
-                    request_ctx.attributes.get("devpilot_project_id")
-                    or self.plugin_manager.project_id_for_path(effective_scope.project_path)
-                ),
+                task_id=h8_task_id,
+                project_id=h8_project_id,
                 step=h8_initial_step + int(public_payload.get("iteration") or 0),
                 message_position=len(session.messages),
                 remaining_iterations=max(
                     0,
-                    h8_iteration_budget
-                    - int(public_payload.get("iteration") or 0)
-                    - 1,
+                    h8_iteration_budget - int(public_payload.get("iteration") or 0) - 1,
                 ),
                 session_prefix_hash=session_message_prefix_hash(session.messages),
                 completed_tool_results=tuple(sorted(h8_completed_tool_result_ids)),
@@ -1580,11 +1753,7 @@ class AgentLoop:
                 )
                 row: dict[str, Any] = {"role": "user", "content": user_content}
                 metadata_value = cast(object, pending_msg.metadata)
-                metadata = (
-                    pending_msg.metadata
-                    if isinstance(metadata_value, dict)
-                    else {}
-                )
+                metadata = pending_msg.metadata if isinstance(metadata_value, dict) else {}
                 if pending_msg.channel != "system":
                     scope = self.workspace_scopes.for_turn(
                         channel=pending_msg.channel,
@@ -1639,9 +1808,11 @@ class AgentLoop:
             # Block if nothing drained but sub-agents spawned in this dispatch
             # are still running.  Keeps the runner loop alive so subsequent
             # completions are injected in-order rather than dispatched separately.
-            if (not items
-                    and session is not None
-                    and self.subagents.get_running_count_by_session(session.key) > 0):
+            if (
+                not items
+                and session is not None
+                and self.subagents.get_running_count_by_session(session.key) > 0
+            ):
                 try:
                     msg = await asyncio.wait_for(pending_queue.get(), timeout=300)
                 except asyncio.TimeoutError:
@@ -1676,6 +1847,13 @@ class AgentLoop:
             metadata=dict(metadata or {}),
             workspace=effective_scope.project_path,
         )
+        h8_task_id = str(request_ctx.attributes.get("devpilot_task_id") or active_session_key or "")
+        h9_new_owner = False
+        h8_project_id = str(
+            request_ctx.attributes.get("devpilot_project_id")
+            or self.plugin_manager.project_id_for_path(effective_scope.project_path)
+        )
+        profile = self.task_profile_for_session(session) if session is not None else None
         if self.loop_handoff_manager is not None and session is not None:
             try:
                 initial_checkpoint = LoopCheckpoint(
@@ -1691,8 +1869,32 @@ class AgentLoop:
                         max_iterations if max_iterations is not None else self.max_iterations
                     ),
                 )
-                self.loop_handoff_manager.ensure(initial_checkpoint)
-                _driver, record = self.loop_handoff_manager.recover_driver(session.key)
+                # A command can establish the durable owner before a later
+                # Profile turn supplies its own derived task context.  Load
+                # that owner first; calling ``ensure`` with the derived id
+                # would correctly reject it as a different task before we
+                # had a chance to preserve its authority.
+                record = self.loop_handoff_manager.store.load(session.key)
+                if record is None:
+                    h9_new_owner = True
+                    selected_driver = (
+                        self._loop_driver_selector(h8_project_id, effective_scope.project_path)
+                        if self._loop_driver_selector is not None
+                        and profile is not None
+                        and profile.dynamic_plugins.allows(
+                            kind="loop", capabilities=set(), action="activate", scope="session"
+                        )
+                        else None
+                    )
+                    selected = (
+                        self.loop_handoff_manager.initial_driver(*selected_driver)
+                        if isinstance(selected_driver, tuple)
+                        else selected_driver
+                    )
+                    self.loop_handoff_manager.ensure(initial_checkpoint, selected)
+                    _driver, record = self.loop_handoff_manager.recover_driver(session.key)
+                h8_task_id = record.task_id
+                h8_project_id = record.project_id
                 # Pending tools belong to the already-started step. A fully
                 # settled checkpoint resumes at the next driver phase.
                 h8_initial_step = record.checkpoint.step + (
@@ -1706,9 +1908,7 @@ class AgentLoop:
                 # otherwise the next checkpoint would omit old completed calls
                 # and be rejected as a stale producer by the CAS boundary.
                 h7_business_references = dict(record.checkpoint.business_references)
-                h7_uncertain_side_effect_refs = tuple(
-                    record.checkpoint.uncertain_side_effect_refs
-                )
+                h7_uncertain_side_effect_refs = tuple(record.checkpoint.uncertain_side_effect_refs)
                 h8_completed_tool_result_ids.update(record.checkpoint.completed_tool_results)
                 h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
             except RuntimeError:
@@ -1717,9 +1917,12 @@ class AgentLoop:
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
         turn_scope_stack = ExitStack()
+
         # Compute lazily because create_goal may create goal metadata during this run.
         def _goal_continue() -> str | None:
-            _goal_lines = goal_state_runtime_lines(session.metadata if session is not None else None)
+            _goal_lines = goal_state_runtime_lines(
+                session.metadata if session is not None else None
+            )
             if not _goal_lines:
                 return None
             return (
@@ -1730,104 +1933,130 @@ class AgentLoop:
             )
 
         session_metadata = session.metadata if session is not None else None
-        profile = self.task_profile_for_session(session) if session is not None else None
+        if h9_new_owner and self.harness_selection_store is not None and session is not None:
+            selection = self.harness_selection_store.active_plugin_version(
+                {
+                    "project_id": h8_project_id,
+                    "workspace": str(effective_scope.project_path.resolve()),
+                }
+            )
+            if (
+                selection is not None
+                and profile is not None
+                and profile.dynamic_plugins.allows(
+                    kind="tool", capabilities=set(), action="activate", scope="session"
+                )
+            ):
+                selected = self.plugin_manager.start_h9_selected_candidate(
+                    *selection, session_id=session.key, project_id=h8_project_id
+                )
+                if not selected.ok:
+                    logger.warning("H9 candidate was not loaded for new task: {}", selected.message)
         effective_tools = self.plugin_manager.live_tools_for_session(
             effective_tools,
             active_session_key or "",
             project_id=self.plugin_manager.project_id_for_path(effective_scope.project_path),
             policy=profile.dynamic_plugins if profile is not None else None,
         )
-        loop_guard = self._task_loop_guard(session, profile) if session is not None and profile else None
+        loop_guard = (
+            self._task_loop_guard(session, profile) if session is not None and profile else None
+        )
         try:
             for scope in turn_scopes or ():
                 turn_scope_stack.enter_context(scope)
-            hook = build_agent_turn_hook(AgentTurnHookSpec(
-                on_progress=on_progress,
-                on_stream=on_stream,
-                on_stream_end=on_stream_end,
-                channel=channel,
-                chat_id=chat_id,
-                message_id=message_id,
-                metadata=metadata,
-                attributes=dict(request_ctx.attributes),
-                session_key=active_session_key,
-                workspace=effective_scope.project_path,
-                tool_hint_max_length=self.tool_hint_max_length,
-                on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
-                registered_hook_factories=self._hook_factories,
-                turn_hook_factories=list(hook_factories or []),
-                registered_hooks=self._extra_hooks,
-                turn_hooks=list(hooks or []),
-                ephemeral=ephemeral,
-                run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
-            ))
-            result = await self.runner.run(AgentRunSpec(
-                initial_messages=initial_messages,
-                tools=effective_tools,
-                runtime=runtime,
-                max_iterations=(
-                    h8_iteration_budget
-                ),
-                max_tool_result_chars=self.max_tool_result_chars,
-                hook=hook,
-                error_message="Sorry, I encountered an error calling the AI model.",
-                concurrent_tools=True,
-                workspace=effective_scope.project_path,
-                session_key=session.key if session else None,
-                task_id=str(request_ctx.attributes.get("devpilot_task_id") or active_session_key or ""),
-                project_id=str(
-                    request_ctx.attributes.get("devpilot_project_id")
-                    or self.plugin_manager.project_id_for_path(effective_scope.project_path)
-                ),
-                context_block_limit=self.context_block_limit,
-                provider_retry_mode=self.provider_retry_mode,
-                progress_callback=on_progress,
-                stream_progress_deltas=on_stream is not None,
-                retry_wait_callback=on_retry_wait,
-                checkpoint_callback=_checkpoint,
-                injection_callback=_drain_pending,
-                # Sustained goals may legitimately exceed NANOBOT_LLM_TIMEOUT_S; idle stall
-                # is still capped by NANOBOT_STREAM_IDLE_TIMEOUT_S in streaming providers.
-                llm_timeout_s=runner_wall_llm_timeout_s(
-                    self.sessions,
-                    session.key if session is not None else session_key,
-                    metadata=session_metadata,
-                    message_metadata=metadata,
-                ),
-                goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
-                goal_continue_message=_goal_continue,
-                request_context=request_ctx,
-                finalize_on_max_iterations=(
-                    finalize_on_max_iterations
-                    if finalize_on_max_iterations is not None
-                    else turn_continuation.should_finalize_on_max_iterations(
-                        pending_queue_available=pending_queue is not None and session is not None,
-                        session_metadata=session_metadata,
-                        message_metadata=metadata,
-                    )
-                ),
-                provider_state=provider_state,
-                loop_guard=loop_guard,
-                task_context_evidence_callback=(
-                    partial(
-                        self._record_task_context_tool_result,
-                        session,
-                        profile,
-                    )
-                    if session is not None and profile is not None
-                    else None
-                ),
-                loop_driver=h8_driver,
-                initial_step=h8_initial_step,
-                remote_decision_callback=(
-                    partial(self._remote_loop_strategy_decision, session.key)
-                    if session is not None
-                    and self.loop_handoff_manager is not None
-                    and self.model_candidate_controller is not None
-                    else None
-                ),
+            hook = build_agent_turn_hook(
+                AgentTurnHookSpec(
+                    on_progress=on_progress,
+                    on_stream=on_stream,
+                    on_stream_end=on_stream_end,
+                    channel=channel,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    metadata=metadata,
+                    attributes=dict(request_ctx.attributes),
+                    session_key=active_session_key,
+                    workspace=effective_scope.project_path,
+                    tool_hint_max_length=self.tool_hint_max_length,
+                    on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
+                    registered_hook_factories=self._hook_factories,
+                    turn_hook_factories=list(hook_factories or []),
+                    registered_hooks=self._extra_hooks,
+                    turn_hooks=list(hooks or []),
+                    ephemeral=ephemeral,
+                    run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
+                )
             )
-        )
+            result = await self.runner.run(
+                AgentRunSpec(
+                    initial_messages=initial_messages,
+                    tools=effective_tools,
+                    runtime=runtime,
+                    max_iterations=(h8_iteration_budget),
+                    max_tool_result_chars=self.max_tool_result_chars,
+                    hook=hook,
+                    error_message="Sorry, I encountered an error calling the AI model.",
+                    concurrent_tools=True,
+                    workspace=effective_scope.project_path,
+                    session_key=session.key if session else None,
+                    task_id=str(
+                        request_ctx.attributes.get("devpilot_task_id") or active_session_key or ""
+                    ),
+                    project_id=str(
+                        request_ctx.attributes.get("devpilot_project_id")
+                        or self.plugin_manager.project_id_for_path(effective_scope.project_path)
+                    ),
+                    context_block_limit=self.context_block_limit,
+                    provider_retry_mode=self.provider_retry_mode,
+                    progress_callback=on_progress,
+                    stream_progress_deltas=on_stream is not None,
+                    retry_wait_callback=on_retry_wait,
+                    checkpoint_callback=_checkpoint,
+                    injection_callback=_drain_pending,
+                    # Sustained goals may legitimately exceed NANOBOT_LLM_TIMEOUT_S; idle stall
+                    # is still capped by NANOBOT_STREAM_IDLE_TIMEOUT_S in streaming providers.
+                    llm_timeout_s=runner_wall_llm_timeout_s(
+                        self.sessions,
+                        session.key if session is not None else session_key,
+                        metadata=session_metadata,
+                        message_metadata=metadata,
+                    ),
+                    goal_active_predicate=lambda: (
+                        sustained_goal_active(session.metadata) if session is not None else False
+                    ),
+                    goal_continue_message=_goal_continue,
+                    request_context=request_ctx,
+                    finalize_on_max_iterations=(
+                        finalize_on_max_iterations
+                        if finalize_on_max_iterations is not None
+                        else turn_continuation.should_finalize_on_max_iterations(
+                            pending_queue_available=pending_queue is not None
+                            and session is not None,
+                            session_metadata=session_metadata,
+                            message_metadata=metadata,
+                        )
+                    ),
+                    provider_state=provider_state,
+                    loop_guard=loop_guard,
+                    task_context_evidence_callback=(
+                        partial(
+                            self._record_task_context_tool_result,
+                            session,
+                            profile,
+                        )
+                        if session is not None and profile is not None
+                        else None
+                    ),
+                    loop_driver=h8_driver,
+                    initial_step=h8_initial_step,
+                    remote_decision_callback=(
+                        partial(self._remote_loop_strategy_decision, session.key)
+                        if session is not None
+                        and self.loop_handoff_manager is not None
+                        and self.model_candidate_controller is not None
+                        else None
+                    ),
+                )
+            )
         finally:
             turn_scope_stack.close()
             reset_workspace_scope(workspace_token)
@@ -1841,6 +2070,16 @@ class AgentLoop:
                     f"{profile.name}@{profile.version}"
                 )
         self._last_usage = result.usage
+        self._record_h9_task_result_evidence(
+            request_ctx,
+            session,
+            profile,
+            result,
+            task_id=h8_task_id,
+            project_id=h8_project_id
+            or self.plugin_manager.project_id_for_path(effective_scope.project_path),
+            workspace=effective_scope.project_path,
+        )
         if session is not None and not ephemeral:
             session.provider_state = result.provider_state
         if result.stop_reason == "max_iterations":
@@ -1863,7 +2102,13 @@ class AgentLoop:
                 await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
             logger.error("LLM returned error: {}", (result.final_content or "")[:200])
-        return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
+        return (
+            result.final_content,
+            result.tools_used,
+            result.messages,
+            result.stop_reason,
+            result.had_injections,
+        )
 
     def _check_expired_sessions_if_due(self) -> None:
         """Scan idle sessions no more often than the configured interval."""
@@ -1907,14 +2152,13 @@ class AgentLoop:
                 effective_key = self._effective_session_key(msg)
                 if await agent_context.handle_runtime_control(self, msg, self.tools):
                     continue
-                if (
-                    msg.require_existing_session
-                    and self.sessions.get_cached(effective_key) is None
-                ):
+                if msg.require_existing_session and self.sessions.get_cached(effective_key) is None:
                     continue
                 if self.commands.is_priority(raw):
                     await self._dispatch_command_inline(
-                        msg, effective_key, raw,
+                        msg,
+                        effective_key,
+                        raw,
                         self.commands.dispatch_priority,
                     )
                     continue
@@ -1942,7 +2186,9 @@ class AgentLoop:
                     # dispatch them directly (same pattern as priority commands).
                     if self.commands.is_dispatchable_command(raw):
                         await self._dispatch_command_inline(
-                            msg, effective_key, raw,
+                            msg,
+                            effective_key,
+                            raw,
                             self.commands.dispatch,
                         )
                         continue
@@ -2098,7 +2344,8 @@ class AgentLoop:
                         if leftover:
                             logger.info(
                                 "Re-published {} leftover message(s) to bus for session {}",
-                                leftover, session_key,
+                                leftover,
+                                session_key,
                             )
                     if not turn_continuation.internal_continuation_pending(msg.metadata):
                         await delivery.idle()
@@ -2194,9 +2441,7 @@ class AgentLoop:
         """Process a single inbound message and return the response."""
         kind = TurnKind.SYSTEM if msg.channel == "system" else TurnKind.USER
         if kind is TurnKind.SYSTEM:
-            destination = (
-                msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
-            )
+            destination = msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
             key = session_key or msg.session_key_override or f"{destination[0]}:{destination[1]}"
         else:
             key = session_key or msg.session_key
@@ -2404,7 +2649,9 @@ class AgentLoop:
             preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
             logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
         else:
-            logger.info("Processing message from {}:{}: [content hidden]", msg.channel, msg.sender_id)
+            logger.info(
+                "Processing message from {}:{}: [content hidden]", msg.channel, msg.sender_id
+            )
 
         self._remember_unified_session_route(
             session,
@@ -2470,9 +2717,7 @@ class AgentLoop:
                 ctx.input_persisted_early = self._persist_user_message_early(
                     ctx.msg, session, _command=True
                 )
-                session.add_message(
-                    "assistant", result.content, _command=True
-                )
+                session.add_message("assistant", result.content, _command=True)
                 self._clear_pending_user_turn(session)
                 self.sessions.save(session)
                 if not ctx.ephemeral:
@@ -2499,9 +2744,7 @@ class AgentLoop:
             )
         if ctx.on_runtime_admitted is not None:
             await ctx.on_runtime_admitted(runtime)
-        replay_max_messages = replay_max_messages_for_context(
-            runtime.context_window_tokens
-        )
+        replay_max_messages = replay_max_messages_for_context(runtime.context_window_tokens)
         if not ctx.ephemeral:
             await self.consolidator.maybe_consolidate_by_tokens(
                 session,
@@ -2569,24 +2812,21 @@ class AgentLoop:
                 }
                 already_staged = any(
                     isinstance(message.get("_meta"), dict)
-                    and cast(dict[str, Any], message["_meta"]).get(
-                        _SUBAGENT_PROVIDER_TASK_META
-                    )
+                    and cast(dict[str, Any], message["_meta"]).get(_SUBAGENT_PROVIDER_TASK_META)
                     == task_id
                     for message in stored_state.pending_messages
                 )
             ctx.provider_state = (
                 stored_state
                 if already_staged
-                else stored_state.with_pending_messages([
-                    *stored_state.pending_messages,
-                    current_provider_message,
-                ])
+                else stored_state.with_pending_messages(
+                    [
+                        *stored_state.pending_messages,
+                        current_provider_message,
+                    ]
+                )
             )
-            if (
-                not ctx.ephemeral
-                and (ctx.kind is TurnKind.USER or subagent_followup_persisted)
-            ):
+            if not ctx.ephemeral and (ctx.kind is TurnKind.USER or subagent_followup_persisted):
                 session.provider_state = ctx.provider_state
                 staged_provider_state = True
         elif stored_state is not None:
@@ -2672,7 +2912,9 @@ class AgentLoop:
         )
         ctx.turn_latency_ms = max(0, int((time.time() - latency_started_at) * 1000))
         self._save_turn(
-            session, ctx.all_messages, ctx.save_skip,
+            session,
+            ctx.all_messages,
+            ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         ctx.delivery.record_latency(ctx.turn_latency_ms)
@@ -2690,9 +2932,8 @@ class AgentLoop:
                 )
             )
         self._clear_pending_user_turn(session)
-        preserve_h7_pause = (
-            ctx.stop_reason == "driver_paused"
-            and isinstance(session.metadata.get(self._RUNTIME_CHECKPOINT_KEY), dict)
+        preserve_h7_pause = ctx.stop_reason == "driver_paused" and isinstance(
+            session.metadata.get(self._RUNTIME_CHECKPOINT_KEY), dict
         )
         if not preserve_h7_pause:
             self._clear_runtime_checkpoint(session)
@@ -2757,14 +2998,12 @@ class AgentLoop:
 
             block_data = cast(dict[str, Any], block)
             image_url = cast(dict[str, Any], block_data.get("image_url", {}))
-            if block_data.get("type") == "image_url" and str(
-                image_url.get("url", "")
-            ).startswith("data:image/"):
+            if block_data.get("type") == "image_url" and str(image_url.get("url", "")).startswith(
+                "data:image/"
+            ):
                 internal_meta = cast(dict[str, Any], block_data.get("_meta") or {})
                 path = cast(str, internal_meta.get("path", ""))
-                filtered.append(
-                    {"type": "text", "text": image_placeholder_text(path)}
-                )
+                filtered.append({"type": "text", "text": image_placeholder_text(path)})
                 continue
 
             if block_data.get("type") == "text" and isinstance(
@@ -2811,9 +3050,7 @@ class AgentLoop:
             entry = dict(m)
             internal_meta = cast(object, entry.pop("_meta", None))
             runtime_context_meta = (
-                cast(dict[str, Any], internal_meta).get(
-                    RUNTIME_CONTEXT_MESSAGE_META
-                )
+                cast(dict[str, Any], internal_meta).get(RUNTIME_CONTEXT_MESSAGE_META)
                 if isinstance(internal_meta, dict)
                 else None
             )
@@ -2887,11 +3124,7 @@ class AgentLoop:
         if not msg.content:
             return False
         metadata_value = cast(object, msg.metadata)
-        task_id = (
-            msg.metadata.get("subagent_task_id")
-            if isinstance(metadata_value, dict)
-            else None
-        )
+        task_id = msg.metadata.get("subagent_task_id") if isinstance(metadata_value, dict) else None
         if task_id and any(
             m.get("injected_event") == "subagent_result" and m.get("subagent_task_id") == task_id
             for m in session.messages
@@ -3035,8 +3268,7 @@ class AgentLoop:
                     or durable.message_position != session_checkpoint.message_position
                     or set(durable.completed_tool_results)
                     != set(session_checkpoint.completed_tool_results)
-                    or set(durable.pending_tool_calls)
-                    != set(session_checkpoint.pending_tool_calls)
+                    or set(durable.pending_tool_calls) != set(session_checkpoint.pending_tool_calls)
                     or bool(durable.uncertain_side_effect_refs)
                 ):
                     # The public payload and its message list are one unit.
@@ -3121,9 +3353,7 @@ class AgentLoop:
         appended_messages = restored_messages[overlap:]
         session.messages.extend(appended_messages)
         assistant_message_data = (
-            cast(dict[str, Any], assistant_message)
-            if isinstance(assistant_message, dict)
-            else None
+            cast(dict[str, Any], assistant_message) if isinstance(assistant_message, dict) else None
         )
         provider_state_is_synchronized = (
             checkpoint_data.get(self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY)
@@ -3143,10 +3373,7 @@ class AgentLoop:
             and assistant_message_data.get("role") == "assistant"
             and not bool(checkpoint_data.get("pending_tool_calls"))
         )
-        if not (
-            provider_state_is_synchronized
-            and (exact_final_response or exact_completed_tools)
-        ):
+        if not (provider_state_is_synchronized and (exact_final_response or exact_completed_tools)):
             session.provider_state = None
 
         self._clear_pending_user_turn(session)
@@ -3206,8 +3433,12 @@ class AgentLoop:
         if not persist_user_message:
             message_metadata[turn_continuation.SKIP_USER_PERSIST_META] = True
         msg = InboundMessage(
-            channel=channel, sender_id=sender_id, chat_id=chat_id,
-            content=content, media=media or [], metadata=message_metadata,
+            channel=channel,
+            sender_id=sender_id,
+            chat_id=chat_id,
+            content=content,
+            media=media or [],
+            metadata=message_metadata,
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = self._get_session_lock(session_key)

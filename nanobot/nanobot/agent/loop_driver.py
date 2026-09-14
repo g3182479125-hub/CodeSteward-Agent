@@ -310,10 +310,35 @@ class LoopCheckpoint:
 
 def session_message_prefix_hash(messages: Iterable[Mapping[str, object]]) -> str:
     """Hash the committed JSON-safe message prefix without hashing private metadata."""
+
+    def _non_serializable_value(value: object) -> Mapping[str, str]:
+        """Keep the hash operation fail-closed without serializing opaque objects.
+
+        Production session messages are JSON values.  A provider/test double can
+        still accidentally place an opaque object in a transient message before
+        the normal session writer rejects it.  H8 must not turn that existing
+        invalid value into a crash during checkpointing, or a retry could repeat
+        a completed action.  Hash its stable type marker rather than its repr,
+        which may contain memory addresses or private data.
+        """
+
+        value_type = type(value)
+        return {
+            "__nanobot_opaque_value__": (
+                f"{value_type.__module__}.{value_type.__qualname__}"
+            )
+        }
+
     digest = hashlib.sha256()
     for message in messages:
         digest.update(
-            json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(
+                message,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=_non_serializable_value,
+            ).encode("utf-8")
         )
         digest.update(b"\n")
     return digest.hexdigest()

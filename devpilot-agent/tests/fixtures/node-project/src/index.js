@@ -5,3 +5,7 @@ export function main() {
 export function formatGreeting(name) {
   return `Hello, ${name}!`;
 }
+
+export function formatThanks(name) {
+  return `Thanks, ${name}!`;
+}

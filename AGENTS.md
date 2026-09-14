@@ -20,6 +20,17 @@ same workflow after cloning the repository.
 
 ## Required skill workflow
 
+## Sustained delivery (hard requirement)
+
+For any implementation request, treat the user-visible objective as active until
+its complete acceptance contract and required review gates are evidenced. Do not
+end work because one test, one patch, a partial review, or a status update has
+completed. Continue through subsequent execution turns without asking the user
+to re-authorize ordinary in-scope development. Only send a final delivery
+response when the objective is actually complete, or when a genuine new
+authority/decision is required from the user. Every development turn must read
+this `AGENTS.md` before acting.
+
 At the beginning of every task, read:
 
 1. `agent-skills/mattpocock-skills/README.md`

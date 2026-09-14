@@ -156,7 +156,12 @@ class PluginManager:
         if self._state_store is None:
             return
         retired_rows: list[dict[str, Any]] = []
-        for ((scope, binding), plugin_id, version, generation), route in self._retired_routes.items():
+        for (
+            (scope, binding),
+            plugin_id,
+            version,
+            generation,
+        ), route in self._retired_routes.items():
             retired_rows.append(
                 {
                     "scope": scope.value,
@@ -230,7 +235,9 @@ class PluginManager:
                 if (registration := self._registered.get(key)) is not None
             ],
             "retired_routes": retired_rows,
-            "operations": [self._operation_to_dict(operation) for operation in self._operations.values()],
+            "operations": [
+                self._operation_to_dict(operation) for operation in self._operations.values()
+            ],
             "candidate_trials": [
                 {
                     "plugin_id": key[0],
@@ -301,7 +308,10 @@ class PluginManager:
                 self._registered[key] = _RegisteredPlugin(record, root, key)
                 try:
                     entry = manifest.resolve_entry(root)
-                    healthy = entry.is_file() and hashlib.sha256(entry.read_bytes()).hexdigest() == manifest.content_hash
+                    healthy = (
+                        entry.is_file()
+                        and hashlib.sha256(entry.read_bytes()).hexdigest() == manifest.content_hash
+                    )
                 except (OSError, ValueError, PluginContractError):
                     healthy = False
                 lifecycle = PluginLifecycle(raw.get("lifecycle", PluginLifecycle.INACTIVE.value))
@@ -368,7 +378,11 @@ class PluginManager:
                     raw["version"],
                     raw["binding"],
                 )
-                if registration is not None and self._lifecycles[registration.registration_key] is not PluginLifecycle.FAILED:
+                if (
+                    registration is not None
+                    and self._lifecycles[registration.registration_key]
+                    is not PluginLifecycle.FAILED
+                ):
                     generation = int(raw["generation"])
                     self._restored_routes[(scope_key, plugin_id)] = (registration, generation)
                     self._next_generation = max(self._next_generation, generation)
@@ -575,7 +589,10 @@ class PluginManager:
         try:
             root = Path(artifact_root).resolve()
             entry = manifest.resolve_entry(root)
-            if not entry.is_file() or hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
+            if (
+                not entry.is_file()
+                or hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash
+            ):
                 raise ValueError("candidate entry content hash does not match the manifest")
             catalog = PluginCatalog.from_registry(
                 session_id=record.session_id or "__project__",
@@ -604,7 +621,10 @@ class PluginManager:
             "model candidate defined and stored",
             plugin_id=manifest.plugin_id,
             version=manifest.version,
-            details={"state": PluginLifecycle.INACTIVE.value, "candidate_status": record.candidate_status.value},
+            details={
+                "state": PluginLifecycle.INACTIVE.value,
+                "candidate_status": record.candidate_status.value,
+            },
         )
 
     def mark_candidate_tested(
@@ -683,6 +703,129 @@ class PluginManager:
             and binding is not None
             and binding.get("content_hash") == registration.record.manifest.content_hash
             and binding.get("contract_hash") == contract_hash
+        )
+
+    def promote_candidate_to_project(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str,
+    ) -> PluginOperationResult:
+        """Copy one already-tested FC artifact into its confirmed project scope.
+
+        This is metadata-only: it neither imports the candidate nor repeats its
+        FC trial.  The copied binding retains the exact trial receipt.
+        """
+        source = self._find_visible(plugin_id, version, session_id, project_id)
+        if source is None or source.record.source is not PluginSource.MODEL_CANDIDATE:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the tested model candidate is not visible in this session",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if source.record.manifest.scope is not PluginScope.SESSION:
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "only a session-tested candidate can be promoted",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        binding = self._candidate_trials.get(source.registration_key)
+        if source.record.candidate_status is not PluginCandidateStatus.TESTED or binding is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "a successful exact FC trial is required before promotion",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        manifest = PluginManifest.from_mapping(
+            {**source.record.manifest.to_dict(), "scope": PluginScope.PROJECT.value}
+        )
+        project_record = PluginRecord(
+            manifest,
+            PluginSource.MODEL_CANDIDATE,
+            project_id=project_id,
+            # Registration accepts only a freshly-defined candidate.  The exact
+            # successful FC receipt is restored immediately after registration.
+            candidate_status=PluginCandidateStatus.DEFINED,
+        )
+        result = self.register_candidate_version(project_record, source.artifact_root)
+        if not result.ok:
+            return result
+        key = self._registration_key(project_record)
+        self._registered[key] = _RegisteredPlugin(
+            replace(project_record, candidate_status=PluginCandidateStatus.TESTED),
+            source.artifact_root,
+            key,
+        )
+        self._candidate_trials[key] = {
+            **binding,
+            "content_hash": project_record.manifest.content_hash,
+        }
+        self._save_state()
+        return PluginOperationResult.success(
+            "tested model candidate promoted to project scope",
+            plugin_id=plugin_id,
+            version=version,
+        )
+
+    def start_h9_selected_candidate(
+        self, plugin_id: str, version: str, *, session_id: str, project_id: str
+    ) -> PluginOperationResult:
+        """Materialize a confirmed project candidate for one newly-created session."""
+        source = self._find_visible(plugin_id, version, session_id, project_id)
+        if source is None or source.record.manifest.scope is not PluginScope.PROJECT:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the confirmed project candidate is unavailable",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        binding = self._candidate_trials.get(source.registration_key)
+        if source.record.candidate_status is not PluginCandidateStatus.TESTED or binding is None:
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_CANDIDATE_STATE,
+                "the confirmed project candidate lost its trial binding",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        manifest = PluginManifest.from_mapping(
+            {**source.record.manifest.to_dict(), "scope": PluginScope.SESSION.value}
+        )
+        session_record = PluginRecord(
+            manifest,
+            PluginSource.MODEL_CANDIDATE,
+            session_id=session_id,
+            candidate_status=PluginCandidateStatus.DEFINED,
+        )
+        session_key = self._registration_key(session_record)
+        if session_key not in self._registered:
+            registered = self.register_candidate_version(session_record, source.artifact_root)
+            if not registered.ok:
+                return registered
+            self._registered[session_key] = _RegisteredPlugin(
+                replace(session_record, candidate_status=PluginCandidateStatus.TESTED),
+                source.artifact_root,
+                session_key,
+            )
+            self._candidate_trials[session_key] = {
+                **binding,
+                "content_hash": session_record.manifest.content_hash,
+            }
+            self._save_state()
+        # H9 reaches this method only after the native confirmation consumed a
+        # project-scoped selection.  Its route remains session-scoped so an
+        # already-running task in the same project is never silently changed.
+        self.authorize(session_id)
+        return self.activate_candidate(
+            plugin_id,
+            version,
+            session_id=session_id,
+            project_id=None,
+            contract_hash=binding["contract_hash"],
         )
 
     def mark_candidate_rejected(
@@ -825,9 +968,8 @@ class PluginManager:
             self._authorized.discard((PluginScope.PROJECT, project_id))
 
     def is_authorized(self, session_id: str, project_id: str | None = None) -> bool:
-        return (
-            (PluginScope.SESSION, session_id) in self._authorized
-            or (project_id is not None and (PluginScope.PROJECT, project_id) in self._authorized)
+        return (PluginScope.SESSION, session_id) in self._authorized or (
+            project_id is not None and (PluginScope.PROJECT, project_id) in self._authorized
         )
 
     def list_view(
@@ -1020,13 +1162,16 @@ class PluginManager:
                     "plugin operation was not found in this scope",
                     operation_id=operation_id,
                 )
-            return self._reuse_operation(
-                operation_id,
-                action=action,
-                plugin_id=plugin_id,
-                version=version,
-                scope_key=prior.scope_key,
-            ) or prior.result
+            return (
+                self._reuse_operation(
+                    operation_id,
+                    action=action,
+                    plugin_id=plugin_id,
+                    version=version,
+                    scope_key=prior.scope_key,
+                )
+                or prior.result
+            )
         registration = self._find_visible(plugin_id, version, session_id, project_id)
         if registration is None:
             return PluginOperationResult.failure(
@@ -1106,7 +1251,10 @@ class PluginManager:
                 "the active plugin generation changed before update",
                 plugin_id=plugin_id,
                 version=version,
-                details={"expected_generation": str(expected_generation), "actual_generation": str(active.generation)},
+                details={
+                    "expected_generation": str(expected_generation),
+                    "actual_generation": str(active.generation),
+                },
             )
         cycle = self._dependency_cycle(scope_key, registration.registration_key)
         if cycle:
@@ -1282,7 +1430,9 @@ class PluginManager:
                         details={
                             "route_commit": "rolled_back",
                             "old_version": active.registration.record.manifest.version,
-                            "staging_cleanup": "failed" if cleanup_error is not None else "complete",
+                            "staging_cleanup": "failed"
+                            if cleanup_error is not None
+                            else "complete",
                             "activation_error": type(activation_error).__name__,
                             "original_code": PluginErrorCode.PLUGIN_UPDATE_FAILED.value,
                         },
@@ -1355,13 +1505,16 @@ class PluginManager:
                     "plugin operation was not found in this scope",
                     operation_id=operation_id,
                 )
-            return self._reuse_operation(
-                operation_id,
-                action="remove",
-                plugin_id=plugin_id,
-                version=version,
-                scope_key=prior.scope_key,
-            ) or prior.result
+            return (
+                self._reuse_operation(
+                    operation_id,
+                    action="remove",
+                    plugin_id=plugin_id,
+                    version=version,
+                    scope_key=prior.scope_key,
+                )
+                or prior.result
+            )
         registration = self._find_visible(plugin_id, version, session_id, project_id)
         if registration is None:
             return PluginOperationResult.failure(
@@ -1378,7 +1531,10 @@ class PluginManager:
             return self._failure_not_authorized(plugin_id, version)
         self._restore_route_if_needed(scope_key, plugin_id)
         active = self._routes.get(scope_key, {}).get(plugin_id)
-        if active is not None and active.registration.registration_key == registration.registration_key:
+        if (
+            active is not None
+            and active.registration.registration_key == registration.registration_key
+        ):
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_REMOVE_REJECTED,
                 "stop the active plugin version before removing its metadata",
@@ -1405,9 +1561,7 @@ class PluginManager:
             retired.registration.registration_key == registration.registration_key
             for retired in self._retired_routes.values()
         ) or any(
-            route_key[0] == scope_key
-            and route_key[1] == plugin_id
-            and route_key[2] == version
+            route_key[0] == scope_key and route_key[1] == plugin_id and route_key[2] == version
             for route_key in self._restored_retired
         ):
             return PluginOperationResult.failure(
@@ -1604,13 +1758,16 @@ class PluginManager:
                     "plugin operation was not found in this scope",
                     operation_id=operation_id,
                 )
-            return self._reuse_operation(
-                operation_id,
-                action="stop",
-                plugin_id=plugin_id,
-                version=prior.version,
-                scope_key=prior.scope_key,
-            ) or prior.result
+            return (
+                self._reuse_operation(
+                    operation_id,
+                    action="stop",
+                    plugin_id=plugin_id,
+                    version=prior.version,
+                    scope_key=prior.scope_key,
+                )
+                or prior.result
+            )
         route, scope_key = self._find_active(plugin_id, session_id, project_id)
         if route is None or scope_key is None:
             return PluginOperationResult.failure(
@@ -1646,7 +1803,10 @@ class PluginManager:
                 "the active plugin generation changed before stop",
                 plugin_id=plugin_id,
                 version=manifest.version,
-                details={"expected_generation": str(expected_generation), "actual_generation": str(route.generation)},
+                details={
+                    "expected_generation": str(expected_generation),
+                    "actual_generation": str(route.generation),
+                },
             )
         self._routes[scope_key].pop(plugin_id, None)
         self._retire_route(scope_key, route)
@@ -1738,9 +1898,8 @@ class PluginManager:
     ) -> ToolRegistry:
         """Return a live dynamic overlay, or the untouched base view."""
         base_tools = self._unwrap_dynamic_view(base_tools)
-        if (
-            (policy is not None and not policy.enabled)
-            or not self.is_authorized(session_id, project_id)
+        if (policy is not None and not policy.enabled) or not self.is_authorized(
+            session_id, project_id
         ):
             return base_tools
         return DynamicPluginRegistry(self, base_tools, session_id, project_id, policy=policy)
@@ -1892,9 +2051,7 @@ class PluginManager:
     @staticmethod
     def _is_visible(record: PluginRecord, session_id: str, project_id: str | None) -> bool:
         manifest = record.manifest
-        return (
-            manifest.scope is PluginScope.SESSION and record.session_id == session_id
-        ) or (
+        return (manifest.scope is PluginScope.SESSION and record.session_id == session_id) or (
             manifest.scope is PluginScope.PROJECT
             and project_id is not None
             and record.project_id == project_id
@@ -2014,7 +2171,9 @@ class PluginManager:
         scope_key: ScopeKey,
         target: RegistrationKey,
     ) -> tuple[str, ...]:
-        registrations = {item.registration_key: item for item in self._registrations_for_scope(scope_key)}
+        registrations = {
+            item.registration_key: item for item in self._registrations_for_scope(scope_key)
+        }
         if target not in registrations:
             return ()
         providers: dict[str, list[RegistrationKey]] = {}
@@ -2237,12 +2396,9 @@ class PluginManager:
         registration, generation = pending
         plugin_context: ManagedPluginContext | None = None
         try:
-            if (
-                registration.record.source is PluginSource.MODEL_CANDIDATE
-                and (
-                    registration.record.candidate_status is not PluginCandidateStatus.TESTED
-                    or registration.registration_key not in self._candidate_trials
-                )
+            if registration.record.source is PluginSource.MODEL_CANDIDATE and (
+                registration.record.candidate_status is not PluginCandidateStatus.TESTED
+                or registration.registration_key not in self._candidate_trials
             ):
                 raise ValueError("candidate route has no valid successful trial binding")
             tool, plugin_context = self._load_registered_tool(registration, scope_key=scope_key)
@@ -2285,7 +2441,11 @@ class PluginManager:
         tool_name: str,
     ) -> ManagedPluginTool | None:
         return next(
-            (route.tool for route in self._active_routes(session_id, project_id) if route.tool.name == tool_name),
+            (
+                route.tool
+                for route in self._active_routes(session_id, project_id)
+                if route.tool.name == tool_name
+            ),
             None,
         )
 
@@ -2327,7 +2487,19 @@ class PluginManager:
         if active is not None:
             result.update({"generation": active.generation, "tool": active.tool.name})
         elif restored is not None:
-            result.update({"generation": restored, "tool": next((name.removeprefix("tool:") for name in manifest.provides if name.startswith("tool:")), "")})
+            result.update(
+                {
+                    "generation": restored,
+                    "tool": next(
+                        (
+                            name.removeprefix("tool:")
+                            for name in manifest.provides
+                            if name.startswith("tool:")
+                        ),
+                        "",
+                    ),
+                }
+            )
         return result
 
     @staticmethod
@@ -2660,7 +2832,9 @@ class PluginManager:
                     "state": PluginLifecycle.ACTIVE.value,
                     "route_commit": "committed",
                     "old_cleanup": "complete",
-                    "generation": str(current_route.generation if current_route is not None else route.generation),
+                    "generation": str(
+                        current_route.generation if current_route is not None else route.generation
+                    ),
                 },
             )
         elif operation.action == "dependency_stop":
@@ -2683,7 +2857,10 @@ class PluginManager:
                 plugin_id=operation.plugin_id,
                 version=operation.version,
                 operation_id=operation.operation_id,
-                details={"state": PluginLifecycle.INACTIVE.value, "generation": str(route.generation)},
+                details={
+                    "state": PluginLifecycle.INACTIVE.value,
+                    "generation": str(route.generation),
+                },
             )
         operation.event.set()
         self._save_state()

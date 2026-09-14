@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from devpilot.candidate_runner import (
     CandidateTrialGrantIssuer,
     CandidateTrialRequest,
 )
+from devpilot.harness_selection import HarnessSelectionStore
 from devpilot.model_plugins import ModelCandidateController, ModelPluginManagementTool
 
 SOURCE = "def transform(payload):\n    return {'message': 'hello ' + payload['name']}\n"
@@ -302,6 +304,43 @@ async def test_h6_define_trial_activate_and_call_without_restart(
             )
         )
         assert stopped["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_h9_promotes_a_tested_candidate_and_starts_it_only_for_a_new_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    controller = ModelCandidateController(
+        tmp_path, runner=FakeCandidateRunner(), grant_issuer=ISSUER
+    )
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    with request_context(_context(tmp_path, text="确认试用")):
+        assert json.loads(
+            await tool.execute(
+                action="define", plugin_id="model-h9", version="1.0.0", source=SOURCE
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(action="trial", plugin_id="model-h9", version="1.0.0")
+        )["ok"]
+
+    promoted = manager.promote_candidate_to_project(
+        "model-h9", "1.0.0", session_id="session:one", project_id="project-h9"
+    )
+    assert promoted.ok
+    started = manager.start_h9_selected_candidate(
+        "model-h9", "1.0.0", session_id="session:new", project_id="project-h9"
+    )
+    assert started.ok
+    assert "model-h9" not in manager.live_tools_for_session(base, "session:one").tool_names
+    assert "model-h9" in manager.live_tools_for_session(base, "session:new").tool_names
 
 
 @pytest.mark.asyncio
@@ -675,3 +714,104 @@ async def test_h6_active_candidate_route_restores_from_durable_state(
     restored_manager.authorize("session:one", PluginManager.project_id_for_path(tmp_path))
     restored_view = restored_manager.live_tools_for_session(restored_base, "session:one")
     assert "model-persisted" in restored_view.tool_names
+
+
+@pytest.mark.asyncio
+async def test_h9_model_candidate_action_runs_the_host_fixed_suite_before_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    harness_db = tmp_path / "harness.db"
+    with sqlite3.connect(harness_db) as connection:
+        connection.execute(
+            "create table harness_selection_records ("
+            "record_id text primary key, record_type text not null, payload_json text not null, "
+            "record_mac text not null, created_at text not null)"
+        )
+    harness = HarnessSelectionStore(harness_db, integrity_key=b"h9-controller-test-key")
+
+    runner = FakeCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    controller.bind_harness_selection(
+        harness,
+        case_oracle=lambda _category, version, _scenario, _repeat, _fixture, _result: {
+            "success": version == "candidate",
+        },
+    )
+    tool = ModelPluginManagementTool(controller)
+    context = _context(tmp_path, text="确认试用")
+    project_id = PluginManager.project_id_for_path(tmp_path)
+    context.attributes.update(
+        {
+            "devpilot_project_id": project_id,
+            "devpilot_task_id": "task-h9-controller",
+        }
+    )
+    baseline_hash = hashlib.sha256(SOURCE.encode()).hexdigest()
+    evidence_id = harness.record_evidence(
+        task_id="task-h9-controller",
+        project_id=project_id,
+        workspace=str(tmp_path.resolve()),
+        version_hash=baseline_hash,
+        source_type="task_result",
+        summary="baseline task result",
+        usage={"calls": 1},
+    )
+    context.attributes["devpilot_harness_evidence_refs"] = [evidence_id]
+
+    with request_context(context):
+        assert json.loads(
+            await tool.execute(
+                action="define",
+                plugin_id="model-h9-controller",
+                version="1.0.0",
+                source=SOURCE,
+                input_rules=[{"field": "name", "kind": "string", "max_length": 64}],
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(
+                action="trial",
+                plugin_id="model-h9-controller",
+                version="1.0.0",
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(
+                action="activate",
+                plugin_id="model-h9-controller",
+                version="1.0.0",
+            )
+        )["ok"]
+        assert json.loads(
+            await tool.execute(
+                action="define",
+                plugin_id="model-h9-controller",
+                version="1.1.0",
+                source=SOURCE_V2,
+                input_rules=[{"field": "name", "kind": "string", "max_length": 64}],
+            )
+        )["ok"]
+        evaluated = json.loads(
+            await tool.execute(
+                action="evaluate",
+                plugin_id="model-h9-controller",
+                baseline_version="1.0.0",
+                version="1.1.0",
+                round_id="round-h9-controller",
+                max_candidates=2,
+                max_evaluations=48,
+                max_tokens=1000,
+            )
+        )
+
+    assert evaluated["ok"] is True
+    assert evaluated["result"]["eligible"] is True
+    assert evaluated["result"]["candidate_status"] == "tested"
+    assert evaluated["result"]["total_runs"] == 24
+    assert len(runner.executions) == 24
+    assert {tuple(request.input_data) for request in runner.executions} == {("name",)}
