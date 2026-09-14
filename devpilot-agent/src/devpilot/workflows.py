@@ -399,10 +399,23 @@ class FeatureDeliveryWorkflow:
                     "evidence_ids": list(evidence),
                     "evidence_hash": evidence_hash,
                     "check_ids": check_ids,
+                    "verification_profile": profile.value,
                     "stop_conditions": stop_conditions,
                     "contract_hash": contract_hash,
                 },
             )
+        # The initial preview is created before the workflow stores its fixed
+        # verification contract. Re-read the server-owned ChangeSet after that
+        # event so the user-visible tuple, immutable snapshot and broker all
+        # bind the same profile.
+        preview = self.manager.get(str(preview["change_set_id"]))
+        preview.update(
+            {
+                "workflow": "feature-delivery",
+                "evidence_ids": list(evidence),
+                "evidence_hash": evidence_hash,
+            }
+        )
         return FeatureDeliveryProposal(
             change_set_id=str(preview["change_set_id"]),
             project_id=str(preview["project_id"]),

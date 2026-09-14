@@ -82,8 +82,9 @@ Skill 只能建议上述已注册 Tool。`devpilot_propose_changeset` 仍作为�
 
 1. 完整读取冻结计划，校验当前节点和前置 Gate；无法读取时立即停止。
 2. 调用 `devpilot_inspect_project`，确认项目边界和技术栈。
-3. 使用 `devpilot_search_code` 和 `devpilot_read_code` 定位最小实现位置，并保存 evidence id、
-   文件路径、行号和前置哈希。
+3. 使用 `devpilot_search_code` 和 `devpilot_read_code` 定位最小实现位置，并保存 **同一个**
+   `devpilot_inspect_project` 返回的 `run_id`、文件路径、行号和前置哈希。提案的
+   `evidence_ids` 只能传这个 repo-analysis `run_id`，绝不能把 `project_id` 当作证据。
 4. 生成 Change Plan：写明需求、非目标、允许文件、风险、验证 profile 和停止条件。
 5. 生成不超过服务端限额的 FilePatch，并调用 `devpilot_feature_delivery_propose`。
    不得用兼容入口 `devpilot_propose_changeset` 替代，因为它不会创建本交付流程所需的

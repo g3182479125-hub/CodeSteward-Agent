@@ -3,7 +3,7 @@
 版本：0.3，2026-09-14；状态：H1–H9 已完成节点验收；H9 已完成最终双轴增量复核。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
-增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8 已完成真实验收；H9 已完成固定 Host oracle、插件/Loop 选择账本、安全回执和最终双轴复核。H10 尚未开始。本文件仍是 H 阶段的
+增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8 已完成真实验收；H9 已完成固定 Host oracle、插件/Loop 选择账本、安全回执和最终双轴复核。H10 正在实施，H10-A 尚待补齐同一网页场景的全链路证据。本文件仍是 H 阶段的
 范围和验收约束，不能把计划内容当作已具备能力。
 
 ## 1. 目标、范围及与旧计划的关系
@@ -354,7 +354,7 @@ Driver，避免未授权投影和本机执行。
 | H7 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h7-loop-driver-boundaries.md`、`docs/reviews/h7-final-review-0cdb1eb.md` |
 | H8 | 已完成 | H8-A–I 真实验收、证据与双轴审查均已通过；可进入 H9 |
 | H9 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h9-selection.md`、`docs/reviews/h9-*-review-2026-09-14.md`；provider-default 无安全回执时 fail-closed |
-| H10 | 未开始 | H9 完成后开始真实演示、跨机恢复与交付清单；不得重做 H1–H9 |
+| H10 | 实施中（H10-A 待补同一网页场景证据） | `docs/evidence/live-harness/h10-delivery.md`：启动门禁、原生 WebUI 会话、并发、50 次装卸、隔离恢复、生产 build、用户指南及命令历史回归的真实 WebSocket 验证已完成；仍须补项目提案→聊天确认→FC 验证→结果查询→撤销的单场景证据。 |
 
 ## 8. 下一条开发指令
 

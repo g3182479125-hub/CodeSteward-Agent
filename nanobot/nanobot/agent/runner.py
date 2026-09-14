@@ -128,6 +128,11 @@ class AgentRunSpec:
     task_context_evidence_callback: TaskContextEvidenceCallback | None = None
     loop_driver: LoopDriver | None = None
     initial_step: int = 0
+    # The durable H8 checkpoint is indexed by the host session, which can
+    # contain command records intentionally omitted from LLM context.  Keep
+    # driver freshness comparisons in that host coordinate system instead of
+    # comparing a filtered prompt length with an unfiltered checkpoint.
+    host_message_position: int | None = None
     remote_decision_callback: RemoteDecisionCallback | None = None
 
 
@@ -475,6 +480,11 @@ class AgentRunner:
 
         for iteration in range(spec.max_iterations):
             host_step = spec.initial_step + iteration
+            message_position = (
+                spec.host_message_position
+                if spec.host_message_position is not None
+                else len(messages)
+            )
             # Driver decisions occur only before a new model request.  Tool
             # execution, permissions and persistence remain Host-owned below.
             step_input = StepInput(
@@ -482,7 +492,7 @@ class AgentRunner:
                 task_id=spec.task_id or spec.session_key or "",
                 project_id=spec.project_id or "",
                 step=host_step,
-                message_position=len(messages),
+                message_position=message_position,
                 remaining_iterations=spec.max_iterations - iteration,
             )
             action = driver.next_action(step_input)
@@ -615,7 +625,7 @@ class AgentRunner:
                         # driver ownership must therefore see the durable Host
                         # step, not a stale turn-local counter.
                         step=host_step,
-                        message_position=len(messages),
+                        message_position=message_position,
                         remaining_iterations=spec.max_iterations - iteration - 1,
                         pending_tool_calls=tuple(tool_call.id for tool_call in response.tool_calls),
                     )

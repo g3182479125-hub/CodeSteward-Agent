@@ -6,6 +6,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 from devpilot.migration_config import resolve_database_url
+from devpilot.storage import ProjectStore
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,3 +120,11 @@ def test_p2a01_upgrade_preserves_p1_records(tmp_path: Path) -> None:
         assert run_status == "running"
     finally:
         engine.dispose()
+
+
+def test_p8_schema_requirement_accepts_the_current_h9_head(tmp_path: Path) -> None:
+    """Later linear migrations retain all tables required by P8 tools."""
+    database_path = tmp_path / "current-head.db"
+    command.upgrade(migration_config(database_path), "head")
+
+    ProjectStore(database_path).require_schema_head("0011_p8_skill_improvement_records")

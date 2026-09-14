@@ -341,11 +341,21 @@ class ProjectStore:
                 ).scalar_one_or_none()
             except Exception as exc:
                 raise RuntimeError("database is not initialized by Alembic") from exc
-        compatible_legacy_head = (
-            expected == "0011_p8_skill_improvement_records"
-            and actual == "0012_h3_plugin_runtime_state"
-        )
-        if actual != expected and not compatible_legacy_head:
+        # P8 callers require the P8 tables, not an obsolete final database
+        # version.  The migration chain is linear through H9, so every listed
+        # successor retains those tables.  Keep the compatibility set explicit
+        # to fail closed for unknown/forked histories.
+        compatible_successor_heads = {
+            "0011_p8_skill_improvement_records": {
+                "0012_h3_plugin_runtime_state",
+                "0013_h8_loop_handoff_state",
+                "0014_h8_requested_driver_state",
+                "0015_h8_switch_generation",
+                "0016_h9_harness_selection_records",
+            }
+        }
+        compatible_head = actual in compatible_successor_heads.get(expected, set())
+        if actual != expected and not compatible_head:
             raise RuntimeError(f"database schema head is {actual!r}; expected {expected!r}")
 
     def ensure_project(

@@ -2053,6 +2053,7 @@ class AgentLoop:
                     ),
                     loop_driver=h8_driver,
                     initial_step=h8_initial_step,
+                    host_message_position=(len(session.messages) if session is not None else None),
                     remote_decision_callback=(
                         partial(self._remote_loop_strategy_decision, session.key)
                         if session is not None

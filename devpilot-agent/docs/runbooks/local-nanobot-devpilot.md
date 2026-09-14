@@ -9,13 +9,22 @@ FastAPI 只作为 nanobot Tool Adapter 和本地 Action Broker 使用的 loopbac
 安装到 nanobot 使用的同一个虚拟环境；只安装 nanobot 不算完成部署：
 
 ```powershell
-cd D:\path\to\devflow-agent
+cd E:\path\to\devflow-agent
 powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1
 ```
 
 若当前网络不可用，先在独立的 `devpilot-agent` 环境执行
 `uv sync --project .\devpilot-agent --locked`，再使用本机缓存按锁文件补齐集成环境；
 不要用未锁定的 `pip install -U` 替代。验证两个包和全部 DevPilot Tool entry points：
+
+如果该电脑已有同一仓库，必须原地更新，不要再 clone 一个同名目录。先保留本地工作，
+再执行与当前分支对应的 fast-forward pull：
+
+```powershell
+cd E:\codex-local\nanobot-devpilot-agent
+git status --short
+git pull --ff-only origin handoff-2026-09-01
+```
 
 ```powershell
 .\nanobot\.venv\Scripts\python.exe -c "import importlib.metadata as m; print(m.version('nanobot-ai')); print(m.version('devpilot-agent')); print(sorted(ep.name for ep in m.entry_points(group='nanobot.tools') if ep.name.startswith('devpilot_')))"
@@ -39,8 +48,8 @@ nanobot 实际使用的 workspace。发布只会把 catalog 中的受信 Skill �
 覆盖人工确认后的 Skill 版本。workspace 路径按本机配置替换：
 
 ```powershell
-cd D:\path\to\devflow-agent\devpilot-agent
-$workspace = "D:\path\to\nanobot-workspace"
+cd E:\path\to\devflow-agent\devpilot-agent
+$workspace = "E:\path\to\nanobot-workspace"
 $target = Join-Path $workspace "skills\bug-fix\SKILL.md"
 if (Test-Path $target) {
   Write-Host "保留已有 bug-fix Skill，跳过发布：$target"
@@ -54,16 +63,50 @@ if (Test-Path $target) {
 如果暂时不启用 P8-03，可以跳过这一步。启用后若 workspace 中没有
 `skills/bug-fix/SKILL.md`，命令会被视为未满足前置条件，不能开始批处理。
 
-## 启动 DevPilot 内部控制面
+## 推荐启动：H6/H8/H9 完整 Harness
+
+H6 运行中模型候选、H8 Loop 接续和 H9 持久选择不是 nanobot 的默认能力；必须同时
+设置三个开关、配置 H9 完整性密钥并把数据库迁移到最新版本。不要只执行旧的 `nanobot
+webui` 命令，否则普通聊天可用但动态 Harness 会被 fail-closed 禁用。
+
+首次仅需为当前 Windows 用户生成一次 H9 完整性密钥；不要复制、提交或展示该值：
+
+```powershell
+$bytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$key = [Convert]::ToBase64String($bytes)
+[Environment]::SetEnvironmentVariable("DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY", $key, "User")
+Remove-Variable bytes, key
+```
+
+以后在 E 盘仓库根目录运行以下一条命令。它会在不改写聊天、配置或现有数据库的前提下：
+执行迁移、检查/启动 `127.0.0.1:18800` 控制面，并以前台方式启动 nanobot。关闭该窗口才会
+停止 nanobot；动态候选的装卸、更新和 Loop 切换发生在运行中，不需要关闭此窗口。
+
+```powershell
+cd E:\codex-local\nanobot-devpilot-agent
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1
+```
+
+启动后打开 `http://127.0.0.1:8765`，新建话题并先输入
+`/task-profile feature-delivery` 或 `/task-profile bug-fix`。Profile 回复中必须含有
+`devpilot_model_plugin`；这就是 H6/H8/H9 已实际加载的最短自检。安装或删除传统 Python
+entry-point 工具仍需重启 nanobot 来重新发现包元数据；通过 `/plugins` 管理的候选工具和
+Loop 则不需要。
+
+## 启动 DevPilot 内部控制面（手动排障）
 
 在 `devpilot-agent` 目录执行：
 
 ```powershell
 $env:DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE = "1"
-$env:DEVPILOT_ENABLE_FC_SANDBOX = "0"
-$env:DEVPILOT_ALLOWED_ROOTS = "D:\path\to\allowed-projects"
-$env:DEVPILOT_DATA_DIR = "D:\path\to\devpilot-agent\local-data"
-$env:DEVPILOT_DATABASE_URL = "sqlite:///local-data/devpilot.db"
+$env:DEVPILOT_ENABLE_FC_SANDBOX = "1"
+$env:DEVPILOT_ENABLE_MODEL_CANDIDATES = "1"
+$env:DEVPILOT_ENABLE_LOOP_HANDOFF = "1"
+$env:DEVPILOT_ENABLE_HARNESS_SELECTION = "1"
+$env:DEVPILOT_ALLOWED_ROOTS = "E:\path\to\allowed-projects"
+$env:DEVPILOT_DATA_DIR = "E:\path\to\devpilot-data"
+$env:DEVPILOT_DATABASE_URL = "sqlite:///E:/path/to/devpilot-data/devpilot.db"
 uv run alembic upgrade head
 uv run devpilot serve --host 127.0.0.1 --port 18800
 ```

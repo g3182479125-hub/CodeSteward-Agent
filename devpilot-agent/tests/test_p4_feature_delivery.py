@@ -129,6 +129,7 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
     assert change_set_state.get(f"/v1/runs/{evidence_id}").json()["status"] == "running"
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
+
     evidence_events = store.list_run_events(evidence_id)
     assert [item["event_type"] for item in evidence_events] == [
         "run.started",
@@ -357,6 +358,26 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
             json.dumps(runtime_evidence, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+
+def test_feature_delivery_preview_binds_requested_regression_profile(tmp_path: Path) -> None:
+    """The preview tuple must not disagree with the requested server-owned profile."""
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend())
+    (project / "tests").mkdir()
+    (project / "tests" / "test_app.py").write_text(
+        "def test_placeholder(): pass\n", encoding="utf-8"
+    )
+    evidence_id = _evidence(project, store)
+
+    proposal = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data").propose(
+        project_path=project,
+        patches=[_patch(project)],
+        evidence_ids=[evidence_id],
+        verification_profile="python-regression",
+    )
+
+    assert proposal.verification_profile.value == "python-regression"
+    assert proposal.preview["verification_profile"] == "python-regression"
 
 
 def test_feature_delivery_run_link_survives_manager_restart(tmp_path: Path) -> None:

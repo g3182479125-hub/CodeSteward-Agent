@@ -872,6 +872,37 @@ async def test_h8_agent_loop_keeps_command_established_owner_across_profile_task
 
 
 @pytest.mark.asyncio
+async def test_h8_profile_command_history_does_not_pause_the_first_model_turn(tmp_path) -> None:
+    """Filtered command history must not look stale to a newly durable Loop owner."""
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.agent.task_profiles import TaskProfile, TaskProfileCatalog
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test-model"
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="done", tool_calls=[]))
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    loop.tools.get_definitions = MagicMock(return_value=[])
+    loop.loop_handoff_manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    loop.task_profiles = TaskProfileCatalog(
+        {
+            "h10-profile": TaskProfile(
+                name="h10-profile",
+                skill_names=("my",),
+                allowed_tools=frozenset(loop.tools.tool_names),
+                output_contract=("complete",),
+            )
+        }
+    )
+
+    await loop.process_direct("/task-profile h10-profile", session_key="cli:h10-command-history")
+    result = await loop.process_direct("use the available tool", session_key="cli:h10-command-history")
+
+    assert result is not None
+    assert result.content == "done"
+    provider.chat_with_retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_h8_switch_waits_for_tool_then_continues_same_runner(tmp_path) -> None:
     """A pending switch cannot replay a tool call, but affects the next model step."""
     from nanobot.agent.runner import AgentRunner

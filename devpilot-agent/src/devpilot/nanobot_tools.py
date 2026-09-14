@@ -1748,7 +1748,16 @@ class ProposeChangeSetTool(Tool):
                 "maxItems": 12,
                 "items": _PATCH_ITEM_SCHEMA,
             },
-            "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 32},
+            "evidence_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "description": (
+                    "Use only repo-analysis run_id values returned by "
+                    "devpilot_inspect_project and extended by search/read in "
+                    "this proposal. Never pass project_id as evidence."
+                ),
+            },
             "verification_profile": {
                 "type": "string",
                 "enum": ["python-syntax", "python-regression", "python-run", "node-syntax"],
