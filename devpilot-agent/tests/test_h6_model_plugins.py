@@ -11,6 +11,11 @@ from nanobot.agent.plugins.manager import PluginManager
 from nanobot.agent.plugins.store import SqlitePluginStateStore
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.security.workspace_access import (
+    bind_workspace_scope,
+    build_workspace_scope,
+    reset_workspace_scope,
+)
 
 from devpilot.candidate_runner import (
     CandidateExecutionResult,
@@ -81,6 +86,9 @@ class FakeCandidateRunner:
     def execute(self, request: CandidateTrialRequest) -> CandidateExecutionResult:
         self.executions.append(request)
         return self._result(request, output={"echo": request.input_data})
+
+    def can_activate_live(self, _task_id: str) -> bool:
+        return True
 
 
 class SourceExecutingCandidateRunner(FakeCandidateRunner):
@@ -319,6 +327,142 @@ async def test_h6_define_trial_activate_and_call_without_restart(
             )
         )
         assert stopped["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_h11_webui_modes_auto_trial_but_only_full_auto_calls_real_candidate_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    runner = FakeCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+
+    restricted_scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "restricted", source_channel="websocket")
+    )
+    try:
+        with request_context(_context(tmp_path, text="ordinary request")):
+            assert json.loads(
+                await tool.execute(
+                    action="define", plugin_id="model-h11", version="1.0.0", source=SOURCE
+                )
+            )["ok"]
+            assert json.loads(
+                await tool.execute(action="trial", plugin_id="model-h11", version="1.0.0")
+            )["ok"]
+            assert json.loads(
+                await tool.execute(action="activate", plugin_id="model-h11", version="1.0.0")
+            )["ok"]
+            view = manager.live_tools_for_session(base, "session:one")
+            blocked = json.loads(await view.execute("model-h11", {"value": "real task"}))
+            assert blocked["code"] == "PLUGIN_AUTHORIZATION_REQUIRED"
+            assert runner.executions == []
+    finally:
+        reset_workspace_scope(restricted_scope)
+
+    full_scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    try:
+        with request_context(_context(tmp_path, text="ordinary request")):
+            view = manager.live_tools_for_session(base, "session:one")
+            result = json.loads(await view.execute("model-h11", {"value": "real task"}))
+    finally:
+        reset_workspace_scope(full_scope)
+
+    assert result["ok"] is True
+    assert len(runner.executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_h11_full_webui_scope_rejects_sensitive_candidate_input_before_fc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    runner = FakeCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+    scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    try:
+        with request_context(_context(tmp_path, text="ordinary request")):
+            for action in ("define", "trial", "activate"):
+                response = await tool.execute(
+                    action=action, plugin_id="model-red", version="1.0.0", source=SOURCE
+                ) if action == "define" else await tool.execute(
+                    action=action, plugin_id="model-red", version="1.0.0"
+                )
+                assert json.loads(response)["ok"]
+            view = manager.live_tools_for_session(base, "session:one")
+            blocked = await view.execute("model-red", {"token": "sk-not-for-fc"})
+    finally:
+        reset_workspace_scope(scope)
+
+    assert "unexpected parameter token" in blocked
+    assert runner.executions == []
+
+
+@pytest.mark.asyncio
+async def test_h11_restricted_confirmation_is_invalidated_by_a_new_candidate_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    runner = FakeCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+    scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "restricted", source_channel="websocket")
+    )
+    try:
+        with request_context(_context(tmp_path, text="ordinary request")):
+            for action in ("define", "trial", "activate"):
+                response = await tool.execute(
+                    action=action,
+                    plugin_id="model-versioned",
+                    version="1.0.0",
+                    source=SOURCE,
+                ) if action == "define" else await tool.execute(
+                    action=action, plugin_id="model-versioned", version="1.0.0"
+                )
+                assert json.loads(response)["ok"]
+        with request_context(_context(tmp_path, text="确认试用")):
+            view = manager.live_tools_for_session(base, "session:one")
+            assert json.loads(await view.execute("model-versioned", {"value": "v1"}))["ok"]
+        with request_context(_context(tmp_path, text="ordinary request")):
+            for action in ("define", "trial", "activate"):
+                response = await tool.execute(
+                    action=action,
+                    plugin_id="model-versioned",
+                    version="2.0.0",
+                    source=SOURCE_V2,
+                ) if action == "define" else await tool.execute(
+                    action=action, plugin_id="model-versioned", version="2.0.0"
+                )
+                assert json.loads(response)["ok"]
+            view = manager.live_tools_for_session(base, "session:one")
+            blocked = json.loads(await view.execute("model-versioned", {"value": "v2"}))
+    finally:
+        reset_workspace_scope(scope)
+
+    assert blocked["code"] == "PLUGIN_AUTHORIZATION_REQUIRED"
+    assert len(runner.executions) == 1
 
 
 @pytest.mark.asyncio

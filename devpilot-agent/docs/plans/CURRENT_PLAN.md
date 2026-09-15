@@ -9,7 +9,7 @@ H6 实现落点为 `nanobot/nanobot/agent/plugins/manager.py` 与 `devpilot-agen
 `devpilot-agent/docs/reviews/h1-*-review-2930119.md`、`h2-*-review-b8141f0.md` 和
 `h3-*-review-6159add.md`、`h4-*-review-78456c6.md`、`h5-*-review-e08299e.md`。
 
-版本：3.9（2026-09-15，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准 H11 的权限模式驱动候选工具自主策略。P0–P8 与 H1–H10 已完成并保留原验收；H11 尚未实施，是后续唯一的 Harness 开发节点。H10-A 真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成。H7 包含默认 Driver、托管检查点和双轴增量复核；H8/H9/H10 证据见 `devpilot-agent/docs/evidence/live-harness/`。
+版本：3.9（2026-09-15，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准 H11 的权限模式驱动候选工具自主策略；H11 实现候选正在按 ADR-0004 审查，尚未完成。P0–P8 与 H1–H10 已完成并保留原验收。H10-A 真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成。H7 包含默认 Driver、托管检查点和双轴增量复核；H8/H9/H10 证据见 `devpilot-agent/docs/evidence/live-harness/`。
 生效关系见 [ADR-0006](../adr/ADR-0006-nanobot-first-personal-agent.md) 和
 [ADR-0007](../adr/ADR-0007-controlled-skill-improvement.md)。仅接管未完成工作。
 

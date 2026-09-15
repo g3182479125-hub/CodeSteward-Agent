@@ -32,7 +32,9 @@ from nanobot.agent.plugins.contracts import (
 from nanobot.agent.plugins.manager import PluginManager, ScopeKey, _RegisteredPlugin
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import current_request_context
+from nanobot.security.workspace_access import current_workspace_scope
 
+from .candidate_autonomy import CandidateAutonomyPolicy
 from .candidate_runner import (
     CANDIDATE_API_VERSION,
     CANDIDATE_COMMAND_PROFILE,
@@ -50,6 +52,7 @@ from .candidate_runner import (
 )
 from .fc_sandbox import build_fc_backend_from_environment
 from .harness_oracle import HarnessOracleContractError
+from .redaction import is_sensitive_field_name, redact_sensitive_payload
 from .remote_loop_strategy import RemoteStrategyArtifact, RemoteStrategyCatalog
 from .storage import ProjectStore
 
@@ -239,6 +242,28 @@ def _parse_rules(raw: object) -> tuple[CandidateInputRule, ...]:
     return tuple(result)
 
 
+def _candidate_input_class(input_data: Mapping[str, object]) -> str:
+    """Classify Host-visible live input before it can be sent to FC."""
+    if any(is_sensitive_field_name(key) for key in input_data):
+        return "sensitive"
+    if redact_sensitive_payload(dict(input_data)) != dict(input_data):
+        return "sensitive"
+    return "task"
+
+
+def _live_budget_available(runner: CandidateTrialRunner | None, task_id: str) -> bool:
+    """Treat unavailable budget state as a hard stop for a real candidate call."""
+    if runner is None:
+        return False
+    budget_check = getattr(runner, "can_activate_live", None)
+    if not callable(budget_check):
+        return False
+    try:
+        return budget_check(task_id) is True
+    except Exception:
+        return False
+
+
 class ModelCandidateController:
     """Host-owned H6 catalog adapter and FC-proxy factory."""
 
@@ -260,6 +285,7 @@ class ModelCandidateController:
         self._runner_error: tuple[str, str] | None = None
         self._runner_lock = threading.Lock()
         self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
+        self._autonomy_policy = CandidateAutonomyPolicy()
         self._remote_strategy_catalog: RemoteStrategyCatalog | None = None
         self._harness_selection_store = harness_selection_store
         self._harness_case_oracle = harness_case_oracle
@@ -678,7 +704,16 @@ class ModelCandidateController:
         _request, session_id, project_id, _task_id, _workspace = context
         return self._require_manager()._find_visible(plugin_id, version, session_id, project_id)
 
-    def _authorize(self, context: tuple[Any, str, str, str, str]) -> str | None:
+    def _authorize(
+        self,
+        context: tuple[Any, str, str, str, str],
+        *,
+        operation: str = "call",
+        input_class: str = "task",
+        candidate_trialled: bool = True,
+        budget_available: bool = True,
+        confirmation_binding: Mapping[str, str] | None = None,
+    ) -> str | None:
         request, session_id, project_id, _task_id, _workspace = context
         if request.attributes.get("devpilot_model_candidates_enabled") is not True:
             return _error(
@@ -686,6 +721,25 @@ class ModelCandidateController:
                 "当前任务 Profile 未启用模型候选插件；不能仅靠聊天确认绕过配置",
             )
         manager = self._require_manager()
+        workspace_scope = current_workspace_scope()
+        h11_confirmation = False
+        if workspace_scope is not None and workspace_scope.source_channel == "websocket":
+            decision = self._autonomy_policy.decide(
+                access_mode=workspace_scope.access_mode,
+                operation=operation,
+                input_class=input_class,
+                budget_available=budget_available,
+                candidate_trialled=candidate_trialled,
+            )
+            if decision == "deny":
+                return _error(
+                    "CANDIDATE_AUTONOMY_DENIED",
+                    "当前候选操作未满足权限、数据、试用或预算约束；未派发到 FC",
+                )
+            if decision in {"auto", "notice"}:
+                manager.authorize(session_id)
+                return None
+            h11_confirmation = decision == "confirm"
         key = (session_id, project_id)
         grant = self._authorizations.get(key)
         now = int(time.time())
@@ -695,6 +749,10 @@ class ModelCandidateController:
             and grant.get("task_id") == _task_id
             and isinstance(grant.get("expires_at"), int)
             and int(grant["expires_at"]) > now
+            and (
+                not h11_confirmation
+                or grant.get("confirmation_binding") == dict(confirmation_binding or {})
+            )
         ):
             return None
         if grant is not None:
@@ -722,6 +780,7 @@ class ModelCandidateController:
             "sender_id": request.sender_id,
             "task_id": _task_id,
             "expires_at": now + _AUTH_TTL_SECONDS,
+            "confirmation_binding": dict(confirmation_binding or {}),
         }
         return None
 
@@ -873,7 +932,14 @@ class ModelCandidateController:
         kwargs: Mapping[str, object],
         context: tuple[Any, str, str, str, str],
     ) -> str:
-        if (authorization_error := self._authorize(context)) is not None:
+        if (
+            authorization_error := self._authorize(
+                context,
+                operation="trial",
+                input_class="fixture",
+                candidate_trialled=False,
+            )
+        ) is not None:
             return authorization_error
         runner = self._ensure_runner()
         if runner is None:
@@ -958,7 +1024,7 @@ class ModelCandidateController:
         kwargs: Mapping[str, object],
         context: tuple[Any, str, str, str, str],
     ) -> str:
-        if (authorization_error := self._authorize(context)) is not None:
+        if (authorization_error := self._authorize(context, operation="activate")) is not None:
             return authorization_error
         if self._ensure_runner() is None:
             return self._runner_failure()
@@ -1234,9 +1300,6 @@ class ModelCandidateController:
         context = self._context()
         if context is None:
             return _error("CANDIDATE_CONTEXT_INVALID", "候选调用缺少可信请求上下文")
-        authorization_error = self._authorize(context)
-        if authorization_error is not None:
-            return authorization_error
         runner = self._ensure_runner()
         if runner is None:
             return self._runner_failure()
@@ -1256,6 +1319,25 @@ class ModelCandidateController:
                 )
             if artifact_rules != rules:
                 return _error("CANDIDATE_CONTRACT_CHANGED", "候选输入契约已变化，必须重新试用")
+            authorization_error = self._authorize(
+                context,
+                operation="call",
+                input_class=_candidate_input_class(input_data),
+                budget_available=_live_budget_available(runner, context[3]),
+                confirmation_binding={
+                    "plugin_id": registration.record.manifest.plugin_id,
+                    "version": registration.record.manifest.version,
+                    "content_hash": registration.record.manifest.content_hash,
+                    "contract_hash": contract_hash,
+                    "input_rules_hash": hashlib.sha256(
+                        _json(_rules_view(rules)).encode("utf-8")
+                    ).hexdigest(),
+                    "max_calls": str(CANDIDATE_MAX_EXECUTIONS),
+                    "max_seconds": str(CANDIDATE_MAX_EXECUTION_SECONDS),
+                },
+            )
+            if authorization_error is not None:
+                return authorization_error
             issuer = self._issuer
             if issuer is None:
                 return self._runner_failure()
@@ -1333,7 +1415,7 @@ class ModelCandidateController:
             self._require_manager().revoke_authorization(context[1])
             return _result({"status": "authorization_revoked"})
         if action in {"stop", "remove"}:
-            if (authorization_error := self._authorize(context)) is not None:
+            if (authorization_error := self._authorize(context, operation=action)) is not None:
                 return authorization_error
             plugin_id, version = kwargs.get("plugin_id"), kwargs.get("version")
             if not isinstance(plugin_id, str) or not isinstance(version, str):
