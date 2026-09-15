@@ -426,7 +426,7 @@ Driver，避免未授权投影和本机执行。
 | H8 | 已完成 | H8-A–I 真实验收、证据与双轴审查均已通过；可进入 H9 |
 | H9 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h9-selection.md`、`docs/reviews/h9-*-review-2026-09-14.md`；provider-default 无安全回执时 fail-closed |
 | H10 | 已完成并通过交付复核 | `docs/evidence/live-harness/h10-delivery.md`、`docs/reviews/h10-product-review-2026-09-15.md`：启动门禁、原生 WebUI 会话、并发、50 次装卸、隔离恢复、生产 build、用户指南及命令历史回归已完成；本轮同一真实 WebUI 会话已补齐既有 FC 配置下的项目提案→聊天确认→FC 验证→结果查询→受保护撤销→刷新重连→回滚后哈希复核；fake 证据仍单独标注。 |
-| H11 | 实现与真实验收完成、审查阻断 | 本文 §6 H11；实现、自动化检查和真实 WebUI/FC 默认/完全访问验收见 `docs/evidence/live-harness/h11-autonomy-policy.md`，最新空输出双轴审查阻断记录见 `docs/reviews/h11-review-blocked-62540b5.md`。复用现有 WebUI 默认/完全访问权限，不新增按钮；唯一未完成门槛是两份有实际内容的 Standards / Spec 报告。 |
+| H11 | 实现候选、首轮审查发现待修复 | 本文 §6 H11；首轮 Standards/Spec 报告见 `docs/reviews/h11-standards-review-62540b5.md`、`docs/reviews/h11-spec-review-62540b5.md`，修复与增量复核未完成。复用现有 WebUI 默认/完全访问权限，不新增按钮。 |
 
 ## 8. 下一条开发指令
 

@@ -421,6 +421,78 @@ async def test_h11_full_webui_scope_rejects_sensitive_candidate_input_before_fc(
     assert runner.executions == []
 
 
+def test_h11_does_not_apply_to_h9_authorization_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    controller = ModelCandidateController(
+        tmp_path, runner=FakeCandidateRunner(), grant_issuer=ISSUER
+    )
+    manager = PluginManager(ToolRegistry(), candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    try:
+        request = _context(tmp_path, text="ordinary request")
+        with request_context(request):
+            context = controller._context()
+            assert context is not None
+            blocked = controller._authorize(context)
+    finally:
+        reset_workspace_scope(scope)
+
+    assert blocked is not None
+    assert "PLUGIN_AUTHORIZATION_REQUIRED" in blocked
+
+
+@pytest.mark.asyncio
+async def test_h11_revoke_stops_candidate_routes_and_records_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    runner = FakeCandidateRunner()
+    controller = ModelCandidateController(tmp_path, runner=runner, grant_issuer=ISSUER)
+    base = ToolRegistry()
+    manager = PluginManager(base, candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    tool = ModelPluginManagementTool(controller)
+    scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    try:
+        with request_context(_context(tmp_path, text="ordinary request")):
+            for action in ("define", "trial", "activate"):
+                response = await tool.execute(
+                    action=action,
+                    plugin_id="model-revoke",
+                    version="1.0.0",
+                    source=SOURCE,
+                ) if action == "define" else await tool.execute(
+                    action=action, plugin_id="model-revoke", version="1.0.0"
+                )
+                assert json.loads(response)["ok"]
+            view = manager.live_tools_for_session(base, "session:one")
+            assert "model-revoke" in view.tool_names
+            revoked = json.loads(await tool.execute(action="revoke"))
+            assert revoked["result"]["status"] == "authorization_revoked"
+            assert len(revoked["result"]["stopped"]) == 1
+            assert "model-revoke" not in manager.live_tools_for_session(
+                base, "session:one"
+            ).tool_names
+    finally:
+        reset_workspace_scope(scope)
+
+    assert any(
+        operation.action == "candidate_autonomy"
+        and operation.result.details_dict["decision"] in {"auto", "notice"}
+        for operation in manager._operations.values()
+    )
+
+
 @pytest.mark.asyncio
 async def test_h11_restricted_confirmation_is_invalidated_by_a_new_candidate_version(
     tmp_path: Path,

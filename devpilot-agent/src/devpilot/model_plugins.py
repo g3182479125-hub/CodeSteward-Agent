@@ -285,6 +285,7 @@ class ModelCandidateController:
         self._runner_error: tuple[str, str] | None = None
         self._runner_lock = threading.Lock()
         self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
+        self._revoked_autonomy: set[tuple[str, str]] = set()
         self._autonomy_policy = CandidateAutonomyPolicy()
         self._remote_strategy_catalog: RemoteStrategyCatalog | None = None
         self._harness_selection_store = harness_selection_store
@@ -737,6 +738,9 @@ class ModelCandidateController:
         candidate_trialled: bool = True,
         budget_available: bool = True,
         confirmation_binding: Mapping[str, str] | None = None,
+        apply_autonomy: bool = False,
+        candidate_id: str | None = None,
+        candidate_version: str | None = None,
     ) -> str | None:
         request, session_id, project_id, _task_id, _workspace = context
         if request.attributes.get("devpilot_model_candidates_enabled") is not True:
@@ -752,8 +756,30 @@ class ModelCandidateController:
             candidate_trialled=candidate_trialled,
         )
         h11_confirmation = False
-        if autonomy is not None:
+        if apply_autonomy and autonomy is not None:
             decision = autonomy["decision"]
+            revoked_key = (session_id, _task_id)
+            if revoked_key in self._revoked_autonomy and operation not in {"stop", "remove"}:
+                decision = "deny"
+                autonomy = {**autonomy, "decision": decision}
+            if candidate_id is not None and candidate_version is not None:
+                try:
+                    manager.record_candidate_autonomy(
+                        candidate_id,
+                        candidate_version,
+                        session_id=session_id,
+                        project_id=project_id,
+                        access_mode=autonomy["access_mode"],
+                        decision=decision,
+                        input_class=input_class,
+                        budget_available=budget_available,
+                        candidate_trialled=candidate_trialled,
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    return _error(
+                        "CANDIDATE_AUTONOMY_AUDIT_UNAVAILABLE",
+                        "候选权限决策无法持久记录；未派发到 FC",
+                    )
             if decision == "deny":
                 return _error(
                     "CANDIDATE_AUTONOMY_DENIED",
@@ -926,8 +952,23 @@ class ModelCandidateController:
                 candidate_status=PluginCandidateStatus.DEFINED,
             )
             result = self._require_manager().register_candidate_version(record, root)
+            autonomy = self._autonomy_summary(
+                operation="define", input_class="fixture", candidate_trialled=False
+            )
+            if autonomy is not None:
+                self._require_manager().record_candidate_autonomy(
+                    plugin_id,
+                    version,
+                    session_id=session_id,
+                    project_id=_project_id,
+                    access_mode=autonomy["access_mode"],
+                    decision=autonomy["decision"],
+                    input_class="fixture",
+                    budget_available=True,
+                    candidate_trialled=False,
+                )
             return _result(result.to_dict()) if result.ok else _json(result.to_dict())
-        except (OSError, ValueError, TypeError):
+        except (OSError, RuntimeError, ValueError, TypeError):
             return _error("CANDIDATE_DEFINITION_FAILED", "候选 artifact 无法安全写入或注册")
 
     def inspect(self, context: tuple[Any, str, str, str, str]) -> str:
@@ -962,21 +1003,24 @@ class ModelCandidateController:
         kwargs: Mapping[str, object],
         context: tuple[Any, str, str, str, str],
     ) -> str:
+        plugin_id, version = kwargs.get("plugin_id"), kwargs.get("version")
+        if not isinstance(plugin_id, str) or not isinstance(version, str):
+            return _error("CANDIDATE_REFERENCE_INVALID", "trial 需要 plugin_id 和 version")
         if (
             authorization_error := self._authorize(
                 context,
                 operation="trial",
                 input_class="fixture",
                 candidate_trialled=False,
+                apply_autonomy=True,
+                candidate_id=plugin_id,
+                candidate_version=version,
             )
         ) is not None:
             return authorization_error
         runner = self._ensure_runner()
         if runner is None:
             return self._runner_failure()
-        plugin_id, version = kwargs.get("plugin_id"), kwargs.get("version")
-        if not isinstance(plugin_id, str) or not isinstance(version, str):
-            return _error("CANDIDATE_REFERENCE_INVALID", "trial 需要 plugin_id 和 version")
         registration = self._registration(plugin_id, version, context)
         if registration is None or registration.record.source is not PluginSource.MODEL_CANDIDATE:
             return _error("PLUGIN_NOT_FOUND", "候选版本在当前会话不可见")
@@ -1057,13 +1101,11 @@ class ModelCandidateController:
         kwargs: Mapping[str, object],
         context: tuple[Any, str, str, str, str],
     ) -> str:
-        if (authorization_error := self._authorize(context, operation="activate")) is not None:
-            return authorization_error
-        if self._ensure_runner() is None:
-            return self._runner_failure()
         plugin_id, version = kwargs.get("plugin_id"), kwargs.get("version")
         if not isinstance(plugin_id, str) or not isinstance(version, str):
             return _error("CANDIDATE_REFERENCE_INVALID", "activate 需要 plugin_id 和 version")
+        if self._ensure_runner() is None:
+            return self._runner_failure()
         _request, session_id, project_id, _task_id, _workspace = context
         task_id = context[3]
         manager = self._require_manager()
@@ -1091,6 +1133,27 @@ class ModelCandidateController:
                 "CANDIDATE_CONTRACT_CHANGED",
                 "候选工件或执行契约已变化，必须重新定义并试用",
             )
+        candidate_trialled = (
+            registration.record.candidate_status is PluginCandidateStatus.TESTED
+            and manager.candidate_binding_matches(
+                plugin_id,
+                version,
+                session_id=session_id,
+                project_id=project_id,
+                contract_hash=contract_hash,
+            )
+        )
+        if (
+            authorization_error := self._authorize(
+                context,
+                operation="activate",
+                candidate_trialled=candidate_trialled,
+                apply_autonomy=True,
+                candidate_id=plugin_id,
+                candidate_version=version,
+            )
+        ) is not None:
+            return authorization_error
         active, _scope_key = manager._find_active(plugin_id, session_id, project_id)
         if active is not None and active.registration.record.manifest.version != version:
             result = await manager.update_candidate(
@@ -1339,6 +1402,19 @@ class ModelCandidateController:
         try:
             source, manifest, artifact_rules, contract_hash = self._artifact(registration)
             manager = self._require_manager()
+            active, _scope_key = manager._find_active(
+                registration.record.manifest.plugin_id,
+                context[1],
+                context[2],
+            )
+            if (
+                active is None
+                or active.registration.registration_key != registration.registration_key
+            ):
+                return _error(
+                    "INVALID_CANDIDATE_STATE",
+                    "候选版本当前未激活或已被替换，不能从旧路由重放调用",
+                )
             if not manager.candidate_binding_matches(
                 registration.record.manifest.plugin_id,
                 registration.record.manifest.version,
@@ -1375,6 +1451,9 @@ class ModelCandidateController:
                     "max_calls": str(CANDIDATE_MAX_EXECUTIONS),
                     "max_seconds": str(CANDIDATE_MAX_EXECUTION_SECONDS),
                 },
+                apply_autonomy=True,
+                candidate_id=registration.record.manifest.plugin_id,
+                candidate_version=registration.record.manifest.version,
             )
             if authorization_error is not None:
                 return authorization_error
@@ -1452,15 +1531,46 @@ class ModelCandidateController:
                 else _error("OPERATION_NOT_FOUND", "该操作不属于当前会话或已不存在")
             )
         if action == "revoke":
-            self._authorizations.pop((context[1], context[2]), None)
-            self._require_manager().revoke_authorization(context[1])
-            return _result({"status": "authorization_revoked"})
+            _request, session_id, project_id, task_id, _workspace = context
+            manager = self._require_manager()
+            stopped: list[dict[str, Any]] = []
+            for item in manager.list_view(session_id, project_id=project_id):
+                plugin_id = item.get("plugin_id")
+                version = item.get("version")
+                if item.get("source") != PluginSource.MODEL_CANDIDATE.value:
+                    continue
+                if not isinstance(plugin_id, str) or not isinstance(version, str):
+                    continue
+                active, _scope_key = manager._find_active(plugin_id, session_id, project_id)
+                if active is None or active.registration.record.manifest.version != version:
+                    continue
+                result = manager.stop(
+                    plugin_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    policy=_MODEL_CANDIDATE_POLICY,
+                )
+                if not result.ok:
+                    return _json(result.to_dict())
+                stopped.append(result.to_dict())
+            self._revoked_autonomy.add((session_id, task_id))
+            self._authorizations.pop((session_id, project_id), None)
+            manager.revoke_authorization(session_id)
+            return _result({"status": "authorization_revoked", "stopped": stopped})
         if action in {"stop", "remove"}:
-            if (authorization_error := self._authorize(context, operation=action)) is not None:
-                return authorization_error
             plugin_id, version = kwargs.get("plugin_id"), kwargs.get("version")
             if not isinstance(plugin_id, str) or not isinstance(version, str):
                 return _error("CANDIDATE_REFERENCE_INVALID", f"{action} 需要 plugin_id 和 version")
+            if (
+                authorization_error := self._authorize(
+                    context,
+                    operation=action,
+                    apply_autonomy=True,
+                    candidate_id=plugin_id,
+                    candidate_version=version,
+                )
+            ) is not None:
+                return authorization_error
             registration = self._registration(plugin_id, version, context)
             if (
                 registration is None

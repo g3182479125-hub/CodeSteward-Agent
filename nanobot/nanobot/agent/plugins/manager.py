@@ -1871,6 +1871,51 @@ class PluginManager:
             return None
         return self._operation_view(operation)
 
+    def record_candidate_autonomy(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        project_id: str | None = None,
+        access_mode: str,
+        decision: str,
+        input_class: str,
+        budget_available: bool,
+        candidate_trialled: bool,
+    ) -> PluginOperationResult:
+        """Persist one H11 decision in the existing operation ledger."""
+        if access_mode not in {"restricted", "full"}:
+            raise ValueError("candidate autonomy access mode is invalid")
+        if decision not in {"deny", "confirm", "auto", "notice"}:
+            raise ValueError("candidate autonomy decision is invalid")
+        if input_class not in {"fixture", "task", "sensitive", "unknown"}:
+            raise ValueError("candidate autonomy input class is invalid")
+        scope_key = (PluginScope.SESSION, session_id)
+        operation = self._new_operation(
+            action="candidate_autonomy",
+            plugin_id=plugin_id,
+            version=version,
+            scope_key=scope_key,
+            state=decision,
+            result=PluginOperationResult.success(
+                "candidate autonomy decision recorded",
+                plugin_id=plugin_id,
+                version=version,
+                details={
+                    "access_mode": access_mode,
+                    "decision": decision,
+                    "input_class": input_class,
+                    "budget": "available" if budget_available else "unavailable",
+                    "candidate_trialled": "yes" if candidate_trialled else "no",
+                    "fc_result": "not_dispatched",
+                },
+            ),
+        )
+        operation.event.set()
+        self._save_state()
+        return operation.result
+
     @staticmethod
     def _operation_visible(
         operation: _Operation,

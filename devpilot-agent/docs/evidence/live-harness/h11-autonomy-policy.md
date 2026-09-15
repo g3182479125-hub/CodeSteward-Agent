@@ -1,8 +1,9 @@
 # H11 权限模式驱动候选工具自主策略：实现与现场证据
 
-状态：实现与 H11-E 真实 WebUI/FC 证据已完成；ADR-0004 双轴审查仍因两个完成但空输出的
-reviewer turn 而阻断，**不得据此写 H11 完成**。最新阻断记录为
-`docs/reviews/h11-review-blocked-62540b5.md`。
+状态：实现与 H11-E 真实 WebUI/FC 证据已完成；首轮 ADR-0004 双轴审查已取得实际报告，
+报告发现的问题正在集中修复，**不得据此写 H11 完成**。首轮报告分别为
+`docs/reviews/h11-standards-review-62540b5.md` 与
+`docs/reviews/h11-spec-review-62540b5.md`。
 
 基线：`3b37fd0`（H11 冻结计划）。本批次只修改候选工具授权决策；不修改
 WebUI 控件、项目 Apply/Verify/Rollback、P8 Skill、FC 执行契约或 nanobot Shell 权限。
@@ -61,7 +62,7 @@ git diff --check
 | WebUI 模式 | 现场事实 | 结果 |
 |---|---|---|
 | 完全访问权限 (`full`) | `h11-uppercase@1.0.0` 完成 define → fixture trial → activate → `value=hello` 真实调用 → stop → remove；真实调用输出 `HELLO`，耗时 1747 ms。 | 未输入确认口令；结束 inspect 为 candidates `[]`。 |
-| 默认权限 (`restricted`) | `h11-default@1.0.0` 自动 define → fixture trial → activate；首次 `value=default` 被 `PLUGIN_AUTHORIZATION_REQUIRED` 拦截，未派发 FC。随后用户精确输入一次 `确认试用`，同一候选调用输出 `DEFAULT`，耗时 1517 ms，随后 stop/remove。 | 一次确认才允许真实输入；结束 inspect 为 candidates `[]`。 |
+| 默认权限 (`restricted`) | `h11-default@1.0.0` 自动 define → fixture trial → activate；首次 `value=default` 被 `CANDIDATE_REAL_INPUT_CONFIRMATION_REQUIRED` 拦截，未派发 FC。随后用户精确输入一次 `确认试用`，同一候选调用输出 `DEFAULT`，耗时 1517 ms，随后 stop/remove。 | 一次确认才允许真实输入；结束 inspect 为 candidates `[]`。 |
 
 fixture trial 使用 Host 固定夹具，输出 `FIXTURE`，并不声称它处理了聊天真实输入。现场
 provider network policy 为 `provider-default`：这是 FC 后端报告的策略名称，**不等于**
@@ -79,7 +80,10 @@ Host 校验红线。
 remove → inspect，候选列表为 `[]`。这同时证明修正后的提示在真实 Gateway/FC 路径生效，
 且测试候选没有留下活动路由。
 
-## 待完成
+## 首轮审查与集中修复
 
-- 在可输出报告的环境中复用同一对 Standards / Spec 审查员，取得两份明确报告。
-- 对有效问题批量修复、运行受影响检查、由原审查员增量复核。
+首轮固定候选为 `62540b5`，基线为 `3b37fd0`。Standards 报告确认文档错误码/状态引用
+不一致；Spec 报告确认 H11 自治策略误影响 H9/Loop、撤销未停止候选路由且旧 proxy
+可重放，以及自治审计未覆盖生命周期/拒绝/清理。修复批次将 H11 入口与旧 H9 路径
+分离，在撤销时停止候选路由并拒绝非活动注册，同时复用 PluginManager 既有 operation
+ledger 记录每个自治决策。修复候选需由同一两位 reviewer 做增量复核。
