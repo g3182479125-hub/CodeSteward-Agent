@@ -175,9 +175,10 @@ def test_recent_history_truncated_at_max_tokens(tmp_path) -> None:
     prompt = builder.build_system_prompt()
     history_section = prompt.split("# Recent History\n\n", 1)
     assert len(history_section) == 2
+    history_body = history_section[1].split("\n\n---\n\n", 1)[0]
 
     enc = tiktoken.get_encoding("cl100k_base")
-    assert len(enc.encode(history_section[1])) <= builder._MAX_HISTORY_TOKENS
+    assert len(enc.encode(history_body)) <= builder._MAX_HISTORY_TOKENS
 
 
 def test_no_recent_history_when_dream_has_processed_all(tmp_path) -> None:

@@ -1,7 +1,7 @@
 # H10：真实链路、恢复与交付证据
 
 日期：2026-09-14
-验证仓库：`E:\codex-local\nanobot-devpilot-agent`
+验证仓库：`E:\codex-local\nanobot-devpilot-agent`（历史现场路径；复跑时以当前仓库根目录为准）
 验证原则：现场结果、历史证据和暂未具备的条件分别记录；不会把演示目标或旧测试计数当成
 本轮生产结果。
 
@@ -39,6 +39,26 @@
   `loop handoff record does not exist`。这是 H8 的预期 fail-closed 行为，不会在无 checkpoint
   的会话中强行换 Loop；建立 owner 后才可在安全边界排队切换。
 
+### H10 本轮本地确定性协议闭环（不计作真实 FC 证据）
+
+为先验证 WebUI、Gateway、确认上下文、控制面和回滚协议，本轮在独立临时目录运行了一个
+确定性的本地 fake provider 与 `FakeExecutionBackend`。它没有调用真实 FC，也没有使用用户项目、
+用户数据库或用户配置；以下事实只证明本地协议闭环，不替代 H10-A 的真实 FC 验收。
+
+- WebUI chat：`4d763777-79b2-43de-b179-95feb8762ad8`。
+- 受控演示文件：隔离 workspace 下的 `h10-live-demo/main.py`。
+- ChangeSet：`134ca8fc-0211-482c-8e84-f2cd6c25cc0c`；Run：
+  `69a42b14-01fe-4ecd-b8df-9e6f9e45569e`。
+- 同一 WebUI 会话依次完成：`inspect → search/read → feature-delivery proposal`，单独输入
+  `执行` 后 `devpilot_confirmed_action(action=apply_verify)` 返回 `application=applied`、
+  `verification=verified`，随后取得 completed delivery report；单独输入 `撤销` 后只调用
+  `devpilot_confirmed_action(action=rollback)`，返回 `reverted`，第二次 `read_code` 读回基线。
+- 变更前哈希为 `85917786…3a93ade54e`，Apply 后为 `4de3fd96…b02bcc05`，Rollback 后
+  恢复为 `85917786…3a93ade54e`；刷新 WebUI 后仍可看到提案、执行、回滚三组工具轨迹和最终
+  恢复消息。
+- 本地后端回执明确为 `backend=fake`、`sandbox_id=fake-sandbox`，没有真实地域、模板或
+  provider-default FC 策略，因此不得将本记录写成云端验证成功。
+
 ## 可审计的网页事件引用
 
 以下均是本机原生 WebUI 追加式事件文件；它们不进入 Git，换机时可按本文件的命令重新生成。
@@ -72,9 +92,10 @@ Get-Content E:\codex-local\nanobot-state\webui\websocket_<chat-id>.jsonl
 可复跑 50 次测量（不读写用户数据库、聊天或项目文件）：
 
 ```powershell
-$env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\nanobot;E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src'
-& E:\codex-local\nanobot-devpilot-agent\nanobot\.venv\Scripts\python.exe `
-  E:\codex-local\nanobot-devpilot-agent\devpilot-agent\scripts\h10_lifecycle_benchmark.py
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+$env:PYTHONPATH="$repoRoot\nanobot;$repoRoot\devpilot-agent\src"
+& "$repoRoot\nanobot\.venv\Scripts\python.exe" `
+  "$repoRoot\devpilot-agent\scripts\h10_lifecycle_benchmark.py"
 ```
 
 H9 的 24 个固定用例来自 `test_h9_harness_selection.py` 中的宿主固定 runner 场景；本轮运行了
@@ -82,8 +103,9 @@ H9 的 24 个固定用例来自 `test_h9_harness_selection.py` 中的宿主固�
 
 ## 隔离恢复演练
 
-正式数据与聊天未被复制或改写。新建的证据目录为
-`E:\codex-local\nanobot-state\h10-recovery-20260914`，独立数据库从空库迁移到
+正式数据与聊天未被复制或改写。历史现场新建的证据目录为
+`E:\codex-local\nanobot-state\h10-recovery-20260914`；复跑时应在当前电脑的临时状态根目录
+新建隔离目录，独立数据库从空库迁移到
 `0016_h9_harness_selection_records (head)`。随后在独立 pytest 基目录运行下列恢复分支：
 
 - 不兼容持久 Driver 恢复为 `default-react`，保留 checkpoint；
@@ -96,15 +118,16 @@ H9 的 24 个固定用例来自 `test_h9_harness_selection.py` 中的宿主固�
 可在其他电脑或本机再次演练（只会新建传入的 E 盘目录，绝不覆盖正式状态）：
 
 ```powershell
-$recoveryRoot = 'E:\codex-local\nanobot-state\h10-recovery-<date>'
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+$recoveryRoot = Join-Path (Split-Path $repoRoot -Parent) 'nanobot-state\h10-recovery-<date>'
 New-Item -ItemType Directory -Path $recoveryRoot -ErrorAction Stop
 $env:DEVPILOT_DATABASE_URL = "sqlite:///" + (($recoveryRoot -replace '\\','/') + '/devpilot.db')
 $env:DEVPILOT_DATA_DIR = $recoveryRoot
-cd E:\codex-local\nanobot-devpilot-agent\devpilot-agent
+Set-Location "$repoRoot\devpilot-agent"
 & .\.venv\Scripts\alembic.exe upgrade head
-$env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\nanobot;E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src'
-& E:\codex-local\nanobot-devpilot-agent\nanobot\.venv\Scripts\python.exe -m pytest `
-  E:\codex-local\nanobot-devpilot-agent\nanobot\tests\agent\test_loop_handoff.py -q `
+$env:PYTHONPATH="$repoRoot\nanobot;$repoRoot\devpilot-agent\src"
+& "$repoRoot\nanobot\.venv\Scripts\python.exe" -m pytest `
+  "$repoRoot\nanobot\tests\agent\test_loop_handoff.py" -q `
   -k 'restores_default_when_persisted_driver_is_incompatible or durable_unsettled_checkpoint_pauses_when_session_snapshot_is_missing or result_saved_before_handoff_checkpoint_pauses_instead_of_replaying'
 ```
 
@@ -115,10 +138,15 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\nanobot;E:\codex-local\na
 
 ### 启动与最短自检
 
-在 E 盘现有仓库根目录执行：
+在当前仓库根目录执行（不要假设固定盘符）：
+
+> 注意：`start-integrated-harness.ps1` 的 `StateRoot`/`AllowedRoots` 仍保留 E: 盘安全门禁；
+> 新电脑没有 E: 时不要绕过该门禁，应先按计划调整并重新做双轴复核。下列仓库内测试命令
+> 可以使用任意仓库盘符。
 
 ```powershell
-cd E:\codex-local\nanobot-devpilot-agent
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+Set-Location $repoRoot
 powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1
 ```
 
@@ -134,7 +162,8 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 已有仓库时原地同步，先检查本地改动；有改动则先自行提交或备份，绝不执行 reset/覆盖：
 
 ```powershell
-cd E:\codex-local\nanobot-devpilot-agent
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+Set-Location $repoRoot
 git status --short
 git pull --ff-only origin handoff-2026-09-01
 ```
@@ -166,15 +195,16 @@ nanobot；这不是 H2–H9 管理的候选工具。通过 `/plugins` 和 `devpi
 
 ## H10 验收状态
 
-- **H10-A：待补同一场景证据。** H2 的完整 lifecycle、H6 的 define→trial→activate→stop→remove
-  现场记录和 H8 安全边界切换记录均保留在原生 WebUI event log；本轮再次以真实 DeepSeek +
-  WebSocket 验证 Profile 后的模型管理 Tool 调用与流式输出，修复了命令历史导致的错误提前暂停。
-  但尚未在同一新建网页场景中重新串联项目提案、聊天确认、FC 验证、结果查询与撤销，不能用上述
-  分段证据替代该验收。
+- **H10-A：仍待真实 FC 证据。** 本轮已经在同一新建 WebUI 场景中完成本地确定性
+  `项目提案 → 聊天确认 → apply_verify → 结果查询 → 撤销 → 刷新重连`，但后端是 fake，不能
+  替代真实 FC；H2 的完整 lifecycle、H6 的 define→trial→activate→stop→remove 现场记录和
+  H8 安全边界切换记录仍保留在原生 WebUI event log。真实 DeepSeek + WebSocket 的模型管理
+  Tool 调用与流式输出也已验证，不能将本地 fake 回执或分段记录合并冒充 H10-A。
 - **H10-B：完成。** 本轮聚焦回归、前端 lint 与生产 build 均已通过。
 - **H10-C：完成。** 隔离数据库迁移及三类缺失/不兼容恢复分支已可复现。
-- **H10-D：完成。** 本文分别标注本轮实测、历史现场记录、自动化证据和 provider-default 的
-  明确限制；未把 FC 的网络隔离未知或 H9 的安全回执缺失写成已实现能力。
+- **H10-D：待 H10-A 最终复核。** 本文已分别标注本轮实测、历史现场记录、自动化证据、
+  本地 fake 限制和 provider-default 边界；最终交付状态仍需真实 FC 证据及双轴增量复核，
+  未把本轮本地闭环写成 H10 完成。
 
 当前 FC `provider-default` 模式不提供“禁网且无副作用”的可信回执，因此 H9 会拒绝将这类
 试用结果提升为持久选择。这是故意的 fail-closed 限制，不是本机回退执行；FC 控制台或服务端
@@ -183,16 +213,17 @@ nanobot；这不是 H2–H9 管理的候选工具。通过 `/plugins` 和 `devpi
 ## 本轮回归命令
 
 ```powershell
-$env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\nanobot;E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src'
-& E:\codex-local\nanobot-devpilot-agent\nanobot\.venv\Scripts\python.exe -m pytest `
-  devpilot-agent/tests/test_p2a_migration.py `
-  devpilot-agent/tests/test_h6_model_plugins.py `
-  devpilot-agent/tests/test_h8_remote_strategy_catalog.py `
-  devpilot-agent/tests/test_h9_harness_selection.py `
-  devpilot-agent/tests/test_h9_harness_oracle.py `
-  nanobot/tests/agent/test_loop_handoff.py `
-  nanobot/tests/command/test_plugin_commands.py -q
-cd E:\codex-local\nanobot-devpilot-agent\nanobot\webui
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+$env:PYTHONPATH="$repoRoot\nanobot;$repoRoot\devpilot-agent\src"
+& "$repoRoot\nanobot\.venv\Scripts\python.exe" -m pytest `
+  "$repoRoot\devpilot-agent\tests\test_p2a_migration.py" `
+  "$repoRoot\devpilot-agent\tests\test_h6_model_plugins.py" `
+  "$repoRoot\devpilot-agent\tests\test_h8_remote_strategy_catalog.py" `
+  "$repoRoot\devpilot-agent\tests\test_h9_harness_selection.py" `
+  "$repoRoot\devpilot-agent\tests\test_h9_harness_oracle.py" `
+  "$repoRoot\nanobot\tests\agent\test_loop_handoff.py" `
+  "$repoRoot\nanobot\tests\command\test_plugin_commands.py" -q
+Set-Location "$repoRoot\nanobot\webui"
 npm run lint
 npm run build
 ```

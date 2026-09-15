@@ -338,6 +338,7 @@ async def test_runner_calls_run_level_hooks_on_success():
             {
                 "prompt_tokens": 3,
                 "completion_tokens": 2,
+                "calls": 1,
                 "total_tokens": 5,
                 "provider_tokens": 5,
             },

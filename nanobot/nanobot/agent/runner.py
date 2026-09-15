@@ -588,7 +588,11 @@ class AgentRunner:
             # compatibility adapter may expose a truthy flag while returning
             # no calls; entering the tool branch then creates an invalid H8
             # ownership boundary instead of finishing the response.
-            if context.tool_calls:
+            # A provider may attach malformed or stale tool calls to a
+            # terminal response.  The normalized response contract is
+            # authoritative: only tool-capable finish reasons may dispatch
+            # side effects (never length, refusal, content-filter, or error).
+            if context.tool_calls and response.should_execute_tools:
                 if hook.wants_streaming():
                     await hook.on_stream_end(context, resuming=True)
 
