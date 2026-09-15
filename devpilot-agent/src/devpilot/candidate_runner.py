@@ -235,6 +235,9 @@ class CandidateTrialRequest:
     input_data: object
     timeout_seconds: int = CANDIDATE_TIMEOUT_SECONDS
     execution_mode: str = "trial"
+    # Host-only, secret-free decision summary retained with the operation
+    # receipt. It never crosses the FC data boundary.
+    autonomy: Mapping[str, str] | None = None
     # Host-only cancellation probe. It is intentionally excluded from the
     # manifest/input hashes and never crosses the FC data boundary.
     cancel_requested: Callable[[], bool] | None = None
@@ -290,6 +293,23 @@ class CandidateExecutionResult:
             "side_effect_count": self.side_effect_count,
             "permission_violation": self.permission_violation,
         }
+
+
+def _autonomy_audit(value: Mapping[str, str] | None) -> dict[str, str]:
+    """Keep only the fixed, non-sensitive H11 decision fields in receipts."""
+    if not isinstance(value, Mapping):
+        return {}
+    allowed = {
+        "access_mode": {"restricted", "full"},
+        "decision": {"deny", "confirm", "auto", "notice"},
+        "input_class": {"fixture", "task", "sensitive", "unknown"},
+    }
+    result: dict[str, str] = {}
+    for key, values in allowed.items():
+        item = value.get(key)
+        if isinstance(item, str) and item in values:
+            result[key] = item
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -1242,6 +1262,7 @@ class CandidateTrialRunner:
             "version": manifest.version,
             "source_hash": source_hash,
             "input_hash": input_hash,
+            "autonomy": _autonomy_audit(request.autonomy),
         }
         return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
@@ -1375,6 +1396,7 @@ class CandidateTrialRunner:
                 "run_id": run_id,
                 "sandbox_id": None,
                 "lease_token": None,
+                "autonomy": _autonomy_audit(request.autonomy),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1426,6 +1448,7 @@ class CandidateTrialRunner:
                     "session_id": request.session_id,
                     "project_id": request.project_id,
                     "operation_hash": operation_hash,
+                    "autonomy": _autonomy_audit(request.autonomy),
                 }
             )
             serialized = json.dumps(

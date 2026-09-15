@@ -771,6 +771,33 @@ def test_persisted_result_is_replayed_after_runner_restart() -> None:
     assert second_backend.requests == []
 
 
+def test_h11_persists_only_the_safe_autonomy_summary_with_a_live_operation() -> None:
+    store = MemoryIdempotencyStore()
+    request = replace(
+        request_for(),
+        execution_mode="live",
+        autonomy={
+            "access_mode": "full",
+            "decision": "notice",
+            "input_class": "task",
+            "untrusted_extra": "must-not-persist",
+        },
+    )
+
+    result = runner_for(RecordingBackend(), store=store).execute(request)
+
+    assert result.status == "passed"
+    operation_key = runner_for(RecordingBackend(), store=store)._operation_key(request)
+    _request_hash, response_json = store.records[operation_key]
+    payload = json.loads(response_json or "")
+    assert payload["autonomy"] == {
+        "access_mode": "full",
+        "decision": "notice",
+        "input_class": "task",
+    }
+    assert "untrusted_extra" not in json.dumps(payload, sort_keys=True)
+
+
 def test_persisted_candidate_record_requires_scope_and_operation_hash() -> None:
     store = MemoryIdempotencyStore()
     request = request_for()

@@ -361,7 +361,9 @@ async def test_h11_webui_modes_auto_trial_but_only_full_auto_calls_real_candidat
             )["ok"]
             view = manager.live_tools_for_session(base, "session:one")
             blocked = json.loads(await view.execute("model-h11", {"value": "real task"}))
-            assert blocked["code"] == "PLUGIN_AUTHORIZATION_REQUIRED"
+            assert blocked["code"] == "CANDIDATE_REAL_INPUT_CONFIRMATION_REQUIRED"
+            assert "已验证临时工具" in blocked["message"]
+            assert "本次任务" in blocked["message"]
             assert runner.executions == []
     finally:
         reset_workspace_scope(restricted_scope)
@@ -378,6 +380,11 @@ async def test_h11_webui_modes_auto_trial_but_only_full_auto_calls_real_candidat
 
     assert result["ok"] is True
     assert len(runner.executions) == 1
+    assert runner.executions[0].autonomy == {
+        "access_mode": "full",
+        "decision": "notice",
+        "input_class": "task",
+    }
 
 
 @pytest.mark.asyncio
@@ -461,7 +468,7 @@ async def test_h11_restricted_confirmation_is_invalidated_by_a_new_candidate_ver
     finally:
         reset_workspace_scope(scope)
 
-    assert blocked["code"] == "PLUGIN_AUTHORIZATION_REQUIRED"
+    assert blocked["code"] == "CANDIDATE_REAL_INPUT_CONFIRMATION_REQUIRED"
     assert len(runner.executions) == 1
 
 

@@ -695,6 +695,30 @@ class ModelCandidateController:
             raise RuntimeError("model candidate manager is not bound")
         return self._manager
 
+    def _autonomy_summary(
+        self,
+        *,
+        operation: str,
+        input_class: str,
+        budget_available: bool = True,
+        candidate_trialled: bool = True,
+    ) -> dict[str, str] | None:
+        scope = current_workspace_scope()
+        if scope is None or scope.source_channel != "websocket":
+            return None
+        decision = self._autonomy_policy.decide(
+            access_mode=scope.access_mode,
+            operation=operation,
+            input_class=input_class,
+            budget_available=budget_available,
+            candidate_trialled=candidate_trialled,
+        )
+        return {
+            "access_mode": scope.access_mode,
+            "decision": decision,
+            "input_class": input_class,
+        }
+
     def _registration(
         self,
         plugin_id: str,
@@ -721,16 +745,15 @@ class ModelCandidateController:
                 "当前任务 Profile 未启用模型候选插件；不能仅靠聊天确认绕过配置",
             )
         manager = self._require_manager()
-        workspace_scope = current_workspace_scope()
+        autonomy = self._autonomy_summary(
+            operation=operation,
+            input_class=input_class,
+            budget_available=budget_available,
+            candidate_trialled=candidate_trialled,
+        )
         h11_confirmation = False
-        if workspace_scope is not None and workspace_scope.source_channel == "websocket":
-            decision = self._autonomy_policy.decide(
-                access_mode=workspace_scope.access_mode,
-                operation=operation,
-                input_class=input_class,
-                budget_available=budget_available,
-                candidate_trialled=candidate_trialled,
-            )
+        if autonomy is not None:
+            decision = autonomy["decision"]
             if decision == "deny":
                 return _error(
                     "CANDIDATE_AUTONOMY_DENIED",
@@ -768,6 +791,13 @@ class ModelCandidateController:
             "approve plugin",
         }
         if not explicit:
+            if h11_confirmation:
+                return _error(
+                    "CANDIDATE_REAL_INPUT_CONFIRMATION_REQUIRED",
+                    "已验证临时工具；是否允许它在本次任务处理当前允许的数据？"
+                    "确认后，同一候选版本、输入规则和预算范围内无需重复确认。",
+                    requires_user_confirmation=True,
+                )
             return _error(
                 "PLUGIN_AUTHORIZATION_REQUIRED",
                 "请先在 nanobot 对话中明确回复‘确认试用’或‘确认启用’，再执行候选插件动作",
@@ -979,6 +1009,9 @@ class ModelCandidateController:
                 source=source,
                 input_data=_fixed_trial_input(rules),
                 timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
+                autonomy=self._autonomy_summary(
+                    operation="trial", input_class="fixture", candidate_trialled=False
+                ),
             )
             result = await asyncio.to_thread(runner.trial, request)
             payload = result.to_dict()
@@ -1319,11 +1352,18 @@ class ModelCandidateController:
                 )
             if artifact_rules != rules:
                 return _error("CANDIDATE_CONTRACT_CHANGED", "候选输入契约已变化，必须重新试用")
+            input_class = _candidate_input_class(input_data)
+            budget_available = _live_budget_available(runner, context[3])
+            autonomy = self._autonomy_summary(
+                operation="call",
+                input_class=input_class,
+                budget_available=budget_available,
+            )
             authorization_error = self._authorize(
                 context,
                 operation="call",
-                input_class=_candidate_input_class(input_data),
-                budget_available=_live_budget_available(runner, context[3]),
+                input_class=input_class,
+                budget_available=budget_available,
                 confirmation_binding={
                     "plugin_id": registration.record.manifest.plugin_id,
                     "version": registration.record.manifest.version,
@@ -1361,6 +1401,7 @@ class ModelCandidateController:
                 input_data=dict(input_data),
                 timeout_seconds=CANDIDATE_TIMEOUT_SECONDS,
                 execution_mode="live",
+                autonomy=autonomy,
             )
             result = await asyncio.to_thread(runner.execute, request)
             return _json({"ok": result.status == "passed", "result": result.to_dict()})
