@@ -4,9 +4,10 @@
 
 For runtime plugin / self-evolving Harness work, also read
 `devpilot-agent/docs/plans/LIVE_HARNESS_EXTENSION.md` in full. It defines the
-proposed H1–H10 extension and explicit exceptions to the old startup-only plugin
-scope. P0–P8 remain historical completed work; H1 and H2 are implemented and
-passed their batched review, and H3–H10 are not implemented.
+H1–H11 extension and explicit exceptions to the old startup-only plugin
+scope. P0–P8 remain historical completed work; H1–H11 are implemented and
+their acceptance/review evidence is recorded in the plan and evidence
+directory.
 When the user asks to implement this extension, follow its contracts and node
 order instead of interpreting the old no-hot-unload/no-Loop-change rules as a
 ban on the newly requested capability. Existing execution permissions remain.
@@ -16,7 +17,11 @@ future code reviews still follow the batched Standards/Spec procedure below.
 This repository contains the nanobot agent and the DevPilot control plane. The
 project also vendors Matt Pocock's engineering skills under
 `agent-skills/mattpocock-skills/skills/` so that every coding agent can use the
-same workflow after cloning the repository.
+same workflow after cloning the repository. As of 2026-09-15, the frozen
+P0–P8 plan and the H1–H11 Live Harness extension are complete according to
+their recorded acceptance evidence; the status records and explicit limits in
+`devpilot-agent/docs/plans/CURRENT_PLAN.md` and
+`devpilot-agent/docs/plans/LIVE_HARNESS_EXTENSION.md` are authoritative.
 
 ## Required skill workflow
 

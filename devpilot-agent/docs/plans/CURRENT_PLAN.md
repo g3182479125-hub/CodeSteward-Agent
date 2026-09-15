@@ -3,9 +3,9 @@
 2026-09-10 扩展入口：[运行中可重组 Harness 计划](LIVE_HARNESS_EXTENSION.md)。
 用户要求规划 H1–H10：工具热插拔、模型动态插件、Loop 接续和反馈选择；随后明确新增 H11，
 使模型候选工具的打扰程度与 nanobot 现有“默认权限 / 完全访问权限”一致。
-本计划的 P0–P8 完成状态不代表该扩展完成；H1–H10 已完成，H7 已完成默认 Driver、托管检查点、自动化验收及双轴增量复核；H10-A 的真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成；H 阶段实施以扩展文档的明确范围例外为准，
-保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期、H3 版本更新/资源清理、H4 有限依赖组合与 H5 模型候选执行边界已完成专项验收和双轴审查；H5 最新候选为 `e08299e`，H6–H10
-H6 实现落点为 `nanobot/nanobot/agent/plugins/manager.py` 与 `devpilot-agent/src/devpilot/model_plugins.py`，证据见 `devpilot-agent/docs/evidence/live-harness/`，最终报告见 `devpilot-agent/docs/reviews/h6-final-review-b55c027.md`；历史报告见
+本计划的 P0–P8 与 H1–H11 均已完成各自验收；H7 已完成默认 Driver、托管检查点、自动化验收及双轴增量复核；H10-A 的真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成；H11-A–E 及其双轴增量复核也已完成。H 阶段实施以扩展文档的明确范围例外为准，
+保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期、H3 版本更新/资源清理、H4 有限依赖组合与 H5 模型候选执行边界已完成专项验收和双轴审查；H5 最新候选为 `e08299e`；H6–H11 的实现、证据和复核记录见 `devpilot-agent/docs/evidence/live-harness/` 与 `devpilot-agent/docs/reviews/`。
+H6 实现落点为 `nanobot/nanobot/agent/plugins/manager.py` 与 `devpilot-agent/src/devpilot/model_plugins.py`，最终报告见 `devpilot-agent/docs/reviews/h6-final-review-b55c027.md`；历史报告见
 `devpilot-agent/docs/reviews/h1-*-review-2930119.md`、`h2-*-review-b8141f0.md` 和
 `h3-*-review-6159add.md`、`h4-*-review-78456c6.md`、`h5-*-review-e08299e.md`。
 
@@ -122,7 +122,9 @@ P5 记录为 complete，证据主要为
 实际源码均在仓库根的 `devpilot-agent/src/devpilot/` 与 `nanobot/nanobot/`。
 开发前按上表找现有模块，禁止仅为匹配旧目录图搬迁文件或再加转接层。
 
-## 5. 剩余节点（顺序执行）
+## 5. 节点规格与验收条件（当前均已完成）
+
+以下保留 P6–P8 的原始规格、实施边界和验收条件，供追溯已完成交付和后续变更影响；当前不存在需要按顺序继续执行的冻结节点。
 
 ### P6-01：真实入口与执行契约
 
@@ -249,7 +251,7 @@ P5 记录为 complete，证据主要为
 - **退出**：换机启动且三个任务可重演；说明哪些来自 nanobot、哪些借鉴 Harness、
   哪些是本项目实现。完整沙箱版要求 P6 通过；P6 阻断时只发布明确标注未验收的演示。
 
-这是基础版交付，不代表 P8 完成；P8-02 在同一份说明和评测材料中补最终交付，
+这是基础版交付；P8-02 在同一份说明和评测材料中补齐最终交付，
 不复制一套安装系统或文档。
 
 ### P8：可验证的 Skill 持续改进
@@ -468,7 +470,7 @@ reviewer ID/覆盖范围/结论 | 剩余项 | 下一步`。已有字段可直接
 
 ## 8. 范围与交付纪律
 
-### 每个剩余节点的实施输入与交付
+### 每个节点的实施输入与交付记录
 
 | 节点 | 开发前输入 | 最小交付（在原节点证据中记录） |
 |---|---|---|
