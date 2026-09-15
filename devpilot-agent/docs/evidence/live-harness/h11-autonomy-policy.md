@@ -1,6 +1,6 @@
 # H11 权限模式驱动候选工具自主策略：实现预检
 
-状态：实现候选，待 ADR-0004 Standards / Spec 双轴审查；不得据此写 H11 完成。
+状态：实现候选，ADR-0004 双轴审查因两个完成但空输出的 reviewer turn 而阻断；不得据此写 H11 完成。详见 `docs/reviews/h11-review-blocked-654f340.md`。
 
 基线：`3b37fd0`（H11 冻结计划）。本批次只修改候选工具授权决策；不修改
 WebUI 控件、项目 Apply/Verify/Rollback、P8 Skill、FC 执行契约或 nanobot Shell 权限。
@@ -40,7 +40,7 @@ nanobot\.venv\Scripts\python.exe -m ruff check devpilot-agent\src\devpilot devpi
 
 ## 待完成
 
-- 固定实现 SHA 后按 ADR-0004 派发同一对 Standards / Spec 审查员。
+- 在可输出报告的环境中复用同一对 Standards / Spec 审查员，取得两份明确报告。
 - 对有效问题批量修复、运行受影响检查、由原审查员增量复核。
 - 完成真实 WebUI + 既有 FC 的默认/完全访问各一条演示，保存脱敏证据；没有真实
   证据时不能声称 H11-E 通过。
