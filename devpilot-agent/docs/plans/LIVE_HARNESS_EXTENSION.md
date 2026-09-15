@@ -1,6 +1,6 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.7，2026-09-15；状态：H1–H10 已完成节点验收；H10-A/H10-B/H10-C/H10-D 均已完成，交付复核见 `docs/reviews/h10-product-review-2026-09-15.md`。H11“权限模式驱动候选工具自主策略”已有实现候选，正按 ADR-0004 审查，尚未完成。
+版本：0.7，2026-09-15；状态：H1–H10 已完成节点验收；H10-A/H10-B/H10-C/H10-D 均已完成，交付复核见 `docs/reviews/h10-product-review-2026-09-15.md`。H11“权限模式驱动候选工具自主策略”已完成 H11-A–E 验收，并按 ADR-0004 通过 Standards/Spec 双轴增量复核；最终候选为 `fd7de83`，证据见 `docs/evidence/live-harness/h11-autonomy-policy.md`。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
 增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8 已完成真实验收；H9 已完成固定 Host oracle、插件/Loop 选择账本、安全回执和最终双轴复核。H10-A 已通过真实 DeepSeek + nanobot WebUI + 既有 FC 配置完成全链路证据，H10-B/H10-C/H10-D 已完成；本轮本地 fake 仍单独标注，不计入 H10-A。本文件仍是 H 阶段的
@@ -426,7 +426,7 @@ Driver，避免未授权投影和本机执行。
 | H8 | 已完成 | H8-A–I 真实验收、证据与双轴审查均已通过；可进入 H9 |
 | H9 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h9-selection.md`、`docs/reviews/h9-*-review-2026-09-14.md`；provider-default 无安全回执时 fail-closed |
 | H10 | 已完成并通过交付复核 | `docs/evidence/live-harness/h10-delivery.md`、`docs/reviews/h10-product-review-2026-09-15.md`：启动门禁、原生 WebUI 会话、并发、50 次装卸、隔离恢复、生产 build、用户指南及命令历史回归已完成；本轮同一真实 WebUI 会话已补齐既有 FC 配置下的项目提案→聊天确认→FC 验证→结果查询→受保护撤销→刷新重连→回滚后哈希复核；fake 证据仍单独标注。 |
-| H11 | 实现候选、首轮审查发现待修复 | 本文 §6 H11；首轮 Standards/Spec 报告见 `docs/reviews/h11-standards-review-62540b5.md`、`docs/reviews/h11-spec-review-62540b5.md`，修复与增量复核未完成。复用现有 WebUI 默认/完全访问权限，不新增按钮。 |
+| H11 | 已完成并通过双轴增量复核 | 本文 §6 H11；实现与 H11-A–E 证据见 `docs/evidence/live-harness/h11-autonomy-policy.md`，首轮报告见 `docs/reviews/h11-standards-review-62540b5.md`、`docs/reviews/h11-spec-review-62540b5.md`，最终增量报告见 `docs/reviews/h11-standards-recheck-fd7de83.md`、`docs/reviews/h11-spec-recheck-fd7de83.md`。复用现有 WebUI 默认/完全访问权限，不新增按钮；provider-default 限制保持明确。 |
 
 ## 8. 下一条开发指令
 

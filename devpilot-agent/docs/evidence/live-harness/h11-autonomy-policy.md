@@ -1,9 +1,11 @@
 # H11 权限模式驱动候选工具自主策略：实现与现场证据
 
-状态：实现与 H11-E 真实 WebUI/FC 证据已完成；首轮 ADR-0004 双轴审查已取得实际报告，
-报告发现的问题正在集中修复，**不得据此写 H11 完成**。首轮报告分别为
+状态：实现与 H11-E 真实 WebUI/FC 证据已完成；ADR-0004 双轴审查与增量复核均已取得实际
+报告，H11-A–E 验收完成。最终代码候选为 `fd7de83`；首轮报告分别为
 `docs/reviews/h11-standards-review-62540b5.md` 与
-`docs/reviews/h11-spec-review-62540b5.md`。
+`docs/reviews/h11-spec-review-62540b5.md`，最终增量报告分别为
+`docs/reviews/h11-standards-recheck-fd7de83.md` 与
+`docs/reviews/h11-spec-recheck-fd7de83.md`。
 
 基线：`3b37fd0`（H11 冻结计划）。本批次只修改候选工具授权决策；不修改
 WebUI 控件、项目 Apply/Verify/Rollback、P8 Skill、FC 执行契约或 nanobot Shell 权限。
@@ -86,4 +88,22 @@ remove → inspect，候选列表为 `[]`。这同时证明修正后的提示在
 不一致；Spec 报告确认 H11 自治策略误影响 H9/Loop、撤销未停止候选路由且旧 proxy
 可重放，以及自治审计未覆盖生命周期/拒绝/清理。修复批次将 H11 入口与旧 H9 路径
 分离，在撤销时停止候选路由并拒绝非活动注册，同时复用 PluginManager 既有 operation
-ledger 记录每个自治决策。修复候选需由同一两位 reviewer 做增量复核。
+ledger 记录每个自治决策。该批次已由同一两位 reviewer 完成增量复核，SPEC-01/02/03
+与 STD-01/02 均已关闭，两个轴最终均为 PASS。
+
+## 最终验证
+
+候选 `fd7de83` 的集成环境检查：
+
+```powershell
+$env:PYTHONPATH='.;..\devpilot-agent\src'
+.venv\Scripts\python.exe -m pytest ..\devpilot-agent\tests -q
+# exit 0
+.venv\Scripts\python.exe -m pytest ..\devpilot-agent\tests\test_h5_candidate_runner.py ..\devpilot-agent\tests\test_h6_model_plugins.py ..\devpilot-agent\tests\test_h11_candidate_autonomy.py -q
+# 66 passed
+.venv\Scripts\python.exe -m pytest tests/agent/test_plugin_contracts.py tests/agent/test_plugin_h3.py tests/agent/test_plugin_h4.py tests/agent/test_plugin_manager.py tests/agent/test_workspace_scope.py tests/channels/test_websocket_devpilot_confirmation.py -q
+# 68 passed
+```
+
+两侧 Ruff 与 `git diff --check` 均退出 0。全量 Pyright 仍有既存跨项目 strict 错误；
+最终增量复核未重跑真实 WebUI/FC，H11-E 现场证据沿用本文前述 2026-09-15 记录。
