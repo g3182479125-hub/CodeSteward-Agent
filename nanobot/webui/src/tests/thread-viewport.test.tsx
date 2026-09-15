@@ -215,6 +215,91 @@ function ViewportWithPromptNavigator({ messages }: { messages: UIMessage[] }) {
 }
 
 describe("ThreadViewport", () => {
+  it("keeps the running indicator directly after the live message stream", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_125_000));
+    const { container, rerender } = render(
+      <ThreadViewport
+        messages={[
+          { id: "u1", role: "user", content: "请检查折扣", createdAt: 1 },
+          { id: "a1", role: "assistant", content: "我正在检查。", createdAt: 2 },
+        ]}
+        isStreaming
+        runStartedAt={1000}
+        composer={<div data-testid="composer" />}
+      />,
+    );
+
+    const status = screen.getByRole("status");
+    const messageRegion = container.querySelector("[data-testid='thread-message-region']");
+      expect(status).toHaveTextContent(/Running/);
+      expect(status).toHaveTextContent(/2:05/);
+      expect(status.querySelector(".run-pulse-icon")).toHaveClass("animate-spin");
+    expect(status.closest("[data-thread-run-status]")).not.toBeNull();
+    expect(messageRegion?.contains(status)).toBe(true);
+
+    rerender(
+      <ThreadViewport
+        messages={[
+          { id: "u1", role: "user", content: "请检查折扣", createdAt: 1 },
+          { id: "a1", role: "assistant", content: "检查完成。", createdAt: 2 },
+        ]}
+        isStreaming={false}
+        runStartedAt={null}
+        composer={<div data-testid="composer" />}
+      />,
+    );
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("shows a rotating running state before the server supplies a start time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_125_000));
+    render(
+      <ThreadViewport
+        messages={[{ id: "u1", role: "user", content: "请检查折扣", createdAt: 1 }]}
+        isStreaming
+        runStartedAt={null}
+        composer={<div data-testid="composer" />}
+      />,
+    );
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/Running/);
+    expect(status).toHaveTextContent(/0s/);
+    expect(status.querySelector(".run-pulse-icon")).toHaveClass(
+      "animate-spin",
+      "motion-reduce:animate-none",
+    );
+    vi.useRealTimers();
+  });
+
+  it("keeps active goal details with the running indicator", async () => {
+    const longObjective =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123456789GoalTail";
+    render(
+      <ThreadViewport
+        messages={messages}
+        isStreaming
+        runStartedAt={1000}
+        goalState={{
+          active: true,
+          objective: longObjective,
+          ui_summary: "Short summary for strip",
+        }}
+        composer={<div />}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show full goal" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Goal" });
+    expect(dialog).toHaveTextContent("Short summary for strip");
+    expect(dialog).toHaveTextContent(longObjective);
+  });
+
   it("keeps reasoning disclosure anchored for pointer and keyboard toggles", () => {
     const takeUserControl = vi.spyOn(
       ThreadMotionCoordinator.prototype,

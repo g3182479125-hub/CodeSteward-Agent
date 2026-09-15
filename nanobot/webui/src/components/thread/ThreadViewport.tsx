@@ -13,6 +13,7 @@ import { ArrowDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { PromptRail } from "@/components/thread/PromptRail";
+import { RunElapsedStrip } from "@/components/thread/ThreadComposer";
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
 import { isAgentActivityMember } from "@/components/thread/AgentActivityCluster";
 import { ThreadCameraController } from "@/components/thread/thread-camera";
@@ -26,7 +27,7 @@ import {
   promptTop,
 } from "@/components/thread/promptNavigation";
 import { cn } from "@/lib/utils";
-import type { CliAppInfo, McpPresetInfo, SlashCommand, UIMessage } from "@/lib/types";
+import type { CliAppInfo, GoalStateWsPayload, McpPresetInfo, SlashCommand, UIMessage } from "@/lib/types";
 
 export interface ThreadViewportHandle {
   jumpToUserPrompt: (promptId: string) => void;
@@ -37,6 +38,8 @@ interface ThreadViewportProps {
   messages: UIMessage[];
   temporary?: boolean;
   isStreaming: boolean;
+  runStartedAt?: number | null;
+  goalState?: GoalStateWsPayload;
   composer: ReactNode;
   emptyState?: ReactNode;
   scrollToBottomSignal?: number;
@@ -160,6 +163,8 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   messages,
   temporary = false,
   isStreaming,
+  runStartedAt = null,
+  goalState,
   composer,
   emptyState,
   scrollToBottomSignal = 0,
@@ -686,6 +691,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   messages={visibleMessages}
                   temporary={temporary}
                   isStreaming={isStreaming}
+                  activeTurnId={activeTurnId}
                   hiddenUserMessageCount={hiddenUserMessageCount}
                   cliApps={cliApps}
                   mcpPresets={mcpPresets}
@@ -694,6 +700,11 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   onOpenFilePreview={onOpenFilePreview}
                   onForkFromMessage={onForkFromMessage}
                   onQuoteSelection={onQuoteSelection}
+                />
+                <RunElapsedStrip
+                  startedAt={runStartedAt}
+                  goalState={goalState}
+                  active={isStreaming}
                 />
               </div>
               <div ref={bottomRef} aria-hidden className="h-px shrink-0" />

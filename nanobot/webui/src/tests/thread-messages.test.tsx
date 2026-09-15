@@ -947,6 +947,34 @@ describe("ThreadMessages", () => {
     expect(screen.getByText("final reply")).toBeInTheDocument();
   });
 
+  it("defers trailing assistant actions until the active turn finishes", () => {
+    const messages: UIMessage[] = [
+      { id: "u1", role: "user", content: "earlier question", createdAt: 1 },
+      { id: "a1", role: "assistant", content: "earlier answer", turnId: "old", createdAt: 2 },
+      { id: "u2", role: "user", content: "current question", turnId: "active", createdAt: 3 },
+      { id: "a2", role: "assistant", content: "current progress", turnId: "active", createdAt: 4 },
+    ];
+    const onForkFromMessage = vi.fn();
+    const { rerender } = render(
+      <ThreadMessages
+        messages={messages}
+        isStreaming
+        activeTurnId="active"
+        onForkFromMessage={onForkFromMessage}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "Fork" })).toHaveLength(1);
+
+    rerender(
+      <ThreadMessages messages={messages} isStreaming={false} onForkFromMessage={onForkFromMessage} />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(4);
+    expect(screen.getAllByRole("button", { name: "Fork" })).toHaveLength(2);
+  });
+
   it("shows copy on adjacent assistant text slices", () => {
     const messages: UIMessage[] = [
       { id: "a1", role: "assistant", content: "part one", createdAt: 1 },

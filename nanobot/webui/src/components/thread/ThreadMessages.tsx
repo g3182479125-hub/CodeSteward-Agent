@@ -11,6 +11,8 @@ interface ThreadMessagesProps {
   temporary?: boolean;
   /** When true, agent turn still in flight — keeps activity timeline expanded. */
   isStreaming?: boolean;
+  /** Stable identity of the whole active turn, when supplied by the shell. */
+  activeTurnId?: string | null;
   hiddenUserMessageCount?: number;
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
@@ -53,6 +55,7 @@ export function ThreadMessages({
   messages,
   temporary = false,
   isStreaming = false,
+  activeTurnId = null,
   hiddenUserMessageCount = 0,
   cliApps = [],
   mcpPresets = [],
@@ -109,6 +112,12 @@ export function ThreadMessages({
           unit.type === "message" && unit.message.role === "assistant" && forkFlags[index]
             ? nextUserIndex
             : undefined;
+        const suppressAssistantActions =
+          isStreaming
+          && !!activeTurnId
+          && unit.type === "message"
+          && unit.message.role === "assistant"
+          && unit.message.turnId === activeTurnId;
         if (
           unit.type === "message"
           && unit.message.role === "user"
@@ -124,6 +133,7 @@ export function ThreadMessages({
             hasBodyBelow={hasBodyBelow}
             deferOffscreenRender={deferOffscreenRender}
             isTurnStreaming={liveActivityClusterIndices.has(index)}
+            suppressAssistantActions={suppressAssistantActions}
             forkIndex={forkIndex}
             showForkBoundary={index === forkBoundaryAfterUnitIndex}
             forkBoundaryLabel={t("thread.forkedFromHistory")}
@@ -147,6 +157,7 @@ interface ThreadDisplayUnitProps {
   hasBodyBelow: boolean;
   deferOffscreenRender: boolean;
   isTurnStreaming: boolean;
+  suppressAssistantActions: boolean;
   forkIndex?: number;
   showForkBoundary: boolean;
   forkBoundaryLabel: string;
@@ -165,6 +176,7 @@ const ThreadDisplayUnit = memo(function ThreadDisplayUnit({
   hasBodyBelow,
   deferOffscreenRender,
   isTurnStreaming,
+  suppressAssistantActions,
   forkIndex,
   showForkBoundary,
   forkBoundaryLabel,
@@ -206,11 +218,14 @@ const ThreadDisplayUnit = memo(function ThreadDisplayUnit({
           <MessageBubble
             message={unit.message}
             temporary={temporary}
+            showCopyAction={!suppressAssistantActions}
             cliApps={cliApps}
             mcpPresets={mcpPresets}
             slashCommands={slashCommands}
             onOpenFilePreview={onOpenFilePreview}
-            onForkFromHere={forkIndex !== undefined ? onForkFromHere : undefined}
+            onForkFromHere={
+              !suppressAssistantActions && forkIndex !== undefined ? onForkFromHere : undefined
+            }
           />
         )}
       </div>
@@ -230,6 +245,7 @@ function threadDisplayUnitPropsEqual(
     && previous.hasBodyBelow === next.hasBodyBelow
     && previous.deferOffscreenRender === next.deferOffscreenRender
     && previous.isTurnStreaming === next.isTurnStreaming
+    && previous.suppressAssistantActions === next.suppressAssistantActions
     && previous.forkIndex === next.forkIndex
     && previous.showForkBoundary === next.showForkBoundary
     && previous.forkBoundaryLabel === next.forkBoundaryLabel

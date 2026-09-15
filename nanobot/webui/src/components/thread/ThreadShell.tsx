@@ -1428,7 +1428,6 @@ export function ThreadShell({
           skills={skills}
           onStop={stop}
           onTranscribeAudio={transcribeAudio}
-          runStartedAt={currentRunStartedAt}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
           workspaceControlsHidden={temporary}
@@ -1471,7 +1470,6 @@ export function ThreadShell({
           sessions={mentionSessions}
           skills={skills}
           surfaceRef={composerSurfaceRef}
-          runStartedAt={currentRunStartedAt}
           onTranscribeAudio={transcribeAudio}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
@@ -1537,6 +1535,8 @@ export function ThreadShell({
             messages={displayMessages}
             temporary={temporary}
             isStreaming={turnActive}
+            runStartedAt={currentRunStartedAt}
+            goalState={currentGoalState}
             emptyState={emptyState}
             composer={composer}
             activeTurnId={viewportTurnId}

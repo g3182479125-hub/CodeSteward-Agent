@@ -42,7 +42,6 @@ import {
   Sparkles,
   Square,
   SquarePen,
-  Target,
   Trash2,
   Undo2,
   X,
@@ -202,8 +201,6 @@ interface ThreadComposerProps {
   onStop?: () => void;
   surfaceRef?: Ref<HTMLDivElement>;
   onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
-  /** Unix seconds from server; turn elapsed timer above input while set. */
-  runStartedAt?: number | null;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
   goalState?: GoalStateWsPayload;
   workspaceScope?: WorkspaceScopePayload | null;
@@ -691,65 +688,57 @@ function mcpPresetMentionPayload(preset: McpPresetInfo): OutboundMcpPresetMentio
 
 function RunPulseIcon() {
   return (
-    <span className="run-pulse-icon relative flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
-      <span className="run-pulse-icon__ring" />
-      <span className="run-pulse-icon__dot" />
-    </span>
+    <Loader2
+      className="run-pulse-icon h-4 w-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+      aria-hidden
+    />
   );
 }
 
-function RunElapsedStrip({
+export function RunElapsedStrip({
   startedAt,
   goalState,
+  active,
 }: {
   startedAt: number | null;
   goalState?: GoalStateWsPayload;
+  /** True while the whole agent turn is still active. */
+  active: boolean;
 }) {
   const { t } = useTranslation();
   const pageVisible = usePageVisibility();
   const [goalPanelOpen, setGoalPanelOpen] = useState(false);
-  const showTimer = startedAt != null;
   const stripLabel = goalStateStripPreview(goalState, t);
-  const showGoal = !!stripLabel?.trim();
-  const active = showTimer || showGoal;
   const [, setTick] = useState(0);
   const stripWrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandToggleRef = useRef<HTMLButtonElement>(null);
-  const stripSnapshotRef = useRef<{
-    startedAt: number | null;
-    goalState?: GoalStateWsPayload;
-    stripLabel: string | null;
-  } | null>(null);
+  const localStartedAtRef = useRef<number | null>(null);
   const [panelMaxPx, setPanelMaxPx] = useState(280);
 
-  if (active) {
-    stripSnapshotRef.current = { startedAt, goalState, stripLabel };
+  if (!active) localStartedAtRef.current = null;
+  if (active && startedAt == null && localStartedAtRef.current == null) {
+    localStartedAtRef.current = Math.floor(Date.now() / 1000);
   }
+  const effectiveStartedAt = startedAt ?? localStartedAtRef.current;
 
   useEffect(() => {
     if (!active) setGoalPanelOpen(false);
   }, [active]);
 
   useEffect(() => {
-    if (startedAt == null || !pageVisible) return;
+    if (!active || effectiveStartedAt == null || !pageVisible) return;
     setTick((n) => n + 1);
     const id = window.setInterval(() => setTick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
-  }, [pageVisible, startedAt]);
+  }, [active, effectiveStartedAt, pageVisible]);
 
-  const display = active
-    ? { startedAt, goalState, stripLabel }
-    : stripSnapshotRef.current;
-  const displayStartedAt = display?.startedAt ?? null;
-  const displayGoalState = display?.goalState;
-  const displayStripLabel = display?.stripLabel ?? null;
-  const displayShowTimer = displayStartedAt != null;
-  const displayShowGoal = !!displayStripLabel?.trim();
+  const displayShowTimer = effectiveStartedAt != null;
+  const displayShowGoal = !!stripLabel?.trim();
 
-  const objectiveFull = displayGoalState?.objective?.trim() ?? "";
-  const summaryFull = displayGoalState?.ui_summary?.trim() ?? "";
-  const canExpandGoal = !!(active && displayGoalState?.active && (objectiveFull || summaryFull));
+  const objectiveFull = goalState?.objective?.trim() ?? "";
+  const summaryFull = goalState?.ui_summary?.trim() ?? "";
+  const canExpandGoal = !!(active && goalState?.active && (objectiveFull || summaryFull));
 
   const markdownBody =
     objectiveFull || summaryFull
@@ -814,7 +803,7 @@ function RunElapsedStrip({
   }, [goalPanelOpen]);
 
   const elapsed =
-    displayStartedAt != null ? Math.max(0, Math.floor(Date.now() / 1000 - displayStartedAt)) : 0;
+    effectiveStartedAt != null ? Math.max(0, Math.floor(Date.now() / 1000 - effectiveStartedAt)) : 0;
   const m = Math.floor(elapsed / 60);
   const sec = elapsed % 60;
   const shortElapsed = m > 0 ? `${m}:${sec.toString().padStart(2, "0")}` : `${sec}s`;
@@ -822,16 +811,17 @@ function RunElapsedStrip({
     ? t("thread.composer.runRuntimeTitle", { elapsed: shortElapsed })
     : null;
 
-  const ariaParts = [timerTitle, displayShowGoal ? displayStripLabel : null].filter(Boolean);
+  const ariaParts = [timerTitle, displayShowGoal ? stripLabel : null].filter(Boolean);
   const ariaLabel = ariaParts.join(" · ");
+
+  if (!active) return null;
 
   return (
     <div
       ref={stripWrapperRef}
-      className="composer-status-drawer relative z-30"
-      data-composer-status-drawer=""
-      data-state={active ? "open" : "closed"}
-      aria-hidden={active ? undefined : true}
+      className="relative mt-2"
+      data-thread-run-status=""
+      data-state="open"
     >
       {goalPanelOpen && canExpandGoal && markdownBody ? (
         <div
@@ -878,18 +868,13 @@ function RunElapsedStrip({
           </div>
         </div>
       ) : null}
-      <div className="composer-status-drawer-clip">
-        {display ? (
-          <div
-            className="composer-status-drawer-content flex min-h-[36px] items-center gap-2 px-3 py-2"
+        <div className="overflow-hidden">
+            <div
+              className="flex min-h-[36px] items-center gap-2 rounded-xl border border-primary/15 bg-primary/[0.04] px-3 py-2"
             role="status"
             aria-label={ariaLabel}
           >
-            {displayShowTimer ? (
-              <RunPulseIcon />
-            ) : (
-              <Target className="h-4 w-4 shrink-0 text-primary/75" aria-hidden />
-            )}
+            <RunPulseIcon />
             <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-medium text-foreground/75">
               {timerTitle ? <span className="shrink-0">{timerTitle}</span> : null}
               {timerTitle && displayShowGoal ? (
@@ -899,7 +884,7 @@ function RunElapsedStrip({
               ) : null}
               {displayShowGoal ? (
                 <span className="truncate">
-                  {t("thread.composer.goalStateStrip", { label: displayStripLabel })}
+                  {t("thread.composer.goalStateStrip", { label: stripLabel })}
                 </span>
               ) : null}
             </span>
@@ -925,9 +910,8 @@ function RunElapsedStrip({
                 )}
               </button>
             ) : null}
-          </div>
-        ) : null}
-      </div>
+            </div>
+        </div>
     </div>
   );
 }
@@ -956,7 +940,6 @@ export function ThreadComposer({
   onStop,
   surfaceRef,
   onTranscribeAudio,
-  runStartedAt = null,
   goalState,
   workspaceScope = null,
   workspaceControlsHidden = false,
@@ -2335,7 +2318,6 @@ export function ThreadComposer({
             </button>
           </div>
         ) : null}
-        <RunElapsedStrip startedAt={runStartedAt} goalState={goalState} />
         <div className="relative">
           {hasMentionDecorations ? (
             <ComposerCliMentionOverlay
