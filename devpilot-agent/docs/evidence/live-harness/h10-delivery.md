@@ -59,6 +59,36 @@
 - 本地后端回执明确为 `backend=fake`、`sandbox_id=fake-sandbox`，没有真实地域、模板或
   provider-default FC 策略，因此不得将本记录写成云端验证成功。
 
+### H10-A 本轮真实 FC 全链路（2026-09-15）
+
+本节是本轮使用既有本机 FC 配置得到的真实证据；配置中的密钥、bootstrap token、完整
+模型响应和完整日志均不进入仓库。运行态使用独立的控制面数据库、WebUI 工作区和隔离
+演示项目，不触碰用户真实项目、数据库或聊天记录。
+
+- 原生 nanobot WebUI chat：`be3cfa0e-039f-4966-b5c8-c2715542162a`；Profile：
+  `feature-delivery`；实际模型：`deepseek-chat`。12:35 完成 `inspect → search/read →
+  proposal`，提案阶段项目文件哈希仍为 `85917786c8f56a32aba9c5b005cecdee4ddab184d0995f16b0315f3a93ade54e`，未发生写入。
+- 隔离项目：`h10-live-demo`，项目 ID：`dc2629d1-e9ff-466c-ba68-efa96fc1e12b`；
+  ChangeSet：`bf33c510-de9f-47ac-93cf-194669c42382`；Run：
+  `9b9b6e19-78a5-49f9-b3f2-24fcd28bb053`。变更仅为 `main.py` 一行：
+  `Decimal("10") → Decimal("100")`，`verification_profile=python-syntax`。
+- 12:36 单独输入“执行”后，真实 `devpilot_confirmed_action(action=apply_verify)` 返回
+  `application=applied`、`verification=verified`、`run_status=completed`。FC 回执：
+  `backend=fc-agent-sandbox`、sandbox `sbx-f84fefbd-c3df-4912-b6c2-9a740e0402c3`、
+  `template=code-interpreter-v1`、`region=cn-beijing`、`exit_code=0`、`duration_ms=1417`、
+  `bundle_bytes=229`、`network_policy=provider-default`。
+- 12:36 单独输入“撤销”后，模型只登记 `r1.rollback` 审批意图，返回
+  `approval_pending` 且没有 token；这证明模型/Skill 不能签发或传播控制面 capability token。
+  12:39:10（Asia/Shanghai）由控制面用户动作签发 `r1.rollback` 审批并调用 rollback，返回
+  `status=reverted`。没有重新 Apply，也没有本机 Shell fallback。
+- 回滚后刷新 WebUI，并在 12:41 通过同一真实会话只读调用 `devpilot_read_code`：
+  `main.py` 当前内容恢复为 `Decimal("10")`，当前 SHA-256 为
+  `85917786c8f56a32aba9c5b005cecdee4ddab184d0995f16b0315f3a93ade54e`，与
+  `rollback_manifest` 和提案 `before_manifest` 完全一致。独立 `Get-FileHash` 复核得到同一值。
+- 控制面 `delivery-report` 的 `status=reverted`，但其 `after_manifest` 持久字段仍描述
+  “应用后版本”；它不是回滚后磁盘哈希。本轮将回滚后的实际文件哈希作为独立只读证据记录，
+  且明确本次回滚没有重新运行验证。`provider-default` 不被表述为网络隔离保证。
+
 ## 可审计的网页事件引用
 
 以下均是本机原生 WebUI 追加式事件文件；它们不进入 Git，换机时可按本文件的命令重新生成。
@@ -195,16 +225,16 @@ nanobot；这不是 H2–H9 管理的候选工具。通过 `/plugins` 和 `devpi
 
 ## H10 验收状态
 
-- **H10-A：仍待真实 FC 证据。** 本轮已经在同一新建 WebUI 场景中完成本地确定性
-  `项目提案 → 聊天确认 → apply_verify → 结果查询 → 撤销 → 刷新重连`，但后端是 fake，不能
-  替代真实 FC；H2 的完整 lifecycle、H6 的 define→trial→activate→stop→remove 现场记录和
-  H8 安全边界切换记录仍保留在原生 WebUI event log。真实 DeepSeek + WebSocket 的模型管理
-  Tool 调用与流式输出也已验证，不能将本地 fake 回执或分段记录合并冒充 H10-A。
+- **H10-A：完成。** 本轮真实 DeepSeek + 原生 WebSocket WebUI + 既有 FC 配置完成
+  `项目提案 → 聊天确认 → apply_verify → FC python-syntax 验证 → 结果查询 →
+  受保护撤销 → 刷新重连 → 回滚后只读哈希复核`；H2 的完整 lifecycle、H6 的
+  `define→trial→activate→stop→remove` 现场记录和 H8 安全边界切换记录仍分别保留在
+  本文前述历史现场引用中。本节没有把 fake 回执计入真实 FC 证据。
 - **H10-B：完成。** 本轮聚焦回归、前端 lint 与生产 build 均已通过。
 - **H10-C：完成。** 隔离数据库迁移及三类缺失/不兼容恢复分支已可复现。
-- **H10-D：待 H10-A 最终复核。** 本文已分别标注本轮实测、历史现场记录、自动化证据、
-  本地 fake 限制和 provider-default 边界；最终交付状态仍需真实 FC 证据及双轴增量复核，
-  未把本轮本地闭环写成 H10 完成。
+- **H10-D：待本轮双轴增量复核。** 本文已分别标注本轮真实实测、历史现场记录、自动化
+  证据、本地 fake 限制和 provider-default 边界；待 Standards / Spec reviewer 对本轮
+  真实证据与现有代码做增量复核后封存 H10。
 
 当前 FC `provider-default` 模式不提供“禁网且无副作用”的可信回执，因此 H9 会拒绝将这类
 试用结果提升为持久选择。这是故意的 fail-closed 限制，不是本机回退执行；FC 控制台或服务端
