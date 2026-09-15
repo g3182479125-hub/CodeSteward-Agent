@@ -447,6 +447,37 @@ def test_h11_does_not_apply_to_h9_authorization_paths(
     assert "PLUGIN_AUTHORIZATION_REQUIRED" in blocked
 
 
+def test_h11_full_scope_defaults_to_confirmation_after_controller_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
+    controller = ModelCandidateController(
+        tmp_path, runner=FakeCandidateRunner(), grant_issuer=ISSUER
+    )
+    manager = PluginManager(ToolRegistry(), candidate_tool_factory=controller.build_proxy)
+    controller.bind_plugin_manager(manager)
+    scope = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    try:
+        request = _context(tmp_path, text="ordinary request")
+        with request_context(request):
+            context = controller._context()
+            assert context is not None
+            blocked = controller._authorize(
+                context,
+                apply_autonomy=True,
+                candidate_id="recovered",
+                candidate_version="1.0.0",
+            )
+    finally:
+        reset_workspace_scope(scope)
+
+    assert blocked is not None
+    assert "PLUGIN_AUTHORIZATION_REQUIRED" in blocked
+
+
 @pytest.mark.asyncio
 async def test_h11_revoke_stops_candidate_routes_and_records_decisions(
     tmp_path: Path,
@@ -480,6 +511,9 @@ async def test_h11_revoke_stops_candidate_routes_and_records_decisions(
             revoked = json.loads(await tool.execute(action="revoke"))
             assert revoked["result"]["status"] == "authorization_revoked"
             assert len(revoked["result"]["stopped"]) == 1
+            assert revoked["result"]["stopped"][0]["details"][
+                "autonomy_access_mode"
+            ] == "full"
             assert "model-revoke" not in manager.live_tools_for_session(
                 base, "session:one"
             ).tool_names

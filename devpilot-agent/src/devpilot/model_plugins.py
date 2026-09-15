@@ -285,6 +285,7 @@ class ModelCandidateController:
         self._runner_error: tuple[str, str] | None = None
         self._runner_lock = threading.Lock()
         self._authorizations: dict[tuple[str, str], dict[str, object]] = {}
+        self._autonomy_tasks: set[tuple[str, str]] = set()
         self._revoked_autonomy: set[tuple[str, str]] = set()
         self._autonomy_policy = CandidateAutonomyPolicy()
         self._remote_strategy_catalog: RemoteStrategyCatalog | None = None
@@ -756,7 +757,11 @@ class ModelCandidateController:
             candidate_trialled=candidate_trialled,
         )
         h11_confirmation = False
-        if apply_autonomy and autonomy is not None:
+        if (
+            apply_autonomy
+            and autonomy is not None
+            and (session_id, _task_id) in self._autonomy_tasks
+        ):
             decision = autonomy["decision"]
             revoked_key = (session_id, _task_id)
             if revoked_key in self._revoked_autonomy and operation not in {"stop", "remove"}:
@@ -768,6 +773,7 @@ class ModelCandidateController:
                         candidate_id,
                         candidate_version,
                         session_id=session_id,
+                        task_id=_task_id,
                         project_id=project_id,
                         access_mode=autonomy["access_mode"],
                         decision=decision,
@@ -775,6 +781,7 @@ class ModelCandidateController:
                         budget_available=budget_available,
                         candidate_trialled=candidate_trialled,
                     )
+                    self._autonomy_tasks.add((session_id, _task_id))
                 except (OSError, RuntimeError, TypeError, ValueError):
                     return _error(
                         "CANDIDATE_AUTONOMY_AUDIT_UNAVAILABLE",
@@ -960,6 +967,7 @@ class ModelCandidateController:
                     plugin_id,
                     version,
                     session_id=session_id,
+                    task_id=_task_id,
                     project_id=_project_id,
                     access_mode=autonomy["access_mode"],
                     decision=autonomy["decision"],
@@ -967,6 +975,7 @@ class ModelCandidateController:
                     budget_available=True,
                     candidate_trialled=False,
                 )
+                self._autonomy_tasks.add((session_id, _task_id))
             return _result(result.to_dict()) if result.ok else _json(result.to_dict())
         except (OSError, RuntimeError, ValueError, TypeError):
             return _error("CANDIDATE_DEFINITION_FAILED", "候选 artifact 无法安全写入或注册")
@@ -1534,6 +1543,7 @@ class ModelCandidateController:
             _request, session_id, project_id, task_id, _workspace = context
             manager = self._require_manager()
             stopped: list[dict[str, Any]] = []
+            stop_autonomy = self._autonomy_summary(operation="stop", input_class="task")
             for item in manager.list_view(session_id, project_id=project_id):
                 plugin_id = item.get("plugin_id")
                 version = item.get("version")
@@ -1549,6 +1559,17 @@ class ModelCandidateController:
                     session_id=session_id,
                     project_id=project_id,
                     policy=_MODEL_CANDIDATE_POLICY,
+                    operation_details=(
+                        {
+                            "autonomy_access_mode": stop_autonomy["access_mode"],
+                            "autonomy_decision": stop_autonomy["decision"],
+                            "autonomy_input_class": "task",
+                            "autonomy_budget": "available",
+                            "autonomy_candidate_trialled": "yes",
+                        }
+                        if stop_autonomy is not None
+                        else None
+                    ),
                 )
                 if not result.ok:
                     return _json(result.to_dict())
@@ -1579,6 +1600,7 @@ class ModelCandidateController:
                 return _error("PLUGIN_NOT_FOUND", "候选版本在当前会话不可见")
             _request, session_id, project_id, _task_id, _workspace = context
             if action == "stop":
+                stop_autonomy = self._autonomy_summary(operation=action, input_class="task")
                 active, _scope_key = self._require_manager()._find_active(
                     plugin_id,
                     session_id,
@@ -1596,6 +1618,17 @@ class ModelCandidateController:
                     session_id=session_id,
                     project_id=project_id,
                     policy=_MODEL_CANDIDATE_POLICY,
+                    operation_details=(
+                        {
+                            "autonomy_access_mode": stop_autonomy["access_mode"],
+                            "autonomy_decision": stop_autonomy["decision"],
+                            "autonomy_input_class": "task",
+                            "autonomy_budget": "available",
+                            "autonomy_candidate_trialled": "yes",
+                        }
+                        if stop_autonomy is not None
+                        else None
+                    ),
                     operation_id=(
                         kwargs.get("operation_id")
                         if isinstance(kwargs.get("operation_id"), str)
