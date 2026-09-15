@@ -119,6 +119,9 @@ class AgentRunSpec:
     checkpoint_callback: CheckpointCallback | None = None
     injection_callback: InjectionCallback | None = None
     llm_timeout_s: float | None = None
+    # Interactive WebUI turns must emit a terminal event in bounded time; unlike
+    # long-running agent goals, do not expand their streaming wall timeout.
+    strict_streaming_timeout: bool = False
     goal_active_predicate: Callable[[], bool] | None = None
     goal_continue_message: GoalContinueMessage | None = None
     finalize_on_max_iterations: bool = True
@@ -1155,11 +1158,9 @@ class AgentRunner:
         # timeout for streaming while preserving NANOBOT_LLM_TIMEOUT_S=0 as an
         # opt-out for all LLM wall-clock timeouts.
         is_streaming_request = wants_streaming or wants_progress_streaming
-        outer_timeout_s = (
-            max(300.0, timeout_s * 2)
-            if is_streaming_request and timeout_s is not None
-            else timeout_s
-        )
+        outer_timeout_s = timeout_s
+        if is_streaming_request and timeout_s is not None and not spec.strict_streaming_timeout:
+            outer_timeout_s = max(300.0, timeout_s * 2)
         try:
             response = (
                 await coro if outer_timeout_s is None

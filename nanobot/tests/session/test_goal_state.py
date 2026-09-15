@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nanobot.session.goal_state import (
+    DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S,
     GOAL_STATE_KEY,
     MAX_GOAL_OBJECTIVE_CHARS,
     discard_legacy_goal_state_key,
@@ -12,6 +13,7 @@ from nanobot.session.goal_state import (
     parse_goal_state,
     runner_wall_llm_timeout_s,
     sustained_goal_active,
+    webui_interactive_llm_timeout_s,
 )
 from nanobot.session.manager import SessionManager
 
@@ -147,3 +149,34 @@ def test_runner_wall_llm_timeout_reads_session_when_metadata_missing(tmp_path):
     assert runner_wall_llm_timeout_s(sm, "c:d") == 0.0
     sess.metadata = {}
     assert runner_wall_llm_timeout_s(sm, "c:d") is None
+
+
+def test_webui_interactive_timeout_only_applies_to_webui_turns(monkeypatch):
+    monkeypatch.delenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", raising=False)
+
+    assert webui_interactive_llm_timeout_s(channel="cli", message_metadata={"webui": True}) is None
+    assert webui_interactive_llm_timeout_s(channel="websocket", message_metadata={}) is None
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket",
+        message_metadata={"webui": True, "_cron_trigger": {"job_id": "daily"}},
+    ) is None
+
+
+def test_webui_interactive_timeout_allows_explicit_opt_out_and_uses_safe_default(monkeypatch):
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "0")
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) is None
+
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "not-a-number")
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "nan")
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S

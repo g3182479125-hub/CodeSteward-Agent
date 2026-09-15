@@ -111,6 +111,7 @@ from nanobot.session.goal_state import (
     goal_state_runtime_lines,
     runner_wall_llm_timeout_s,
     sustained_goal_active,
+    webui_interactive_llm_timeout_s,
 )
 from nanobot.session.history_visibility import HIDDEN_HISTORY_META
 from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
@@ -1991,6 +1992,20 @@ class AgentLoop:
                     run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
                 )
             )
+            goal_llm_timeout_s = runner_wall_llm_timeout_s(
+                self.sessions,
+                session.key if session is not None else session_key,
+                metadata=session_metadata,
+                message_metadata=metadata,
+            )
+            interactive_webui_timeout_s = (
+                None
+                if goal_llm_timeout_s is not None
+                else webui_interactive_llm_timeout_s(
+                    channel=channel,
+                    message_metadata=metadata,
+                )
+            )
             result = await self.runner.run(
                 AgentRunSpec(
                     initial_messages=initial_messages,
@@ -2017,14 +2032,15 @@ class AgentLoop:
                     retry_wait_callback=on_retry_wait,
                     checkpoint_callback=_checkpoint,
                     injection_callback=_drain_pending,
-                    # Sustained goals may legitimately exceed NANOBOT_LLM_TIMEOUT_S; idle stall
-                    # is still capped by NANOBOT_STREAM_IDLE_TIMEOUT_S in streaming providers.
-                    llm_timeout_s=runner_wall_llm_timeout_s(
-                        self.sessions,
-                        session.key if session is not None else session_key,
-                        metadata=session_metadata,
-                        message_metadata=metadata,
+                    # Sustained goals opt out of the wall cap. Ordinary WebUI turns
+                    # use a finite strict cap so their serial chat queue always
+                    # receives a terminal event after an upstream stall.
+                    llm_timeout_s=(
+                        goal_llm_timeout_s
+                        if goal_llm_timeout_s is not None
+                        else interactive_webui_timeout_s
                     ),
+                    strict_streaming_timeout=interactive_webui_timeout_s is not None,
                     goal_active_predicate=lambda: (
                         sustained_goal_active(session.metadata) if session is not None else False
                     ),

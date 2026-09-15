@@ -2,14 +2,18 @@
 
 Tools set ``metadata[GOAL_STATE_KEY]``. Reads accept the legacy session key ``thread_goal``
 for older sessions. Callers use ``goal_state_runtime_lines``, ``goal_state_ws_blob``, and
-``runner_wall_llm_timeout_s`` without importing tool implementations.
+``runner_wall_llm_timeout_s`` and ``webui_interactive_llm_timeout_s`` without importing
+tool implementations.
 """
 
 from __future__ import annotations
 
 import json
+import math
+import os
 from typing import Any, Mapping, MutableMapping, cast
 
+from nanobot.cron.session_turns import is_cron_turn
 from nanobot.session.manager import SessionManager
 
 GOAL_STATE_KEY = "goal_state"
@@ -18,6 +22,8 @@ MAX_GOAL_OBJECTIVE_CHARS = 4000
 # Older builds stored the same JSON blob under this key.
 _LEGACY_GOAL_STATE_SESSION_KEY = "thread_goal"
 _MAX_OBJECTIVE_WS = 600
+DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S = 75.0
+_WEBUI_INTERACTIVE_LLM_TIMEOUT_ENV = "NANOBOT_WEBUI_LLM_TIMEOUT_S"
 
 
 def _session_goal_raw(metadata: Mapping[str, Any] | None) -> Any:
@@ -130,3 +136,35 @@ def runner_wall_llm_timeout_s(
     if meta is None and session_key:
         meta = sessions.get_or_create(session_key).metadata
     return 0.0 if sustained_goal_turn(meta, message_metadata=message_metadata) else None
+
+
+def webui_interactive_llm_timeout_s(
+    *,
+    channel: str | None,
+    message_metadata: Mapping[str, Any] | None,
+) -> float | None:
+    """Return the finite timeout for an ordinary WebUI turn.
+
+    A WebUI conversation has one serial turn queue.  Unlike a sustained goal, an
+    interactive chat turn must eventually produce a terminal event so the browser
+    can release its running state and accept the next message.  ``0`` is an
+    explicit operator opt-out; malformed values fall back to the safe default.
+    """
+    if (
+        channel != "websocket"
+        or not message_metadata
+        or message_metadata.get("webui") is not True
+        or is_cron_turn(message_metadata)
+    ):
+        return None
+    raw = os.environ.get(
+        _WEBUI_INTERACTIVE_LLM_TIMEOUT_ENV,
+        str(DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S),
+    ).strip()
+    try:
+        timeout_s = float(raw)
+    except ValueError:
+        return DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+    if not math.isfinite(timeout_s):
+        return DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+    return timeout_s if timeout_s > 0 else None

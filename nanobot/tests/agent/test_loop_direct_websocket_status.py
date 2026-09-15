@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.runner import AgentRunResult
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import GoalStatusEvent
 from nanobot.bus.queue import MessageBus
@@ -88,6 +89,28 @@ async def test_process_direct_websocket_clears_run_status(tmp_path) -> None:
         wth._WEBSOCKET_TURN_WALL_STARTED_AT.clear()
         wth._WEBSOCKET_TURN_IDS.clear()
         wth._WEBSOCKET_TURN_OWNERS.clear()
+
+
+@pytest.mark.asyncio
+async def test_webui_turn_uses_strict_interactive_llm_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", raising=False)
+    loop = _make_loop(tmp_path)
+    loop.runner.run = AsyncMock(
+        return_value=AgentRunResult(final_content="done", messages=[], stop_reason="completed")
+    )
+
+    response = await loop.process_direct(
+        "help me inspect this",
+        session_key="websocket:chat-timeout",
+        channel="websocket",
+        chat_id="chat-timeout",
+        metadata={"webui": True},
+    )
+
+    assert response is not None
+    spec = loop.runner.run.call_args.args[0]
+    assert spec.llm_timeout_s == 75.0
+    assert spec.strict_streaming_timeout is True
 
 
 @pytest.mark.asyncio

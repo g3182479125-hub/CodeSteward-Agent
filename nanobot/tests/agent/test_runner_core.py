@@ -561,6 +561,56 @@ async def test_runner_applies_outer_wall_timeout_to_streaming_requests():
 
 
 @pytest.mark.asyncio
+async def test_runner_honors_strict_timeout_for_interactive_streaming_requests():
+    from nanobot.agent.hook import AgentHook, AgentHookContext
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    streamed: list[str] = []
+
+    async def chat_stream_with_retry(*, on_content_delta, **kwargs):
+        await on_content_delta("ok")
+        return LLMResponse(content="ok", finish_reason="stop")
+
+    provider.chat_stream_with_retry = chat_stream_with_retry
+    provider.chat_with_retry = AsyncMock()
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    class StreamHook(AgentHook):
+        def wants_streaming(self) -> bool:
+            return True
+
+        async def on_stream(self, context: AgentHookContext, delta: str) -> None:
+            streamed.append(delta)
+
+    runner = AgentRunner()
+    original_wait_for = asyncio.wait_for
+    wait_for_calls: list[float] = []
+
+    async def recording_wait_for(awaitable, *, timeout):
+        wait_for_calls.append(timeout)
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    with patch("nanobot.agent.runner.asyncio.wait_for", side_effect=recording_wait_for):
+        result = await runner.run(make_run_spec(
+            provider,
+            initial_messages=[{"role": "user", "content": "do task"}],
+            tools=tools,
+            model="test-model",
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+            hook=StreamHook(),
+            llm_timeout_s=0.01,
+            strict_streaming_timeout=True,
+        ))
+
+    assert result.final_content == "ok"
+    assert streamed == ["ok"]
+    assert wait_for_calls == [0.01]
+
+
+@pytest.mark.asyncio
 async def test_runner_times_out_never_ending_streaming_request():
     from nanobot.agent.hook import AgentHook
     from nanobot.agent.runner import AgentRunner
