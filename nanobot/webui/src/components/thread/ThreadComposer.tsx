@@ -10,7 +10,6 @@ import {
   type Ref,
 } from "react";
 
-import { MarkdownText, preloadMarkdownText } from "@/components/MarkdownText";
 import {
   CapabilityMentionToken,
   cliAppInitials,
@@ -24,8 +23,6 @@ import {
   ArrowUp,
   BookOpen,
   Brain,
-  ChevronDown,
-  ChevronUp,
   CircleHelp,
   CornerDownRight,
   FileText,
@@ -52,7 +49,6 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   floatingItemClassName,
-  floatingSurfaceElevationClassName,
   floatingSurfaceVisualClassName,
 } from "@/components/ui/floating-surface";
 import {
@@ -640,28 +636,6 @@ function goalStateStripPreview(
   return t("thread.composer.goalStateFallback");
 }
 
-const GOAL_PANEL_VIEWPORT_TOP_PAD = 20;
-const GOAL_PANEL_GAP_ABOVE_STRIP_PX = 10;
-const GOAL_PANEL_MIN_HEIGHT_PX = 112;
-const GOAL_PANEL_MAX_VIEWPORT_RATIO = 0.62;
-
-function measureGoalPanelMaxCssHeight(stripTopY: number): number {
-  const viewport = visualViewportBounds();
-  const spaceAboveStrip =
-    stripTopY - viewport.top - GOAL_PANEL_VIEWPORT_TOP_PAD - GOAL_PANEL_GAP_ABOVE_STRIP_PX;
-  return Math.min(
-    Math.max(spaceAboveStrip, GOAL_PANEL_MIN_HEIGHT_PX),
-    Math.floor(viewport.height * GOAL_PANEL_MAX_VIEWPORT_RATIO),
-  );
-}
-
-function buildGoalMarkdownBody(summary: string, objective: string): string {
-  const s = summary.trim();
-  const o = objective.trim();
-  if (s && o) return `${s}\n\n---\n\n${o}`;
-  return o || s;
-}
-
 function cliAppMentionPayload(app: CliAppInfo): OutboundCliAppMention {
   return {
     name: app.name,
@@ -707,14 +681,10 @@ export function RunElapsedStrip({
 }) {
   const { t } = useTranslation();
   const pageVisible = usePageVisibility();
-  const [goalPanelOpen, setGoalPanelOpen] = useState(false);
   const stripLabel = goalStateStripPreview(goalState, t);
   const [, setTick] = useState(0);
-  const stripWrapperRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const expandToggleRef = useRef<HTMLButtonElement>(null);
   const localStartedAtRef = useRef<number | null>(null);
-  const [panelMaxPx, setPanelMaxPx] = useState(280);
+  const [lastActivityAt, setLastActivityAt] = useState<number | null>(null);
 
   if (!active) localStartedAtRef.current = null;
   if (active && startedAt == null && localStartedAtRef.current == null) {
@@ -723,8 +693,12 @@ export function RunElapsedStrip({
   const effectiveStartedAt = startedAt ?? localStartedAtRef.current;
 
   useEffect(() => {
-    if (!active) setGoalPanelOpen(false);
-  }, [active]);
+    if (!active) {
+      setLastActivityAt(null);
+      return;
+    }
+    setLastActivityAt(Date.now());
+  }, [active, stripLabel]);
 
   useEffect(() => {
     if (!active || effectiveStartedAt == null || !pageVisible) return;
@@ -733,185 +707,45 @@ export function RunElapsedStrip({
     return () => window.clearInterval(id);
   }, [active, effectiveStartedAt, pageVisible]);
 
-  const displayShowTimer = effectiveStartedAt != null;
-  const displayShowGoal = !!stripLabel?.trim();
-
-  const objectiveFull = goalState?.objective?.trim() ?? "";
-  const summaryFull = goalState?.ui_summary?.trim() ?? "";
-  const canExpandGoal = !!(active && goalState?.active && (objectiveFull || summaryFull));
-
-  const markdownBody =
-    objectiveFull || summaryFull
-      ? buildGoalMarkdownBody(summaryFull, objectiveFull)
-      : "";
-
-  useLayoutEffect(() => {
-    if (!goalPanelOpen) return;
-
-    function relayout(): void {
-      const el = stripWrapperRef.current;
-      if (!el) return;
-      const top = el.getBoundingClientRect().top;
-      setPanelMaxPx(measureGoalPanelMaxCssHeight(top));
-    }
-
-    relayout();
-
-    void preloadMarkdownText();
-    const ro =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => relayout())
-        : null;
-    if (stripWrapperRef.current && ro) {
-      ro.observe(stripWrapperRef.current);
-    }
-    const viewport = window.visualViewport;
-    viewport?.addEventListener("resize", relayout);
-    viewport?.addEventListener("scroll", relayout);
-    window.addEventListener("resize", relayout);
-    window.addEventListener("scroll", relayout, true);
-    return () => {
-      ro?.disconnect();
-      viewport?.removeEventListener("resize", relayout);
-      viewport?.removeEventListener("scroll", relayout);
-      window.removeEventListener("resize", relayout);
-      window.removeEventListener("scroll", relayout, true);
-    };
-  }, [goalPanelOpen]);
-
-  useEffect(() => {
-    if (!goalPanelOpen) return;
-
-    function onPointerDown(ev: MouseEvent): void {
-      const target = ev.target as Node | null;
-      if (!target) return;
-      if (panelRef.current?.contains(target)) return;
-      if (expandToggleRef.current?.contains(target)) return;
-      setGoalPanelOpen(false);
-    }
-
-    function onKey(ev: KeyboardEvent): void {
-      if (ev.key === "Escape") setGoalPanelOpen(false);
-    }
-
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [goalPanelOpen]);
-
   const elapsed =
     effectiveStartedAt != null ? Math.max(0, Math.floor(Date.now() / 1000 - effectiveStartedAt)) : 0;
   const m = Math.floor(elapsed / 60);
   const sec = elapsed % 60;
   const shortElapsed = m > 0 ? `${m}:${sec.toString().padStart(2, "0")}` : `${sec}s`;
-  const timerTitle = displayShowTimer
-    ? t("thread.composer.runRuntimeTitle", { elapsed: shortElapsed })
-    : null;
-
-  const ariaParts = [timerTitle, displayShowGoal ? stripLabel : null].filter(Boolean);
-  const ariaLabel = ariaParts.join(" · ");
+  const timerTitle = t("thread.composer.runRuntimeTitle", { elapsed: shortElapsed });
+  const currentStepPrefix = t("thread.composer.runCurrentStep", {
+    defaultValue: "Current: ",
+  });
+  const currentStep = stripLabel?.trim() || t("thread.composer.runAwaitingModel", {
+    defaultValue: "Waiting for the model to start processing",
+  });
+  const idleForMs = lastActivityAt == null ? 0 : Date.now() - lastActivityAt;
+  const waitingForResult = idleForMs >= 10_000;
+  const waitingCopy = t("thread.composer.runWaitingForResult", {
+    defaultValue: "Still waiting for the next result",
+  });
+  const ariaLabel = [timerTitle, currentStep, waitingForResult ? waitingCopy : null]
+    .filter(Boolean)
+    .join(" · ");
 
   if (!active) return null;
 
   return (
     <div
-      ref={stripWrapperRef}
-      className="relative mt-2"
+      className="mt-2 flex min-h-7 items-center gap-2 px-1 text-[12px] text-muted-foreground"
       data-thread-run-status=""
       data-state="open"
+      role="status"
+      aria-live="polite"
+      aria-label={ariaLabel}
     >
-      {goalPanelOpen && canExpandGoal && markdownBody ? (
-        <div
-          ref={panelRef}
-          id="nanobot-goal-panel-root"
-          role="dialog"
-          aria-modal="false"
-          aria-labelledby="nanobot-goal-panel-title"
-          tabIndex={-1}
-          className={cn(
-            "absolute bottom-[calc(100%+8px)] left-3 right-3 z-[50] flex max-w-none flex-col overflow-hidden",
-            "rounded-2xl",
-            floatingSurfaceElevationClassName,
-          )}
-          style={{ maxHeight: `${Math.round(panelMaxPx)}px` }}
-        >
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-black/[0.06] px-3 py-2 dark:border-white/[0.08]">
-            <h2
-              id="nanobot-goal-panel-title"
-              className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-foreground"
-            >
-              {t("thread.composer.goalStateSheetTitle")}
-            </h2>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                "text-muted-foreground transition-colors hover:bg-muted/65 hover:text-foreground",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              )}
-              aria-label={t("thread.composer.goalStateCloseAria")}
-              onClick={() => setGoalPanelOpen(false)}
-            >
-              <X className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
-          <div
-            id="nanobot-goal-panel-scroll"
-            className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-3 pb-3 pt-2"
-          >
-            <MarkdownText className="max-w-none text-[13.5px] leading-relaxed text-foreground/90">
-              {markdownBody}
-            </MarkdownText>
-          </div>
-        </div>
+      <RunPulseIcon />
+      <span className="shrink-0 font-medium text-foreground/75">{timerTitle}</span>
+      <span className="shrink-0 text-muted-foreground/45" aria-hidden>·</span>
+      <span className="min-w-0 truncate">{currentStepPrefix}{currentStep}</span>
+      {waitingForResult ? (
+        <span className="min-w-0 truncate text-muted-foreground/80">· {waitingCopy}</span>
       ) : null}
-        <div className="overflow-hidden">
-            <div
-              className="flex min-h-[36px] items-center gap-2 rounded-xl border border-primary/15 bg-primary/[0.04] px-3 py-2"
-            role="status"
-            aria-label={ariaLabel}
-          >
-            <RunPulseIcon />
-            <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-medium text-foreground/75">
-              {timerTitle ? <span className="shrink-0">{timerTitle}</span> : null}
-              {timerTitle && displayShowGoal ? (
-                <span className="shrink-0 text-muted-foreground/45" aria-hidden>
-                  ·
-                </span>
-              ) : null}
-              {displayShowGoal ? (
-                <span className="truncate">
-                  {t("thread.composer.goalStateStrip", { label: stripLabel })}
-                </span>
-              ) : null}
-            </span>
-            {canExpandGoal ? (
-              <button
-                ref={expandToggleRef}
-                type="button"
-                className={cn(
-                  "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                  "text-muted-foreground transition-colors hover:bg-muted/55 hover:text-foreground",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                )}
-                aria-expanded={goalPanelOpen}
-                aria-controls={goalPanelOpen ? "nanobot-goal-panel-root" : undefined}
-                aria-label={t("thread.composer.goalStateExpandAria")}
-                title={t("thread.composer.goalStateExpandAria")}
-                onClick={() => setGoalPanelOpen((o) => !o)}
-              >
-                {goalPanelOpen ? (
-                  <ChevronDown className="h-4 w-4" aria-hidden />
-                ) : (
-                  <ChevronUp className="h-4 w-4" aria-hidden />
-                )}
-              </button>
-            ) : null}
-            </div>
-        </div>
     </div>
   );
 }

@@ -276,28 +276,42 @@ describe("ThreadViewport", () => {
     vi.useRealTimers();
   });
 
-  it("keeps active goal details with the running indicator", async () => {
-    const longObjective =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123456789GoalTail";
-    render(
+  it("shows the latest real activity in the borderless running indicator", () => {
+    const { container } = render(
       <ThreadViewport
         messages={messages}
         isStreaming
         runStartedAt={1000}
         goalState={{
           active: true,
-          objective: longObjective,
           ui_summary: "Short summary for strip",
         }}
         composer={<div />}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Show full goal" }));
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Current: Short summary for strip");
+    expect(status).not.toHaveClass("rounded-xl", "border", "bg-primary/[0.04]");
+    expect(container.querySelector("[role='dialog']")).toBeNull();
+  });
 
-    const dialog = await screen.findByRole("dialog", { name: "Goal" });
-    expect(dialog).toHaveTextContent("Short summary for strip");
-    expect(dialog).toHaveTextContent(longObjective);
+  it("explains when the current activity has not produced a new update", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_125_000));
+    render(
+      <ThreadViewport
+        messages={messages}
+        isStreaming
+        runStartedAt={1000}
+        goalState={{ active: true, ui_summary: "Locating the project" }}
+        composer={<div />}
+      />,
+    );
+
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(screen.getByRole("status")).toHaveTextContent("Still waiting for the next result");
+    vi.useRealTimers();
   });
 
   it("keeps reasoning disclosure anchored for pointer and keyboard toggles", () => {
