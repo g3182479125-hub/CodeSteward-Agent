@@ -1,8 +1,8 @@
 # H11 权限模式驱动候选工具自主策略：实现与现场证据
 
 状态：实现与 H11-E 真实 WebUI/FC 证据已完成；ADR-0004 双轴审查仍因两个完成但空输出的
-reviewer turn 而阻断，**不得据此写 H11 完成**。详见
-`docs/reviews/h11-review-blocked-654f340.md`。
+reviewer turn 而阻断，**不得据此写 H11 完成**。最新阻断记录为
+`docs/reviews/h11-review-blocked-62540b5.md`。
 
 基线：`3b37fd0`（H11 冻结计划）。本批次只修改候选工具授权决策；不修改
 WebUI 控件、项目 Apply/Verify/Rollback、P8 Skill、FC 执行契约或 nanobot Shell 权限。
