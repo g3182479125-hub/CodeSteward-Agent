@@ -1496,6 +1496,7 @@ class PluginManager:
         operation_id: str | None = None,
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
+        operation_details: Mapping[str, str] | None = None,
     ) -> PluginOperationResult:
         """Remove an inactive metadata record without deleting its artifact."""
         if operation_id is not None and (prior := self._operations.get(operation_id)) is not None:
@@ -1593,7 +1594,11 @@ class PluginManager:
                 "plugin version removed; its artifact was retained",
                 plugin_id=plugin_id,
                 version=version,
-                details={"artifact": "retained", "state": PluginLifecycle.INACTIVE.value},
+                details={
+                    **(operation_details or {}),
+                    "artifact": "retained",
+                    "state": PluginLifecycle.INACTIVE.value,
+                },
             ),
         )
         operation.event.set()
@@ -1628,6 +1633,7 @@ class PluginManager:
                     version=operation.version,
                     operation_id=operation_id,
                     details={
+                        **self._autonomy_details(operation),
                         "route_commit": "rolled_back",
                         "staging_cleanup": "failed",
                         "original_code": (
@@ -1656,7 +1662,11 @@ class PluginManager:
                 plugin_id=operation.plugin_id,
                 version=operation.version,
                 operation_id=operation_id,
-                details={"route_commit": "rolled_back", "staging_cleanup": "complete"},
+                details={
+                    **self._autonomy_details(operation),
+                    "route_commit": "rolled_back",
+                    "staging_cleanup": "complete",
+                },
             )
             operation.event.set()
             self._save_state()
@@ -1683,7 +1693,10 @@ class PluginManager:
                         plugin_id=operation.plugin_id,
                         version=operation.version,
                         operation_id=operation_id,
-                        details={"recovery": "manual_lease_reconciliation_required"},
+                        details={
+                            **self._autonomy_details(operation),
+                            "recovery": "manual_lease_reconciliation_required",
+                        },
                     )
                 self._restored_retired.pop(restored, None)
                 for key, registration in self._registered.items():
@@ -1702,6 +1715,7 @@ class PluginManager:
                     version=operation.version,
                     operation_id=operation_id,
                     details={
+                        **self._autonomy_details(operation),
                         "state": PluginLifecycle.INACTIVE.value,
                         "old_cleanup": "recovered_after_restart",
                         "route_commit": "committed",
@@ -1733,7 +1747,11 @@ class PluginManager:
             plugin_id=operation.plugin_id,
             version=operation.version,
             operation_id=operation.operation_id,
-            details={"state": PluginLifecycle.DRAINING.value, "old_cleanup": "retrying"},
+            details={
+                **self._autonomy_details(operation),
+                "state": PluginLifecycle.DRAINING.value,
+                "old_cleanup": "retrying",
+            },
         )
         operation.event.clear()
         self._start_retirement(operation, route)
@@ -2601,6 +2619,15 @@ class PluginManager:
             )
         return operation.result
 
+    @staticmethod
+    def _autonomy_details(operation: _Operation) -> dict[str, str]:
+        """Carry safe H11 metadata across asynchronous cleanup transitions."""
+        return {
+            key: value
+            for key, value in operation.result.details_dict.items()
+            if key.startswith("autonomy_")
+        }
+
     def _new_operation(
         self,
         *,
@@ -2687,11 +2714,7 @@ class PluginManager:
                 version=operation.version,
                 operation_id=operation.operation_id,
                 details={
-                    **{
-                        key: value
-                        for key, value in operation.result.details_dict.items()
-                        if key.startswith("autonomy_")
-                    },
+                    **self._autonomy_details(operation),
                     "route_commit": "committed",
                     "old_cleanup": "failed",
                     "retry_available": "true",
@@ -2837,11 +2860,7 @@ class PluginManager:
                 version=operation.version,
                 operation_id=operation.operation_id,
                 details={
-                    **{
-                        key: value
-                        for key, value in operation.result.details_dict.items()
-                        if key.startswith("autonomy_")
-                    },
+                    **self._autonomy_details(operation),
                     "state": PluginLifecycle.DRAINING.value,
                     "leases": str(route.leases),
                 },
@@ -2891,11 +2910,7 @@ class PluginManager:
                 version=operation.version,
                 operation_id=operation.operation_id,
                 details={
-                    **{
-                        key: value
-                        for key, value in operation.result.details_dict.items()
-                        if key.startswith("autonomy_")
-                    },
+                    **self._autonomy_details(operation),
                     "state": PluginLifecycle.ACTIVE.value,
                     "route_commit": "committed",
                     "old_cleanup": "complete",
@@ -2925,11 +2940,7 @@ class PluginManager:
                 version=operation.version,
                 operation_id=operation.operation_id,
                 details={
-                    **{
-                        key: value
-                        for key, value in operation.result.details_dict.items()
-                        if key.startswith("autonomy_")
-                    },
+                    **self._autonomy_details(operation),
                     "state": PluginLifecycle.INACTIVE.value,
                     "generation": str(route.generation),
                 },

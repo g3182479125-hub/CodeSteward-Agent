@@ -517,6 +517,13 @@ async def test_h11_revoke_stops_candidate_routes_and_records_decisions(
             assert "model-revoke" not in manager.live_tools_for_session(
                 base, "session:one"
             ).tool_names
+            removed = json.loads(
+                await tool.execute(
+                    action="remove", plugin_id="model-revoke", version="1.0.0"
+                )
+            )
+            assert removed["ok"] is True
+            assert removed["result"]["details"]["autonomy_access_mode"] == "full"
     finally:
         reset_workspace_scope(scope)
 

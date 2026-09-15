@@ -1636,12 +1636,24 @@ class ModelCandidateController:
                     ),
                 )
             else:
+                remove_autonomy = self._autonomy_summary(operation=action, input_class="task")
                 result = self._require_manager().remove(
                     plugin_id,
                     version,
                     session_id=session_id,
                     project_id=project_id,
                     policy=_MODEL_CANDIDATE_POLICY,
+                    operation_details=(
+                        {
+                            "autonomy_access_mode": remove_autonomy["access_mode"],
+                            "autonomy_decision": remove_autonomy["decision"],
+                            "autonomy_input_class": "task",
+                            "autonomy_budget": "available",
+                            "autonomy_candidate_trialled": "yes",
+                        }
+                        if remove_autonomy is not None
+                        else None
+                    ),
                     operation_id=(
                         kwargs.get("operation_id")
                         if isinstance(kwargs.get("operation_id"), str)
