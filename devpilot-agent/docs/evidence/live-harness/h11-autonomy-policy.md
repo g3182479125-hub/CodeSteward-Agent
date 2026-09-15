@@ -72,6 +72,13 @@ Host 校验红线。
 语言不是授权。代码现在将“缺一次确认”的返回改成 H11 的单一、可理解提示；UI 不新增
 第三个权限控件。
 
+服务重启并加载 `62540b5` 后，在新的隔离 WebUI 会话又复测了这项提示变更：默认权限下
+`h11-message@1.0.0` 的 define → fixture trial → activate 自动完成；`value=check` 被
+`CANDIDATE_REAL_INPUT_CONFIRMATION_REQUIRED` 拦截，FC 未收到这次真实输入。精确输入一次
+`确认试用` 后，FC 输出 `CHECK`（1781 ms、无副作用/越权、清理已完成）；随后 stop →
+remove → inspect，候选列表为 `[]`。这同时证明修正后的提示在真实 Gateway/FC 路径生效，
+且测试候选没有留下活动路由。
+
 ## 待完成
 
 - 在可输出报告的环境中复用同一对 Standards / Spec 审查员，取得两份明确报告。
