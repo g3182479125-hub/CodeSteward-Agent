@@ -89,13 +89,10 @@ function FileEditRow({
   displayMode: FileEditDisplayMode;
   onOpenFilePreview?: (path: string) => void;
 }) {
-  const { t } = useTranslation();
   const editing = edit.status === "editing";
   const failed = edit.status === "error";
   const actionKey = fileEditActionKey(edit, editing, failed);
-  const action = t(`message.fileEditAction.${actionKey}`, {
-    defaultValue: fileEditActionFallback(actionKey),
-  });
+  const action = fileEditActionFallback(actionKey);
   const hasCountedDiff = !failed && !edit.binary && hasVisibleDiffStats(edit);
   const showDiff = canRenderDiff(edit, displayMode);
   const statusIcon = failed ? (
@@ -126,7 +123,7 @@ function FileEditRow({
         className="text-xs"
         ariaLabel={edit.path ? `${action} ${edit.path}` : action}
         label={edit.pending && !edit.path
-          ? t("message.fileEditPreparing", { defaultValue: "Preparing file edit…" })
+          ? "正在准备文件修改…"
           : (
             <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
               <span className="shrink-0">{action}</span>

@@ -16,4 +16,14 @@ describe("简体中文活动文案", () => {
       "npm test · 脚本，共 3 行",
     );
   });
+
+  it("在非中文界面也保持流式活动为中文", async () => {
+    await i18n.changeLanguage("en");
+
+    expect(localizeActivityText("已搜索网页")).toBe("已搜索网页");
+    expect(localizeActivityText("工具执行完成 Third party sync")).toBe(
+      "工具执行完成 Third party sync",
+    );
+    expect(localizeActivityText("2 个文件")).toBe("2 个文件");
+  });
 });

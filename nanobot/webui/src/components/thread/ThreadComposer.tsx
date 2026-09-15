@@ -674,7 +674,6 @@ export function RunElapsedStrip({
   /** True while the whole agent turn is still active. */
   active: boolean;
 }) {
-  const { t } = useTranslation();
   const pageVisible = usePageVisibility();
   const stripLabel = goalStateStripPreview(goalState);
   const [, setTick] = useState(0);
@@ -707,18 +706,12 @@ export function RunElapsedStrip({
   const m = Math.floor(elapsed / 60);
   const sec = elapsed % 60;
   const shortElapsed = m > 0 ? `${m}:${sec.toString().padStart(2, "0")}` : `${sec}s`;
-  const timerTitle = t("thread.composer.runRuntimeTitle", { elapsed: shortElapsed });
-  const currentStepPrefix = t("thread.composer.runCurrentStep", {
-    defaultValue: "Current: ",
-  });
-  const currentStep = stripLabel?.trim() || t("thread.composer.runAwaitingModel", {
-    defaultValue: "Waiting for the model to start processing",
-  });
+  const timerTitle = `运行中 · ${shortElapsed}`;
+  const currentStepPrefix = "当前：";
+  const currentStep = stripLabel?.trim() || "正在等待模型开始处理";
   const idleForMs = lastActivityAt == null ? 0 : Date.now() - lastActivityAt;
   const waitingForResult = idleForMs >= 10_000;
-  const waitingCopy = t("thread.composer.runWaitingForResult", {
-    defaultValue: "Still waiting for the next result",
-  });
+  const waitingCopy = "仍在等待下一步结果";
   const ariaLabel = [timerTitle, currentStep, waitingForResult ? waitingCopy : null]
     .filter(Boolean)
     .join(" · ");

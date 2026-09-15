@@ -76,6 +76,7 @@ function fakeClient() {
         return () => set!.delete(h);
       },
       sendMessage: vi.fn(),
+      sendSystemCommand: vi.fn().mockResolvedValue(undefined),
       finishRunLocally: vi.fn(),
       newChat: vi.fn(),
       forkChat: vi.fn(),
@@ -2247,7 +2248,8 @@ describe("useNanobotStream", () => {
       result.current.stop();
     });
 
-    expect(fake.client.sendMessage).toHaveBeenLastCalledWith("chat-stop", "/stop");
+    expect(fake.client.sendSystemCommand).toHaveBeenCalledWith("chat-stop", "/stop");
+    expect(fake.client.sendMessage).not.toHaveBeenCalledWith("chat-stop", "/stop");
     expect(fake.client.finishRunLocally).toHaveBeenCalledWith("chat-stop");
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.messages).toHaveLength(1);

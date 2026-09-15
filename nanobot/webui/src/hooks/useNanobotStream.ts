@@ -1507,7 +1507,13 @@ export function useNanobotStream(
     suppressStreamUntilTurnEndRef.current = false;
     setRunStartedAt(null);
     client.finishRunLocally(chatId);
-    client.sendMessage(chatId, "/stop");
+    // /stop is a priority backend control operation. Use the acknowledged
+    // system-command channel rather than an uncorrelated chat message, so it
+    // is delivered even while a normal turn owns this chat's lifecycle.
+    void client.sendSystemCommand(chatId, "/stop").catch(() => {
+      // The UI is already released optimistically; a later reconnect/history
+      // reconciliation will surface the authoritative backend state.
+    });
   }, [chatId, clearActivitySegment, client, flushPendingStreamEvents]);
 
   const reconcileTurnComplete = useCallback(() => {

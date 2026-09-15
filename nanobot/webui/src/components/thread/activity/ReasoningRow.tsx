@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, CircleDashed } from "lucide-react";
-import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
 import { ActivityStep } from "./ActivityStep";
 import { compactReasoningPreview } from "./reasoning-preview";
+
+function chineseReasoningPreview(text: string, streaming: boolean): string {
+  const preview = compactReasoningPreview(text);
+  // Reasoning deltas come directly from the model and are not safe to machine
+  // translate in the browser.  Show the stable Chinese progress summary until
+  // the model supplies Chinese narration; this avoids mixed-language streaming
+  // while preserving technical detail in the tool rows below.
+  return /[\u3400-\u9fff]/.test(preview)
+    ? preview
+    : streaming ? "正在分析下一步" : "已完成本步分析";
+}
 
 export function ReasoningRow({
   text,
@@ -16,11 +26,7 @@ export function ReasoningRow({
   streaming: boolean;
   className?: string;
 }) {
-  const { t } = useTranslation();
-  const fallback = streaming
-    ? t("message.reasoningStreaming", { defaultValue: "Thinking…" })
-    : t("message.reasoning", { defaultValue: "Thinking" });
-  const preview = compactReasoningPreview(text) || fallback;
+  const preview = chineseReasoningPreview(text, streaming);
   return (
     <ActivityStep
       marker={<ReasoningMarker streaming={streaming} />}

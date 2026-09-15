@@ -9,7 +9,6 @@ import {
   Wrench,
   type LucideIcon,
 } from "lucide-react";
-import { useTranslation } from "react-i18next";
 
 import { cliAppInitials, mcpPresetInitials } from "@/components/CliAppMentionText";
 import { ActivityStep } from "@/components/thread/activity/ActivityStep";
@@ -145,7 +144,6 @@ export function AgentActivityCluster({
   mcpPresets = [],
   onOpenFilePreview,
 }: AgentActivityClusterProps) {
-  const { t } = useTranslation();
   const fileEditDisplayMode = useFileEditDisplayMode();
   const pageVisible = usePageVisibility();
   const activityMessages = useMemo(() => coalesceActivityMessages(messages), [messages]);
@@ -200,27 +198,15 @@ export function AgentActivityCluster({
   const activityDuration = formatActivityDuration(durationMs);
   const thoughtLabel = hasNonReasoningActivity
     ? isTurnStreaming
-      ? t("message.activityWorkingFor", {
-          duration: activityDuration,
-          defaultValue: "Working for {{duration}}",
-        })
+      ? `处理中 ${activityDuration}`
       : durationMs <= 0
-        ? t("message.activityWorked", { defaultValue: "Worked" })
-      : t("message.activityWorkedFor", {
-          duration: activityDuration,
-          defaultValue: "Worked for {{duration}}",
-        })
+        ? "处理完成"
+        : `处理了 ${activityDuration}`
     : isTurnStreaming
-      ? t("message.activityThinkingFor", {
-          duration: activityDuration,
-          defaultValue: "Thinking for {{duration}}",
-        })
+      ? `思考中 ${activityDuration}`
       : durationMs <= 0
-        ? t("message.activityThought", { defaultValue: "Thought" })
-      : t("message.activityThoughtFor", {
-          duration: activityDuration,
-          defaultValue: "Thought for {{duration}}",
-        });
+        ? "思考完成"
+        : `思考了 ${activityDuration}`;
 
   const cancelActivityScrollFrame = useCallback(() => {
     if (scrollFrameRef.current !== null) {
