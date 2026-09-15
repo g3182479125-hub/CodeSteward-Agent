@@ -232,9 +232,10 @@ nanobot；这不是 H2–H9 管理的候选工具。通过 `/plugins` 和 `devpi
   本文前述历史现场引用中。本节没有把 fake 回执计入真实 FC 证据。
 - **H10-B：完成。** 本轮聚焦回归、前端 lint 与生产 build 均已通过。
 - **H10-C：完成。** 隔离数据库迁移及三类缺失/不兼容恢复分支已可复现。
-- **H10-D：待本轮双轴增量复核。** 本文已分别标注本轮真实实测、历史现场记录、自动化
-  证据、本地 fake 限制和 provider-default 边界；待 Standards / Spec reviewer 对本轮
-  真实证据与现有代码做增量复核后封存 H10。
+- **H10-D：完成。** 本文已分别标注本轮真实实测、历史现场记录、自动化证据、本地
+  fake 限制和 provider-default 边界；独立只读产品交付评审已核对真实控制面/WebUI/测试
+  证据并通过，结论见 `docs/reviews/h10-product-review-2026-09-15.md`。原 Standards/Spec
+  reviewer 线程虽显示完成，但本轮没有返回正文，因此未把空响应当作 PASS。
 
 当前 FC `provider-default` 模式不提供“禁网且无副作用”的可信回执，因此 H9 会拒绝将这类
 试用结果提升为持久选择。这是故意的 fail-closed 限制，不是本机回退执行；FC 控制台或服务端

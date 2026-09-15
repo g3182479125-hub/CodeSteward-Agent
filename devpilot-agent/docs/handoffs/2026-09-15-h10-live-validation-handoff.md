@@ -9,7 +9,8 @@
 - 分支：`handoff-2026-09-01`
 - 本次提交完成后，以该分支最新 HEAD 为准；不要直接覆盖用户的本地运行态、`.env`、数据库或聊天记录。
 - 历史 H1-H9 已完成。本交接文档创建时 H10 尚未完成；本轮已补齐 H10-A 的真实 FC
-  网页闭环，H10-B/H10-C 已通过，当前只剩本轮 Standards / Spec 双轴增量复核后封存 H10-D。
+  网页闭环、H10-B/H10-C 回归恢复和 H10-D 交付复核，H10 已完成。最终评审记录见
+  `devpilot-agent/docs/reviews/h10-product-review-2026-09-15.md`。
 
 ## 本次已完成
 
@@ -89,12 +90,13 @@
 
 任何复跑失败时，仍应只保留秘密外的错误码、ChangeSet ID、chat ID 和事件时间；不要打印 API Key、bootstrap token 或完整 config。
 
-## 推荐继续顺序（H10 收尾）
+## H10 已完成；后续接手顺序
 
 1. 先运行本次的 focused tests、Ruff、WebUI build/lint；修复失败再进入真实 FC。
 2. 真实 FC 清单、时间、结果和已知边界已追加到 `h10-delivery.md`。
 3. H10-B/H10-C 回归、Ruff、WebUI lint/build 已完成并保留本轮结果。
-4. 最后向原 Standards、Spec 两个 reviewer subagent 发送**本次增量**复核请求。两者 PASS 后将 H10 标记完成、进入后续工作。
+4. 如继续开发新节点，先读取 `CURRENT_PLAN.md` 和本交接文档，保持 H10 的真实 FC、
+   provider-default 与回滚证据边界；不要把本轮临时运行态提交到 Git。
 
 ## 建议验证命令
 
