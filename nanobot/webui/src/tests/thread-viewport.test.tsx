@@ -296,6 +296,22 @@ describe("ThreadViewport", () => {
     expect(container.querySelector("[role='dialog']")).toBeNull();
   });
 
+  it("does not present the long-term objective as the current activity", () => {
+    render(
+      <ThreadViewport
+        messages={messages}
+        isStreaming
+        runStartedAt={1000}
+        goalState={{ active: true, objective: "Refactor the whole project" }}
+        composer={<div />}
+      />,
+    );
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Waiting for the model to start processing");
+    expect(status).not.toHaveTextContent("Refactor the whole project");
+  });
+
   it("explains when the current activity has not produced a new update", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_125_000));

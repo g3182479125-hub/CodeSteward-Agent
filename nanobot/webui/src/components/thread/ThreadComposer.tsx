@@ -624,16 +624,11 @@ function getVisibleBounds(el: HTMLElement): { top: number; bottom: number } {
   return { top, bottom };
 }
 
-function goalStateStripPreview(
-  goal: GoalStateWsPayload | undefined,
-  t: (key: string) => string,
-): string | null {
+function goalStateStripPreview(goal: GoalStateWsPayload | undefined): string | null {
   if (!goal?.active) return null;
   const summary = goal.ui_summary?.trim();
   if (summary) return summary;
-  const obj = goal.objective?.trim();
-  if (obj) return obj.length > 72 ? `${obj.slice(0, 72)}…` : obj;
-  return t("thread.composer.goalStateFallback");
+  return null;
 }
 
 function cliAppMentionPayload(app: CliAppInfo): OutboundCliAppMention {
@@ -681,7 +676,7 @@ export function RunElapsedStrip({
 }) {
   const { t } = useTranslation();
   const pageVisible = usePageVisibility();
-  const stripLabel = goalStateStripPreview(goalState, t);
+  const stripLabel = goalStateStripPreview(goalState);
   const [, setTick] = useState(0);
   const localStartedAtRef = useRef<number | null>(null);
   const [lastActivityAt, setLastActivityAt] = useState<number | null>(null);
