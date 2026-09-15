@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from devpilot import nanobot_tools
 from devpilot.code_access import CodeAccessError, CodeAccessService
-from devpilot.nanobot_tools import ReadCodeTool, SearchCodeTool, ToolResult
+from devpilot.nanobot_tools import InspectProjectTool, ReadCodeTool, SearchCodeTool, ToolResult
 from devpilot.paths import AllowedRoots
 from devpilot.storage import ProjectStore
 
@@ -133,3 +136,51 @@ def test_nanobot_search_and_read_tools_use_registered_project(
     assert isinstance(denied, ToolResult)
     assert denied.is_error is True
     assert "PATH_DENIED" in str(denied)
+
+
+def test_inspect_tool_does_not_block_the_agent_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow local inspection must not freeze WebUI health or other chats."""
+
+    inspect_started = threading.Event()
+    allow_inspect_to_finish = threading.Event()
+    callback_processed_before_finish = threading.Event()
+
+    class SlowService:
+        def inspect(self, _project_path: Path) -> SimpleNamespace:
+            inspect_started.set()
+            assert allow_inspect_to_finish.wait(timeout=1)
+            return SimpleNamespace(
+                project_id="project-id",
+                run_id="run-id",
+                inspection=SimpleNamespace(to_dict=lambda: {"files_seen": 1}),
+            )
+
+    monkeypatch.setattr(nanobot_tools, "_service", lambda _workspace: SlowService())
+
+    async def run() -> str | ToolResult:
+        loop = asyncio.get_running_loop()
+        callback_ready = threading.Event()
+
+        def mark_callback() -> None:
+            callback_ready.set()
+
+        def release_after_callback() -> None:
+            assert inspect_started.wait(timeout=1)
+            loop.call_soon_threadsafe(mark_callback)
+            if callback_ready.wait(timeout=0.5):
+                callback_processed_before_finish.set()
+            allow_inspect_to_finish.set()
+
+        watchdog = threading.Thread(target=release_after_callback, daemon=True)
+        watchdog.start()
+        task = asyncio.create_task(InspectProjectTool(tmp_path).execute(project_path=str(tmp_path)))
+        result = await task
+        watchdog.join(timeout=1)
+        return result
+
+    result = asyncio.run(run())
+
+    assert callback_processed_before_finish.is_set()
+    assert not isinstance(result, ToolResult) or not result.is_error

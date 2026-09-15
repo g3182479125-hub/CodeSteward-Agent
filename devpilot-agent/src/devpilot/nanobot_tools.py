@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -359,7 +360,10 @@ class InspectProjectTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
             project_path = _project_path(str(kwargs["project_path"]), self.workspace)
-            outcome = _service(self.workspace).inspect(project_path)
+            # Repository discovery and its SQLite writes are synchronous.  Keep
+            # them off nanobot's single event loop so a slow filesystem or
+            # database lock cannot freeze WebUI health and unrelated chats.
+            outcome = await asyncio.to_thread(_service(self.workspace).inspect, project_path)
             payload = {
                 "project_id": outcome.project_id,
                 "run_id": outcome.run_id,
