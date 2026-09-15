@@ -4,8 +4,9 @@
 
 - 本次验证机仓库根目录：`E:\codex-local\nanobot-devpilot-agent`（历史现场路径；换机后以
   `git rev-parse --show-toplevel` 得到的当前仓库根目录为准，不要照抄盘符）。
-- `start-integrated-harness.ps1` 对隔离状态和允许根目录保留 E: 盘安全门禁；新电脑没有 E: 时，
-  不要直接放宽门禁，需先按计划调整并重新完成双轴复核。
+- `start-integrated-harness.ps1` 已支持显式 `ConfigPath`、`WorkspacePath` 和 `DataPath`，
+  因此新电脑不需要 E: 盘；它仍拒绝相对路径、盘符根目录和允许根之外的工作区。先以
+  `-ValidateOnly` 校验路径，再删除该开关启动。
 - 分支：`handoff-2026-09-01`
 - 本次提交完成后，以该分支最新 HEAD 为准；不要直接覆盖用户的本地运行态、`.env`、数据库或聊天记录。
 - 历史 H1-H9 已完成。本交接文档创建时 H10 尚未完成；本轮已补齐 H10-A 的真实 FC
@@ -16,7 +17,8 @@
 
 ### 1. H10 本地运行与性能基础
 
-- 新增 `scripts/start-integrated-harness.ps1`：仅允许 E: 路径，检查 H9 完整性密钥，迁移 DevPilot 数据库，等待控制面健康后启动原生 nanobot WebUI。
+- 新增 `scripts/start-integrated-harness.ps1`：保留旧的 E: 状态根快捷方式，同时支持显式的
+  任意盘符配置/工作区/数据目录组合；检查 H9 完整性密钥，迁移 DevPilot 数据库，等待控制面健康后启动原生 nanobot WebUI。
 - 新增 `scripts/h10_lifecycle_benchmark.py`：连续 50 次 PluginManager load/stop 后检查残留路由、drain 任务。最近结果：P50 `1.465 ms`、P95 `2.059 ms`、三类残留均为 `0`。
 - 新增 H10 证据模板和本地运行手册；明确临时隔离运行态不能覆盖用户真实 `config.json`、数据库或聊天记录。
 

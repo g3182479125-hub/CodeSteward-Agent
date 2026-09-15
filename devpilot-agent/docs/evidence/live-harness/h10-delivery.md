@@ -170,9 +170,10 @@ $env:PYTHONPATH="$repoRoot\nanobot;$repoRoot\devpilot-agent\src"
 
 在当前仓库根目录执行（不要假设固定盘符）：
 
-> 注意：`start-integrated-harness.ps1` 的 `StateRoot`/`AllowedRoots` 仍保留 E: 盘安全门禁；
-> 新电脑没有 E: 时不要绕过该门禁，应先按计划调整并重新做双轴复核。下列仓库内测试命令
-> 可以使用任意仓库盘符。
+> 注意：启动脚本接受任意盘符的显式绝对路径，但仍要求 `WorkspacePath` 位于
+> `AllowedRoots` 内，且拒绝盘符根目录和相对路径。配置、工作区、数据路径分离时使用
+> `-ConfigPath`、`-WorkspacePath`、`-DataPath`，先运行 `-ValidateOnly`；详见
+> [`local-nanobot-devpilot.md`](../../runbooks/local-nanobot-devpilot.md)。
 
 ```powershell
 $repoRoot = (git rev-parse --show-toplevel).Trim()

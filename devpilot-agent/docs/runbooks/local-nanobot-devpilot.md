@@ -69,17 +69,24 @@ H6 运行中模型候选、H8 Loop 接续和 H9 持久选择不是 nanobot 的�
 设置三个开关、配置 H9 完整性密钥并把数据库迁移到最新版本。不要只执行旧的 `nanobot
 webui` 命令，否则普通聊天可用但动态 Harness 会被 fail-closed 禁用。
 
-首次仅需为当前 Windows 用户生成一次 H9 完整性密钥；不要复制、提交或展示该值：
+首次仅需为当前 Windows 用户生成一次 H9 完整性密钥和 H6 试用授权密钥；不要复制、提交或展示它们：
 
 ```powershell
-$bytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$key = [Convert]::ToBase64String($bytes)
-[Environment]::SetEnvironmentVariable("DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY", $key, "User")
-Remove-Variable bytes, key
+$selectionBytes = New-Object byte[] 32
+$grantBytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($selectionBytes)
+[Security.Cryptography.RandomNumberGenerator]::Fill($grantBytes)
+[Environment]::SetEnvironmentVariable(
+  "DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY", [Convert]::ToBase64String($selectionBytes), "User"
+)
+[Environment]::SetEnvironmentVariable(
+  "DEVPILOT_CANDIDATE_GRANT_SECRET", [Convert]::ToBase64String($grantBytes), "User"
+)
+Remove-Variable selectionBytes, grantBytes
 ```
 
-以后在 E 盘仓库根目录运行以下一条命令。它会在不改写聊天、配置或现有数据库的前提下：
+如果配置文件、工作区与隔离数据都在同一个 E: 状态根目录，可在仓库根目录运行以下一条命令。
+它会在不改写聊天、配置或现有数据库的前提下：
 执行迁移、检查/启动 `127.0.0.1:18800` 控制面，并以前台方式启动 nanobot。关闭该窗口才会
 停止 nanobot；动态候选的装卸、更新和 Loop 切换发生在运行中，不需要关闭此窗口。
 
@@ -87,6 +94,25 @@ Remove-Variable bytes, key
 cd E:\codex-local\nanobot-devpilot-agent
 powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1
 ```
+
+如果当前机器没有 E:，或像演示环境一样把模型配置、受控工作区和运行数据分开保存，
+必须显式传入这三个路径和项目允许根。脚本接受任意盘符，但拒绝盘符根目录、相对路径和
+位于 `AllowedRoots` 之外的工作区；多个允许根按 Windows 的 `;` 分隔。先用
+`-ValidateOnly` 检查，成功后删掉该开关启动：
+
+```powershell
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+$configPath = 'D:\path\to\nanobot\config.json'
+$workspacePath = 'D:\path\to\demo-workspace'
+$dataPath = 'D:\path\to\isolated-devpilot-data'
+
+powershell -ExecutionPolicy Bypass -File "$repoRoot\devpilot-agent\scripts\start-integrated-harness.ps1" `
+  -ConfigPath $configPath -WorkspacePath $workspacePath -DataPath $dataPath `
+  -AllowedRoots $workspacePath -ValidateOnly
+```
+
+`configPath` 只在本机读取，不能录入视频或提交版本库；`dataPath` 是可隔离、可重建的
+DevPilot 数据目录，不要指向已有聊天或生产数据库。
 
 启动后打开 `http://127.0.0.1:8765`，新建话题并先输入
 `/task-profile feature-delivery` 或 `/task-profile bug-fix`。Profile 回复中必须含有
