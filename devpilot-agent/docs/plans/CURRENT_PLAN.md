@@ -1,14 +1,15 @@
 # DevPilot 精简执行计划
 
 2026-09-10 扩展入口：[运行中可重组 Harness 计划](LIVE_HARNESS_EXTENSION.md)。
-用户要求规划 H1–H10：工具热插拔、模型动态插件、Loop 接续和反馈选择。
+用户要求规划 H1–H10：工具热插拔、模型动态插件、Loop 接续和反馈选择；随后明确新增 H11，
+使模型候选工具的打扰程度与 nanobot 现有“默认权限 / 完全访问权限”一致。
 本计划的 P0–P8 完成状态不代表该扩展完成；H1–H10 已完成，H7 已完成默认 Driver、托管检查点、自动化验收及双轴增量复核；H10-A 的真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成；H 阶段实施以扩展文档的明确范围例外为准，
 保留本文既有功能和开发审查规则。H1 契约、H2 动态插件生命周期、H3 版本更新/资源清理、H4 有限依赖组合与 H5 模型候选执行边界已完成专项验收和双轴审查；H5 最新候选为 `e08299e`，H6–H10
 H6 实现落点为 `nanobot/nanobot/agent/plugins/manager.py` 与 `devpilot-agent/src/devpilot/model_plugins.py`，证据见 `devpilot-agent/docs/evidence/live-harness/`，最终报告见 `devpilot-agent/docs/reviews/h6-final-review-b55c027.md`；历史报告见
 `devpilot-agent/docs/reviews/h1-*-review-2930119.md`、`h2-*-review-b8141f0.md` 和
 `h3-*-review-6159add.md`、`h4-*-review-78456c6.md`、`h5-*-review-e08299e.md`。
 
-版本：3.8（2026-09-15，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准设计方向，P0–P8 已按本计划完成并通过相应验收；本文继续作为冻结边界与维护依据。H5、H6、H7、H8、H9、H10 已完成；H10-A 真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成。H7 包含默认 Driver、托管检查点和双轴增量复核；H8/H9/H10 证据见 `devpilot-agent/docs/evidence/live-harness/`。
+版本：3.9（2026-09-15，接受 FC provider-default，不把网络隔离作为本项目目标）；状态：用户已批准 H11 的权限模式驱动候选工具自主策略。P0–P8 与 H1–H10 已完成并保留原验收；H11 尚未实施，是后续唯一的 Harness 开发节点。H10-A 真实 FC 全链路证据、H10-B/H10-C 回归与恢复、H10-D 交付复核均已完成。H7 包含默认 Driver、托管检查点和双轴增量复核；H8/H9/H10 证据见 `devpilot-agent/docs/evidence/live-harness/`。
 生效关系见 [ADR-0006](../adr/ADR-0006-nanobot-first-personal-agent.md) 和
 [ADR-0007](../adr/ADR-0007-controlled-skill-improvement.md)。仅接管未完成工作。
 
@@ -95,6 +96,7 @@ P8-01/P8-02 已实现并通过双轴 subagent review；P8-03 已按用户明确�
 | 恢复 | 前端断线不等于服务端进程崩溃；崩溃后定位已有执行，不能确认结果则标未知/失败 |
 | 秘密保护 | key 仅在配置/受信后端；上传不含凭据与本机环境，日志/模型结果不含授权 token |
 | 权限一致性 | 受控任务中限制内置写文件、exec 及其他旁路工具；用实际工具集合和拒绝测试证明 |
+| 候选工具自主性 | 复用 WebUI 已有“默认权限 / 完全访问权限”表达用户被打断的偏好；其精确映射、红线和验收以 `LIVE_HARNESS_EXTENSION.md` 的 H11 为准。它不改变项目 Apply/Verify/Rollback 的独立确认契约。 |
 
 优先使用 nanobot 现有权限/工具配置完成受控任务限制；若配置粒度不够，再做最小
 适配并补回归。不得为了复用而开放旁路，也不重写 nanobot 核心循环。
