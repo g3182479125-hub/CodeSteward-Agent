@@ -313,6 +313,7 @@ class ControlPlaneManager:
         target_files: list[str],
         symptom: str,
         expected_behavior: str,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         if self.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project test runs require durable storage")
@@ -321,6 +322,26 @@ class ControlPlaneManager:
                 "EXECUTION_BACKEND_UNAVAILABLE", "no test execution backend is configured"
             )
         backend = self.execution_backend
+        request_fingerprint = json.dumps(
+            {
+                "project_path": str(project_path),
+                "test_kind": test_kind,
+                "target_files": target_files,
+                "symptom": symptom,
+                "expected_behavior": expected_behavior,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        replay = self._check_idempotency(
+            idempotency_key,
+            "project-test",
+            str(project_path),
+            "",
+            request_fingerprint=request_fingerprint,
+        )
+        if replay is not None:
+            return replay
         try:
             _command, command_profile = ProjectTestRunner.command_for(test_kind)
         except ValueError as exc:
@@ -356,6 +377,13 @@ class ControlPlaneManager:
             store=self.store,
             execution_backend=backend,
         )
+        self._reserve_idempotency(
+            idempotency_key,
+            "project-test",
+            str(project_path),
+            "",
+            request_fingerprint=request_fingerprint,
+        )
         try:
             result = runner.run(
                 project_path=project_path,
@@ -365,10 +393,12 @@ class ControlPlaneManager:
                 expected_behavior=expected_behavior,
             )
         except ProjectTestTrustError as exc:
+            self._abort(idempotency_key)
             raise PatchError("PROJECT_TRUST_REQUIRED", str(exc)) from exc
         except ValueError as exc:
+            self._abort(idempotency_key)
             raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
-        return {
+        response = {
             "project_id": result.project_id,
             "run_id": result.run_id,
             "failure_run_id": result.failure_run_id,
@@ -376,6 +406,8 @@ class ControlPlaneManager:
             "command": result.command,
             "exit_code": result.exit_code,
         }
+        self._complete(idempotency_key, response)
+        return response
 
     def preview(
         self, *, project_path: str | Path, project_id: str | None, patches: list[FilePatch]
@@ -1782,7 +1814,11 @@ def create_app(
 
     @app.post("/api/v1/project-tests", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/project-tests", status_code=status.HTTP_201_CREATED)
-    def run_project_test(request: Request, payload: ProjectTestRequest) -> dict[str, Any]:
+    def run_project_test(
+        request: Request,
+        payload: ProjectTestRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
         return _contract_payload(
             request,
             manager.run_project_test(
@@ -1791,6 +1827,7 @@ def create_app(
                 target_files=payload.target_files,
                 symptom=payload.symptom,
                 expected_behavior=payload.expected_behavior,
+                idempotency_key=idempotency_key,
             ),
         )
 

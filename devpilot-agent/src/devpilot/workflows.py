@@ -1344,7 +1344,7 @@ class BugFixWorkflow:
             facts.append(
                 {
                     "run_id": evidence_id,
-                    "event": {"event_type": "bug_check.failed", "payload": payload},
+                    "event": {"event_type": failure_event, "payload": payload},
                 }
             )
         return facts, tuple(sorted(target_files)), before_hashes

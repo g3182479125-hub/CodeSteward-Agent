@@ -689,10 +689,13 @@ class FCSandboxBackend:
             )
             stdout = stdout_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
             stderr = stderr_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
+            raw_exit_code = getattr(result, "exit_code", None)
+            if not isinstance(raw_exit_code, int) or isinstance(raw_exit_code, bool):
+                raise ExecutionError("FC_RECEIPT_INCOMPLETE", "FC Sandbox receipt has no exit code")
             receipt = ExecutionResult(
                 backend=self.name,
                 sandbox_id=state.sandbox_id or _sandbox_id(sandbox_handle),
-                exit_code=int(getattr(result, "exit_code", 0)),
+                exit_code=raw_exit_code,
                 stdout=stdout,
                 stderr=stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),

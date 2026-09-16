@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,10 @@ _TEST_COMMANDS = {
 
 class ProjectTestTrustError(ValueError):
     """Raised when the target has not received an explicit trust binding."""
+
+
+class ProjectTestEntryError(ValueError):
+    """Raised when the server snapshot has no recognized test entry."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +78,8 @@ class ProjectTestRunner:
         if not targets or len(set(targets)) != len(targets):
             raise ValueError("test target files must be unique and non-empty")
         snapshot = self._snapshot(project)
+        if not self._has_test_entry(test_kind, snapshot):
+            raise ProjectTestEntryError("no supported project test entry was found")
         before_hashes = self._target_hashes(snapshot, targets)
         root_id, fingerprint = self.allowed_roots.binding_for(project)
         project_id = self.store.ensure_project(
@@ -104,8 +111,24 @@ class ProjectTestRunner:
             )
             self.store.finish_run(run_id, "failed", {"code": exc.code})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+        except Exception as exc:
+            self.store.append_event(
+                run_id,
+                "test.execution.failed",
+                {"code": "EXECUTION_RECEIPT_INVALID", "error_type": type(exc).__name__},
+            )
+            self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
+            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
 
         self._record_receipt(run_id, receipt, command)
+        if not self._receipt_is_complete(receipt, command_profile):
+            self.store.append_event(
+                run_id,
+                "test.execution.incomplete",
+                {"code": "TEST_RECEIPT_INCOMPLETE", "command": command},
+            )
+            self.store.finish_run(run_id, "failed", {"code": "TEST_RECEIPT_INCOMPLETE"})
+            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
             return ProjectTestRunResult("passed", project_id, run_id, None, command, 0)
@@ -157,6 +180,41 @@ class ProjectTestRunner:
             }
         except KeyError as exc:
             raise ValueError("test targets must be regular project files in the snapshot") from exc
+
+    @staticmethod
+    def _has_test_entry(test_kind: str, snapshot: tuple[ExecutionFile, ...]) -> bool:
+        files = {item.relative_path: item.content for item in snapshot}
+        if test_kind == "python-pytest":
+            return any(
+                path.rsplit("/", 1)[-1].startswith("test_") and path.endswith(".py")
+                or path.endswith("_test.py")
+                for path in files
+            ) or any(path in files for path in {"pytest.ini", "pyproject.toml", "setup.cfg"})
+        package = files.get("package.json")
+        if package is None:
+            return False
+        try:
+            parsed = json.loads(package.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        scripts = parsed.get("scripts") if isinstance(parsed, dict) else None
+        return isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and bool(
+            scripts["test"].strip()
+        )
+
+    @staticmethod
+    def _receipt_is_complete(receipt: ExecutionResult, command_profile: str) -> bool:
+        return bool(
+            isinstance(receipt.exit_code, int)
+            and not isinstance(receipt.exit_code, bool)
+            and receipt.sandbox_id
+            and receipt.command_profile == command_profile
+            and isinstance(receipt.duration_ms, int)
+            and receipt.duration_ms >= 0
+            and receipt.side_effect_count in {None, 0}
+            and receipt.permission_violation in {None, False}
+            and not receipt.output_truncated
+        )
 
     @staticmethod
     def _snapshot(project: Path) -> tuple[ExecutionFile, ...]:
