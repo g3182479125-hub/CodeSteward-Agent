@@ -1495,24 +1495,27 @@ export function useNanobotStream(
 
   const stop = useCallback(() => {
     if (!chatId) return;
-    flushPendingStreamEvents();
-    setIsStreaming(false);
-    setMessages((prev) => {
-      buffer.current = null;
-      activeAssistantRef.current = null;
-      closedAssistantStreamIdsRef.current.clear();
-      clearActivitySegment();
-      return prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
-    });
-    suppressStreamUntilTurnEndRef.current = false;
-    setRunStartedAt(null);
-    client.finishRunLocally(chatId);
     // /stop is a priority backend control operation. Use the acknowledged
     // system-command channel rather than an uncorrelated chat message, so it
-    // is delivered even while a normal turn owns this chat's lifecycle.
-    void client.sendSystemCommand(chatId, "/stop").catch(() => {
-      // The UI is already released optimistically; a later reconnect/history
-      // reconciliation will surface the authoritative backend state.
+    // is delivered even while a normal turn owns this chat's lifecycle. Do
+    // not make a new user message eligible until the backend has acknowledged
+    // cancellation: otherwise a second turn can race the still-active task.
+    void client.sendSystemCommand(chatId, "/stop").then(() => {
+      flushPendingStreamEvents();
+      setIsStreaming(false);
+      setMessages((prev) => {
+        buffer.current = null;
+        activeAssistantRef.current = null;
+        closedAssistantStreamIdsRef.current.clear();
+        clearActivitySegment();
+        return prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
+      });
+      suppressStreamUntilTurnEndRef.current = false;
+      setRunStartedAt(null);
+      client.finishRunLocally(chatId);
+    }).catch(() => {
+      // Keep the current run authoritative when cancellation is not
+      // acknowledged. The user can retry stop or wait for a terminal event.
     });
   }, [chatId, clearActivitySegment, client, flushPendingStreamEvents]);
 

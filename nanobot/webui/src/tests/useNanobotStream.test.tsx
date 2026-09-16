@@ -2232,8 +2232,14 @@ describe("useNanobotStream", () => {
     expect(result.current.messages[0].media).toHaveLength(1);
   });
 
-  it("stops the active turn without adding a user slash command bubble", () => {
+  it("waits for the stop acknowledgement before releasing the active turn", async () => {
     const fake = fakeClient();
+    let acknowledgeStop: (() => void) | undefined;
+    fake.client.sendSystemCommand.mockImplementation(
+      () => new Promise<void>((resolve) => {
+        acknowledgeStop = resolve;
+      }),
+    );
     const { result } = renderHook(() => useNanobotStream("chat-stop", EMPTY_MESSAGES), {
       wrapper: wrap(fake.client),
     });
@@ -2250,10 +2256,37 @@ describe("useNanobotStream", () => {
 
     expect(fake.client.sendSystemCommand).toHaveBeenCalledWith("chat-stop", "/stop");
     expect(fake.client.sendMessage).not.toHaveBeenCalledWith("chat-stop", "/stop");
+    expect(fake.client.finishRunLocally).not.toHaveBeenCalled();
+    expect(result.current.isStreaming).toBe(true);
+
+    await act(async () => {
+      acknowledgeStop?.();
+      await Promise.resolve();
+    });
+
     expect(fake.client.finishRunLocally).toHaveBeenCalledWith("chat-stop");
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0].content).toBe("long task");
+  });
+
+  it("keeps the active turn authoritative when stop is not acknowledged", async () => {
+    const fake = fakeClient();
+    fake.client.sendSystemCommand.mockRejectedValue(new Error("socket closed"));
+    const { result } = renderHook(() => useNanobotStream("chat-stop-failed", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      result.current.send("long task");
+      result.current.stop();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fake.client.finishRunLocally).not.toHaveBeenCalled();
+    expect(result.current.isStreaming).toBe(true);
   });
 
   it("does not mark side-channel slash commands as streaming", () => {
