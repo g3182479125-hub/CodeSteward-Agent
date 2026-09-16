@@ -552,10 +552,14 @@ class SkillImprovementStore:
             compatible_heads = {
                 "0011_p8_skill_improvement_records",
                 "0012_h3_plugin_runtime_state",
+                "0013_h8_loop_handoff_state",
+                "0014_h8_requested_driver_state",
+                "0015_h8_switch_generation",
+                "0016_h9_harness_selection_records",
             }
             if version is not None and version[0] not in compatible_heads:
                 raise SkillImprovementError(
-                    "database schema must be upgraded to 0012_h3_plugin_runtime_state"
+                    "database schema must be at least 0011_p8_skill_improvement_records"
                 )
             if version is not None:
                 has_records_table = connection.execute(

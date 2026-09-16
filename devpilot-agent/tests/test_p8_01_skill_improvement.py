@@ -128,6 +128,26 @@ def test_production_store_requires_alembic_head(tmp_path: Path) -> None:
         SkillImprovementStore(data_dir, workspace=workspace)
 
 
+def test_production_store_accepts_the_current_linear_harness_head(tmp_path: Path) -> None:
+    """P8 can open the shared database after later additive Harness migrations."""
+    store, evidence_id = _store(tmp_path)
+    del evidence_id
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "update alembic_version set version_num = ?",
+            ("0016_h9_harness_selection_records",),
+        )
+
+    reopened = SkillImprovementStore(store.root, workspace=tmp_path / "workspace")
+    snapshot = reopened.capture_task_snapshot(
+        task_id="task-current-head",
+        workspace=tmp_path / "workspace",
+        session_id="session-current-head",
+        project_id="project-current-head",
+    )
+    assert snapshot.content_hash == content_sha256(_baseline())
+
+
 def test_integrity_key_is_independent_from_business_database(tmp_path: Path) -> None:
     store, _evidence_id = _store(tmp_path)
     assert store.integrity_key_file != store.database_path

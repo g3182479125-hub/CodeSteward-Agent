@@ -74,8 +74,14 @@ webui` 命令，否则普通聊天可用但动态 Harness 会被 fail-closed 禁
 ```powershell
 $selectionBytes = New-Object byte[] 32
 $grantBytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Fill($selectionBytes)
-[Security.Cryptography.RandomNumberGenerator]::Fill($grantBytes)
+$randomNumberGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+  $randomNumberGenerator.GetBytes($selectionBytes)
+  $randomNumberGenerator.GetBytes($grantBytes)
+}
+finally {
+  $randomNumberGenerator.Dispose()
+}
 [Environment]::SetEnvironmentVariable(
   "DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY", [Convert]::ToBase64String($selectionBytes), "User"
 )
