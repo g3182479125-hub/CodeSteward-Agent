@@ -738,6 +738,9 @@ def _post_control_plane(
         "Content-Type": "application/json",
         "Idempotency-Key": idempotency_key or str(uuid.uuid4()),
     }
+    internal_auth_token = os.environ.get("DEVPILOT_CONTROL_PLANE_TOKEN")
+    if internal_auth_token:
+        headers["X-DevPilot-Internal-Token"] = internal_auth_token
     if authorization_token:
         headers["Authorization"] = f"DevPilotGrant {authorization_token}"
     request = Request(
@@ -757,7 +760,11 @@ def _post_control_plane(
 
 
 def _get_control_plane(path: str) -> dict[str, Any]:
-    request = Request(f"{_control_plane_url()}{path}", method="GET")
+    headers: dict[str, str] = {}
+    internal_auth_token = os.environ.get("DEVPILOT_CONTROL_PLANE_TOKEN")
+    if internal_auth_token:
+        headers["X-DevPilot-Internal-Token"] = internal_auth_token
+    request = Request(f"{_control_plane_url()}{path}", headers=headers, method="GET")
     with urlopen(request, timeout=10) as response:
         response_body = response.read(256 * 1024 + 1)
     if len(response_body) > 256 * 1024:
@@ -800,6 +807,9 @@ def _get_control_plane_events(
     headers: dict[str, str] = {"Accept": "text/event-stream"}
     if last_event_id is not None:
         headers["Last-Event-ID"] = str(last_event_id)
+    internal_auth_token = os.environ.get("DEVPILOT_CONTROL_PLANE_TOKEN")
+    if internal_auth_token:
+        headers["X-DevPilot-Internal-Token"] = internal_auth_token
     request = Request(f"{_control_plane_url()}{path}", headers=headers, method="GET")
     with urlopen(request, timeout=15) as response:
         body = response.read(512 * 1024 + 1)

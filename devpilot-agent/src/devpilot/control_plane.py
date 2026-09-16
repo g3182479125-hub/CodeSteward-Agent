@@ -13,6 +13,7 @@ import secrets
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,6 +51,8 @@ DEFAULT_TOKEN_TTL = timedelta(minutes=5)
 APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
+INTERNAL_AUTH_HEADER = "X-DevPilot-Internal-Token"
+_INTERNAL_AUTH_PATHS = frozenset({"/approve", "/trust", "/revoke"})
 
 
 class PatchPayload(BaseModel):
@@ -1497,6 +1500,7 @@ def create_app(
     manager: ControlPlaneManager | None = None,
     allowed_roots: AllowedRoots | None = None,
     data_dir: str | Path | None = None,
+    internal_auth_token: str | None = None,
 ) -> FastAPI:
     if manager is None:
         resolved_data_dir = (
@@ -1524,6 +1528,13 @@ def create_app(
     # broker. There is no standalone browser client, so CORS is intentionally
     # not enabled.
     app.state.manager = manager
+    app.state.internal_auth_token = (
+        internal_auth_token
+        if internal_auth_token is not None
+        else os.environ.get("DEVPILOT_CONTROL_PLANE_TOKEN")
+    )
+    if app.state.internal_auth_token is not None and len(app.state.internal_auth_token) < 32:
+        raise ValueError("DEVPILOT_CONTROL_PLANE_TOKEN must contain at least 32 characters")
 
     @app.middleware("http")
     async def require_loopback_and_contract(request: Request, call_next: Any) -> Any:
@@ -1531,6 +1542,27 @@ def create_app(
         request.state.request_id = request_id
         client = request.client.host if request.client is not None else None
         forwarded = request.headers.get("Forwarded") or request.headers.get("X-Forwarded-For")
+        route_requires_internal_auth = any(
+            request.url.path.endswith(path) for path in _INTERNAL_AUTH_PATHS
+        )
+        expected_internal_token = getattr(request.app.state, "internal_auth_token", None)
+        provided_internal_token = request.headers.get(INTERNAL_AUTH_HEADER)
+        internal_auth_error: tuple[int, str, str] | None = None
+        if route_requires_internal_auth and not expected_internal_token:
+            internal_auth_error = (
+                503,
+                "INTERNAL_AUTH_NOT_CONFIGURED",
+                "control-plane internal authentication is not configured",
+            )
+        elif route_requires_internal_auth and (
+            not provided_internal_token
+            or not compare_digest(provided_internal_token, str(expected_internal_token))
+        ):
+            internal_auth_error = (
+                401,
+                "INTERNAL_AUTH_REQUIRED",
+                "control-plane internal authentication is required",
+            )
         if client not in {"127.0.0.1", "::1", "localhost"} or forwarded:
             response = JSONResponse(
                 status_code=403,
@@ -1539,6 +1571,12 @@ def create_app(
                     "PATH_DENIED",
                     "local control plane only; forwarded requests are not accepted",
                 ),
+            )
+        elif internal_auth_error is not None:
+            code, message = internal_auth_error[1:]
+            response = JSONResponse(
+                status_code=internal_auth_error[0],
+                content=_error_payload(request, code, message),
             )
         else:
             response = await call_next(request)

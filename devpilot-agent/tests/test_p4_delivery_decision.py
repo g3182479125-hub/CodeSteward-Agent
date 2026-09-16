@@ -26,7 +26,11 @@ def _delivered(
     proposal = workflow.propose(
         project_path=project, patches=[_patch(project)], evidence_ids=[evidence_id]
     )
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     apply_approval = client.post(f"/v1/change-sets/{proposal.change_set_id}/approve")
     applied = workflow.apply(
         proposal,
@@ -124,7 +128,11 @@ def test_delivery_report_api_and_nanobot_adapter_are_read_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _store, _project, manager, proposal = _delivered(tmp_path)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
 
     response = client.get(f"/v1/change-sets/{proposal.change_set_id}/delivery-report")
     assert response.status_code == 200

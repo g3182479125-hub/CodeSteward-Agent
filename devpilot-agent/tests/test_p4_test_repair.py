@@ -367,8 +367,12 @@ def test_test_repair_api_and_nanobot_contract(
     store, project, manager, analysis_id, failure_id = _setup(
         tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
     )
-    app = create_app(manager=manager)
-    client = TestClient(app, client=("127.0.0.1", 50000))
+    app = create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789")
+    client = TestClient(
+        app,
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     preview = _TestRepairWorkflow(manager).propose
     del preview
     payload = {

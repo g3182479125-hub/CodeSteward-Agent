@@ -157,7 +157,11 @@ def test_concurrent_apply_consumes_one_approval(tmp_path: Path) -> None:
 
 def test_http_contract_uses_authorization_header_and_idempotency_key(tmp_path: Path) -> None:
     store, project, project_id, manager = setup_manager(tmp_path)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     preview = client.post(
         "/v1/change-sets/preview",
         json={
@@ -190,9 +194,41 @@ def test_http_contract_uses_authorization_header_and_idempotency_key(tmp_path: P
     assert "approval_token" not in json.dumps(applied.json())
 
 
+def test_http_approval_requires_internal_adapter_authentication(tmp_path: Path) -> None:
+    store, project, project_id, manager = setup_manager(tmp_path)
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+    )
+    preview = client.post(
+        "/v1/change-sets/preview",
+        json={
+            "project_path": str(project),
+            "project_id": project_id,
+            "patches": [{"relative_path": "main.py", "operation": "create", "content": "ok\n"}],
+        },
+    )
+    change_set_id = preview.json()["change_set_id"]
+
+    missing = client.post(f"/v1/change-sets/{change_set_id}/approve")
+    assert missing.status_code == 401
+    assert missing.json()["error"]["code"] == "INTERNAL_AUTH_REQUIRED"
+
+    approved = client.post(
+        f"/v1/change-sets/{change_set_id}/approve",
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
+    assert approved.status_code == 200
+    assert isinstance(approved.json()["approval_token"], str)
+
+
 def test_http_rejects_non_loopback_client(tmp_path: Path) -> None:
     _store, _project, _project_id, manager = setup_manager(tmp_path)
-    client = TestClient(create_app(manager=manager), client=("10.0.0.8", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("10.0.0.8", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
 
     response = client.get("/healthz")
 
@@ -207,7 +243,11 @@ def test_http_verification_requires_separate_capability_and_is_idempotent(tmp_pa
         store=store,
         execution_backend=FakeExecutionBackend(stdout="verified"),
     )
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     preview = client.post(
         "/v1/change-sets/preview",
         json={

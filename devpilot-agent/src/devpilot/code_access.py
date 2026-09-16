@@ -331,7 +331,8 @@ class CodeAccessService:
                     if files_scanned >= MAX_SEARCH_FILES:
                         truncated = True
                         break
-                    content = _read_source(path).decode("utf-8")
+                    safe_path, _ = _target(project, relative)
+                    content = _read_source(safe_path).decode("utf-8")
                 except CodeAccessError:
                     continue
                 files_scanned += 1

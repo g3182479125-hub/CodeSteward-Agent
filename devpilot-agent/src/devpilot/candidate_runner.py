@@ -66,10 +66,14 @@ _FORBIDDEN_AST_NODES = (
     ast.AsyncFunctionDef,
     ast.AsyncWith,
     ast.Await,
+    ast.Attribute,
+    ast.ClassDef,
     ast.Delete,
     ast.Global,
     ast.Import,
     ast.ImportFrom,
+    ast.Lambda,
+    ast.NamedExpr,
     ast.Nonlocal,
     ast.Raise,
     ast.Try,
@@ -79,11 +83,72 @@ _FORBIDDEN_AST_NODES = (
     ast.YieldFrom,
 )
 _FORBIDDEN_CALLS = frozenset(
-    {"__import__", "breakpoint", "compile", "eval", "exec", "input", "open", "print"}
+    {
+        "__import__",
+        "breakpoint",
+        "compile",
+        "delattr",
+        "dir",
+        "eval",
+        "exec",
+        "getattr",
+        "globals",
+        "help",
+        "input",
+        "locals",
+        "open",
+        "print",
+        "setattr",
+        "vars",
+    }
 )
-_FIXED_RUNNER_SOURCE = b"""import json
+_SAFE_BUILTIN_NAMES = (
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "dict",
+    "enumerate",
+    "filter",
+    "float",
+    "int",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "range",
+    "repr",
+    "round",
+    "set",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "zip",
+)
+_FIXED_RUNNER_SOURCE = (
+    """import builtins as _builtins
+import json
 
-from candidate import transform
+_candidate_builtins = {
+    name: getattr(_builtins, name)
+    for name in __DEVPILOT_SAFE_BUILTINS__
+}
+with open("/workspace/devpilot/candidate.py", encoding="utf-8") as candidate_file:
+    candidate_source = candidate_file.read()
+_candidate_globals = {
+    "__builtins__": _candidate_builtins,
+    "__name__": "candidate",
+}
+exec(
+    compile(candidate_source, "/workspace/devpilot/candidate.py", "exec"),
+    _candidate_globals,
+    _candidate_globals,
+)
+transform = _candidate_globals.get("transform")
+if not callable(transform):
+    raise SystemExit(87)
 
 
 with open("/workspace/devpilot/input.json", encoding="utf-8") as input_file:
@@ -93,7 +158,8 @@ serialized = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=
 if len(serialized.encode("utf-8")) > 65536:
     raise SystemExit(86)
 print(serialized)
-"""
+""".replace("__DEVPILOT_SAFE_BUILTINS__", repr(_SAFE_BUILTIN_NAMES))
+).encode("utf-8")
 
 CandidateInputRule = tuple[str, str, int, int | float | None, int | float | None]
 
@@ -451,6 +517,8 @@ def _validate_source(source: str) -> tuple[str, str] | None:
     for node in ast.walk(tree):
         if isinstance(node, _FORBIDDEN_AST_NODES):
             return "CANDIDATE_SOURCE_FORBIDDEN", "候选源码包含不允许的导入、异步或副作用结构"
+        if isinstance(node, ast.Name) and node.id.startswith("_"):
+            return "CANDIDATE_SOURCE_FORBIDDEN", "候选源码不能访问下划线运行时名称"
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in _FORBIDDEN_CALLS:
                 return "CANDIDATE_SOURCE_FORBIDDEN", "候选源码调用了不允许的运行时能力"

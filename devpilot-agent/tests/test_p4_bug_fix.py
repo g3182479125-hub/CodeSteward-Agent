@@ -121,7 +121,11 @@ def test_g02_bug_fix_success_binds_failure_and_writes_artifact(tmp_path: Path) -
     with pytest.raises(TypeError):
         proposal.preview["workflow"] = "tampered"  # type: ignore[index]
 
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     apply_approval = client.post(f"/v1/change-sets/{proposal.change_set_id}/approve")
     applied = BugFixWorkflow(manager).apply(
         proposal,
@@ -155,7 +159,11 @@ def test_g02_bug_fix_success_binds_failure_and_writes_artifact(tmp_path: Path) -
 def test_g02_bug_fix_failed_verification_is_not_success(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path, exit_code=1)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     applied = BugFixWorkflow(manager).apply(
         proposal,
         user_confirmation="执行",
@@ -247,7 +255,11 @@ def test_g02_bug_fix_requires_user_confirmation_before_apply(tmp_path: Path) -> 
 def test_bug_fix_verify_state_errors_do_not_create_failure_artifact(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     BugFixWorkflow(manager).apply(
         proposal,
         user_confirmation="执行",
@@ -291,7 +303,11 @@ def test_bug_fix_control_plane_errors_are_not_verification_failures(
 def test_g02_bug_fix_api_and_nanobot_contract(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     before_hash = hashlib.sha256((project / "src" / "App.jsx").read_bytes()).hexdigest()
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     response = client.post(
         "/v1/bug-fix/proposals",
         json={
@@ -429,7 +445,11 @@ def test_bug_fix_loads_persisted_contract_after_manager_restart(tmp_path: Path) 
     assert loaded.allowed_files == proposal.allowed_files
     assert loaded.symptom == proposal.symptom
     assert restarted.get(proposal.change_set_id)["bug_fix_contract"]["workflow"] == "bug-fix"
-    client = TestClient(create_app(manager=restarted), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=restarted, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     applied = BugFixWorkflow(restarted).apply(
         loaded,
         user_confirmation="执行",
@@ -456,7 +476,11 @@ def test_bug_fix_loads_persisted_contract_after_manager_restart(tmp_path: Path) 
 def test_bug_fix_non_fake_backend_is_fail_closed(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     BugFixWorkflow(manager).apply(
         proposal,
         user_confirmation="执行",
@@ -650,7 +674,11 @@ def test_bug_fix_skill_is_publishable_after_review_approval() -> None:
 def test_bug_fix_backend_unavailable_writes_failure_artifact(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     apply_token = client.post(f"/v1/change-sets/{proposal.change_set_id}/approve").json()[
         "approval_token"
     ]
@@ -684,7 +712,11 @@ def test_bug_fix_artifact_db_failure_leaves_failure_artifact_and_event(
 ) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     applied = BugFixWorkflow(manager).apply(
         proposal,
         user_confirmation="执行",
@@ -735,7 +767,11 @@ def test_bug_fix_artifact_file_failure_is_explicit_and_non_successful(
 ) -> None:
     store, project, manager, analysis_id, failure_id = _setup(tmp_path)
     proposal = _propose(manager, project, analysis_id, failure_id)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     applied = BugFixWorkflow(manager).apply(
         proposal,
         user_confirmation="执行",

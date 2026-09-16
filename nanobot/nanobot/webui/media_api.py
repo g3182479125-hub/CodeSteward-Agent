@@ -6,10 +6,12 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import mimetypes
 import os
 import re
 import shutil
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -63,6 +65,7 @@ _MEDIA_ALLOWED_MIMES: frozenset[str] = frozenset({
     "video/webm",
     "video/quicktime",
 })
+MEDIA_URL_TTL_SECONDS = 300
 _SVG_MEDIA_HEADERS: tuple[tuple[str, str], ...] = (
     (
         "Content-Security-Policy",
@@ -103,14 +106,23 @@ def sign_media_path(
     *,
     secret: bytes,
     media_dir: MediaDirProvider = _default_media_dir,
+    expires_in_s: int = MEDIA_URL_TTL_SECONDS,
 ) -> str | None:
     """Return a signed ``/api/media/<sig>/<payload>`` URL for a media-root path."""
+    if isinstance(expires_in_s, bool) or not isinstance(expires_in_s, int) or expires_in_s <= 0:
+        return None
     try:
         media_root = media_dir(None).resolve()
         rel = abs_path.resolve().relative_to(media_root)
     except (OSError, ValueError):
         return None
-    payload = b64url_encode(rel.as_posix().encode("utf-8"))
+    payload_data = json.dumps(
+        {"expires_at": int(time.time()) + expires_in_s, "path": rel.as_posix()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload = b64url_encode(payload_data)
     mac = hmac.new(secret, payload.encode("ascii"), hashlib.sha256).digest()[:16]
     return f"/api/media/{b64url_encode(mac)}/{payload}"
 
@@ -206,10 +218,22 @@ def serve_signed_media(
     if not hmac.compare_digest(expected_mac, provided_mac):
         return _http_error(401, "invalid signature")
     try:
-        rel_bytes = b64url_decode(payload)
-        rel_str = rel_bytes.decode("utf-8")
-    except (ValueError, binascii.Error, UnicodeDecodeError):
+        payload_data = json.loads(b64url_decode(payload).decode("utf-8"))
+    except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
         return _http_error(400, "invalid payload")
+    if not isinstance(payload_data, dict):
+        return _http_error(400, "invalid payload")
+    rel_str = payload_data.get("path")
+    expires_at = payload_data.get("expires_at")
+    if (
+        not isinstance(rel_str, str)
+        or not rel_str
+        or isinstance(expires_at, bool)
+        or not isinstance(expires_at, int)
+    ):
+        return _http_error(400, "invalid payload")
+    if expires_at < int(time.time()):
+        return _http_error(401, "expired signature")
     try:
         media_root = media_dir(None).resolve()
         candidate = (media_root / rel_str).resolve()
@@ -224,8 +248,9 @@ def serve_signed_media(
         mime = "application/octet-stream"
     common_headers = [
         ("Accept-Ranges", "bytes"),
-        ("Cache-Control", "private, max-age=31536000, immutable"),
+        ("Cache-Control", f"private, max-age={MEDIA_URL_TTL_SECONDS}"),
         ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
     ]
     if mime == "image/svg+xml":
         common_headers.extend(_SVG_MEDIA_HEADERS)

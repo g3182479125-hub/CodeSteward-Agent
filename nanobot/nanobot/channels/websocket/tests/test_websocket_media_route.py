@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -137,8 +138,11 @@ def test_sign_media_path_round_trips_via_hmac(
         channel.gateway.media.secret, payload.encode("ascii"), hashlib.sha256
     ).digest()[:16]
     assert b64url_decode(sig) == expected
-    # The payload decodes back to the *relative* path — no absolute-path leaks.
-    assert b64url_decode(payload).decode() == "a.png"
+    # The payload contains only a relative path and a bounded expiry — no
+    # absolute-path leaks or indefinitely reusable URLs.
+    payload_data = json.loads(b64url_decode(payload).decode())
+    assert payload_data["path"] == "a.png"
+    assert isinstance(payload_data["expires_at"], int)
 
 
 def test_local_markdown_image_is_staged_and_rewritten(
@@ -256,12 +260,44 @@ async def test_media_route_serves_signed_file(
     assert resp.status_code == 200
     assert resp.content == _PNG_BYTES
     assert resp.headers["content-type"].startswith("image/png")
-    # Immutable cache header lets the browser skip round-trips on replay.
-    assert "immutable" in resp.headers.get("cache-control", "")
+    # The signed URL is cacheable only for its bounded lifetime.
+    assert resp.headers.get("cache-control") == "private, max-age=300"
     # Video players rely on byte ranges; images get the header for consistency.
     assert resp.headers.get("accept-ranges") == "bytes"
     # nosniff keeps the browser from second-guessing our Content-Type.
     assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+
+
+@pytest.mark.asyncio
+async def test_media_route_rejects_expired_signed_url(
+    bus: MagicMock, tmp_path: Path
+) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    target = media / "expired.png"
+    target.write_bytes(_PNG_BYTES)
+
+    channel = _ch(bus, port=29928)
+    with patch("nanobot.webui.media_api.time.time", return_value=1000):
+        with patch("nanobot.webui.media_gateway.get_media_dir", return_value=media):
+            url_path = sign_media_path(
+                target,
+                secret=channel.gateway.media.secret,
+                media_dir=channel.gateway.media._media_dir,
+                expires_in_s=1,
+            )
+    assert url_path is not None
+    with patch("nanobot.webui.media_api.time.time", return_value=1002):
+        server_task = asyncio.create_task(channel.start())
+        try:
+            resp = await _http_get(f"http://127.0.0.1:29928{url_path}")
+        finally:
+            await channel.stop()
+            await server_task
+
+    assert resp.status_code == 401
+    assert resp.content == b"expired signature"
 
 
 @pytest.mark.asyncio
@@ -402,7 +438,13 @@ async def test_media_route_rejects_path_traversal_payload(
 
     channel = _ch(bus, port=29922)
     # Hand-craft a traversal payload the legit signer would refuse to mint.
-    payload = b64url_encode(b"../secret.txt")
+    payload = b64url_encode(
+        json.dumps(
+            {"expires_at": 2_000_000_000, "path": "../secret.txt"},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    )
     mac = hmac.new(
         channel.gateway.media.secret, payload.encode("ascii"), hashlib.sha256
     ).digest()[:16]
@@ -459,7 +501,13 @@ async def test_media_route_degrades_non_image_to_octet_stream(
 
     channel = _ch(bus, port=29924)
     with patch("nanobot.webui.media_gateway.get_media_dir", return_value=media):
-        payload = b64url_encode(b"scary.html")
+        payload = b64url_encode(
+            json.dumps(
+                {"expires_at": 2_000_000_000, "path": "scary.html"},
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        )
         mac = hmac.new(
             channel.gateway.media.secret, payload.encode("ascii"), hashlib.sha256
         ).digest()[:16]

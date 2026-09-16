@@ -121,7 +121,9 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
         proposal.preview["status"] = "tampered"  # type: ignore[index]
     assert manager.get(proposal.change_set_id)["diff"] == proposal.preview["diff"]
     change_set_state = client = TestClient(
-        create_app(manager=manager), client=("127.0.0.1", 50000)
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
     )
     assert change_set_state.get(f"/v1/change-sets/{proposal.change_set_id}").json()[
         "contract_hash"
@@ -228,7 +230,12 @@ def test_feature_delivery_g01_completes_approved_fake_path_and_artifact(
         project_path=project, patches=[_patch(project)], evidence_ids=[evidence_id]
     )
     failed_apply = client = TestClient(
-        create_app(manager=failed_manager), client=("127.0.0.1", 50001)
+        create_app(
+            manager=failed_manager,
+            internal_auth_token="test-control-plane-token-0123456789",
+        ),
+        client=("127.0.0.1", 50001),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
     )
     failed_apply_approval = failed_apply.post(
         f"/v1/change-sets/{failed_proposal.change_set_id}/approve"
@@ -405,7 +412,11 @@ def test_feature_delivery_run_link_survives_manager_restart(tmp_path: Path) -> N
 def test_feature_delivery_http_handoff_and_explicit_rollback(tmp_path: Path) -> None:
     store, project, manager = _manager(tmp_path, FakeExecutionBackend(stdout="safe"))
     evidence_id = _evidence(project, store)
-    client = TestClient(create_app(manager=manager), client=("127.0.0.1", 50000))
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
     response = client.post(
         "/v1/feature-delivery/proposals",
         json={

@@ -28,7 +28,15 @@ def setup_app(tmp_path: Path) -> tuple[TestClient, ControlPlaneManager, Path]:
         project_id, allowed_root_id=root_id, repo_fingerprint=fingerprint
     )
     manager = ControlPlaneManager(allowed_roots=roots, store=store)
-    return TestClient(create_app(manager=manager), client=("127.0.0.1", 50000)), manager, project
+    return (
+        TestClient(
+            create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+            client=("127.0.0.1", 50000),
+            headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+        ),
+        manager,
+        project,
+    )
 
 
 def make_preview(client: TestClient, project: Path) -> dict[str, object]:
@@ -510,7 +518,12 @@ def test_idempotency_request_id_is_stable_across_app_instances(tmp_path: Path) -
         allowed_roots=AllowedRoots.from_paths([tmp_path]), store=restarted_store
     )
     restarted = TestClient(
-        create_app(manager=restarted_manager), client=("127.0.0.1", 50001)
+        create_app(
+            manager=restarted_manager,
+            internal_auth_token="test-control-plane-token-0123456789",
+        ),
+        client=("127.0.0.1", 50001),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
     ).get(
         f"/api/v1/change-sets/{change_set_id}",
         headers={"Idempotency-Key": key},

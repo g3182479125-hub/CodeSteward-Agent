@@ -126,6 +126,7 @@ Loop 则不需要。
 
 ```powershell
 $env:DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE = "1"
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = "<随机生成的至少 32 字节本地密钥>"
 $env:DEVPILOT_ENABLE_FC_SANDBOX = "1"
 $env:DEVPILOT_ENABLE_MODEL_CANDIDATES = "1"
 $env:DEVPILOT_ENABLE_LOOP_HANDOFF = "1"
@@ -139,6 +140,9 @@ uv run devpilot serve --host 127.0.0.1 --port 18800
 
 API 只绑定 `127.0.0.1`。不要启动 `web/`、Vite 或 18801 端口；该独立控制台已被
 ADR-0003 删除。
+`DEVPILOT_CONTROL_PLANE_TOKEN` 必须同时存在于 DevPilot 和 nanobot 的启动进程环境中；
+`scripts/start-integrated-harness.ps1` 在未设置时会自动生成一个仅存于当前 PowerShell
+进程的临时值。审批、信任和撤销路由没有该内部认证时会拒绝请求。
 
 ## 启动 nanobot
 

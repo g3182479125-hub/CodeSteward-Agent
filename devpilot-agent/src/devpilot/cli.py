@@ -50,6 +50,13 @@ def run_serve(*, host: str, port: int) -> int:
             file=sys.stderr,
         )
         return 2
+    internal_auth_token = os.environ.get("DEVPILOT_CONTROL_PLANE_TOKEN", "")
+    if len(internal_auth_token) < 32:
+        print(
+            "DEVPILOT_CONTROL_PLANE_TOKEN must contain at least 32 characters.",
+            file=sys.stderr,
+        )
+        return 2
     if host not in {"127.0.0.1", "localhost", "::1"}:
         print("DevPilot control plane only permits a localhost bind.", file=sys.stderr)
         return 2

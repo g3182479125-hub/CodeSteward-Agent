@@ -404,6 +404,18 @@ def test_loop_strategy_candidate_uses_the_same_bounded_fc_executor() -> None:
             {},
             "CANDIDATE_SOURCE_FORBIDDEN",
         ),
+        (
+            "def transform(payload):\n"
+            "    return getattr(__builtins__, '__import__')('os').getcwd()\n",
+            {},
+            "CANDIDATE_SOURCE_FORBIDDEN",
+        ),
+        (
+            "def transform(payload):\n"
+            "    return __builtins__['__import__']('os').getcwd()\n",
+            {},
+            "CANDIDATE_SOURCE_FORBIDDEN",
+        ),
         ("def other(payload):\n    return payload\n", {}, "CANDIDATE_ENTRY_INVALID"),
         (
             VALID_SOURCE,

@@ -110,7 +110,6 @@ if (-not $env:DEVPILOT_CANDIDATE_GRANT_SECRET) {
 if ([Text.Encoding]::UTF8.GetByteCount($env:DEVPILOT_CANDIDATE_GRANT_SECRET) -lt 32) {
     throw "DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes for this Windows user."
 }
-
 $env:DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE = "1"
 $env:DEVPILOT_ENABLE_FC_SANDBOX = "1"
 $env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = "1"
@@ -139,6 +138,17 @@ try {
 }
 catch {
     $controlPlaneHealthy = $false
+}
+if (-not $controlPlaneHealthy -and -not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+    $tokenBytes = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
+    $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Convert]::ToBase64String($tokenBytes)
+}
+if (-not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+    throw "An existing control plane is healthy; set DEVPILOT_CONTROL_PLANE_TOKEN to its shared secret before starting nanobot."
+}
+if ([Text.Encoding]::UTF8.GetByteCount($env:DEVPILOT_CONTROL_PLANE_TOKEN) -lt 32) {
+    throw "DEVPILOT_CONTROL_PLANE_TOKEN must contain at least 32 bytes for this Windows user."
 }
 if (-not $controlPlaneHealthy) {
     Start-Process -FilePath $devpilotExe `

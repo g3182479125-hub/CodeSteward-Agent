@@ -96,8 +96,10 @@ P2B/P4 的 proposal Tool 只创建预览，不能批准、Apply 或 Rollback，�
 `devpilot_request_approval` 登记审批意图；控制面用户动作才会签发一次性 token 并执行
 Apply/Verify/Rollback。独立审批页面已移除，不再作为运行依赖。
 控制面仍默认关闭；只有开发者明确设置
-`DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE=1` 且数据库已执行 `alembic upgrade head`
-后才可用于本机测试。它不是 OS Sandbox，不得处理真实生产仓库。
+`DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE=1`、长度至少 32 字节的
+`DEVPILOT_CONTROL_PLANE_TOKEN` 且数据库已执行 `alembic upgrade head` 后才可用于本机测试。
+该 token 只作为 nanobot 适配层与控制面之间的本地进程认证，不进入模型上下文；集成启动脚本
+会在当前 PowerShell 进程中自动生成临时值。它不是 OS Sandbox，不得处理真实生产仓库。
 
 当前生效的前端范围修订见
 [ADR-0003：统一使用 nanobot 原生前端](docs/adr/ADR-0003-nanobot-only-frontend.md)。
