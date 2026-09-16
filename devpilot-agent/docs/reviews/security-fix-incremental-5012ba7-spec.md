@@ -8,4 +8,3 @@
 The reviewer accepted the remaining fixed-runner and cache requirements, and required two spec-level corrections: reject a signed URL when `expires_at == now`, and close the parent-directory TOCTOU on Windows and POSIX. The next candidate implemented both. No H1–H11 work was reopened.
 
 Evidence at this candidate: DevPilot code-access/candidate tests passed, nanobot media route `16 passed`, Ruff passed, and the delta was clean under `git diff --check`.
-

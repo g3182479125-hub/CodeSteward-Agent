@@ -33,4 +33,3 @@ The final delta added `O_NONBLOCK` to POSIX final-file opens. The reviewer confi
 - DevPilot full suite in the integrated nanobot environment: passed to 100%.
 - Ruff for both `devpilot-agent` and `nanobot`: passed.
 - `git diff --check`: passed for each reviewed candidate delta.
-

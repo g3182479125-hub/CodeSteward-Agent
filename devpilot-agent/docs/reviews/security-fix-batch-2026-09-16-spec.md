@@ -33,4 +33,3 @@ The reviewer confirmed that POSIX component-wise `O_NOFOLLOW` traversal plus Win
 - DevPilot full integrated suite: passed to 100%.
 - Lockfile and dev dependency remain consistent for `pytest-asyncio`.
 - Untracked user directories were not included in any review or commit.
-

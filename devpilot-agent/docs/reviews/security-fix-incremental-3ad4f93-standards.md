@@ -8,4 +8,3 @@
 The only change was adding `O_NONBLOCK` to POSIX final media/project file opens. The reviewer confirmed that special files cannot block before the regular-file `fstat` check, Windows behavior is unchanged, and existing handle cleanup and expiry behavior remain correct. No actionable Standards issue remains.
 
 Evidence: affected DevPilot tests, nanobot media tests (`16 passed`), Ruff, and `git diff --check` all passed.
-

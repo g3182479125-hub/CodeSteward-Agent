@@ -8,4 +8,3 @@
 The reviewer accepted the expiry-based cache header and actual fixed-runner subprocess test. It requested handle-based path reads rather than check-then-use reads, noting that the current Windows platform cannot use POSIX `O_NOFOLLOW` and that parent-directory replacement remained a race. The finding drove the next patch: POSIX descriptor-relative traversal, Windows final-handle containment checks, single-handle bounded reads, and explicit close paths. The `pytest-asyncio` lockfile change was judged in scope because it makes the existing async test suite executable.
 
 Evidence at this candidate: DevPilot relevant tests passed, nanobot media route `16 passed`, Ruff and `git diff --check` passed.
-
