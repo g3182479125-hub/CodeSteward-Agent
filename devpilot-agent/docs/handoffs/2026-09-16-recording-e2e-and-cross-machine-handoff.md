@@ -14,6 +14,7 @@
 
 - 仓库：<https://github.com/g3182479125-hub/devflow-agent>
 - 分支：codex/h11-complete-handoff
+- 最终候选提交：1cde483
 - 工作目录：D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate
 - 本交接文档和录屏稿随本次提交上传；提交完成后以 GitHub 分支上的最新 SHA 为准。
 
