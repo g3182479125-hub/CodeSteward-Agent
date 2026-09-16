@@ -15,16 +15,23 @@ python -m pytest -q
 
 屏幕应出现 `3 failed, 2 passed`。三个失败是“删除后编号重复”“按编号删除错任务”“完成不存在的任务报错不清楚”。如果基线已经不是这样，先找回尚未修复的演示副本，再开拍。
 
-启动你本机已配置的集成 Harness。需要从仓库根目录启动时，可用：
+启动你本机已配置的集成 Harness。这台电脑没有 E 盘，所以必须明确传入本机的配置、工作区、数据目录和允许的项目目录。逐行复制下面的 PowerShell 命令；不要把终端提示符 `PS>` 或 `>>` 一起复制：
 
 ~~~powershell
 $repoRoot = 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate'
 $project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
-$env:DEVPILOT_ALLOWED_ROOTS = Join-Path $repoRoot 'training-projects'
+$configPath = 'D:\Users\tianmin.li\.nanobot\config.json'
+$workspacePath = 'D:\Users\tianmin.li\.nanobot\workspace'
+$dataPath = 'D:\Users\tianmin.li\.nanobot\devpilot-data'
+$trainingRoot = Join-Path $repoRoot 'training-projects'
+$allowedRoots = "$workspacePath;$trainingRoot"
 $env:DEVPILOT_FC_ALLOWED_PROJECTS = $project
 Set-Location $repoRoot
-powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1 -ConfigPath $configPath -WorkspacePath $workspacePath -DataPath $dataPath -AllowedRoots $allowedRoots -ValidateOnly
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1 -ConfigPath $configPath -WorkspacePath $workspacePath -DataPath $dataPath -AllowedRoots $allowedRoots
 ~~~
+
+第一条脚本命令只校验路径，应该输出 `Harness paths are valid`；第二条才真正启动。我已在这台电脑上验证第一条通过。`config.json` 使用的是你本机现成的模型配置，录屏时不要打开这个文件。
 
 打开 [WebUI](http://127.0.0.1:8765)，在项目选择处选上面的完整目录。如果需要任务 Profile，先在新会话发 `/task-profile bug-fix`。模型使用这台电脑已经配置好的模型。打开录屏软件，把浏览器和终端都录进去。
 
