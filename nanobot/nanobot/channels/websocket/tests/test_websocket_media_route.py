@@ -293,6 +293,8 @@ async def test_media_route_rejects_expired_signed_url(
         try:
             with patch("nanobot.webui.media_api.time.time", return_value=1000):
                 active = await _http_get(f"http://127.0.0.1:29928{url_path}")
+            with patch("nanobot.webui.media_api.time.time", return_value=1001):
+                boundary = await _http_get(f"http://127.0.0.1:29928{url_path}")
             with patch("nanobot.webui.media_api.time.time", return_value=1002):
                 resp = await _http_get(f"http://127.0.0.1:29928{url_path}")
         finally:
@@ -301,6 +303,7 @@ async def test_media_route_rejects_expired_signed_url(
 
     assert active.status_code == 200
     assert active.headers.get("cache-control") == "private, max-age=1"
+    assert boundary.status_code == 401
     assert resp.status_code == 401
     assert resp.content == b"expired signature"
 

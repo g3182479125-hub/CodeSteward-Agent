@@ -150,13 +150,90 @@ def _target(project: Path, relative_path: str) -> tuple[Path, str]:
     return resolved, "/".join(parts)
 
 
-def _read_source(path: Path) -> bytes:
+def _verify_opened_path(file_fd: int, root: Path) -> None:
+    """Reject a Windows handle whose final path escaped the project root."""
+    if os.name != "nt":
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = get_final_path(
+        wintypes.HANDLE(msvcrt.get_osfhandle(file_fd)),
+        buffer,
+        len(buffer),
+        0,
+    )
+    if not length or length >= len(buffer):
+        raise OSError("could not resolve the opened Windows file handle")
+    final_name = buffer.value
+    if final_name.startswith("\\\\?\\UNC\\"):
+        final_name = "\\" + final_name[7:]
+    elif final_name.startswith("\\\\?\\"):
+        final_name = final_name[4:]
+    try:
+        common = os.path.commonpath(
+            (
+                os.path.normcase(os.path.abspath(str(root))),
+                os.path.normcase(os.path.abspath(final_name)),
+            )
+        )
+    except ValueError as exc:
+        raise OSError("opened Windows file handle is on another volume") from exc
+    if common != os.path.normcase(os.path.abspath(str(root))):
+        raise OSError("opened Windows file handle escaped the project root")
+
+
+def _open_project_file(project: Path, relative_path: str, fallback: Path) -> int:
+    """Open a project file with component-wise no-follow traversal where available."""
+    parts = tuple(part for part in relative_path.replace("\\", "/").split("/") if part)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if os.name == "posix" and no_follow and os.open in os.supports_dir_fd:
+        root_fd = os.open(project, os.O_RDONLY | directory_flag | no_follow)
+        current_fd = root_fd
+        file_fd = -1
+        try:
+            for part in parts[:-1]:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | directory_flag | no_follow,
+                    dir_fd=current_fd,
+                )
+                os.close(current_fd)
+                current_fd = next_fd
+            file_fd = os.open(parts[-1], os.O_RDONLY | no_follow, dir_fd=current_fd)
+            _verify_opened_path(file_fd, project)
+        except BaseException:
+            if file_fd >= 0:
+                os.close(file_fd)
+            os.close(current_fd)
+            raise
+        os.close(current_fd)
+        return file_fd
+    file_fd = os.open(fallback, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        _verify_opened_path(file_fd, project)
+    except BaseException:
+        os.close(file_fd)
+        raise
+    return file_fd
+
+
+def _read_source(path: Path, *, project: Path, relative_path: str) -> bytes:
     file_handle = None
     try:
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        if os.name == "posix":
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-        file_fd = os.open(path, flags)
+        file_fd = _open_project_file(project, relative_path, path)
         try:
             file_handle = os.fdopen(file_fd, "rb")
         except BaseException:
@@ -260,7 +337,7 @@ class CodeAccessService:
                     "EVIDENCE_RUN_INVALID", "evidence_run_id must be an open run for this project"
                 ) from exc
         target, normalized = _target(project, relative_path)
-        content = _read_source(target)
+        content = _read_source(target, project=project, relative_path=normalized)
         lines = content.decode("utf-8").splitlines(keepends=True)
         requested_end = end_line or min(len(lines), start_line + MAX_READ_LINES - 1)
         selected = "".join(lines[start_line - 1 : requested_end])
@@ -351,7 +428,11 @@ class CodeAccessService:
                         truncated = True
                         break
                     safe_path, _ = _target(project, relative)
-                    content = _read_source(safe_path).decode("utf-8")
+                    content = _read_source(
+                        safe_path,
+                        project=project,
+                        relative_path=relative,
+                    ).decode("utf-8")
                 except CodeAccessError:
                     continue
                 files_scanned += 1

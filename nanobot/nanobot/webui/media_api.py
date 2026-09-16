@@ -77,14 +77,57 @@ _SVG_MEDIA_HEADERS: tuple[tuple[str, str], ...] = (
 _BYTE_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
+def _verify_opened_path(file_fd: int, root: Path) -> None:
+    """Reject a Windows handle whose final path escaped the validated root."""
+    if os.name != "nt":
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = get_final_path(
+        wintypes.HANDLE(msvcrt.get_osfhandle(file_fd)),
+        buffer,
+        len(buffer),
+        0,
+    )
+    if not length or length >= len(buffer):
+        raise OSError("could not resolve the opened Windows file handle")
+    final_name = buffer.value
+    if final_name.startswith("\\\\?\\UNC\\"):
+        final_name = "\\" + final_name[7:]
+    elif final_name.startswith("\\\\?\\"):
+        final_name = final_name[4:]
+    try:
+        common = os.path.commonpath(
+            (
+                os.path.normcase(os.path.abspath(str(root))),
+                os.path.normcase(os.path.abspath(final_name)),
+            )
+        )
+    except ValueError as exc:
+        raise OSError("opened Windows file handle is on another volume") from exc
+    if common != os.path.normcase(os.path.abspath(str(root))):
+        raise OSError("opened Windows file handle escaped the media root")
+
+
 def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> int:
     """Open one media file and return a stable read handle.
 
     POSIX callers get descriptor-relative, no-follow traversal for every path
     component. Windows does not expose the equivalent through Python's stdlib,
-    so its fallback still relies on the already-validated absolute path; using
-    one handle at least prevents replacement after the open from changing the
-    bytes being served.
+    so its fallback opens the validated absolute path and then verifies the
+    operating system's final handle path remains under the media root.
     """
     parts = tuple(part for part in relative_path.replace("\\", "/").split("/") if part)
     if not parts or any(part in {".", ".."} for part in parts):
@@ -94,6 +137,7 @@ def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> in
     if os.name == "posix" and no_follow and os.open in os.supports_dir_fd:
         root_fd = os.open(media_root, os.O_RDONLY | directory_flag | no_follow)
         current_fd = root_fd
+        file_fd = -1
         try:
             for part in parts[:-1]:
                 next_fd = os.open(
@@ -104,12 +148,21 @@ def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> in
                 os.close(current_fd)
                 current_fd = next_fd
             file_fd = os.open(parts[-1], os.O_RDONLY | no_follow, dir_fd=current_fd)
+            _verify_opened_path(file_fd, media_root)
         except BaseException:
+            if file_fd >= 0:
+                os.close(file_fd)
             os.close(current_fd)
             raise
         os.close(current_fd)
         return file_fd
-    return os.open(fallback, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    file_fd = os.open(fallback, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        _verify_opened_path(file_fd, media_root)
+    except BaseException:
+        os.close(file_fd)
+        raise
+    return file_fd
 
 
 def _parse_single_byte_range(range_header: str, size: int) -> tuple[int, int]:
@@ -269,7 +322,7 @@ def serve_signed_media(
     ):
         return _http_error(400, "invalid payload")
     now = int(time.time())
-    if expires_at < now:
+    if expires_at <= now:
         return _http_error(401, "expired signature")
     try:
         media_root = media_dir(None).resolve()
