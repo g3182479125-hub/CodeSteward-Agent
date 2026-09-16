@@ -141,7 +141,13 @@ catch {
 }
 if (-not $controlPlaneHealthy -and -not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
     $tokenBytes = New-Object byte[] 32
-    [Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
+    $randomNumberGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $randomNumberGenerator.GetBytes($tokenBytes)
+    }
+    finally {
+        $randomNumberGenerator.Dispose()
+    }
     $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Convert]::ToBase64String($tokenBytes)
 }
 if (-not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
