@@ -45,7 +45,9 @@ def _fixed_app(before: str) -> str:
     )
 
 
-def _setup(tmp_path: Path, *, exit_code: int = 0) -> tuple[
+def _setup(
+    tmp_path: Path, *, exit_code: int = 0, include_search_evidence: bool = True
+) -> tuple[
     ProjectStore, Path, ControlPlaneManager, str, str
 ]:
     project = tmp_path / "react-form-project"
@@ -61,7 +63,8 @@ def _setup(tmp_path: Path, *, exit_code: int = 0) -> tuple[
         allowed_root_id=root_id,
     )
     access = CodeAccessService(allowed_roots=roots, store=store)
-    access.search(analysis.project_id, "preventDefault", evidence_run_id=analysis.run_id)
+    if include_search_evidence:
+        access.search(analysis.project_id, "preventDefault", evidence_run_id=analysis.run_id)
     access.read(analysis.project_id, "src/App.jsx", evidence_run_id=analysis.run_id)
     failure = BugCheckService(allowed_roots=roots, store=store).record_failure(
         project,
@@ -154,6 +157,39 @@ def test_g02_bug_fix_success_binds_failure_and_writes_artifact(tmp_path: Path) -
     assert "before=`" in report
     assert "after=`" in report
     assert store.list_artifacts(proposal.run_id or "")
+
+
+def test_bug_fix_proposal_accepts_inspect_and_read_evidence_without_search(
+    tmp_path: Path,
+) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, include_search_evidence=False
+    )
+
+    proposal = _propose(manager, project, analysis_id, failure_id)
+
+    assert proposal.analysis_evidence_ids == (analysis_id,)
+    assert proposal.preview["allowed_files"] == ("src/App.jsx",)
+
+
+def test_bug_fix_proposal_accepts_a_natural_language_failure_summary(
+    tmp_path: Path,
+) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(tmp_path)
+
+    proposal = BugFixWorkflow(manager, artifacts_root=manager.artifacts_root).propose(
+        project_path=project,
+        patches=[_patch(project)],
+        analysis_evidence_ids=[analysis_id],
+        failure_evidence_ids=[failure_id],
+        symptom="提交表单后页面会跳转，无法显示保存结果",
+        expected_behavior="提交后应留在当前页面并显示保存成功",
+        non_goals=["不调整页面样式"],
+        allowed_files=["src/App.jsx"],
+    )
+
+    assert proposal.failure_evidence_ids == (failure_id,)
+    assert proposal.symptom == "提交表单后页面会跳转，无法显示保存结果"
 
 
 def test_g02_bug_fix_failed_verification_is_not_success(tmp_path: Path) -> None:

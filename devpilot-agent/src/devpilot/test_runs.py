@@ -26,9 +26,30 @@ from .verification import (
 )
 
 _TEST_COMMANDS = {
-    "python-pytest": ("python3 -m pytest -q", "project-pytest"),
+    # The FC Code Interpreter image exposes ``python`` reliably, while
+    # ``python3`` is not guaranteed to be on its command path.  Invoke
+    # pytest through the interpreter selected by the image so a real test
+    # failure is distinguishable from a missing-command failure.
+    "python-pytest": ("python -m pytest -q", "project-pytest"),
     "node-test": ("npm test", "project-npm-test"),
 }
+_PLAIN_TEST_RUNNER_PATH = ".devpilot/plain_test_runner.py"
+_PLAIN_TEST_RUNNER = b'''"""Minimal dependency-free fallback for plain test functions."""
+from pathlib import Path
+import inspect
+import runpy
+import sys
+
+sys.path.insert(0, str(Path.cwd()))
+for test_file in sorted(Path("tests").rglob("test_*.py")):
+    namespace = runpy.run_path(str(test_file))
+    for name, value in sorted(namespace.items()):
+        if name.startswith("test_") and callable(value):
+            if inspect.signature(value).parameters:
+                raise RuntimeError(f"unsupported pytest fixture: {test_file}:{name}")
+            value()
+print("plain-python-tests: passed")
+'''
 
 
 class ProjectTestTrustError(ValueError):
@@ -120,6 +141,22 @@ class ProjectTestRunner:
             self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
 
+        if self._pytest_is_missing(receipt):
+            fallback_files = (*snapshot, ExecutionFile(_PLAIN_TEST_RUNNER_PATH, _PLAIN_TEST_RUNNER))
+            fallback_request = ExecutionRequest(
+                # FC persists sandbox ownership by run ID.  The fallback is
+                # a second sandbox attempt for the same logical test record.
+                run_id=f"{run_id}-plain",
+                project_id=project_id,
+                files=fallback_files,
+                command=f"python /workspace/devpilot/{_PLAIN_TEST_RUNNER_PATH}",
+                timeout_seconds=300,
+                network_allowed=False,
+                command_profile=command_profile,
+            )
+            receipt = self.execution_backend.run(fallback_request)
+            command = fallback_request.command
+
         if not isinstance(receipt, ExecutionResult) or not self._receipt_is_complete(
             receipt, command_profile
         ):
@@ -169,6 +206,10 @@ class ProjectTestRunner:
             return _TEST_COMMANDS[test_kind]
         except KeyError as exc:
             raise ValueError("unsupported project test kind") from exc
+
+    @staticmethod
+    def _pytest_is_missing(receipt: ExecutionResult) -> bool:
+        return receipt.exit_code != 0 and "no module named pytest" in receipt.stderr.casefold()
 
     @staticmethod
     def _target_hashes(

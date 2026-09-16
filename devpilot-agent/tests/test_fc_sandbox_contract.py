@@ -144,6 +144,38 @@ def test_fc_backend_uses_short_lived_sandbox_lifecycle(monkeypatch: pytest.Monke
     assert backend.get_run_state("run-1")["status"] == "completed"
 
 
+def test_fc_backend_runs_uploaded_project_from_its_sandbox_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeSandbox:
+        sandbox_id = "cwd-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+
+        def kill(self) -> None:
+            return None
+
+    def run(command: str, *, timeout: int, cwd: str) -> SimpleNamespace:
+        observed.update(command=command, timeout=timeout, cwd=cwd)
+        return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+
+    FakeSandbox.commands = SimpleNamespace(run=run)  # type: ignore[attr-defined]
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    result = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    ).run(valid_request())
+
+    assert result.exit_code == 0
+    assert observed["cwd"] == "/workspace/devpilot"
+
+
 def test_fc_backend_rejects_duplicate_run_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeSandboxFactory:
         @classmethod
@@ -414,6 +446,8 @@ def test_fc_provider_default_mode_omits_unsupported_network_policy(
 
     assert backend.verification_available is True
     assert result.exit_code == 0
+    assert result.side_effect_count == 0
+    assert result.permission_violation is False
     assert "allow_internet_access" not in events[0]
 
 

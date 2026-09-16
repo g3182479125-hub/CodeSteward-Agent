@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +64,24 @@ async def test_find_files_can_include_directories(tmp_path: Path) -> None:
 
     assert "src/settings/" in result.splitlines()
     assert "src/settings/index.ts" in result.splitlines()
+
+
+@pytest.mark.asyncio
+async def test_find_files_scans_outside_event_loop(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "sample.py").write_text("pass\n", encoding="utf-8")
+    tool = FindFilesTool(workspace=tmp_path, allowed_dir=tmp_path)
+    caller_thread = threading.get_ident()
+    observed_threads: list[int] = []
+    original_iter = tool._iter_paths
+
+    def record_thread(root: Path, *, include_dirs: bool):
+        observed_threads.append(threading.get_ident())
+        yield from original_iter(root, include_dirs=include_dirs)
+
+    monkeypatch.setattr(tool, "_iter_paths", record_thread)
+
+    assert await tool.execute(path=".", type="py") == "sample.py"
+    assert observed_threads and observed_threads[0] != caller_thread
 
 
 @pytest.mark.asyncio

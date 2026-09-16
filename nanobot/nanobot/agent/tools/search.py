@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import os
 import re
@@ -218,6 +219,31 @@ class FindFilesTool(_SearchTool):
         offset: int = 0,
         **kwargs: Any,
     ) -> str:
+        """Search outside the event loop so /stop and other chats stay responsive."""
+        return await asyncio.to_thread(
+            self._execute_sync,
+            path=path,
+            query=query,
+            glob=glob,
+            type=type,
+            include_dirs=include_dirs,
+            sort=sort,
+            head_limit=head_limit,
+            offset=offset,
+        )
+
+    def _execute_sync(
+        self,
+        *,
+        path: str,
+        query: str | None,
+        glob: str | None,
+        type: str | None,
+        include_dirs: bool,
+        sort: str,
+        head_limit: int | None,
+        offset: int,
+    ) -> str:
         try:
             target = self._resolve(path or ".")
             if not target.exists():
@@ -235,6 +261,12 @@ class FindFilesTool(_SearchTool):
             )
             root = target if target.is_dir() else target.parent
             matches: list[tuple[str, float]] = []
+            # A path-ordered walk is deterministic enough for bounded discovery.
+            # Stop once the requested page is full instead of scanning an entire
+            # workspace merely to return its first few matches.
+            early_limit = None
+            if sort == "path" and limit is not None:
+                early_limit = offset + limit + 1
 
             for candidate in self._iter_paths(target, include_dirs=include_dirs):
                 if candidate.is_dir() and not include_dirs:
@@ -257,6 +289,8 @@ class FindFilesTool(_SearchTool):
                     mtime = 0.0
                 suffix = "/" if candidate.is_dir() else ""
                 matches.append((display_path + suffix, mtime))
+                if early_limit is not None and len(matches) >= early_limit:
+                    break
 
             if sort == "modified":
                 matches.sort(key=lambda item: (-item[1], item[0]))

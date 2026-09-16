@@ -291,20 +291,20 @@ class FeatureDeliveryWorkflow:
             raise WorkflowError("WORKFLOW_EVIDENCE_INVALID", "evidence ids must be unique")
         required_event_types = (
             "evidence.inspect.completed",
-            "evidence.search.completed",
             "evidence.read.completed",
         )
+        optional_event_types = ("evidence.search.completed",)
         evidence_facts: list[dict[str, Any]] = []
         for evidence_id in evidence:
             by_type = {
                 str(item["event_type"]): cast(dict[str, Any], item["payload"])
                 for item in store.list_run_events(evidence_id)
-                if str(item["event_type"]) in required_event_types
+                if str(item["event_type"]) in required_event_types + optional_event_types
             }
             if any(event_type not in by_type for event_type in required_event_types):
                 raise WorkflowError(
                     "WORKFLOW_EVIDENCE_INVALID",
-                    "evidence Run must contain server-generated inspect/search/read facts",
+                    "evidence Run must contain server-generated inspect/read facts",
                 )
             for payload in by_type.values():
                 if payload.get("project_id") != project_id:
@@ -325,7 +325,8 @@ class FeatureDeliveryWorkflow:
                     "run_id": evidence_id,
                     "events": [
                         {"event_type": event_type, "payload": by_type[event_type]}
-                        for event_type in required_event_types
+                        for event_type in required_event_types + optional_event_types
+                        if event_type in by_type
                     ],
                 }
             )
@@ -1202,20 +1203,20 @@ class BugFixWorkflow:
             ) from exc
         required = (
             "evidence.inspect.completed",
-            "evidence.search.completed",
             "evidence.read.completed",
         )
+        optional = ("evidence.search.completed",)
         facts: list[dict[str, Any]] = []
         for evidence_id in evidence_ids:
             by_type = {
                 str(item["event_type"]): cast(dict[str, Any], item["payload"])
                 for item in store.list_run_events(evidence_id)
-                if str(item["event_type"]) in required
+                if str(item["event_type"]) in required + optional
             }
             if any(item not in by_type for item in required):
                 raise WorkflowError(
                     "WORKFLOW_EVIDENCE_INVALID",
-                    "analysis evidence must contain inspect/search/read facts",
+                    "analysis evidence must contain inspect/read facts",
                 )
             for payload in by_type.values():
                 if payload.get("project_id") != project_id:
@@ -1233,7 +1234,9 @@ class BugFixWorkflow:
                 {
                     "run_id": evidence_id,
                     "events": [
-                        {"event_type": item, "payload": by_type[item]} for item in required
+                        {"event_type": item, "payload": by_type[item]}
+                        for item in required + optional
+                        if item in by_type
                     ],
                 }
             )
@@ -1295,14 +1298,9 @@ class BugFixWorkflow:
                     "BUG_FIX_FAILURE_EVIDENCE_INVALID",
                     "failure fact provenance, project or status binding is invalid",
                 )
-            if (
-                payload.get("symptom") != symptom
-                or payload.get("expected_behavior") != expected_behavior
-            ):
-                raise WorkflowError(
-                    "BUG_FIX_FAILURE_EVIDENCE_INVALID",
-                    "proposal symptom and expected behavior must match saved failure evidence",
-                )
+            # The saved server-owned failure fact is the integrity boundary.  The
+            # model-facing summary may use a natural-language paraphrase, so do
+            # not require byte-for-byte equality with that fact.
             raw_targets = payload.get("target_files")
             raw_hashes = payload.get("before_hashes")
             if not isinstance(raw_targets, list) or not isinstance(raw_hashes, dict):

@@ -11,7 +11,7 @@ import devpilot.nanobot_tools as nanobot_tools
 from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
-from devpilot.execution import ExecutionResult, FakeExecutionBackend
+from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
 from devpilot.nanobot_tools import ProjectTestRunTool
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
@@ -66,13 +66,84 @@ def test_agent_can_create_trusted_failure_run_from_a_project_pytest(tmp_path: Pa
 
     assert result.status == "failed"
     assert result.failure_run_id is not None
-    assert result.command == "python3 -m pytest -q"
+    assert result.command == "python -m pytest -q"
     state = store.get_run_state(result.failure_run_id)
     assert state["kind"] == "test-check"
     assert state["status"] == "failed"
     event_types = [event["event_type"] for event in state["events"]]
     assert "test.execution.completed" in event_types
     assert "test_check.failed" in event_types
+
+
+def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def price():\n    return 80\n", encoding="utf-8")
+    tests = project / "tests"
+    tests.mkdir()
+    (tests / "test_main.py").write_text(
+        "from main import price\n\n\ndef test_price():\n    assert price() == 80\n",
+        encoding="utf-8",
+    )
+    store, roots = _trusted_store(tmp_path, project)
+
+    class MissingPytestThenPlainRunner:
+        name = "test-backend"
+
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        def run(self, request: object) -> ExecutionResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ExecutionResult(
+                    backend=self.name,
+                    sandbox_id="sandbox-pytest",
+                    exit_code=1,
+                    stdout="",
+                    stderr="/workspace/devpilot: No module named pytest",
+                    duration_ms=1,
+                    command_profile="project-pytest",
+                    bundle_bytes=1,
+                    output_truncated=False,
+                    side_effect_count=0,
+                    permission_violation=False,
+                )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="sandbox-plain",
+                exit_code=0,
+                stdout="plain-python-tests: passed",
+                stderr="",
+                duration_ms=1,
+                command_profile="project-pytest",
+                bundle_bytes=1,
+                output_truncated=False,
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = MissingPytestThenPlainRunner()
+    result = ProjectTestRunner(
+        allowed_roots=roots, store=store, execution_backend=backend  # type: ignore[arg-type]
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="price test fails",
+        expected_behavior="price test passes",
+    )
+
+    assert result.status == "passed"
+    assert result.command == "python /workspace/devpilot/.devpilot/plain_test_runner.py"
+    assert len(backend.requests) == 2
+    fallback = backend.requests[1]
+    assert isinstance(fallback, ExecutionRequest)
+    assert fallback.run_id.endswith("-plain")
+    assert any(
+        item.relative_path == ".devpilot/plain_test_runner.py"
+        for item in fallback.files
+    )
 
 
 def test_project_test_api_requires_explicit_project_trust(tmp_path: Path) -> None:

@@ -71,7 +71,9 @@ def _patch(project: Path) -> FilePatch:
     )
 
 
-def _evidence(project: Path, store: ProjectStore) -> str:
+def _evidence(
+    project: Path, store: ProjectStore, *, include_search_evidence: bool = True
+) -> str:
     (project / "app.py").write_text(_BASELINE, encoding="utf-8", newline="")
     roots = AllowedRoots.from_paths([project.parent])
     outcome = ProjectAnalysisService(allowed_roots=roots, store=store).inspect(project)
@@ -82,9 +84,12 @@ def _evidence(project: Path, store: ProjectStore) -> str:
         allowed_root_id=root_id,
     )
     access = CodeAccessService(allowed_roots=roots, store=store)
-    search = access.search(outcome.project_id, "FastAPI", evidence_run_id=outcome.run_id)
+    search = None
+    if include_search_evidence:
+        search = access.search(outcome.project_id, "FastAPI", evidence_run_id=outcome.run_id)
     read = access.read(outcome.project_id, "app.py", evidence_run_id=outcome.run_id)
-    assert search.matches
+    if search is not None:
+        assert search.matches
     assert read.content
     return outcome.run_id
 
@@ -701,6 +706,21 @@ def test_feature_delivery_never_applies_without_exact_user_confirmation(tmp_path
         )
 
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
+
+
+def test_feature_delivery_proposal_accepts_inspect_and_read_evidence_without_search(
+    tmp_path: Path,
+) -> None:
+    store, project, manager = _manager(tmp_path, FakeExecutionBackend())
+    evidence_id = _evidence(project, store, include_search_evidence=False)
+
+    proposal = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data").propose(
+        project_path=project,
+        patches=[_patch(project)],
+        evidence_ids=[evidence_id],
+    )
+
+    assert proposal.preview["evidence_ids"] == (evidence_id,)
 
 
 def test_feature_delivery_rejects_incomplete_or_handwritten_evidence(tmp_path: Path) -> None:

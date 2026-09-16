@@ -162,11 +162,14 @@ def validate_command(command: str, input_paths: set[str]) -> None:
                 "command is outside the Python syntax allowlist",
             )
         return
-    if tokens == ["python3", "-m", "pytest", "-q"]:
+    if tokens in (
+        ["python3", "-m", "pytest", "-q"],
+        ["python", "-m", "pytest", "-q"],
+    ):
         return
     if tokens == ["npm", "test"]:
         return
-    if len(tokens) == 2 and tokens[0] == "python3":
+    if len(tokens) == 2 and tokens[0] in {"python3", "python"}:
         path = tokens[1]
         if path in input_paths and path.casefold().endswith(".py"):
             return

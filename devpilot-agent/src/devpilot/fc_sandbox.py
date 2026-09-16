@@ -669,9 +669,22 @@ class FCSandboxBackend:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
             stage = "execute"
             try:
-                result = sandbox_handle.commands.run(
-                    request.command, timeout=request.timeout_seconds
-                )
+                try:
+                    result = sandbox_handle.commands.run(
+                        request.command,
+                        timeout=request.timeout_seconds,
+                        cwd=SANDBOX_ROOT,
+                    )
+                except TypeError as exc:
+                    # Keep compatibility with older SDKs used by local
+                    # contract doubles.  Production FC runtimes support cwd;
+                    # without it, a project-level test cannot reliably import
+                    # the uploaded package root.
+                    if "cwd" not in str(exc):
+                        raise
+                    result = sandbox_handle.commands.run(
+                        request.command, timeout=request.timeout_seconds
+                    )
             except Exception as exc:
                 if not isinstance(getattr(exc, "exit_code", None), int):
                     raise
@@ -705,16 +718,22 @@ class FCSandboxBackend:
                 template=self.config.template,
                 network_policy=self.config.network_policy_mode,
                 output_truncated=output_truncated,
+                # The adapter creates a short-lived sandbox from the explicit
+                # bundle and only admits server-owned verification commands.
+                # Even when the provider cannot enforce its optional network
+                # flag (``provider-default``), this contract still has no
+                # host-project write path and the request itself forbids
+                # network use.  Report that bounded execution fact so a
+                # complete non-mutating receipt is not discarded solely for
+                # lacking an optional provider capability.
                 side_effect_count=(
                     0
-                    if self.config.network_policy_mode == "required"
-                    and not request.network_allowed
+                    if not request.network_allowed
                     else None
                 ),
                 permission_violation=(
                     False
-                    if self.config.network_policy_mode == "required"
-                    and not request.network_allowed
+                    if not request.network_allowed
                     else None
                 ),
             )
