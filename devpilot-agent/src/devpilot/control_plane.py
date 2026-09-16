@@ -322,6 +322,18 @@ class ControlPlaneManager:
                 "EXECUTION_BACKEND_UNAVAILABLE", "no test execution backend is configured"
             )
         backend = self.execution_backend
+        try:
+            project_snapshot = ProjectTestRunner._snapshot(  # pyright: ignore[reportPrivateUsage]
+                self.patch_service.allowed_roots.require_project(project_path)
+            )
+        except (PathBoundaryError, ValueError) as exc:
+            raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
+        snapshot_hash = hashlib.sha256(
+            b"".join(
+                item.relative_path.encode("utf-8") + b"\0" + item.content + b"\0"
+                for item in project_snapshot
+            )
+        ).hexdigest()
         request_fingerprint = json.dumps(
             {
                 "project_path": str(project_path),
@@ -329,6 +341,7 @@ class ControlPlaneManager:
                 "target_files": target_files,
                 "symptom": symptom,
                 "expected_behavior": expected_behavior,
+                "snapshot_hash": snapshot_hash,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -409,7 +422,11 @@ class ControlPlaneManager:
             "command": result.command,
             "exit_code": result.exit_code,
         }
-        self._complete(idempotency_key, response)
+        try:
+            self._complete(idempotency_key, response)
+        except Exception:
+            self._abort(idempotency_key)
+            raise
         return response
 
     def preview(
