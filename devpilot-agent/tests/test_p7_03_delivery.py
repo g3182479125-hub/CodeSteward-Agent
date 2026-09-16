@@ -13,8 +13,9 @@ def test_devpilot_declares_nanobot_tools() -> None:
         project = tomllib.load(handle)["project"]
 
     entry_points = project["entry-points"]["nanobot.tools"]
-    assert len(entry_points) == 16
+    assert len(entry_points) == 17
     assert "devpilot_inspect_project" in entry_points
+    assert "devpilot_test_run" in entry_points
     assert "devpilot_confirmed_action" in entry_points
     assert "uvicorn>=0.34,<1.0" in project["dependencies"]
     assert "uvicorn[standard]>=0.34,<1.0" not in project["dependencies"]

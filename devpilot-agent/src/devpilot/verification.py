@@ -61,12 +61,16 @@ def _is_secret_name(name: str) -> bool:
     return lowered.endswith((".pem", ".key", ".crt", ".cer", ".p12", ".pfx", ".jks"))
 
 
-def _is_excluded(relative_path: str) -> bool:
+def is_verification_snapshot_excluded(relative_path: str) -> bool:
+    """Return whether a path must stay out of a sandbox project snapshot."""
+
     parts = tuple(part for part in relative_path.replace("\\", "/").split("/") if part)
     return any(part.casefold() in _FORBIDDEN_PARTS or _is_secret_name(part) for part in parts)
 
 
-def _read_snapshot_file(path: Path, relative_path: str) -> bytes | None:
+def read_verification_snapshot_file(path: Path, relative_path: str) -> bytes | None:
+    """Read one bounded, non-secret text file for a sandbox snapshot."""
+
     try:
         content = path.read_bytes()
     except OSError as exc:
@@ -95,7 +99,9 @@ def _project_snapshot(plan: PatchPlan) -> tuple[ExecutionFile, ...]:
             directories[:] = sorted(
                 name
                 for name in directories
-                if not _is_excluded(str(Path(root, name).relative_to(project)))
+                if not is_verification_snapshot_excluded(
+                    str(Path(root, name).relative_to(project))
+                )
                 and not Path(root, name).is_symlink()
             )
             for name in sorted(names):
@@ -103,9 +109,9 @@ def _project_snapshot(plan: PatchPlan) -> tuple[ExecutionFile, ...]:
                 if path.is_symlink():
                     continue
                 relative_path = path.relative_to(project).as_posix()
-                if _is_excluded(relative_path):
+                if is_verification_snapshot_excluded(relative_path):
                     continue
-                content = _read_snapshot_file(path, relative_path)
+                content = read_verification_snapshot_file(path, relative_path)
                 if content is not None:
                     files[relative_path] = content
     except OSError as exc:

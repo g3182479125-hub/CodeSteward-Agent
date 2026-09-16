@@ -43,6 +43,7 @@ from .redaction import (
     redact_sensitive_text,
 )
 from .storage import ProjectStore
+from .test_runs import ProjectTestRunner, ProjectTestTrustError
 from .verification import VerificationProfile, build_verification_request, verification_binding
 
 DEFAULT_HOST = "127.0.0.1"
@@ -100,6 +101,16 @@ class VerificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
+
+
+class ProjectTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_path: str = Field(min_length=1)
+    test_kind: str = Field(pattern=r"^(?:python-pytest|node-test)$")
+    target_files: list[str] = Field(min_length=1, max_length=32)
+    symptom: str = Field(min_length=1, max_length=4000)
+    expected_behavior: str = Field(min_length=1, max_length=4000)
 
 
 class TrustProjectRequest(BaseModel):
@@ -293,6 +304,78 @@ class ControlPlaneManager:
                     self._entries[change_set_id] = self._load_entry(change_set_id)
                 except (KeyError, ValueError, TypeError, json.JSONDecodeError):
                     continue
+
+    def run_project_test(
+        self,
+        *,
+        project_path: str | Path,
+        test_kind: str,
+        target_files: list[str],
+        symptom: str,
+        expected_behavior: str,
+    ) -> dict[str, Any]:
+        if self.store is None:
+            raise PatchError("PERSISTENCE_REQUIRED", "project test runs require durable storage")
+        if self.execution_backend is None:
+            raise PatchError(
+                "EXECUTION_BACKEND_UNAVAILABLE", "no test execution backend is configured"
+            )
+        backend = self.execution_backend
+        try:
+            _command, command_profile = ProjectTestRunner.command_for(test_kind)
+        except ValueError as exc:
+            raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
+        if type(backend) is not FakeExecutionBackend and not getattr(
+            backend, "verification_available", False
+        ):
+            raise PatchError(
+                "EXECUTION_BACKEND_UNAVAILABLE",
+                "configured execution backend is not available for project tests",
+            )
+        supports_profile = getattr(backend, "supports_profile", None)
+        if (
+            type(backend) is not FakeExecutionBackend
+            and (not callable(supports_profile) or not supports_profile(command_profile))
+        ):
+            raise PatchError(
+                "VERIFICATION_PROFILE_UNSUPPORTED",
+                "configured execution backend does not support this project test",
+            )
+        project_allowed = getattr(backend, "project_allowed", None)
+        if (
+            type(backend) is not FakeExecutionBackend
+            and callable(project_allowed)
+            and not project_allowed(str(project_path))
+        ):
+            raise PatchError(
+                "EXECUTION_PROJECT_NOT_ALLOWLISTED",
+                "project is not explicitly allowlisted for remote testing",
+            )
+        runner = ProjectTestRunner(
+            allowed_roots=self.patch_service.allowed_roots,
+            store=self.store,
+            execution_backend=backend,
+        )
+        try:
+            result = runner.run(
+                project_path=project_path,
+                test_kind=test_kind,
+                target_files=target_files,
+                symptom=symptom,
+                expected_behavior=expected_behavior,
+            )
+        except ProjectTestTrustError as exc:
+            raise PatchError("PROJECT_TRUST_REQUIRED", str(exc)) from exc
+        except ValueError as exc:
+            raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
+        return {
+            "project_id": result.project_id,
+            "run_id": result.run_id,
+            "failure_run_id": result.failure_run_id,
+            "status": result.status,
+            "command": result.command,
+            "exit_code": result.exit_code,
+        }
 
     def preview(
         self, *, project_path: str | Path, project_id: str | None, patches: list[FilePatch]
@@ -1696,6 +1779,20 @@ def create_app(
     @app.get("/v1/skills")
     def list_skills() -> dict[str, Any]:
         return {"skills": _skill_catalog()}
+
+    @app.post("/api/v1/project-tests", status_code=status.HTTP_201_CREATED)
+    @app.post("/v1/project-tests", status_code=status.HTTP_201_CREATED)
+    def run_project_test(request: Request, payload: ProjectTestRequest) -> dict[str, Any]:
+        return _contract_payload(
+            request,
+            manager.run_project_test(
+                project_path=payload.project_path,
+                test_kind=payload.test_kind,
+                target_files=payload.target_files,
+                symptom=payload.symptom,
+                expected_behavior=payload.expected_behavior,
+            ),
+        )
 
     @app.post("/api/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)

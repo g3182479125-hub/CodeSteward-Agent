@@ -36,7 +36,7 @@ SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
 _PERSIST_LOCK = RLock()
 FC_VERIFICATION_PROFILES = frozenset(
-    {"python-syntax", "python-run", "node-syntax"}
+    {"python-syntax", "python-run", "node-syntax", "project-pytest", "project-npm-test"}
 )
 
 

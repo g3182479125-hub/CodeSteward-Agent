@@ -300,6 +300,71 @@ def _project_path(value: str, workspace: Path) -> str:
     {
         "type": "object",
         "properties": {
+            "project_path": {"type": "string", "minLength": 1},
+            "test_kind": {"type": "string", "enum": ["python-pytest", "node-test"]},
+            "target_files": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {"type": "string", "minLength": 1},
+            },
+            "symptom": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "expected_behavior": {"type": "string", "minLength": 1, "maxLength": 4000},
+        },
+        "required": [
+            "project_path",
+            "test_kind",
+            "target_files",
+            "symptom",
+            "expected_behavior",
+        ],
+        "additionalProperties": False,
+    }
+)
+class ProjectTestRunTool(Tool):
+    """Run a project test in the configured sandbox and preserve the real receipt."""
+
+    _scopes = {"core"}
+
+    @property
+    def name(self) -> str:
+        return "devpilot_test_run"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run a needed project test in the configured sandbox. The server snapshots files, "
+            "records the actual receipt, and only a real non-zero exit creates failure evidence. "
+            "Use after inspecting the project; this never changes project files."
+        )
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        try:
+            result = await asyncio.to_thread(
+                _post_project_test,
+                {
+                    "project_path": str(kwargs["project_path"]),
+                    "test_kind": str(kwargs["test_kind"]),
+                    "target_files": kwargs["target_files"],
+                    "symptom": str(kwargs["symptom"]),
+                    "expected_behavior": str(kwargs["expected_behavior"]),
+                },
+            )
+            return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        except HTTPError as exc:
+            return ToolResult.error(f"project test rejected: {_http_error_message(exc)}")
+        except (KeyError, TypeError, ValueError, OSError, URLError) as exc:
+            return ToolResult.error(f"project test rejected: {type(exc).__name__}")
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
             "project_path": {
                 "type": "string",
                 "description": (
@@ -677,6 +742,10 @@ def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("control-plane response is invalid")
     result["requires_user_confirmation"] = True
     return _model_result(result)
+
+
+def _post_project_test(payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_control_plane("/v1/project-tests", payload)
 
 
 def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:

@@ -15,19 +15,19 @@
 
 ### 1. 新工具与权限
 
-新增 DevPilot 工具 `devpilot_test_run`，只在已有 `bug-fix` Profile 与当前 WebUI 已授权项目范围内可见。工具接受测试意图或命令建议，Agent 可自行调用，无需逐次聊天确认。
+新增 DevPilot 工具 `devpilot_test_run`，只在已有 `bug-fix` Profile 与当前 WebUI 已授权项目范围内可见。Agent 根据已读取的项目事实选择受支持的测试种类并自行调用，无需逐次聊天确认。
 
 工具不会执行宿主机 Shell，也不会接受模型提供的文件内容、退出码或日志作为事实。Control Plane 根据已绑定的可信项目路径重新读取文件、应用既有敏感文件排除与大小限制，生成 `ExecutionRequest`，再交给既有 FC 执行后端。`provider-default` 继续如实标注，不宣称网络隔离。
 
 ### 2. 命令处理
 
-第一版支持项目内常见测试命令：Python `pytest`、Node `npm test`/`npm run test`。Agent 可以根据项目的 `pyproject.toml`、`pytest.ini`、`package.json`、测试目录和已读取事实自行选择；不要求用户预先给出命令。
+第一版支持项目内常见测试命令：Python `pytest`、Node `npm test`。Agent 可以根据项目的 `pyproject.toml`、`pytest.ini`、`package.json`、测试目录和已读取事实自行选择；不要求用户预先给出命令。
 
 命令不是开放的宿主 Shell：必须在已绑定项目的 sandbox 工作目录内运行，不允许 shell 串联、重定向、下载依赖、网络凭据或越出上传清单的路径。不存在可识别测试入口时，工具返回结构化“未找到测试入口”，Agent 继续只读分析并如实报告，不杜撰 Failure Run。
 
 ### 3. Failure Run 事实
 
-测试执行创建独立 Run，持久化：项目/会话/任务归属、命令、执行后端、sandbox ID、开始/结束时间、退出码、截断标记、stdout/stderr 摘要、执行前文件清单和 SHA-256、对应的项目版本/范围摘要。退出码非 0 时写入 `bug_check.failed` 事实并返回 `failure_run_id`；退出码为 0 只返回成功 receipt，不伪造失败证据。
+测试执行创建独立 Run，持久化：项目归属、命令、执行后端、sandbox ID、退出码、截断标记、stdout/stderr 摘要，以及目标文件的执行前 SHA-256。退出码非 0 时写入 `test_check.failed` 事实并返回 `failure_run_id`；退出码为 0 只返回成功 receipt，不伪造失败证据。
 
 `BugFixWorkflow.propose` 保持既有 `failure_evidence_ids` 与 before-hash 校验，不放宽门禁；新工具生成的 Run 只是其可信输入来源之一。提案时若相关文件哈希已经变化，仍以 `failure_evidence_changed` 停止。
 
@@ -35,7 +35,7 @@
 
 超时、上传/执行失败、取消、输出过大或 sandbox 回执不完整，都持久化为执行失败/未知 receipt，但不登记为业务测试 Failure Run，也不能推动修复提案。系统只展示已知事实与下一步。
 
-同一请求以 operation ID 去重；重连只查询已有结果，不重复启动测试。测试运行占用既有任务预算与取消链路，停止优先于后续提案。所有测试结果经过现有聊天流式活动展示。
+测试运行复用既有任务预算与聊天流式活动展示。取消与重连沿用任务运行时的既有机制；当执行端只返回基础设施错误或未知结果时，不会生成可用于提案的 Failure Run。
 
 ## 验收
 

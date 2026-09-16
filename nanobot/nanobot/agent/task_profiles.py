@@ -103,6 +103,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_inspect_project",
             "devpilot_search_code",
             "devpilot_read_code",
+            "devpilot_test_run",
             "devpilot_bug_fix_propose",
             "devpilot_propose_changeset",
             "devpilot_request_approval",

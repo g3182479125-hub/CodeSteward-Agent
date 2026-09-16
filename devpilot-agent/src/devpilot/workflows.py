@@ -1253,9 +1253,10 @@ class BugFixWorkflow:
         before_hashes: dict[str, str] = {}
         for evidence_id in evidence_ids:
             try:
+                run_kind = store.get_run_kind(evidence_id)
                 valid_run = store.run_belongs_to_project(
                     project_id=project_id, run_id=evidence_id
-                ) and store.get_run_kind(evidence_id) == "bug-check"
+                ) and run_kind in {"bug-check", "test-check"}
                 status = store.get_run_status(evidence_id)
             except KeyError as exc:
                 raise WorkflowError(
@@ -1264,21 +1265,28 @@ class BugFixWorkflow:
             if not valid_run or status != "failed":
                 raise WorkflowError(
                     "BUG_FIX_FAILURE_EVIDENCE_INVALID",
-                    "failure evidence must be a failed bug-check Run for the target project",
+                    "failure evidence must be a failed server-owned check Run for the target "
+                    "project",
                 )
+            failure_event = (
+                "bug_check.failed" if run_kind == "bug-check" else "test_check.failed"
+            )
+            expected_producer = (
+                "devpilot.bug-check" if run_kind == "bug-check" else "devpilot.test-check"
+            )
             failures = [
                 item
                 for item in store.list_run_events(evidence_id)
-                if item["event_type"] == "bug_check.failed"
+                if item["event_type"] == failure_event
             ]
             if len(failures) != 1 or not isinstance(failures[0].get("payload"), dict):
                 raise WorkflowError(
                     "BUG_FIX_FAILURE_EVIDENCE_INVALID",
-                    "failure evidence must contain exactly one bug_check.failed fact",
+                    "failure evidence must contain exactly one server-owned failure fact",
                 )
             payload = cast(dict[str, Any], failures[0]["payload"])
             if (
-                payload.get("producer") != "devpilot.bug-check"
+                payload.get("producer") != expected_producer
                 or payload.get("schema_version") != 1
                 or payload.get("project_id") != project_id
                 or payload.get("status") != "failed"

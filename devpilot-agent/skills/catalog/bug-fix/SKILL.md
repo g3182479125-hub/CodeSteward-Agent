@@ -10,6 +10,7 @@ metadata:
       - devpilot_inspect_project
       - devpilot_search_code
       - devpilot_read_code
+      - devpilot_test_run
       - devpilot_bug_fix_propose
       - devpilot_propose_changeset
       - devpilot_request_approval
@@ -39,12 +40,15 @@ metadata:
 - 项目真实路径位于服务端配置的 allowed roots 且已显式 trust；
 - 已读取冻结计划和当前 P4-02 设计；
 - 已有 repo-analysis inspect/search/read 证据；
-- 已有服务端保存的失败检查 Run，包含目标文件与失败前 hash；
+- 若用户只描述现象，先用 `devpilot_test_run` 自主运行项目测试并生成服务端失败 Run；若已有
+  失败 Run，直接复用。两种情况都必须包含目标文件与失败前 hash；
 - symptom、expected behavior、非目标、允许文件和回归 profile 已明确。
 
 ## 允许 Tool
 
 - `devpilot_inspect_project`、`devpilot_search_code`、`devpilot_read_code`：只读定位和取得事实；
+- `devpilot_test_run`：在已信任项目的沙箱中运行 allowlisted 项目测试，服务端保存真实退出码和
+  输出回执；失败时自动形成失败证据，不需要用户先指定终端命令；
 - `devpilot_bug_fix_propose`：绑定失败证据并创建 bug-fix proposal，只读提案；
 - `devpilot_propose_changeset`：创建不可变 Diff，只读提案；
 - `devpilot_request_approval`：登记用户确认的审批意图，不接收或返回 capability token；
@@ -57,8 +61,9 @@ Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用�
 
 ## 执行步骤
 
-1. 读取冻结计划和 P4-02 设计，确认当前节点；
-2. 读取失败 Run，核对失败现象、目标文件和 before hash；
+1. 检查项目结构；若没有已保存的失败证据，自主选择匹配的项目测试并调用
+   `devpilot_test_run`，不得要求用户先给出测试命令；
+2. 读取失败 Run，核对真实退出码、失败现象、目标文件和 before hash；
 3. 用 inspect/search/read 取得相关源码事实，不能把模型猜测当作失败证据；
 4. 生成最小修复 proposal，绑定 failure evidence、symptom、expected behavior 和回归 profile；
 5. 创建 ChangeSet/Diff，展示允许文件、风险、前后 hash、验证和回滚方式；
