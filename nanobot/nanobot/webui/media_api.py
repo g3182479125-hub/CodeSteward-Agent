@@ -134,6 +134,7 @@ def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> in
         raise FileNotFoundError(relative_path)
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory_flag = getattr(os, "O_DIRECTORY", 0)
+    non_blocking = getattr(os, "O_NONBLOCK", 0)
     if os.name == "posix" and no_follow and os.open in os.supports_dir_fd:
         root_fd = os.open(media_root, os.O_RDONLY | directory_flag | no_follow)
         current_fd = root_fd
@@ -147,7 +148,9 @@ def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> in
                 )
                 os.close(current_fd)
                 current_fd = next_fd
-            file_fd = os.open(parts[-1], os.O_RDONLY | no_follow, dir_fd=current_fd)
+            file_fd = os.open(
+                parts[-1], os.O_RDONLY | no_follow | non_blocking, dir_fd=current_fd
+            )
             _verify_opened_path(file_fd, media_root)
         except BaseException:
             if file_fd >= 0:
