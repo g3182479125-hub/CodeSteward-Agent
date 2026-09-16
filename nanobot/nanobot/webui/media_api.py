@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import shutil
+import stat
 import time
 import uuid
 from collections.abc import Callable
@@ -74,6 +75,41 @@ _SVG_MEDIA_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 _BYTE_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _open_media_file(media_root: Path, relative_path: str, fallback: Path) -> int:
+    """Open one media file and return a stable read handle.
+
+    POSIX callers get descriptor-relative, no-follow traversal for every path
+    component. Windows does not expose the equivalent through Python's stdlib,
+    so its fallback still relies on the already-validated absolute path; using
+    one handle at least prevents replacement after the open from changing the
+    bytes being served.
+    """
+    parts = tuple(part for part in relative_path.replace("\\", "/").split("/") if part)
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise FileNotFoundError(relative_path)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if os.name == "posix" and no_follow and os.open in os.supports_dir_fd:
+        root_fd = os.open(media_root, os.O_RDONLY | directory_flag | no_follow)
+        current_fd = root_fd
+        try:
+            for part in parts[:-1]:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | directory_flag | no_follow,
+                    dir_fd=current_fd,
+                )
+                os.close(current_fd)
+                current_fd = next_fd
+            file_fd = os.open(parts[-1], os.O_RDONLY | no_follow, dir_fd=current_fd)
+        except BaseException:
+            os.close(current_fd)
+            raise
+        os.close(current_fd)
+        return file_fd
+    return os.open(fallback, os.O_RDONLY | getattr(os, "O_BINARY", 0))
 
 
 def _parse_single_byte_range(range_header: str, size: int) -> tuple[int, int]:
@@ -232,7 +268,8 @@ def serve_signed_media(
         or not isinstance(expires_at, int)
     ):
         return _http_error(400, "invalid payload")
-    if expires_at < int(time.time()):
+    now = int(time.time())
+    if expires_at < now:
         return _http_error(401, "expired signature")
     try:
         media_root = media_dir(None).resolve()
@@ -246,24 +283,40 @@ def serve_signed_media(
     mime, _ = mimetypes.guess_type(candidate.name)
     if mime not in _MEDIA_ALLOWED_MIMES:
         mime = "application/octet-stream"
+    cache_seconds = min(MEDIA_URL_TTL_SECONDS, max(0, expires_at - now))
     common_headers = [
         ("Accept-Ranges", "bytes"),
-        ("Cache-Control", f"private, max-age={MEDIA_URL_TTL_SECONDS}"),
+        ("Cache-Control", f"private, max-age={cache_seconds}"),
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
     ]
     if mime == "image/svg+xml":
         common_headers.extend(_SVG_MEDIA_HEADERS)
     try:
-        size = candidate.stat().st_size
-    except OSError:
+        file_fd = _open_media_file(media_root, rel_str, candidate)
+        try:
+            file_handle = os.fdopen(file_fd, "rb")
+        except BaseException:
+            os.close(file_fd)
+            raise
+        try:
+            file_stat = os.fstat(file_handle.fileno())
+        except BaseException:
+            file_handle.close()
+            raise
+    except (OSError, ValueError):
         return _http_error(500, "read error")
+    if not stat.S_ISREG(file_stat.st_mode):
+        file_handle.close()
+        return _http_error(404, "not found")
+    size = file_stat.st_size
 
     range_header = _case_insensitive_header(request.headers, "Range") if request else ""
     if range_header:
         try:
             start, end = _parse_single_byte_range(range_header, size)
         except ValueError:
+            file_handle.close()
             return _http_response(
                 b"range not satisfiable",
                 status=416,
@@ -275,11 +328,12 @@ def serve_signed_media(
             )
         try:
             length = end - start + 1
-            with candidate.open("rb") as fh:
-                fh.seek(start)
-                body = fh.read(length)
+            file_handle.seek(start)
+            body = file_handle.read(length)
         except OSError:
+            file_handle.close()
             return _http_error(500, "read error")
+        file_handle.close()
         return _http_response(
             body,
             status=206,
@@ -291,7 +345,9 @@ def serve_signed_media(
         )
 
     try:
-        body = candidate.read_bytes()
+        body = file_handle.read()
     except OSError:
+        file_handle.close()
         return _http_error(500, "read error")
+    file_handle.close()
     return _http_response(body, content_type=mime, extra_headers=common_headers)

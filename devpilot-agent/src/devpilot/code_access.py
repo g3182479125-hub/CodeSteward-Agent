@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import os
 import re
+import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -150,15 +151,33 @@ def _target(project: Path, relative_path: str) -> tuple[Path, str]:
 
 
 def _read_source(path: Path) -> bytes:
+    file_handle = None
     try:
-        size = path.stat().st_size
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if os.name == "posix":
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+        file_fd = os.open(path, flags)
+        try:
+            file_handle = os.fdopen(file_fd, "rb")
+        except BaseException:
+            os.close(file_fd)
+            raise
+        file_stat = os.fstat(file_handle.fileno())
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise CodeAccessError("TARGET_NOT_FILE", "requested path is not a regular file")
+        size = file_stat.st_size
         if size > MAX_SOURCE_FILE_BYTES:
             raise CodeAccessError("FILE_LIMIT_EXCEEDED", "source file exceeds the 1 MiB limit")
-        content = path.read_bytes()
+        content = file_handle.read(MAX_SOURCE_FILE_BYTES + 1)
+        if len(content) > MAX_SOURCE_FILE_BYTES:
+            raise CodeAccessError("FILE_LIMIT_EXCEEDED", "source file exceeds the 1 MiB limit")
     except CodeAccessError:
         raise
     except OSError as exc:
         raise CodeAccessError("FILE_READ_FAILED", "source file could not be read") from exc
+    finally:
+        if file_handle is not None:
+            file_handle.close()
     if b"\x00" in content:
         raise CodeAccessError("BINARY_FILE_FORBIDDEN", "binary files are not readable")
     try:

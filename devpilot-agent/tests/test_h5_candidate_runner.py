@@ -3,14 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import multiprocessing
+import subprocess
+import sys
 import threading
 import time as pytime
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from devpilot.candidate_runner import (
+    _FIXED_RUNNER_SOURCE,
     CANDIDATE_MAX_OUTPUT_BYTES,
     CANDIDATE_MAX_TRIAL_SECONDS,
     CANDIDATE_MAX_TRIALS,
@@ -457,6 +461,38 @@ def test_backend_is_required_and_never_falls_back_to_host_execution() -> None:
     assert result.status == "failed"
     assert result.error_code == "CANDIDATE_BACKEND_UNAVAILABLE"
     assert result.output is None
+
+
+def test_fixed_runner_executes_a_valid_candidate_inside_its_restricted_globals(
+    tmp_path: Path,
+) -> None:
+    """Exercise the actual runner template, not only the backend request contract."""
+    workspace = tmp_path.as_posix()
+    runner_source = _FIXED_RUNNER_SOURCE.decode("utf-8").replace(
+        "/workspace/devpilot", workspace
+    )
+    (tmp_path / "candidate.py").write_text(
+        "def transform(payload):\n"
+        "    return {'message': 'Hello, ' + payload['name'], 'items': list(range(2))}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "input.json").write_text('{"name":"Alice"}', encoding="utf-8")
+    runner_path = tmp_path / "candidate_runner.py"
+    runner_path.write_text(runner_source, encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, str(runner_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "message": "Hello, Alice",
+        "items": [0, 1],
+    }
 
 
 def test_candidate_requires_a_signed_host_grant() -> None:
