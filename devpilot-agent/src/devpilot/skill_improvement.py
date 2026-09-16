@@ -538,12 +538,12 @@ class SkillImprovementStore:
             has_alembic = connection.execute(
                 "select 1 from sqlite_master where type = 'table' and name = 'alembic_version'"
             ).fetchone()
-            version = (
-                connection.execute("select version_num from alembic_version limit 1").fetchone()
+            version_rows = (
+                connection.execute("select version_num from alembic_version").fetchall()
                 if has_alembic
-                else None
+                else []
             )
-            if has_alembic and version is None:
+            if has_alembic and not version_rows:
                 raise SkillImprovementError("database schema version is unavailable")
             if not has_alembic:
                 raise SkillImprovementError(
@@ -557,20 +557,24 @@ class SkillImprovementStore:
                 "0015_h8_switch_generation",
                 "0016_h9_harness_selection_records",
             }
-            if version is not None and version[0] not in compatible_heads:
+            if len(version_rows) != 1:
                 raise SkillImprovementError(
-                    "database schema must be at least 0011_p8_skill_improvement_records"
+                    "database schema must have exactly one supported Alembic head"
                 )
-            if version is not None:
-                has_records_table = connection.execute(
-                    "select 1 from sqlite_master "
-                    "where type = 'table' and name = 'skill_improvement_records'"
-                ).fetchone()
-                if has_records_table is None:
-                    raise SkillImprovementError(
-                        "database schema is incomplete; rerun Alembic migration 0011"
-                    )
-                return
+            version = str(version_rows[0][0])
+            if version not in compatible_heads:
+                raise SkillImprovementError(
+                    "database schema head is unsupported; expected a supported linear P8 head"
+                )
+            has_records_table = connection.execute(
+                "select 1 from sqlite_master "
+                "where type = 'table' and name = 'skill_improvement_records'"
+            ).fetchone()
+            if has_records_table is None:
+                raise SkillImprovementError(
+                    "database schema is incomplete; rerun Alembic migration 0011"
+                )
+            return
 
     def _record_rows(self, record_type: str, record_id: str | None = None) -> list[dict[str, Any]]:
         query = (

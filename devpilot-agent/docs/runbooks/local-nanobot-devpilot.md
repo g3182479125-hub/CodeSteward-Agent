@@ -23,7 +23,8 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integr
 ```powershell
 cd E:\codex-local\nanobot-devpilot-agent
 git status --short
-git pull --ff-only origin handoff-2026-09-01
+git switch codex/h11-complete-handoff
+git pull --ff-only origin codex/h11-complete-handoff
 ```
 
 ```powershell

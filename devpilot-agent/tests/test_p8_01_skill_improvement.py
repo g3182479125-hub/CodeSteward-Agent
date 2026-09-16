@@ -2,6 +2,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 
 from devpilot.skill_improvement import (
     SkillImprovementError,
@@ -75,6 +77,14 @@ def _store(tmp_path: Path) -> tuple[SkillImprovementStore, str]:
     return store, feedback.evidence_id
 
 
+def _migration_config(database_path: Path) -> Config:
+    root = Path(__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path.as_posix()}")
+    return config
+
+
 def test_feedback_is_redacted_and_candidate_stays_outside_skill_loader(tmp_path: Path) -> None:
     store, evidence_id = _store(tmp_path)
     feedback = store.get_feedback(evidence_id)
@@ -130,22 +140,57 @@ def test_production_store_requires_alembic_head(tmp_path: Path) -> None:
 
 def test_production_store_accepts_the_current_linear_harness_head(tmp_path: Path) -> None:
     """P8 can open the shared database after later additive Harness migrations."""
-    store, evidence_id = _store(tmp_path)
-    del evidence_id
-    with sqlite3.connect(store.database_path) as connection:
-        connection.execute(
-            "update alembic_version set version_num = ?",
-            ("0016_h9_harness_selection_records",),
-        )
-
-    reopened = SkillImprovementStore(store.root, workspace=tmp_path / "workspace")
-    snapshot = reopened.capture_task_snapshot(
+    workspace = tmp_path / "workspace"
+    skill_path = workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(_baseline(), encoding="utf-8")
+    data_dir = tmp_path / "data"
+    command.upgrade(_migration_config(data_dir / "devpilot.db"), "head")
+    store = SkillImprovementStore(data_dir, workspace=workspace)
+    snapshot = store.capture_task_snapshot(
         task_id="task-current-head",
-        workspace=tmp_path / "workspace",
+        workspace=workspace,
         session_id="session-current-head",
         project_id="project-current-head",
     )
     assert snapshot.content_hash == content_sha256(_baseline())
+
+
+@pytest.mark.parametrize(
+    ("versions", "error"),
+    [
+        (["9999_unknown"], "unsupported"),
+        (["0016_h9_harness_selection_records", "9999_unknown"], "exactly one"),
+        (
+            [
+                "0011_p8_skill_improvement_records",
+                "0016_h9_harness_selection_records",
+            ],
+            "exactly one",
+        ),
+    ],
+)
+def test_production_store_rejects_unknown_or_forked_schema_heads(
+    tmp_path: Path, versions: list[str], error: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.executemany(
+            "insert into alembic_version (version_num) values (?)",
+            [(version,) for version in versions],
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    with pytest.raises(SkillImprovementError, match=error):
+        SkillImprovementStore(data_dir, workspace=workspace)
 
 
 def test_integrity_key_is_independent_from_business_database(tmp_path: Path) -> None:
