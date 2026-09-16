@@ -80,6 +80,36 @@ git pull --ff-only origin codex/h11-complete-handoff
 
 ## 下一步建议
 
+### 未完成：跨消息 Bug-fix 证据复用（录屏当前阻塞）
+
+这是当前最优先修复项，尚未实现，不能把它写成已通过。
+
+**复现：**在同一 WebUI `bug-fix` 话题中，先完成“读取代码 + FC 失败测试”，再要求生成
+专用 Bug-fix 提案。模型有时会新建一个仅含 `evidence.inspect.completed` 的 repo-analysis Run，
+但不读取文件，就把该不完整 Run 传给 `devpilot_bug_fix_propose`。服务端正确返回
+`WORKFLOW_EVIDENCE_INVALID`；模型随后可能退回通用 `devpilot_propose_changeset`，只绑定
+`python-syntax`，这不满足录屏所需的回归验证闭环。
+
+**已确认事实：**
+
+- `/task-profile bug-fix` 已启用不是根因；它只影响可见工具和提示，不会自动复用证据。
+- 当前项目的完整分析证据和失败证据均已存在；失败 Run、项目绑定、目标文件及哈希有效。
+- 已修复“search 必须存在”和“故障说明必须逐字匹配”两个过严门槛；本问题是模型重试时选择了新建但不完整的 analysis Run。
+
+**推荐最小设计：**在服务端 Bug-fix 提案入口中，若调用方提供的 analysis evidence 不完整，
+只允许在**同一 project_id** 内查找最近一份同时具备 `evidence.inspect.completed` 与至少一个
+`evidence.read.completed` 的服务端 repo-analysis Run，并以该 Run 替换不完整引用。找不到完整证据
+时仍拒绝。不得跨项目、不得接受模型手写证据、不得跳过失败 Run/文件哈希/`allowed_files`/确认门禁。
+
+**验收：**
+
+1. 单元测试：不完整 analysis ID + 同项目完整历史 analysis ID 时，专用 Bug-fix 提案成功且合同只记录完整 ID。
+2. 单元测试：没有同项目完整历史证据、跨项目证据或伪造证据时，仍为 `WORKFLOW_EVIDENCE_INVALID`。
+3. WebUI：按录屏稿自然语言两轮检查/复现后，要求“只生成提案”应走 `devpilot_bug_fix_propose`，显示 `bug-fix` 与项目测试验证档位；不得退回仅 `python-syntax` 的通用 ChangeSet。
+4. 之后才继续 Apply → FC 回归测试 → Rollback 的现场录制。
+
+### 其他后续项
+
 1. 在新机器按录屏稿从镜头 1 开始做一次 WebUI 现场复验。
 2. 若模型再次出现额度或工具调用异常，先用“请只回复：模型连通正常。”确认上游，再检查 Gateway/Control Plane 日志；不要绕过失败证据、确认或回滚门禁。
 3. 若继续开发录屏体验，优先补充“从 WebUI 选择项目后完成服务端可信登记”的可视化入口；当前信任登记需要由操作者在控制面预先完成。
