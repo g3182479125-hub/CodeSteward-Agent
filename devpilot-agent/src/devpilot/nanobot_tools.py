@@ -745,7 +745,15 @@ def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_project_test(payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_control_plane("/v1/project-tests", payload)
+    canonical_payload = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    idempotency_key = "project-test-" + hashlib.sha256(
+        canonical_payload.encode("utf-8")
+    ).hexdigest()[:48]
+    return _post_control_plane(
+        "/v1/project-tests", payload, idempotency_key=idempotency_key
+    )
 
 
 def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:

@@ -398,6 +398,9 @@ class ControlPlaneManager:
         except ValueError as exc:
             self._abort(idempotency_key)
             raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
+        except Exception:
+            self._abort(idempotency_key)
+            raise
         response = {
             "project_id": result.project_id,
             "run_id": result.run_id,

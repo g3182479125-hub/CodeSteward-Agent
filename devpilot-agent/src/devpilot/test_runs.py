@@ -120,8 +120,9 @@ class ProjectTestRunner:
             self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
 
-        self._record_receipt(run_id, receipt, command)
-        if not self._receipt_is_complete(receipt, command_profile):
+        if not isinstance(receipt, ExecutionResult) or not self._receipt_is_complete(
+            receipt, command_profile
+        ):
             self.store.append_event(
                 run_id,
                 "test.execution.incomplete",
@@ -129,6 +130,7 @@ class ProjectTestRunner:
             )
             self.store.finish_run(run_id, "failed", {"code": "TEST_RECEIPT_INCOMPLETE"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+        self._record_receipt(run_id, receipt, command)
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
             return ProjectTestRunResult("passed", project_id, run_id, None, command, 0)
@@ -189,7 +191,7 @@ class ProjectTestRunner:
                 path.rsplit("/", 1)[-1].startswith("test_") and path.endswith(".py")
                 or path.endswith("_test.py")
                 for path in files
-            ) or any(path in files for path in {"pytest.ini", "pyproject.toml", "setup.cfg"})
+            )
         package = files.get("package.json")
         if package is None:
             return False
@@ -211,8 +213,8 @@ class ProjectTestRunner:
             and receipt.command_profile == command_profile
             and isinstance(receipt.duration_ms, int)
             and receipt.duration_ms >= 0
-            and receipt.side_effect_count in {None, 0}
-            and receipt.permission_violation in {None, False}
+            and receipt.side_effect_count == 0
+            and receipt.permission_violation is False
             and not receipt.output_truncated
         )
 
