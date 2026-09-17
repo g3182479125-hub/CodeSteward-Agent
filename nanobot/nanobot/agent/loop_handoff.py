@@ -502,7 +502,11 @@ class ManagedLoopDriver:
             project_id=step.project_id,
             step=step.step,
             message_position=step.message_position,
-            remaining_iterations=min(step.remaining_iterations, checkpoint.remaining_iterations),
+            remaining_iterations=(
+                step.remaining_iterations
+                if self.allow_unresolved_side_effects
+                else min(step.remaining_iterations, checkpoint.remaining_iterations)
+            ),
             completed_tool_results=step.completed_tool_results,
             pending_tool_calls=step.pending_tool_calls,
         )
@@ -510,7 +514,11 @@ class ManagedLoopDriver:
         # A model response produced within the final permitted iteration is
         # still allowed to settle the tools it already requested. The budget
         # only prevents another model decision after that settlement.
-        if checkpoint.remaining_iterations <= 0 and not bounded.pending_tool_calls:
+        if (
+            checkpoint.remaining_iterations <= 0
+            and not bounded.pending_tool_calls
+            and not self.allow_unresolved_side_effects
+        ):
             return DriverAction(DriverActionKind.PAUSE, "durable_iteration_budget_exhausted")
         action = driver.next_action(bounded)
         self._dispatch_generation = (

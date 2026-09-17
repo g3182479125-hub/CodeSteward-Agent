@@ -748,6 +748,44 @@ async def test_h7_paused_handoff_allows_new_message_without_replaying_old_work(
     loop.provider.chat_with_retry.assert_awaited_once()
 
 
+def test_h7_legacy_replay_policy_fails_closed_without_persisted_fingerprints() -> None:
+    loop = _mk_loop()
+    session = Session(
+        key="websocket:legacy-replay",
+        metadata={
+            AgentLoop._H7_HANDOFF_PAUSE_KEY: {
+                "checkpoint": {
+                    "pending_tool_calls": [
+                        {
+                            "id": "old-call",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": {"path": "old.txt"},
+                            },
+                        }
+                    ]
+                },
+                "h7_loop_checkpoint": {
+                    "checkpoint_schema": "h7-v1",
+                    "session_id": "websocket:legacy-replay",
+                    "task_id": "task-1",
+                    "project_id": "project-1",
+                    "step": 1,
+                    "message_position": 0,
+                    "remaining_iterations": 3,
+                    "pending_tool_calls": ["old-call"],
+                    "uncertain_side_effect_refs": ["run_id:unknown"],
+                },
+            }
+        },
+    )
+
+    fingerprints, fail_closed = loop._h7_replay_policy(session)
+
+    assert fingerprints
+    assert fail_closed is True
+
+
 @pytest.mark.asyncio
 async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
@@ -759,7 +797,7 @@ async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) 
         project_id="project-1",
         step=2,
         message_position=0,
-        remaining_iterations=3,
+        remaining_iterations=0,
         pending_tool_calls=("call-1",),
         uncertain_side_effect_refs=("run_id:run-1",),
         business_references={"run_id:run-1": "run-1"},

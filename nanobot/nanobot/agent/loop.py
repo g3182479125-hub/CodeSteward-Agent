@@ -1459,35 +1459,60 @@ class AgentLoop:
             )
         ]
 
-    def _h7_blocked_tool_call_fingerprints(self, session: Session) -> frozenset[str]:
-        """Return exact old calls that must not be replayed in a fresh turn."""
+    def _h7_replay_policy(self, session: Session) -> tuple[frozenset[str], bool]:
+        """Return exact replay blocks and whether legacy fail-closed applies."""
         raw_state = session.metadata.get(self._H7_HANDOFF_PAUSE_KEY)
         if not isinstance(raw_state, Mapping):
-            return frozenset()
+            return frozenset(), False
         checkpoint = raw_state.get("checkpoint")
         signatures: set[str] = set()
+        pending_ids: set[str] = set()
+        uncertain_refs: set[str] = set()
+        fingerprint_metadata_present = False
+        legacy_fail_closed = False
+        h7_checkpoint = raw_state.get("h7_loop_checkpoint")
+        if isinstance(h7_checkpoint, Mapping):
+            raw_pending_ids = h7_checkpoint.get("pending_tool_calls")
+            if isinstance(raw_pending_ids, (list, tuple)):
+                pending_ids.update(item for item in raw_pending_ids if isinstance(item, str))
+            raw_uncertain_refs = h7_checkpoint.get("uncertain_side_effect_refs")
+            if isinstance(raw_uncertain_refs, (list, tuple)):
+                uncertain_refs.update(item for item in raw_uncertain_refs if isinstance(item, str))
+            fingerprint_metadata_present = "blocked_tool_call_fingerprints" in h7_checkpoint
+            fingerprints = h7_checkpoint.get("blocked_tool_call_fingerprints")
+            if isinstance(fingerprints, (list, tuple)):
+                signatures.update(item for item in fingerprints if isinstance(item, str))
         if isinstance(checkpoint, Mapping):
             pending_tool_calls = checkpoint.get("pending_tool_calls")
             if isinstance(pending_tool_calls, list):
                 for raw_call in pending_tool_calls:
                     if not isinstance(raw_call, Mapping):
+                        legacy_fail_closed = True
                         continue
+                    call_id = raw_call.get("id")
                     function = raw_call.get("function")
-                    if not isinstance(function, Mapping):
+                    if not isinstance(call_id, str) or not call_id or not isinstance(function, Mapping):
+                        legacy_fail_closed = True
                         continue
                     name = function.get("name")
                     if isinstance(name, str) and name:
+                        pending_ids.add(call_id)
                         signatures.add(
                             tool_call_fingerprint(name, function.get("arguments", {}))
                         )
-        h7_checkpoint = raw_state.get("h7_loop_checkpoint")
-        if isinstance(h7_checkpoint, Mapping):
-            fingerprints = h7_checkpoint.get("blocked_tool_call_fingerprints")
-            if isinstance(fingerprints, (list, tuple)):
-                signatures.update(
-                    item for item in fingerprints if isinstance(item, str)
-                )
-        return frozenset(signatures)
+                    else:
+                        legacy_fail_closed = True
+            elif pending_tool_calls is not None:
+                legacy_fail_closed = True
+        has_unresolved_work = bool(pending_ids or uncertain_refs or signatures)
+        if has_unresolved_work and not fingerprint_metadata_present:
+            # Pre-fingerprint checkpoints cannot prove that the complete set
+            # of old calls is known. Temporary hashes are useful diagnostics,
+            # but never narrow the legacy fail-closed boundary.
+            legacy_fail_closed = True
+        if pending_ids and not signatures:
+            legacy_fail_closed = True
+        return frozenset(signatures), legacy_fail_closed
 
     async def _resolve_runtime_context_for_request(
         self,
@@ -1703,11 +1728,12 @@ class AgentLoop:
         h7_business_references: dict[str, str] = {}
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
         h8_completed_tool_result_ids: set[str] = set()
-        h7_blocked_tool_call_fingerprints = set(
-            self._h7_blocked_tool_call_fingerprints(session)
+        h7_blocked_tool_call_fingerprints, h7_block_unidentified_tool_calls = (
+            self._h7_replay_policy(session)
             if session is not None
-            else ()
+            else (frozenset(), False)
         )
+        h7_blocked_tool_call_fingerprints = set(h7_blocked_tool_call_fingerprints)
         current_tool_call_fingerprints: dict[str, str] = {}
         h8_driver: LoopDriver = DefaultReactDriver()
         # A new user turn after an unresolved operation is a fresh Host
@@ -1744,6 +1770,7 @@ class AgentLoop:
                     )
         h8_initial_step = 0
         h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
+        h8_durable_remaining_iterations = h8_iteration_budget
         # A handoff record establishes task/project ownership for its whole
         # lifetime.  Commands do not carry a DevPilot task context, whereas a
         # later Profile turn can.  Do not let that later, derived task id turn
@@ -1820,7 +1847,9 @@ class AgentLoop:
                 message_position=len(session.messages),
                 remaining_iterations=max(
                     0,
-                    h8_iteration_budget - int(public_payload.get("iteration") or 0) - 1,
+                    h8_durable_remaining_iterations
+                    - int(public_payload.get("iteration") or 0)
+                    - 1,
                 ),
                 session_prefix_hash=session_message_prefix_hash(session.messages),
                 completed_tool_results=tuple(sorted(h8_completed_tool_result_ids)),
@@ -2057,6 +2086,15 @@ class AgentLoop:
                     h8_iteration_budget,
                     record.checkpoint.remaining_iterations,
                 )
+                h8_durable_remaining_iterations = record.checkpoint.remaining_iterations
+                if h7_recovery_turn:
+                    # A fresh inbound turn gets a fresh local model/tool
+                    # budget. The durable task budget remains monotonic and
+                    # is never increased by this escape hatch.
+                    h8_iteration_budget = max(
+                        max_iterations if max_iterations is not None else self.max_iterations,
+                        1,
+                    )
                 # Continue the durable monotonic facts after a resumed runner;
                 # otherwise the next checkpoint would omit old completed calls
                 # and be rejected as a stale producer by the CAS boundary.
@@ -2228,8 +2266,7 @@ class AgentLoop:
                         else frozenset()
                     ),
                     block_unidentified_tool_calls=(
-                        bool(h7_recovery_turn and h7_uncertain_side_effect_refs)
-                        and not h7_blocked_tool_call_fingerprints
+                        bool(h7_recovery_turn and h7_block_unidentified_tool_calls)
                     ),
                     initial_step=h8_initial_step,
                     host_message_position=(len(session.messages) if session is not None else None),

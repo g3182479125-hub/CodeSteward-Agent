@@ -360,6 +360,28 @@ def test_h8_managed_driver_pauses_for_durable_unknown_or_exhausted_budget(tmp_pa
     assert action.reason == "uncertain_side_effect_requires_recovery"
 
 
+def test_h8_recovery_turn_can_start_after_durable_budget_exhausted(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(
+        LoopCheckpoint(
+            "session-1",
+            "task-1",
+            "project-1",
+            2,
+            4,
+            0,
+            uncertain_side_effect_refs=("run_id:unknown",),
+        )
+    )
+    action = ManagedLoopDriver(
+        manager,
+        "session-1",
+        allow_unresolved_side_effects=True,
+    ).next_action(StepInput("session-1", "task-1", "project-1", 3, 5, 9))
+
+    assert action.kind is DriverActionKind.REQUEST_MODEL
+
+
 def test_h8_plan_driver_uses_durable_step_after_restart(tmp_path) -> None:
     store = SqliteLoopHandoffStore(tmp_path / "devpilot.db")
     first = LoopHandoffManager(store)

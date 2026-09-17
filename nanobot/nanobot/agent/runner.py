@@ -1596,10 +1596,7 @@ class AgentRunner:
             tool_call_fingerprint(tool_call.name, tool_call.arguments)
             in spec.blocked_tool_call_fingerprints
         )
-        if is_blocked_replay or (
-            spec.block_unidentified_tool_calls
-            and not spec.blocked_tool_call_fingerprints
-        ):
+        if is_blocked_replay or spec.block_unidentified_tool_calls:
             detail = (
                 "This exact tool call belongs to an earlier operation whose result is unknown; "
                 "it was not replayed. Query or recover that operation instead."

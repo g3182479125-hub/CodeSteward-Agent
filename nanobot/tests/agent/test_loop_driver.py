@@ -214,6 +214,38 @@ async def test_runner_calls_driver_at_model_and_tool_boundaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_host_fail_closed_for_legacy_unknown_tool_set() -> None:
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(
+        side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(id="new-call", name="write_file", arguments={})],
+            ),
+            LLMResponse(content="continued without executing the unknown call"),
+        ]
+    )
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="must not run")
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "continue"}],
+        tools=tools,
+        model="test",
+        max_iterations=2,
+        max_tool_result_chars=10_000,
+        block_unidentified_tool_calls=True,
+        blocked_tool_call_fingerprints=frozenset({"old-call-fingerprint"}),
+    ))
+
+    assert result.final_content == "continued without executing the unknown call"
+    assert result.tool_events[0]["status"] == "blocked"
+    tools.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_host_honors_driver_pause_before_tool_dispatch() -> None:
     class PauseBeforeToolsDriver:
         name = "pause-before-tools"
