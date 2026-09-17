@@ -39,7 +39,7 @@
 
 ## 已验证结果
 
-### 2026-09-17 全流程现场验收
+### 2026-09-17 全流程现场验收（历史证据）
 
 在本机专用录制配置下，已完成一遍正式闭环：
 
@@ -54,6 +54,12 @@
 本次现场闭环的关键 ChangeSet 为 `eb6f1dbb-7d50-4ff3-b6db-84928c2086e8`；验证成功后
 已回滚，不要把它当作当前项目已修复状态。当前 `main.py` 哈希应为：
 `dd957367759f4221db9b8bfcdea3e8000ae5a434601506c121d1fc85ceb81fa1`。
+
+这组结果是本机专用录制配置下的历史验收证据，证明代码链路曾经完成过 Apply → FC Verify →
+Rollback；它不等于换电脑后模型、FC 账号、控制面数据库和项目 trust 已经自动就绪。换电脑后
+仍需按 `training-projects/README.md` 重新登记并信任项目，再实际复验当前模型的完整录制流程。
+录屏稿中记录的 DeepSeek V4.1 Flash 当前回合未产出正式 Diff，和这里保存的历史闭环证据属于
+不同环境/回合，不能互相替代。
 
 ```powershell
 $py = '.\devpilot-agent\.venv\Scripts\python.exe'

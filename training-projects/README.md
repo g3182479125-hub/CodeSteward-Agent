@@ -95,8 +95,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 看到 Harness 正常启动后，打开 <http://127.0.0.1:8765/#/new>。在项目选择器中选择完整路径
-`$project`。如果项目还没有登记，先在本机 WebUI / 控制面登记这个绝对路径，再用明确确认词
-`信任项目`完成可信登记；这句确认词要在系统要求确认时单独提交，不要混在普通聊天里。
+`$project`。如果项目还没有登记，可以用本机控制面完成登记和信任。下面的命令只访问回环地址，
+不会把 token 打印到屏幕：
+
+```powershell
+$headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
+$body = @{ project_path = $project } | ConvertTo-Json
+$registered = Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:18800/v1/projects' `
+  -ContentType 'application/json' -Body $body
+$projectId = $registered.project_id
+
+$trustBody = @{ confirmation = 'trust' } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:18800/v1/projects/$projectId/trust" `
+  -Headers $headers -ContentType 'application/json' -Body $trustBody
+```
+
+如果返回 `PATH_DENIED`，检查 `$project` 是否在 `$repoRoot` 下并且已经放进
+`DEVPILOT_FC_ALLOWED_PROJECTS`；如果返回 `INTERNAL_AUTH_REQUIRED`，在同一个 PowerShell
+窗口重新读取本机的 `DEVPILOT_CONTROL_PLANE_TOKEN` 后再执行。信任请求中的 `trust` 是系统确认词，
+也可以使用中文 `信任项目`；不要把确认词混在普通聊天里。
 
 ## 录制时发什么
 
