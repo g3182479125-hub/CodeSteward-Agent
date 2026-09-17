@@ -41,7 +41,9 @@ import runpy
 import sys
 
 sys.path.insert(0, str(Path.cwd()))
-for test_file in sorted(Path("tests").rglob("test_*.py")):
+for test_file in sorted(Path("tests").rglob("*.py")):
+    if test_file.name == "__init__.py":
+        continue
     namespace = runpy.run_path(str(test_file))
     for name, value in sorted(namespace.items()):
         if name.startswith("test_") and callable(value):
@@ -141,7 +143,9 @@ class ProjectTestRunner:
             self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
 
+        fallback_used = False
         if self._pytest_is_missing(receipt):
+            fallback_used = True
             fallback_files = (*snapshot, ExecutionFile(_PLAIN_TEST_RUNNER_PATH, _PLAIN_TEST_RUNNER))
             fallback_request = ExecutionRequest(
                 # FC persists sandbox ownership by run ID.  The fallback is
@@ -168,6 +172,14 @@ class ProjectTestRunner:
             self.store.finish_run(run_id, "failed", {"code": "TEST_RECEIPT_INCOMPLETE"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
         self._record_receipt(run_id, receipt, command)
+        if fallback_used and "unsupported pytest fixture:" in receipt.stderr.casefold():
+            self.store.append_event(
+                run_id,
+                "test.execution.incomplete",
+                {"code": "TEST_FALLBACK_UNSUPPORTED", "command": command},
+            )
+            self.store.finish_run(run_id, "failed", {"code": "TEST_FALLBACK_UNSUPPORTED"})
+            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
             return ProjectTestRunResult("passed", project_id, run_id, None, command, 0)
