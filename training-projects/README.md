@@ -120,6 +120,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 不会把 token 打印到屏幕：
 
 ```powershell
+# 这是新开的第二个 PowerShell 窗口；把路径改成你实际 clone 的目录。
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable('DEVPILOT_CONTROL_PLANE_TOKEN', 'User')
 $headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
 $body = @{ project_path = $project } | ConvertTo-Json
 $registered = Invoke-RestMethod -Method Post `
