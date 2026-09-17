@@ -4,7 +4,7 @@
 
 - 仓库：<https://github.com/g3182479125-hub/devflow-agent>
 - 分支：`codex/h11-complete-handoff`
-- 本次提交包含：FC 项目测试兼容、WebUI 搜索不阻塞事件循环、自然语言 Bug-fix 证据门槛修复、录屏稿和相应回归测试。
+- 本次提交包含：FC 项目测试兼容、WebUI 搜索不阻塞事件循环、自然语言 Bug-fix 证据门槛修复、录屏稿和相应回归测试；最新 FC fallback 修复为 `e5d168e`、`d722a67`、`bf70a22`。
 - 不包含：API Key、`.env`、SQLite、日志、临时 pytest 目录、训练项目目录，以及 `nanobot/webui/package-lock.json` 的既有本地变更。
 
 ## 本次完成内容
@@ -43,13 +43,23 @@ $py = '.\devpilot-agent\.venv\Scripts\python.exe'
 # All checks passed
 ```
 
-真实 FC 隔离演示验证已完成：
+本机 FC 配置与链路状态：
 
-1. 未修复副本的测试失败（`exit_code=1`）；
-2. 专用 `bug-fix` 提案生成成功，绑定分析和失败证据；
-3. Apply 后 FC `python-run` 验证通过；
-4. FC 项目测试通过（pytest 缺失时自动走无依赖 runner，`exit_code=0`）；
-5. Rollback 成功；再次 FC 项目测试恢复失败基线（`exit_code=1`）。
+1. 已安装本机虚拟环境的可选 FC 依赖：`uv sync --extra fc-sandbox`；
+2. 独立 `uv run devpilot sandbox-check` 已通过，确认 FC 后端可创建沙箱并返回回执；
+3. 真实 WebUI 项目测试已打到 `fc-agent-sandbox`。最新 Run 为
+   `69971ca9-7f4c-42d0-9eb5-1db9a2e53f1f`，实际命令是
+   `python /workspace/devpilot/.devpilot/plain_test_runner.py`，退出码为 `1`；
+4. 这次退出不是项目断言失败，而是镜像缺少 `pytest`。最新代码已将该结果归类为
+   `unknown`，记录 `TEST_FALLBACK_UNSUPPORTED`，不生成 `failure_run_id`，也不写入
+   `test_check.failed`，所以不能拿它当作 Bug-fix 失败证据；
+5. 若要录制“真实项目缺陷 → 专用提案 → Apply → 验证 → Rollback”，FC 模板必须提供
+   `pytest`，或者训练项目必须使用无依赖、零参数的纯 Python 测试。当前模板含
+   `import pytest` 和 pytest fixture，尚未取得真实断言失败证据。
+
+网络策略：本机用户环境已配置 `DEVPILOT_FC_NETWORK_POLICY_MODE=provider-default`，因为
+当前 FC 端点拒绝严格网络隔离模式。该模式只表示采用提供商默认网络策略，不能宣称网络隔离已证明；
+需要安全演示时使用支持 strict 模式的 FC 端点。内部控制面认证令牌在本机用户环境中生成，未提交到仓库。
 
 DeepSeek 余额恢复后，WebUI 新话题已实测返回“模型连通正常”。录制时仍应每步等待当前回合结束，再发送下一条。
 
@@ -112,10 +122,9 @@ Standards / Spec 双轴复核，记录见：
 3. 额外覆盖：完整证据即使排在 33 个较新的不完整 Run 之后，仍能被找到。
 
 **2026-09-17 现场状态：**新 WebUI 已实测可选择训练项目、切换 `bug-fix` profile、完成
-inspect/read/search 的只读分析，并把 `devpilot_test_run` 的 `HTTP 409
-EXECUTION_BACKEND_UNAVAILABLE` 明确报告为“没有真实失败证据”，没有退化为伪造提案或绕过门禁。
-本机当前未提供可用的 FC 执行后端，因此尚未重新取得“现场 FC 失败 Run → 专用提案 →
-Apply → 验证 → Rollback”的一整段新证据；恢复该后端后，按录屏稿继续第 3 镜头即可。
+inspect/read/search 的只读分析，并已真实调用 FC。控制面重启后需要重新登记项目 trust；本机已用
+内部认证重新登记训练项目。当前阻塞点不是后端不可达，而是 FC 模板没有 pytest，因此只能得到
+`unknown`，不能生成伪造失败证据。换用带 pytest 的模板后，按录屏稿继续第 3 镜头即可。
 
 ### 其他后续项
 
