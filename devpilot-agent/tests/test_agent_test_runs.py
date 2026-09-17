@@ -441,3 +441,34 @@ def test_agent_tool_posts_only_a_structured_project_test_request(
     assert "run-1" in str(result)
     assert captured["test_kind"] == "python-pytest"
     assert ProjectTestRunTool().read_only is True
+
+
+def test_project_test_request_waits_for_the_fc_execution_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"status":"failed","run_id":"run-1"}'
+
+    def fake_urlopen(_request: object, timeout: int) -> FakeResponse:
+        assert timeout == 330
+        return FakeResponse()
+
+    monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
+    result = nanobot_tools._post_project_test(
+        {
+            "project_path": "E:/workspace/project",
+            "test_kind": "python-pytest",
+            "target_files": ["tests/main_test.py"],
+            "symptom": "tests fail",
+            "expected_behavior": "tests pass",
+        }
+    )
+
+    assert result["run_id"] == "run-1"

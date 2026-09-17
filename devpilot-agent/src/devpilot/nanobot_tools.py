@@ -751,8 +751,15 @@ def _post_project_test(payload: dict[str, Any]) -> dict[str, Any]:
     idempotency_key = "project-test-" + hashlib.sha256(
         canonical_payload.encode("utf-8")
     ).hexdigest()[:48]
+    # The control plane can spend up to the FC project-test limit executing
+    # pytest (300 seconds).  Keep a small response/cleanup margin so the
+    # nanobot adapter does not report a client-side timeout after FC has
+    # already run the test successfully.
     return _post_control_plane(
-        "/v1/project-tests", payload, idempotency_key=idempotency_key
+        "/v1/project-tests",
+        payload,
+        idempotency_key=idempotency_key,
+        timeout_seconds=330,
     )
 
 
@@ -808,6 +815,7 @@ def _post_control_plane(
     authorization_token: str | None = None,
     idempotency_key: str | None = None,
     redact: bool = True,
+    timeout_seconds: int = 30,
 ) -> dict[str, Any]:
     """Call one local control-plane action and remove bearer-like secrets."""
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
@@ -826,7 +834,7 @@ def _post_control_plane(
         headers=headers,
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=timeout_seconds) as response:
         response_body = response.read(256 * 1024 + 1)
     if len(response_body) > 256 * 1024:
         raise ValueError("control-plane response is too large")
