@@ -80,9 +80,13 @@ git pull --ff-only origin codex/h11-complete-handoff
 
 ## 下一步建议
 
-### 未完成：跨消息 Bug-fix 证据复用（录屏当前阻塞）
+### 已完成：跨消息 Bug-fix 证据复用
 
-这是当前最优先修复项，尚未实现，不能把它写成已通过。
+该服务端缺口已由 `075846d` 和 `0a4ef50` 修复，并按 ADR-0004 完成
+Standards / Spec 双轴复核，记录见：
+
+- [Standards review](../reviews/2026-09-17-bug-fix-evidence-reuse-standards-review.md)
+- [Spec review](../reviews/2026-09-17-bug-fix-evidence-reuse-spec-review.md)
 
 **复现：**在同一 WebUI `bug-fix` 话题中，先完成“读取代码 + FC 失败测试”，再要求生成
 专用 Bug-fix 提案。模型有时会新建一个仅含 `evidence.inspect.completed` 的 repo-analysis Run，
@@ -96,20 +100,25 @@ git pull --ff-only origin codex/h11-complete-handoff
 - 当前项目的完整分析证据和失败证据均已存在；失败 Run、项目绑定、目标文件及哈希有效。
 - 已修复“search 必须存在”和“故障说明必须逐字匹配”两个过严门槛；本问题是模型重试时选择了新建但不完整的 analysis Run。
 
-**推荐最小设计：**在服务端 Bug-fix 提案入口中，若调用方提供的 analysis evidence 不完整，
-只允许在**同一 project_id** 内查找最近一份同时具备 `evidence.inspect.completed` 与至少一个
-`evidence.read.completed` 的服务端 repo-analysis Run，并以该 Run 替换不完整引用。找不到完整证据
-时仍拒绝。不得跨项目、不得接受模型手写证据、不得跳过失败 Run/文件哈希/`allowed_files`/确认门禁。
+**实际实现：**在服务端 Bug-fix 提案入口中，调用方提供的 analysis evidence 不完整时，
+仅在**同一 project_id** 的历史 repo-analysis Run 中选择最近一份同时具备
+`evidence.inspect.completed` 与至少一个 `evidence.read.completed` 的服务端证据。找不到完整证据
+仍拒绝；跨项目、伪造证据、失败 Run、文件哈希、`allowed_files` 和确认门禁均保持原有约束。
 
-**验收：**
+**已完成的自动化验收：**
 
 1. 单元测试：不完整 analysis ID + 同项目完整历史 analysis ID 时，专用 Bug-fix 提案成功且合同只记录完整 ID。
 2. 单元测试：没有同项目完整历史证据、跨项目证据或伪造证据时，仍为 `WORKFLOW_EVIDENCE_INVALID`。
-3. WebUI：按录屏稿自然语言两轮检查/复现后，要求“只生成提案”应走 `devpilot_bug_fix_propose`，显示 `bug-fix` 与项目测试验证档位；不得退回仅 `python-syntax` 的通用 ChangeSet。
-4. 之后才继续 Apply → FC 回归测试 → Rollback 的现场录制。
+3. 额外覆盖：完整证据即使排在 33 个较新的不完整 Run 之后，仍能被找到。
+
+**2026-09-17 现场状态：**新 WebUI 已实测可选择训练项目、切换 `bug-fix` profile、完成
+inspect/read/search 的只读分析，并把 `devpilot_test_run` 的 `HTTP 409
+EXECUTION_BACKEND_UNAVAILABLE` 明确报告为“没有真实失败证据”，没有退化为伪造提案或绕过门禁。
+本机当前未提供可用的 FC 执行后端，因此尚未重新取得“现场 FC 失败 Run → 专用提案 →
+Apply → 验证 → Rollback”的一整段新证据；恢复该后端后，按录屏稿继续第 3 镜头即可。
 
 ### 其他后续项
 
-1. 在新机器按录屏稿从镜头 1 开始做一次 WebUI 现场复验。
+1. 为目标训练项目恢复一个可用的 FC 执行后端后，按录屏稿从镜头 3 重新取得真实失败 Run；再验证专用 `bug-fix` 提案、Apply、验证和 Rollback。
 2. 若模型再次出现额度或工具调用异常，先用“请只回复：模型连通正常。”确认上游，再检查 Gateway/Control Plane 日志；不要绕过失败证据、确认或回滚门禁。
 3. 若继续开发录屏体验，优先补充“从 WebUI 选择项目后完成服务端可信登记”的可视化入口；当前信任登记需要由操作者在控制面预先完成。
