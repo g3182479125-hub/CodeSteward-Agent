@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,6 +106,88 @@ def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> No
     assert backend.requests[0].command == "python3 /workspace/devpilot/main.py"
     assert backend.requests[0].network_allowed is False
     assert backend.requests[0].files[0].content == content.encode("utf-8")
+
+
+def test_control_plane_routes_python_regression_to_fc_pytest_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, project = make_manager(tmp_path)
+    (project / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_main.py").write_text(
+        "def test_main():\n    assert True\n", encoding="utf-8"
+    )
+    events: list[tuple[object, ...]] = []
+
+    class FakeFiles:
+        def make_dir(self, path: str) -> None:
+            events.append(("mkdir", path))
+
+        def write(self, path: str, content: bytes) -> None:
+            events.append(("write", path, content))
+
+    class FakeCommands:
+        def run(
+            self, command: str, *, timeout: int, cwd: str | None = None
+        ) -> SimpleNamespace:
+            events.append(("run", command, timeout, cwd))
+            return SimpleNamespace(exit_code=0, stdout="5 passed", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "control-plane-regression-sandbox"
+        files = FakeFiles()
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            events.append(("kill",))
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+            allowed_project_paths=(str(project),),
+            state_dir=str(tmp_path / "fc-state"),
+        )
+    )
+    manager.execution_backend = backend
+    expected_sha = hashlib.sha256((project / "main.py").read_bytes()).hexdigest()
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[
+            FilePatch(
+                "main.py",
+                FileOperation.UPDATE,
+                "VALUE = 2\n",
+                expected_sha,
+            )
+        ],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    verified = manager.verify(
+        change_set_id,
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_REGRESSION,
+    )
+
+    assert verified["status"] == "verified"
+    assert verified["command_profile"] == "python-regression"
+    assert [event[:2] for event in events if event[0] == "run"] == [
+        ("run", "python -m pip install --disable-pip-version-check pytest"),
+        ("run", "python -m pytest -q"),
+    ]
 
 
 def test_control_plane_fail_closed_for_non_fake_backend_without_p6_gate(tmp_path: Path) -> None:

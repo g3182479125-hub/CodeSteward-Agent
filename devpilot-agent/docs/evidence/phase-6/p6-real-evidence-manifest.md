@@ -2,27 +2,28 @@
 
 本清单保留早期候选 `1161722eb369799c44ac8befc30f708806dc5343`、
 `b939d018dbe085a9982f890644e86f14be4ae062` 与 `570208b1e4f5dbd656bb80dc8a4a8bc1224949cd`
-的历史证据。本轮实现候选为 `3bab72b78908d5b9d397c78dbaf24bfdc9345c91`；本清单不预先宣称当前
-工作区已通过 Standards/Spec 复审。它记录真实杭州 FC 与本地集成测试的可审计边界。API
+的历史证据。本轮实现候选为 `65cf72c`，其固定点为 `92884b9`；本清单同时记录本轮新增的
+`python-regression` FC 证据。它记录真实 FC 与本地集成测试的可审计边界。API
 Key、SQLite、项目源码和原始日志不进入仓库。
 
 ## 固定配置
 
 | 字段 | 值 |
 |---|---|
-| region | `cn-hangzhou` |
-| endpoint/domain | `https://api.cn-hangzhou.e2b.fc.aliyuncs.com` / `cn-hangzhou.e2b.fc.aliyuncs.com` |
+| region | `cn-beijing` |
+| endpoint/domain | `https://api.cn-beijing.e2b.fc.aliyuncs.com` / `cn-beijing.e2b.fc.aliyuncs.com` |
 | template | `code-interpreter-v1` |
 | SDK | `e2b-code-interpreter 2.8.1` |
 | policy mode | `provider-default` |
 | request network flag | `network_allowed=False` |
 | isolation conclusion | 未证明；CLI 明确输出 `network_isolation_proven=false` |
-| non-secret configuration fingerprint | `sha256:557aceede17b606575f16aa8f1dd22262331c1cacecd81fb1fcc09c651fd2125` |
+| non-secret configuration fingerprint | `sha256:671e8d5c5df6f6b0dee49ef78b3451d0f9985b3a9ee97821b081ca48c937272e` |
 
 配置指纹由下列规范化、非敏感字段按键排序后计算：`region`、`api_url`、`domain`、`template`、
 `network_policy_mode`、`network_allowed=false`、已启用 profile 集合
-`[node-syntax, python-run, python-syntax]` 与 `allowlist_mode=explicit-project-paths`。它不包含
-API Key、allowlist 的实际路径或任何项目内容。
+`[node-syntax, project-npm-test, project-pytest, python-regression, python-run, python-syntax]` 与
+`allowlist_mode=explicit-project-paths`。本轮规范化 JSON 为：
+`{"allowlist_mode":"explicit-project-paths","api_url":"https://api.cn-beijing.e2b.fc.aliyuncs.com","domain":"cn-beijing.e2b.fc.aliyuncs.com","network_allowed":false,"network_policy_mode":"provider-default","profiles":["node-syntax","project-npm-test","project-pytest","python-regression","python-run","python-syntax"],"region":"cn-beijing","template":"code-interpreter-v1"}`。它不包含 API Key、allowlist 的实际路径或任何项目内容。
 
 ## 验证版本与最终候选复核
 
@@ -38,9 +39,9 @@ uv run --no-sync pyright
 git diff --check b939d018dbe085a9982f890644e86f14be4ae062...570208b1e4f5dbd656bb80dc8a4a8bc1224949cd
 ```
 
-本复核额外确认：`python-syntax`、`python-run`、`node-syntax` 是唯一可用的 FC profile；
-`python-regression` 与 `react-static` 均失败关闭。真实 FC 证据仍仅证明本清单下的降级执行，
-不因为上述本地复核而新增网络隔离或 React 执行结论。
+历史复核曾确认 `python-regression` 未接入 FC；该结论已因 `65cf72c` 的能力配置变化而失效。
+当前 `python-regression` 的新增真实证据见下文，`react-static` 仍失败关闭。真实 FC 证据仍仅
+证明本清单下的降级执行，不新增网络隔离或 React 执行结论。
 
 ## 真实 FC 场景
 
@@ -51,6 +52,7 @@ git diff --check b939d018dbe085a9982f890644e86f14be4ae062...570208b1e4f5dbd656bb
 |---|---|---|---|
 | CLI lifecycle | 固定 `python3 /workspace/devpilot/sandbox_check.py` | `exit_code=0`，`status=degraded`，清理完成 | `sbx-dc40e18d-87b0-4c57-9847-2621053c04ef` |
 | Node syntax | `node --check /workspace/devpilot/main.js` | `exit_code=0`，`network_policy=provider-default`，清理完成 | `sbx-246efbbd-dae8-4559-9eb4-ebc3e2f9a104` |
+| Python regression after approved Apply | `python-regression` → `python -m pytest -q`，前置固定 pytest bootstrap | `exit_code=0`，stdout 为 `5 passed in 0.02s`，清理完成 | `sbx-9d504d1e-39f3-4698-a25a-e32da91576e2`；ChangeSet `eb6f1dbb-7d50-4ff3-b6db-84928c2086e8` |
 | Python syntax failure | `python-syntax` 非敏感语法错误 fixture | `exit_code=1`，stderr 保留，失败与成功分离 | 见 `p6-02-fc-hangzhou-diagnosis.md` 现场记录 |
 | timeout | `python-run` 无限循环 fixture | `FC_TIMEOUT`，运行失败并清理 | 见同上 |
 | cancel | 运行中调用 `cancel()` | `FC_CANCELLED`，重复取消不创建新运行 | 见同上 |
@@ -62,6 +64,8 @@ git diff --check b939d018dbe085a9982f890644e86f14be4ae062...570208b1e4f5dbd656bb
 - nanobot 请求上下文、WebSocket 确认和通道集成：28 项通过。
 - `ruff`、`secret_scan.py`、`check_markdown.py`：通过。
 - Fake 合同测试与真实 FC 记录分列；Fake 不用于证明网络隔离。
+- `python-regression` 控制面→FC 路径集成测试覆盖固定命令和 bootstrap 顺序；真实现场结果见
+  [2026-09-17 pytest 回归证据](p6-05-pytest-regression-evidence-2026-09-17.md)。
 
 ## 当前范围与未交付增强
 

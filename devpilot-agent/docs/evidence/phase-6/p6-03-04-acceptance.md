@@ -16,7 +16,7 @@
 | 取消 | 真实 FC 取消调用 `kill()`，状态为 `cancelled` | 通过 |
 | 退出码与输出 | 真实 Python 语法错误返回 `exit_code=1` 和 stderr | 通过 |
 | 清理与恢复 | 清理失败保留错误；已结束沙箱恢复为 `unknown`，不创建替代任务 | 通过 |
-| 网页链路 | nanobot 原生 WebUI：提案→聊天确认→Apply→FC 验证；ChangeSet `edaa74b1-3cb2-4401-bfaa-0f0511109376` | 通过（降级模式） |
+| 网页链路 | nanobot 原生 WebUI：提案→聊天确认→Apply→FC 验证；现场闭环 ChangeSet `eb6f1dbb-7d50-4ff3-b6db-84928c2086e8` | 通过（降级模式） |
 
 ## 受控场景
 
@@ -30,7 +30,10 @@
   和幂等键阻止重复 Apply；回滚冲突在目标文件发生外部变化时失败关闭。
 
 对应自动化覆盖包括 `test_p2b_durable_control_plane.py`、`test_p5_action_broker.py`、
-`test_p5_event_bridge.py`、WebSocket confirmation tests 和 `test_fc_sandbox_contract.py`。
+`test_p5_event_bridge.py`、WebSocket confirmation tests、`test_fc_sandbox_contract.py` 和
+`test_p3_execution_boundary.py`。本轮新增
+`test_control_plane_routes_python_regression_to_fc_pytest_bootstrap`，覆盖控制面到 FC 的
+profile、固定命令和 bootstrap 顺序。
 本次真实 FC 证据与 Fake 契约证据分列，Fake 不冒充云端隔离证明。
 逐场景命令、版本和脱敏供应商关联记录见 [P6 真实执行证据清单](p6-real-evidence-manifest.md)。
 

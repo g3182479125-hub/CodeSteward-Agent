@@ -13,8 +13,8 @@
 
 - FC Code Interpreter 的 Python 项目测试改为在测试命令前先运行服务端固定的
   `python -m pip install --disable-pip-version-check pytest`，每次 Sandbox 临时安装，
-  再执行 `python -m pytest -q`；`DEVPILOT_FC_INSTALL_PYTEST=0` 时才回退到旧的
-  纯 Python 兼容运行器。
+  再执行 `python -m pytest -q`；`DEVPILOT_FC_INSTALL_PYTEST=0` 时仍执行 pytest，
+  但如果 FC 模板没有预装 pytest 就会如实失败，不会伪造或切换到其他运行器。
 - FC 命令从上传项目根目录执行，避免上传代码无法被项目测试导入。
 - 安装失败、网络不允许或回执不完整只记录为未知执行结果，不生成 `failure_run_id`。
 - `provider-default` 不被表述成绝对断网；回执仍记录宿主机无文件写入、受限命令和沙箱信息。
