@@ -43,6 +43,8 @@ failure_run_id: c7abbb30-fcc5-4476-b7a7-c03941cf2716
 ### 3. FC 回归验证
 
 - 正式 `r2.verify`，profile：`python-regression`。
+- 控制面 Run：`e36b45e8-d172-489c-8178-978746c3bfda`，事件中记录完整的
+  `changeset.verification_completed` 回执。
 - Sandbox：`sbx-9d504d1e-39f3-4698-a25a-e32da91576e2`。
 - 结果：`status=verified`、`exit_code=0`、`duration_ms=23195`。
 - 标准输出：
