@@ -153,11 +153,8 @@ Invoke-RestMethod -Method Post `
    嗨，你简单说说你能帮我做什么。
    ```
 
-2. 再发：
-
-   ```text
-   /task-profile bug-fix
-   ```
+2. 输入框里输入 `/`，点击 **Select task profile**，再点击 **Bug fix**。
+   页面会自动切换模式，不需要你手动发送 `/task-profile bug-fix`。
 
 3. 只读看代码：
 

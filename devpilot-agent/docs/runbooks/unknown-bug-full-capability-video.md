@@ -26,9 +26,8 @@ python -m pytest -q
 受控读写范围，不会把任何缺陷答案告诉 Agent；聊天中说“我信任”不能替代这项服务端登记。
 录制时不要展示或输入任何令牌。
 
-```text
-/task-profile bug-fix
-```
+在输入框输入 `/`，点击 **Select task profile**，再点击 **Bug fix**。
+页面会自动切换到 bug-fix 模式。
 
 画面中应出现 `devpilot_model_plugin`。这证明动态 Harness、模型候选工具和 Loop 接续入口
 已载入；不是传统 Python entry-point 插件的“启动时发现”。

@@ -34,7 +34,8 @@ powershell -ExecutionPolicy Bypass -File "$repoRoot\devpilot-agent\scripts\start
 
 ## 2. 录制顺序
 
-1. 新建会话，输入 `/task-profile feature-delivery`；确认可见工具包含
+1. 新建会话，在输入框输入 `/`，点击 **Select task profile**，再选择
+   **Feature delivery**；确认可见工具包含
    `devpilot_model_plugin`，说明 H6/H8/H9 已启用。
 2. 说明传统 Python entry-point 插件与本次能力的区别：前者是例如
    `pip install my_calendar_plugin` 后由 nanobot 启动时发现的包元数据，安装、依赖升级或卸载

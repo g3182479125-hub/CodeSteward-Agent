@@ -127,8 +127,8 @@ powershell -ExecutionPolicy Bypass -File "$repoRoot\devpilot-agent\scripts\start
 `configPath` 只在本机读取，不能录入视频或提交版本库；`dataPath` 是可隔离、可重建的
 DevPilot 数据目录，不要指向已有聊天或生产数据库。
 
-启动后打开 `http://127.0.0.1:8765`，新建话题并先输入
-`/task-profile feature-delivery` 或 `/task-profile bug-fix`。Profile 回复中必须含有
+启动后打开 `http://127.0.0.1:8765`，新建话题，在输入框输入 `/`，点击
+**Select task profile**，再选择 **Feature delivery** 或 **Bug fix**。Profile 回复中必须含有
 `devpilot_model_plugin`；这就是 H6/H8/H9 已实际加载的最短自检。安装或删除传统 Python
 entry-point 工具仍需重启 nanobot 来重新发现包元数据；通过 `/plugins` 管理的候选工具和
 Loop 则不需要。

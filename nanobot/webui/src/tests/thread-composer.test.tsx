@@ -35,6 +35,16 @@ const COMMANDS: SlashCommand[] = [
   },
 ];
 
+const TASK_PROFILE_COMMAND: SlashCommand = {
+  command: "/task-profile",
+  title: "Select task profile",
+  description: "Choose a trusted Skill and tool set for this chat session.",
+  icon: "sliders-horizontal",
+  argHint: "[name|off]",
+  lifecycle: "side_channel",
+  acceptsArgs: true,
+};
+
 const CLI_APPS: CliAppInfo[] = [
   {
     name: "gimp",
@@ -1282,6 +1292,37 @@ describe("ThreadComposer", () => {
 
     expect(input).toHaveValue("/stop");
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("lets users choose a task profile from a second-level slash menu", () => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        placeholder="Type your message..."
+        slashCommands={[TASK_PROFILE_COMMAND]}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "/" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: /Select task profile/i }));
+
+    const profilePalette = screen.getByRole("listbox", { name: "Task profiles" });
+    expect(profilePalette).toBeInTheDocument();
+    expect(within(profilePalette).getByRole("option", { name: /Bug fix bug-fix/i })).toBeInTheDocument();
+
+    fireEvent.mouseDown(
+      within(profilePalette).getByRole("option", { name: /Bug fix bug-fix/i }),
+    );
+
+    expect(onSend).toHaveBeenCalledWith(
+      "/task-profile bug-fix",
+      undefined,
+      { sideChannel: true },
+    );
+    expect(input).toHaveValue("");
+    expect(screen.queryByRole("listbox", { name: "Task profiles" })).not.toBeInTheDocument();
   });
 
   it("renders slash commands as direct actions with current status", () => {

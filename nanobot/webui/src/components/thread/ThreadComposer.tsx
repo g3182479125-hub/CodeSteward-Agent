@@ -36,6 +36,7 @@ import {
   Quote,
   RotateCw,
   Shield,
+  SlidersHorizontal,
   Sparkles,
   Square,
   SquarePen,
@@ -222,6 +223,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   history: History,
   "rotate-cw": RotateCw,
   shield: Shield,
+  "sliders-horizontal": SlidersHorizontal,
   sparkles: Sparkles,
   square: Square,
   "square-pen": SquarePen,
@@ -394,6 +396,35 @@ interface SlashPaletteCommand {
   badge?: string;
   recent: boolean;
 }
+
+interface TaskProfileOption {
+  name: string;
+  title: string;
+  description: string;
+}
+
+const TASK_PROFILE_OPTIONS: TaskProfileOption[] = [
+  {
+    name: "bug-fix",
+    title: "Bug fix",
+    description: "Analyze a defect, propose a minimal patch, verify it, and roll it back.",
+  },
+  {
+    name: "repo-analysis",
+    title: "Repository analysis",
+    description: "Read and explain a project without changing its files.",
+  },
+  {
+    name: "feature-delivery",
+    title: "Feature delivery",
+    description: "Plan and deliver a small feature with tests and verification.",
+  },
+  {
+    name: "off",
+    title: "Turn off task profile",
+    description: "Return this chat to nanobot's ordinary configured tools.",
+  },
+];
 
 function skillMatchRank(skill: SkillSummary, query: string): number | null {
   if (!query) return 0;
@@ -788,7 +819,9 @@ export function ThreadComposer({
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [voiceErrorFading, setVoiceErrorFading] = useState(false);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
+  const [taskProfileMenuOpen, setTaskProfileMenuOpen] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [selectedTaskProfileIndex, setSelectedTaskProfileIndex] = useState(0);
   const [cliAppMenuDismissed, setCliAppMenuDismissed] = useState(false);
   const [selectedCliAppIndex, setSelectedCliAppIndex] = useState(0);
   const [cursorPosition, setCursorPosition] = useState(0);
@@ -1216,7 +1249,8 @@ export function ThreadComposer({
   }, [activeSessionMentions, availableSessionMentions, cliAppMention, cliApps, mcpPresets]);
 
   const showCliAppMenu = filteredMentionCandidates.length > 0;
-  const showAnyPalette = showSlashMenu || showCliAppMenu;
+  const showTaskProfileMenu = taskProfileMenuOpen && slashQuery === "" && showSlashMenu;
+  const showAnyPalette = showSlashMenu || showCliAppMenu || showTaskProfileMenu;
   const hasMentionDecorations = displayMentionSegments.some(
     (segment) => segment.kind !== "text",
   );
@@ -1243,6 +1277,12 @@ export function ThreadComposer({
 
   useEffect(() => {
     setSelectedCommandIndex(0);
+  }, [slashQuery]);
+
+  useEffect(() => {
+    if (slashQuery !== "") {
+      setTaskProfileMenuOpen(false);
+    }
   }, [slashQuery]);
 
   useEffect(() => {
@@ -1336,6 +1376,7 @@ export function ThreadComposer({
     setSelectedSessionMentions([]);
     setInlineError(null);
     setSlashMenuDismissed(false);
+    setTaskProfileMenuOpen(false);
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
     clear();
@@ -1438,6 +1479,21 @@ export function ThreadComposer({
         setCliAppMenuDismissed(false);
         setInlineError(null);
         resizeTextarea();
+        return;
+      }
+
+      if (command.command === "/task-profile") {
+        setTaskProfileMenuOpen(true);
+        setSelectedTaskProfileIndex(0);
+        setSlashMenuDismissed(false);
+        setValue("/");
+        setCursorPosition(1);
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (!el) return;
+          el.focus();
+          el.setSelectionRange(1, 1);
+        });
         return;
       }
 
@@ -1591,6 +1647,24 @@ export function ThreadComposer({
     setCursorPosition(0);
     resizeTextarea(restoreFocus);
   }, [resizeTextarea]);
+
+  const chooseTaskProfile = useCallback(
+    (profile: TaskProfileOption) => {
+      const command = `/task-profile ${profile.name}`;
+      const nextRecents = [
+        "/task-profile",
+        ...recentSlashCommands.filter((item) => item !== "/task-profile"),
+      ].slice(0, SLASH_RECENTS_LIMIT);
+      setRecentSlashCommands(nextRecents);
+      storeSlashRecents(nextRecents);
+      onSend(command, undefined, { sideChannel: true });
+      clear();
+      clearComposerText();
+      setTaskProfileMenuOpen(false);
+      setSlashMenuDismissed(true);
+    },
+    [clear, clearComposerText, onSend, recentSlashCommands],
+  );
 
   const queueGuidancePrompt = useCallback(() => {
     const text = value.trim();
@@ -1855,6 +1929,30 @@ export function ThreadComposer({
   ]);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (showTaskProfileMenu) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedTaskProfileIndex((idx) => (idx + 1) % TASK_PROFILE_OPTIONS.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedTaskProfileIndex(
+          (idx) => (idx - 1 + TASK_PROFILE_OPTIONS.length) % TASK_PROFILE_OPTIONS.length,
+        );
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        chooseTaskProfile(TASK_PROFILE_OPTIONS[selectedTaskProfileIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setTaskProfileMenuOpen(false);
+        return;
+      }
+    }
     if (showCliAppMenu) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -2031,7 +2129,16 @@ export function ThreadComposer({
       }}
       className={cn("relative w-full", isHero ? "px-0" : "px-1 pb-1.5 pt-1 sm:px-0")}
     >
-      {showSlashMenu ? (
+      {showTaskProfileMenu ? (
+        <TaskProfilePalette
+          profiles={TASK_PROFILE_OPTIONS}
+          selectedIndex={selectedTaskProfileIndex}
+          layout={slashPaletteLayout}
+          isHero={isHero}
+          onHover={setSelectedTaskProfileIndex}
+          onChoose={chooseTaskProfile}
+        />
+      ) : showSlashMenu ? (
         <SlashCommandPalette
           commands={filteredSlashCommands}
           selectedIndex={selectedCommandIndex}
@@ -2158,6 +2265,7 @@ export function ThreadComposer({
               secondEnterPromptIdRef.current = null;
               setValue(e.target.value);
               setSlashMenuDismissed(false);
+              setTaskProfileMenuOpen(false);
               setCliAppMenuDismissed(false);
               setCursorPosition(e.target.selectionStart ?? e.target.value.length);
             }}
@@ -2804,6 +2912,91 @@ function MentionCandidateLogo({
     >
       {candidate.initials}
     </span>
+  );
+}
+
+interface TaskProfilePaletteProps {
+  profiles: TaskProfileOption[];
+  selectedIndex: number;
+  layout: SlashPaletteLayout;
+  isHero: boolean;
+  onHover: (index: number) => void;
+  onChoose: (profile: TaskProfileOption) => void;
+}
+
+function TaskProfilePalette({
+  profiles,
+  selectedIndex,
+  layout,
+  isHero,
+  onHover,
+  onChoose,
+}: TaskProfilePaletteProps) {
+  const listMaxHeight = Math.max(
+    0,
+    layout.maxHeight - SLASH_PALETTE_CHROME_PX,
+  );
+  const listRef = useSelectedOptionScroll(selectedIndex);
+  return (
+    <div
+      role="listbox"
+      aria-label="Task profiles"
+      style={{ maxHeight: layout.maxHeight }}
+      className={cn(
+        floatingSurfaceVisualClassName,
+        "absolute left-1/2 z-30 w-[calc(100%-0.5rem)] -translate-x-1/2 overflow-hidden",
+        layout.placement === "above" ? "bottom-full mb-2" : "top-full mt-2",
+        isHero ? "max-w-[58rem]" : "max-w-[49.5rem]",
+      )}
+    >
+      <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-[12px] text-muted-foreground">
+        <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+        <span className="font-medium text-foreground">Choose a task profile</span>
+        <span className="ml-auto">Esc to go back</span>
+      </div>
+      <div ref={listRef} className="overflow-y-auto pr-0.5" style={{ maxHeight: listMaxHeight }}>
+        {profiles.map((profile, index) => {
+          const selected = index === selectedIndex;
+          return (
+            <button
+              key={profile.name}
+              type="button"
+              role="option"
+              data-palette-index={index}
+              aria-selected={selected}
+              aria-label={`${profile.title} ${profile.name} ${profile.description}`}
+              onMouseEnter={() => onHover(index)}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                onChoose(profile);
+              }}
+              className={cn(
+                floatingItemClassName,
+                "flex min-h-[44px] w-full items-center gap-3 px-3 py-2 text-left transition-colors",
+                selected
+                  ? "bg-foreground/[0.065] text-foreground dark:bg-white/[0.09]"
+                  : "text-foreground/86 hover:bg-foreground/[0.045] dark:hover:bg-white/[0.065]",
+              )}
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <SlidersHorizontal className="h-4 w-4" aria-hidden />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2">
+                <span className="min-w-0 shrink-0 text-[13.5px] font-semibold tracking-normal text-foreground">
+                  {profile.title}
+                </span>
+                <span className="min-w-0 truncate text-[13px] text-muted-foreground">
+                  {profile.description}
+                </span>
+              </span>
+              <span className="font-mono text-[12px] text-muted-foreground/60">
+                {profile.name}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

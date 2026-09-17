@@ -132,11 +132,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts
 
 **我发：**
 
-~~~~text
-/task-profile bug-fix
-~~~~
+在输入框输入 `/`，点击 **Select task profile**，再点击 **Bug fix**。
+页面会自动发送并切换到 bug-fix；这里不需要手动输入 `/task-profile bug-fix`。
 
-等页面显示 Task profile bug-fix is active for this chat 后，再发下一条：
+等页面显示 `Task profile bug-fix is active for this chat` 后，再发下一条：
 
 **我说：**“先看看入口和测试，告诉我这三个问题大概在哪儿，不要改文件。”
 
@@ -329,7 +328,7 @@ git status --short
 | 集成 Harness 迁移到数据库 0016 | 通过 |
 | WebUI、Gateway、Control Plane 连接 | 通过 |
 | 选择 python-project-template-bugfix 项目 | 通过 |
-| /task-profile bug-fix 激活 | 通过 |
+| 通过 `/` 菜单选择 Select task profile → Bug fix | 通过 |
 | 读取 main.py、tests/main_test.py 并找出三个问题 | 通过 |
 | 在项目终端复现 3 failed, 2 passed | 通过 |
 | 当前 DeepSeek V4.1 Flash 生成正式 bug-fix Diff | 未通过：工具调用后未生成最终答复，随后触发暂停保护 |
