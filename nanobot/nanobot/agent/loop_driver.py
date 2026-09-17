@@ -245,17 +245,30 @@ def merge_business_facts(
                 settled_refs = {
                     f"{key}:{item[:256]}" for key, item in identifiers.items()
                 }
-                settles_existing_operation = bool(settled_refs & uncertain)
+                uncertain_before_settlement = set(uncertain)
+                unsettled_business_refs = {
+                    ref
+                    for ref in uncertain_before_settlement
+                    if not ref.startswith("tool_call:") and ref not in settled_refs
+                }
+                old_tool_call_refs = {
+                    ref
+                    for ref in uncertain_before_settlement
+                    if ref.startswith("tool_call:")
+                }
+                settles_existing_operation = bool(settled_refs & uncertain_before_settlement)
                 for key, item in identifiers.items():
                     uncertain.discard(f"{key}:{item[:256]}")
-                if settles_existing_operation:
-                    # A matching terminal recovery result settles the stale
-                    # in-process intent that led to this business operation
-                    # as well. Any tool calls in the current checkpoint are
-                    # re-added below, so this only retires older intents.
-                    for ref in tuple(uncertain):
-                        if ref.startswith("tool_call:"):
-                            uncertain.discard(ref)
+                if (
+                    settles_existing_operation
+                    and not unsettled_business_refs
+                    and len(old_tool_call_refs) == 1
+                ):
+                    # A matching terminal recovery result settles the one
+                    # stale in-process intent that led to this business
+                    # operation. Multiple old intents are deliberately kept
+                    # because this result cannot identify which one it settled.
+                    uncertain.discard(next(iter(old_tool_call_refs)))
         for item in value.values():
             record(item)
 

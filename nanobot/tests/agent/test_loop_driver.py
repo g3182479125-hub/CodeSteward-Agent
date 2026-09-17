@@ -172,6 +172,18 @@ def test_business_facts_keep_old_tool_intent_for_unrelated_terminal_status() -> 
     assert uncertain == ("run_id:run-1", "tool_call:old-call")
 
 
+def test_business_facts_keep_other_old_intent_when_one_operation_settles() -> None:
+    references, uncertain = merge_business_facts(
+        {},
+        ("run_id:run-1", "tool_call:old-call", "tool_call:other-call"),
+        [{"content": '{"status":"completed","run_id":"run-1"}'}],
+        [],
+    )
+
+    assert references == {"run_id:run-1": "run-1"}
+    assert uncertain == ("tool_call:old-call", "tool_call:other-call")
+
+
 @pytest.mark.asyncio
 async def test_runner_calls_driver_at_model_and_tool_boundaries() -> None:
     class RecordingDriver:
