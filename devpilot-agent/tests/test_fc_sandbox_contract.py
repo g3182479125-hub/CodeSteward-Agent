@@ -669,8 +669,49 @@ def test_fc_backend_exposes_only_real_evidenced_profiles() -> None:
     assert backend.supports_profile("python-syntax")
     assert backend.supports_profile("python-run")
     assert backend.supports_profile("node-syntax")
-    assert not backend.supports_profile("python-regression")
+    assert backend.supports_profile("python-regression")
     assert not backend.supports_profile("react-static")
+
+
+def test_fc_backend_bootstraps_pytest_for_python_regression_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[object, ...]] = []
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
+            events.append((command, timeout, cwd))
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "python-regression-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            return None
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+
+    result = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+        )
+    ).run(valid_request(command_profile="python-regression", command="python -m pytest -q"))
+
+    assert result.exit_code == 0
+    assert events == [
+        ("python -m pip install --disable-pip-version-check pytest", 120, None),
+        ("python -m pytest -q", 300, "/workspace/devpilot"),
+    ]
 
 
 def test_fc_backend_cancel_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -38,6 +38,22 @@
 
 ## 已验证结果
 
+### 2026-09-17 全流程现场验收
+
+在本机专用录制配置下，已完成一遍正式闭环：
+
+1. 录制项目 `training-projects/python-project-template-bugfix` 保持初始故障，FC
+   真实运行 `python -m pytest -q`，得到 `3 failed, 2 passed`。
+2. 通过正式 Bug-fix 提案生成 ChangeSet，确认后走 `r1.apply`，只修改 `main.py`。
+3. 通过正式 `r2.verify` 执行 `python-regression`，FC 回执为 `exit_code=0`、
+   `5 passed`；该 profile 会在同一临时 Sandbox 内默认安装 pytest。
+4. 通过正式 `r1.rollback` 恢复项目初始哈希；最后再次运行 FC，得到预期的失败基线，
+   因此当前目录已经可以直接从“发现故障”开始录制。
+
+本次现场闭环的关键 ChangeSet 为 `eb6f1dbb-7d50-4ff3-b6db-84928c2086e8`；验证成功后
+已回滚，不要把它当作当前项目已修复状态。当前 `main.py` 哈希应为：
+`dd957367759f4221db9b8bfcdea3e8000ae5a434601506c121d1fc85ceb81fa1`。
+
 ```powershell
 $py = '.\devpilot-agent\.venv\Scripts\python.exe'
 & $py -m pytest devpilot-agent/tests/test_p4_bug_fix.py devpilot-agent/tests/test_p4_feature_delivery.py devpilot-agent/tests/test_agent_test_runs.py -q

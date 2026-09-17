@@ -13,11 +13,12 @@
 
 ## 决策
 
-- 仅当执行 profile 为 `project-pytest` 时，在同一个短生命周期 Sandbox 中先运行服务端
-  固定命令：`python -m pip install --disable-pip-version-check pytest`。
+- 仅当执行 profile 为 `project-pytest` 或 `python-regression` 时，在同一个短生命周期
+  Sandbox 中先运行服务端固定命令：`python -m pip install --disable-pip-version-check pytest`。
 - `DEVPILOT_FC_INSTALL_PYTEST` 默认值为 `1`；设置为 `0` 可关闭。
 - 安装命令不经过模型、不接受用户项目中的命令、不写入项目快照，也不适用于 Node
-  测试、普通 Python 执行、语法检查或模型候选执行。
+  测试、普通 Python 执行、语法检查或模型候选执行。`python-regression` 使用同一固定的
+  `python -m pytest -q` 回归命令，避免项目测试和正式验证的 profile 不一致。
 - 严格网络策略下必须显式允许网络；`provider-default` 下如实记录网络隔离未知。
 - 安装失败、超时或回执不完整都只能形成基础设施失败/未知结果，不得生成
   `failure_run_id` 或推动 bug-fix 提案。

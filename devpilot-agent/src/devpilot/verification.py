@@ -173,7 +173,7 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
     elif profile is VerificationProfile.PYTHON_REGRESSION:
         if not any(item.relative_path.startswith("tests/") for item in files):
             raise ValueError("python-regression requires a tests/ snapshot")
-        command = 'python3 -m unittest discover -s tests -p "test_*.py"'
+        command = "python -m pytest -q"
     elif profile is VerificationProfile.PYTHON_RUN:
         if len(paths) != 1:
             raise ValueError("python-run requires exactly one changed Python file")

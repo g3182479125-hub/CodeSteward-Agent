@@ -38,7 +38,14 @@ PYTEST_INSTALL_COMMAND = "python -m pip install --disable-pip-version-check pyte
 PYTEST_INSTALL_TIMEOUT_SECONDS = 120
 _PERSIST_LOCK = RLock()
 FC_VERIFICATION_PROFILES = frozenset(
-    {"python-syntax", "python-run", "node-syntax", "project-pytest", "project-npm-test"}
+    {
+        "python-syntax",
+        "python-run",
+        "python-regression",
+        "node-syntax",
+        "project-pytest",
+        "project-npm-test",
+    }
 )
 
 
@@ -259,7 +266,10 @@ class FCSandboxBackend:
         return resolved in self.config.allowed_project_paths
 
     def _should_install_pytest(self, request: ExecutionRequest) -> bool:
-        return self.config.install_pytest and request.command_profile == "project-pytest"
+        return self.config.install_pytest and request.command_profile in {
+            "project-pytest",
+            "python-regression",
+        }
 
     def _install_pytest(self, sandbox_handle: Any) -> None:
         """Install the fixed test runner dependency inside this short-lived sandbox."""

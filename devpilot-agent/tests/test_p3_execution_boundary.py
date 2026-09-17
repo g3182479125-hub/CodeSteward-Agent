@@ -89,7 +89,7 @@ def test_python_regression_profile_uses_fixed_test_command_and_budget(tmp_path: 
 
     request = build_verification_request(entry.plan, VerificationProfile.PYTHON_REGRESSION)
 
-    assert request.command == 'python3 -m unittest discover -s tests -p "test_*.py"'
+    assert request.command == "python -m pytest -q"
     assert request.timeout_seconds == PYTHON_REGRESSION_TIMEOUT_SECONDS
     assert request.network_allowed is False
     assert {item.relative_path for item in request.files} == {"main.py", "tests/test_main.py"}
