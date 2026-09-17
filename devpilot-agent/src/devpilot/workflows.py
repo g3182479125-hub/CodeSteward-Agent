@@ -781,7 +781,7 @@ class BugFixWorkflow:
                 "ARTIFACT_ROOT_INVALID", "Artifact root must not overlap the target project"
             )
         project_id = store.ensure_project(str(project))
-        analysis_facts = self._analysis_facts(store, project_id, analysis_ids)
+        analysis_ids, analysis_facts = self._analysis_facts(store, project_id, analysis_ids)
         failure_facts, target_files, before_hashes = self._failure_facts(
             store,
             project_id,
@@ -1186,7 +1186,7 @@ class BugFixWorkflow:
     @classmethod
     def _analysis_facts(
         cls, store: Any, project_id: str, evidence_ids: tuple[str, ...]
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[tuple[str, ...], list[dict[str, Any]]]:
         try:
             if not all(
                 store.run_belongs_to_project(project_id=project_id, run_id=item)
@@ -1207,40 +1207,66 @@ class BugFixWorkflow:
         )
         optional = ("evidence.search.completed",)
         facts: list[dict[str, Any]] = []
+        incomplete = False
         for evidence_id in evidence_ids:
-            by_type = {
-                str(item["event_type"]): cast(dict[str, Any], item["payload"])
-                for item in store.list_run_events(evidence_id)
-                if str(item["event_type"]) in required + optional
-            }
-            if any(item not in by_type for item in required):
-                raise WorkflowError(
-                    "WORKFLOW_EVIDENCE_INVALID",
-                    "analysis evidence must contain inspect/read facts",
-                )
-            for payload in by_type.values():
-                if payload.get("project_id") != project_id:
-                    raise WorkflowError(
-                        "WORKFLOW_EVIDENCE_INVALID", "analysis evidence project binding is invalid"
-                    )
-            read_fact = by_type["evidence.read.completed"]
-            if not isinstance(read_fact.get("path"), str) or not re.fullmatch(
-                r"[0-9a-f]{64}", str(read_fact.get("sha256", ""))
-            ):
-                raise WorkflowError(
-                    "WORKFLOW_EVIDENCE_INVALID", "read evidence must contain a valid source hash"
-                )
-            facts.append(
-                {
-                    "run_id": evidence_id,
-                    "events": [
-                        {"event_type": item, "payload": by_type[item]}
-                        for item in required + optional
-                        if item in by_type
-                    ],
-                }
+            fact = cls._analysis_fact(
+                store, project_id, evidence_id, required=required, optional=optional
             )
-        return facts
+            if fact is None:
+                incomplete = True
+            else:
+                facts.append(fact)
+        if not incomplete:
+            return evidence_ids, facts
+        for candidate_id in store.list_project_run_ids(
+            project_id=project_id, kind="repo-analysis"
+        ):
+            fact = cls._analysis_fact(
+                store, project_id, candidate_id, required=required, optional=optional
+            )
+            if fact is not None:
+                return (candidate_id,), [fact]
+        raise WorkflowError(
+            "WORKFLOW_EVIDENCE_INVALID",
+            "analysis evidence must contain inspect/read facts",
+        )
+
+    @staticmethod
+    def _analysis_fact(
+        store: Any,
+        project_id: str,
+        evidence_id: str,
+        *,
+        required: tuple[str, ...],
+        optional: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        by_type = {
+            str(item["event_type"]): cast(dict[str, Any], item["payload"])
+            for item in store.list_run_events(evidence_id)
+            if str(item["event_type"]) in required + optional
+        }
+        for payload in by_type.values():
+            if payload.get("project_id") != project_id:
+                raise WorkflowError(
+                    "WORKFLOW_EVIDENCE_INVALID", "analysis evidence project binding is invalid"
+                )
+        if any(item not in by_type for item in required):
+            return None
+        read_fact = by_type["evidence.read.completed"]
+        if not isinstance(read_fact.get("path"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", str(read_fact.get("sha256", ""))
+        ):
+            raise WorkflowError(
+                "WORKFLOW_EVIDENCE_INVALID", "read evidence must contain a valid source hash"
+            )
+        return {
+            "run_id": evidence_id,
+            "events": [
+                {"event_type": item, "payload": by_type[item]}
+                for item in required + optional
+                if item in by_type
+            ],
+        }
 
     @classmethod
     def _failure_facts(

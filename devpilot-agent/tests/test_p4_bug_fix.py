@@ -46,7 +46,11 @@ def _fixed_app(before: str) -> str:
 
 
 def _setup(
-    tmp_path: Path, *, exit_code: int = 0, include_search_evidence: bool = True
+    tmp_path: Path,
+    *,
+    exit_code: int = 0,
+    include_search_evidence: bool = True,
+    include_read_evidence: bool = True,
 ) -> tuple[
     ProjectStore, Path, ControlPlaneManager, str, str
 ]:
@@ -65,7 +69,8 @@ def _setup(
     access = CodeAccessService(allowed_roots=roots, store=store)
     if include_search_evidence:
         access.search(analysis.project_id, "preventDefault", evidence_run_id=analysis.run_id)
-    access.read(analysis.project_id, "src/App.jsx", evidence_run_id=analysis.run_id)
+    if include_read_evidence:
+        access.read(analysis.project_id, "src/App.jsx", evidence_run_id=analysis.run_id)
     failure = BugCheckService(allowed_roots=roots, store=store).record_failure(
         project,
         symptom="submitting the form navigates away",
@@ -170,6 +175,50 @@ def test_bug_fix_proposal_accepts_inspect_and_read_evidence_without_search(
 
     assert proposal.analysis_evidence_ids == (analysis_id,)
     assert proposal.preview["allowed_files"] == ("src/App.jsx",)
+
+
+def test_bug_fix_proposal_reuses_the_latest_complete_same_project_analysis(
+    tmp_path: Path,
+) -> None:
+    store, project, manager, complete_analysis_id, failure_id = _setup(tmp_path)
+    incomplete = ProjectAnalysisService(
+        allowed_roots=manager.patch_service.allowed_roots,
+        store=store,
+    ).inspect(project)
+
+    proposal = _propose(manager, project, incomplete.run_id, failure_id)
+
+    assert proposal.analysis_evidence_ids == (complete_analysis_id,)
+    assert proposal.preview["analysis_evidence_ids"] == (complete_analysis_id,)
+
+
+def test_bug_fix_proposal_rejects_incomplete_analysis_without_same_project_history(
+    tmp_path: Path,
+) -> None:
+    _, project, manager, incomplete_analysis_id, failure_id = _setup(
+        tmp_path,
+        include_read_evidence=False,
+    )
+
+    with pytest.raises(WorkflowError, match="WORKFLOW_EVIDENCE_INVALID"):
+        _propose(manager, project, incomplete_analysis_id, failure_id)
+
+
+def test_bug_fix_proposal_does_not_replace_cross_project_or_unknown_analysis(
+    tmp_path: Path,
+) -> None:
+    store, project, manager, _analysis_id, failure_id = _setup(tmp_path)
+    other_project = tmp_path / "other-project"
+    shutil.copytree(_FIXTURE_ROOT, other_project)
+    other_analysis = ProjectAnalysisService(
+        allowed_roots=manager.patch_service.allowed_roots,
+        store=store,
+    ).inspect(other_project)
+
+    with pytest.raises(WorkflowError, match="WORKFLOW_EVIDENCE_INVALID"):
+        _propose(manager, project, other_analysis.run_id, failure_id)
+    with pytest.raises(WorkflowError, match="WORKFLOW_EVIDENCE_INVALID"):
+        _propose(manager, project, "forged-analysis-run", failure_id)
 
 
 def test_bug_fix_proposal_accepts_a_natural_language_failure_summary(

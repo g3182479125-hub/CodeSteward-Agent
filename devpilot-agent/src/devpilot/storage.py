@@ -637,6 +637,21 @@ class ProjectStore:
             run = session.get(RunRecord, run_id)
             return run is not None and run.project_id == project_id
 
+    def list_project_run_ids(
+        self, *, project_id: str, kind: str, limit: int = 32
+    ) -> list[str]:
+        """Return recent server-owned Runs for one project and kind."""
+        if not 1 <= limit <= 128:
+            raise ValueError("run list limit must be between 1 and 128")
+        with self._session_factory() as session:
+            statement = (
+                select(RunRecord.id)
+                .where(RunRecord.project_id == project_id, RunRecord.kind == kind)
+                .order_by(RunRecord.started_at.desc(), RunRecord.id.desc())
+                .limit(limit)
+            )
+            return list(session.scalars(statement))
+
     def get_run_status(self, run_id: str) -> str:
         with self._session_factory() as session:
             run = session.get(RunRecord, run_id)
