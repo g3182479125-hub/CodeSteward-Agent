@@ -5,7 +5,9 @@
 - 固定点：`92884b9`
 - 初始候选：`65cf72c`
 - 增量候选：`dd7a253`
+- 本轮最终记录提交：`037c080`（仅补证据/审查记录，不改变实现行为）。
 - 规格：`CURRENT_PLAN.md` 第 0/6/7 节、ADR-0004、ADR-0008。
+- 审查员：Spec reviewer `01a0ad94-b1f1-79a1-b8ce-13b853596bea`（Confucius）。
 
 ## 初始复核与修复
 
@@ -28,3 +30,22 @@
 - 未发现 scope creep 或实现与规格不一致的问题。
 
 **PASS（记录文件补齐后）。** 网络隔离仍按规格标记为未证明，不改变本结论。
+
+## 可复现检查
+
+以下命令在 `037c080` 工作区执行，均为退出码 `0`：
+
+```powershell
+Set-Location devpilot-agent
+$repoRoot = (Resolve-Path ..).Path
+$env:PYTHONPATH = "$repoRoot\nanobot;$repoRoot\devpilot-agent\src"
+& "$repoRoot\nanobot\.venv\Scripts\python.exe" -m pytest -q
+& .\.venv\Scripts\python.exe -m ruff check src scripts tests
+& .\.venv\Scripts\python.exe .\scripts\check_markdown.py
+git diff --check
+```
+
+真实 FC 验证命令由服务端固定生成，现场结果为退出码 `0`：
+`python -m pip install --disable-pip-version-check pytest` 后执行
+`python -m pytest -q`，详见 P6-05 的 Run
+`e36b45e8-d172-489c-8178-978746c3bfda`。
