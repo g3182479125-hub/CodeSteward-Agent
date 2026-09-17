@@ -110,8 +110,22 @@ def test_task_loop_guard_pauses_after_three_identical_errors() -> None:
     paused = guard.observe("devpilot_read_code", {"path": "src/main.py"}, "Error: stale hash")
 
     assert paused is not None
-    assert "same tool error repeated" in paused
-    assert "stale hash" in paused
+    assert "同一个问题连续出现" in paused
+    assert "工具没有返回新的有效结果" in paused
+
+
+def test_task_loop_guard_humanizes_workspace_boundary_errors() -> None:
+    guard = TaskLoopGuard()
+    error = "Error: PathBoundaryError: path is outside the configured workspace"
+
+    for _ in range(2):
+        assert guard.observe("read", {"path": "D:/outside/main.py"}, error) is None
+
+    paused = guard.observe("read", {"path": "D:/outside/main.py"}, error)
+
+    assert paused is not None
+    assert "项目路径不在当前允许访问的目录内" in paused
+    assert "PathBoundaryError" not in paused
 
 
 def test_task_loop_guard_allows_one_new_diagnostic_branch() -> None:

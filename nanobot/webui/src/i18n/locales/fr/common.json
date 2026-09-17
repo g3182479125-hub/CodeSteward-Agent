@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "Appairage",
             "description": "Gérer les demandes d’appairage."
+          },
+          "task_profile": {
+            "title": "Choisir le mode de tâche",
+            "description": "Choisissez comment corriger un problème, analyser un projet ou livrer une fonctionnalité."
+          },
+          "plugins": {
+            "title": "Gérer les outils temporaires",
+            "description": "Consultez et gérez les outils disponibles dans cette conversation."
           }
         },
         "badges": {

@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "Pemasangan",
             "description": "Kelola permintaan pemasangan."
+          },
+          "task_profile": {
+            "title": "Pilih mode tugas",
+            "description": "Pilih cara memperbaiki masalah, menganalisis proyek, atau mengirimkan fitur."
+          },
+          "plugins": {
+            "title": "Kelola alat sementara",
+            "description": "Lihat dan kelola alat yang tersedia untuk percakapan ini."
           }
         },
         "badges": {

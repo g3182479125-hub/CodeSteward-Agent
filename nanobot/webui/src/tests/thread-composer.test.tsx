@@ -1306,7 +1306,7 @@ describe("ThreadComposer", () => {
 
     const input = screen.getByLabelText("Message input");
     fireEvent.change(input, { target: { value: "/" } });
-    fireEvent.mouseDown(screen.getByRole("option", { name: /Select task profile/i }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: /Choose task mode/i }));
 
     const profilePalette = screen.getByTestId("task-profile-palette");
     expect(profilePalette).toBeInTheDocument();

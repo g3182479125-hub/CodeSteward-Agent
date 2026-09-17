@@ -128,8 +128,8 @@ powershell -ExecutionPolicy Bypass -File "$repoRoot\devpilot-agent\scripts\start
 DevPilot 数据目录，不要指向已有聊天或生产数据库。
 
 启动后打开 `http://127.0.0.1:8765`，新建话题，在输入框输入 `/`，点击
-**Select task profile**，再选择 **Feature delivery** 或 **Bug fix**。Profile 回复中必须含有
-`devpilot_model_plugin`；这就是 H6/H8/H9 已实际加载的最短自检。安装或删除传统 Python
+**选择任务模式**，再选择 **交付功能** 或 **修复 Bug**。模式回复会用自然语言说明当前模式和
+后续步骤；动态 Harness 是否加载应通过活动记录或 `/plugins` 的状态信息检查，不再把内部工具名直接展示给用户。安装或删除传统 Python
 entry-point 工具仍需重启 nanobot 来重新发现包元数据；通过 `/plugins` 管理的候选工具和
 Loop 则不需要。
 

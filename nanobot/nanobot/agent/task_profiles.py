@@ -15,14 +15,51 @@ TASK_PROFILE_VERSION_METADATA_KEY = "task_profile_version"
 TASK_CONTEXT_METADATA_KEY = "task_context"
 TASK_LOOP_GUARD_METADATA_KEY = "task_loop_guard"
 
+TASK_PROFILE_DISPLAY_NAMES = {
+    "bug-fix": "修复 Bug",
+    "repo-analysis": "分析项目",
+    "feature-delivery": "交付功能",
+}
+TASK_PROFILE_DESCRIPTIONS = {
+    "bug-fix": "定位问题、给出最小修改方案，并在确认后验证。",
+    "repo-analysis": "只读项目结构和代码，不修改文件。",
+    "feature-delivery": "规划并交付小功能，补充测试和验证。",
+}
+
 _SENSITIVE_CONTEXT_RE = re.compile(
     r"(?i)(?:authorization\s*[:=]\s*bearer\s+[^\s,;]+|"
     r"(?:api[_ -]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+)"
 )
 
 
+def _humanize_diagnostic_error(error: str) -> str:
+    """Turn common tool-boundary errors into user-facing diagnostic copy."""
+    lowered = error.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "outside the configured workspace",
+            "outside allowed directory",
+            "working_dir is outside",
+            "path outside working dir",
+            "path traversal detected",
+            "pathboundaryerror",
+        )
+    ):
+        return "项目路径不在当前允许访问的目录内。"
+    if any(marker in lowered for marker in ("permission denied", "unauthorized", "forbidden")):
+        return "当前操作没有获得访问权限。"
+    if any(marker in lowered for marker in ("timeout", "timed out", "deadline exceeded")):
+        return "这次操作等待超时了。"
+    return "工具没有返回新的有效结果。"
+
+
 class TaskProfileError(ValueError):
     """A task profile is missing, invalid, or cannot run in this process."""
+
+
+def task_profile_display_name(name: str) -> str:
+    return TASK_PROFILE_DISPLAY_NAMES.get(name, name)
 
 
 MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
@@ -162,14 +199,13 @@ class TaskProfileCatalog:
             )
 
     def describe(self, current: str | None = None) -> str:
-        lines = ["Task profiles:"]
+        lines = ["可选任务模式："]
         for name in self.names:
-            marker = " (active)" if name == current else ""
-            profile = self._profiles[name]
-            lines.append(
-                f"- {name}{marker}: skills={','.join(profile.skill_names)}; "
-                f"tools={len(profile.allowed_tools)}; output={','.join(profile.output_contract)}"
-            )
+            label = task_profile_display_name(name)
+            description = TASK_PROFILE_DESCRIPTIONS.get(name, "按当前配置处理任务。")
+            marker = "（当前）" if name == current else ""
+            lines.append(f"- {label}{marker}：{description}（{name}）")
+        lines.append("在输入框输入“/”，选择“选择任务模式”即可切换。")
         return "\n".join(lines)
 
 
@@ -310,15 +346,16 @@ class TaskLoopGuard:
             self._seen_errors.add(fingerprint)
 
         if self._consecutive >= self.same_error_limit:
+            readable_error = _humanize_diagnostic_error(normalized_error)
             return (
-                "Task paused: the same tool error repeated without new evidence "
-                f"({self._consecutive} attempts). Known error: {normalized_error}. "
-                "Report the known facts, unknowns, and the next diagnostic step; do not retry it."
+                "这轮检查先暂停了：同一个问题连续出现，继续重试也没有得到新信息。\n"
+                f"目前知道：{readable_error}\n"
+                "下一步：请提供新的路径或信息，或者让我先查看当前状态；我不会继续重复这个操作。"
             )
         if self._branches > self.max_diagnostic_branches:
             return (
-                "Task paused: the bounded diagnostic-branch budget was exhausted. "
-                "Report the known facts, unknowns, and the next diagnostic step."
+                "这轮检查先暂停了：我已经尝试了几种处理方向，但结果没有变化。\n"
+                "下一步：请补充新的信息，或者让我先查看当前状态；你也可以继续发送普通问题。"
             )
         return None
 

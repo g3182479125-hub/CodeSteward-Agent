@@ -17,8 +17,9 @@ _MAX_REPEAT_WORKSPACE_VIOLATIONS = 2
 _LENGTH_RECOVERY_TAIL_CHARS = 64
 
 EMPTY_FINAL_RESPONSE_MESSAGE = (
-    "I completed the tool steps but couldn't produce a final answer. "
-    "Please try again or narrow the task."
+    "这轮处理已经结束了，但我没有整理出最终答复。\n\n"
+    "你可以继续发消息；如果想让我重新整理刚才的结果，可以直接说："
+    "“把刚才的检查结果总结一下”。"
 )
 
 FINALIZATION_RETRY_PROMPT = (

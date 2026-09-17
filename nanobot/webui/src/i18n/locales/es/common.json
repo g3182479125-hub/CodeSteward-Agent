@@ -1220,6 +1220,14 @@
           "pairing": {
             "title": "Emparejamiento",
             "description": "Gestiona solicitudes de emparejamiento."
+          },
+          "task_profile": {
+            "title": "Elegir modo de tarea",
+            "description": "Elige cómo reparar problemas, analizar proyectos o entregar funciones."
+          },
+          "plugins": {
+            "title": "Gestionar herramientas temporales",
+            "description": "Consulta y gestiona las herramientas disponibles en esta conversación."
           }
         },
         "badges": {

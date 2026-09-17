@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "페어링",
             "description": "페어링 요청을 관리합니다."
+          },
+          "task_profile": {
+            "title": "작업 모드 선택",
+            "description": "문제 수정, 프로젝트 분석 또는 기능 제공 방식을 선택합니다."
+          },
+          "plugins": {
+            "title": "임시 도구 관리",
+            "description": "이 대화에서 사용할 수 있는 임시 도구를 확인하고 관리합니다."
           }
         },
         "badges": {

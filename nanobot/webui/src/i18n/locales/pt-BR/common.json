@@ -1243,6 +1243,14 @@
           "pairing": {
             "title": "Pareamento",
             "description": "Gerencia solicitações de pareamento."
+          },
+          "task_profile": {
+            "title": "Escolher modo de tarefa",
+            "description": "Escolha como corrigir problemas, analisar projetos ou entregar funcionalidades."
+          },
+          "plugins": {
+            "title": "Gerenciar ferramentas temporárias",
+            "description": "Veja e gerencie as ferramentas disponíveis nesta conversa."
           }
         }
       },

@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "Ghép nối",
             "description": "Quản lý yêu cầu ghép nối."
+          },
+          "task_profile": {
+            "title": "Chọn chế độ tác vụ",
+            "description": "Chọn cách sửa lỗi, phân tích dự án hoặc bàn giao tính năng."
+          },
+          "plugins": {
+            "title": "Quản lý công cụ tạm thời",
+            "description": "Xem và quản lý các công cụ có sẵn trong cuộc trò chuyện này."
           }
         },
         "badges": {

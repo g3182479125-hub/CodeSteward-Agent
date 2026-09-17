@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from nanobot import __version__
+from nanobot.agent.task_profiles import task_profile_display_name
 from nanobot.bus.events import OutboundMessage
 from nanobot.command.router import CommandContext, CommandRouter, normalize_command_text
 from nanobot.utils.helpers import build_status_content
@@ -470,7 +471,7 @@ async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="Only a direct user message can change the task profile; this message may only query `/task-profile`.",
+            content="只有你直接发送的消息才能切换任务模式；这条消息只能查看当前模式。",
             metadata=metadata,
         )
     parts = args.split()
@@ -478,7 +479,7 @@ async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="Usage: `/task-profile [repo-analysis|feature-delivery|bug-fix|off]`",
+            content="请选择一个任务模式：修复 Bug、分析项目、交付功能，或关闭任务模式。",
             metadata=metadata,
         )
     name = parts[0].lower()
@@ -486,39 +487,57 @@ async def cmd_task_profile(ctx: CommandContext) -> OutboundMessage:
         try:
             loop.clear_session_task_profile(ctx.key)
         except ValueError as exc:
+            detail = str(exc).lower()
+            if "unfinished session" in detail:
+                message = "当前对话已经有内容，不能在中途关闭任务模式。\n请点击“新建话题”后继续普通聊天。"
+            else:
+                message = "暂时无法关闭任务模式，请稍后重试。"
             return OutboundMessage(
                 channel=ctx.msg.channel,
                 chat_id=ctx.msg.chat_id,
-                content=f"Could not clear task profile: {exc}",
+                content=message,
                 metadata=metadata,
             )
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content="Task profile cleared; this chat uses nanobot's ordinary configured tools.",
+            content="已关闭任务模式，当前对话恢复普通聊天。",
             metadata=metadata,
         )
     try:
         profile = loop.set_session_task_profile(ctx.key, name)
     except (KeyError, ValueError) as exc:
+        detail = str(exc).lower()
+        if "unfinished session" in detail:
+            message = (
+                "当前对话已经有内容，不能在中途切换任务模式。\n"
+                "请点击“新建话题”，然后从输入框的“/”菜单重新选择任务模式。"
+            )
+        elif "unavailable" in detail or "missing" in detail:
+            message = "这个任务模式暂时没有准备好所需能力，请检查本机配置后再试。"
+        else:
+            message = "暂时无法切换任务模式，请稍后重试。"
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content=f"Could not select task profile: {exc}",
+            content=message,
             metadata=metadata,
         )
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=(
-            f"Task profile `{profile.name}` is active for this chat.\n"
-            f"Skills: {', '.join(profile.skill_names)}\n"
-            f"Visible tools: {', '.join(sorted(profile.allowed_tools))}\n"
-            f"Output fields: {', '.join(profile.output_contract)}\n"
-            "This selection does not grant approval, execution, or rollback authority."
+            f"已进入“{_task_profile_label(profile.name)}”模式。\n\n"
+            "接下来我会先读取相关项目和测试，说明问题或方案；涉及修改文件时，"
+            "会先把改动和验证方式告诉你，只有你明确确认后才会执行；"
+            "这个模式本身不授予审批、执行或回滚权限，仍按正式流程处理。"
         ),
         metadata=metadata,
     )
+
+
+def _task_profile_label(name: str) -> str:
+    return task_profile_display_name(name)
 
 
 async def cmd_dream(ctx: CommandContext) -> OutboundMessage:

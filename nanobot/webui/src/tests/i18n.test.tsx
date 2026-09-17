@@ -33,6 +33,8 @@ const SLASH_COMMAND_KEYS = [
   "trigger",
   "help",
   "pairing",
+  "task_profile",
+  "plugins",
 ];
 const SETTINGS_NAV_KEYS = [
   "overview",

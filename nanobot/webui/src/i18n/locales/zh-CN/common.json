@@ -1207,6 +1207,14 @@
             "title": "模型",
             "description": "查看或切换当前模型预设。"
           },
+          "task_profile": {
+            "title": "选择任务模式",
+            "description": "选择修复问题、分析项目或交付功能的工作方式。"
+          },
+          "plugins": {
+            "title": "管理临时工具",
+            "description": "查看和管理当前对话可用的临时工具。"
+          },
           "history": {
             "title": "查看对话历史",
             "description": "打印最近 N 条已持久化的对话消息。"
@@ -1403,7 +1411,7 @@
     },
     "workspaceScopeRejected": {
       "title": "工作区未更改",
-      "body": "网关拒绝了请求的项目或访问权限，Nanobot 已继续使用之前的工作区。"
+      "body": "当前项目或访问权限没有通过检查，已继续使用之前的工作区。请从“选择项目”中重新选择一个允许访问的目录。"
     },
     "turnRejected": {
       "title": "消息未发送",

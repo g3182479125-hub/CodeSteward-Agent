@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "配對",
             "description": "管理配對請求。"
+          },
+          "task_profile": {
+            "title": "選擇任務模式",
+            "description": "選擇修復問題、分析專案或交付功能的工作方式。"
+          },
+          "plugins": {
+            "title": "管理暫時工具",
+            "description": "檢視和管理目前對話可用的暫時工具。"
           }
         },
         "badges": {

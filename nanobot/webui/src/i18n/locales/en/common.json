@@ -1208,6 +1208,14 @@
             "title": "Model",
             "description": "Show or switch the active model preset."
           },
+          "task_profile": {
+            "title": "Choose task mode",
+            "description": "Choose a workflow for fixing bugs, analyzing a project, or delivering a feature."
+          },
+          "plugins": {
+            "title": "Manage temporary tools",
+            "description": "View and manage temporary tools available in this chat."
+          },
           "history": {
             "title": "Show conversation history",
             "description": "Print the last N persisted conversation messages."

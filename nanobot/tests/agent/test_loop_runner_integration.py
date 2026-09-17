@@ -142,7 +142,7 @@ async def test_new_inbound_turn_does_not_restore_diagnostic_guard_state(tmp_path
 
     assert stop_reason == "tool_error"
     assert final_content is not None
-    assert "bounded diagnostic-branch budget was exhausted" in final_content
+    assert "我已经尝试了几种处理方向" in final_content
 
 
 @pytest.mark.asyncio

@@ -238,7 +238,8 @@ async def test_task_profile_command_is_session_scoped(tmp_path) -> None:
     )
     other = loop.sessions.get_or_create("cli:other")
 
-    assert "feature-delivery" in out.content
+    assert "已进入“交付功能”模式" in out.content
+    assert "Visible tools" not in out.content
     assert loop.sessions.get_or_create("cli:direct").policy.task_profile == "feature-delivery"
     assert other.policy.task_profile is None
 
@@ -252,7 +253,7 @@ async def test_task_profile_command_rejects_internal_permission_change(tmp_path)
         CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content, args="off", loop=loop)
     )
 
-    assert "Only a direct user message" in out.content
+    assert "只有你直接发送的消息才能切换任务模式" in out.content
 
 
 @pytest.mark.asyncio

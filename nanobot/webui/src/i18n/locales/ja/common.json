@@ -1219,6 +1219,14 @@
           "pairing": {
             "title": "ペアリング",
             "description": "ペアリングリクエストを管理します。"
+          },
+          "task_profile": {
+            "title": "タスクモードを選択",
+            "description": "問題修正、プロジェクト分析、機能提供の進め方を選択します。"
+          },
+          "plugins": {
+            "title": "一時ツールを管理",
+            "description": "この会話で利用できる一時ツールを確認・管理します。"
           }
         },
         "badges": {
