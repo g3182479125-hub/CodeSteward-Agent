@@ -41,8 +41,10 @@ import runpy
 import sys
 
 sys.path.insert(0, str(Path.cwd()))
-for test_file in sorted(Path("tests").rglob("*.py")):
-    if test_file.name == "__init__.py":
+for test_file in sorted(Path(".").rglob("*.py")):
+    if not (
+        test_file.name.startswith("test_") or test_file.name.endswith("_test.py")
+    ):
         continue
     namespace = runpy.run_path(str(test_file))
     for name, value in sorted(namespace.items()):
@@ -172,7 +174,7 @@ class ProjectTestRunner:
             self.store.finish_run(run_id, "failed", {"code": "TEST_RECEIPT_INCOMPLETE"})
             return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
         self._record_receipt(run_id, receipt, command)
-        if fallback_used and "unsupported pytest fixture:" in receipt.stderr.casefold():
+        if fallback_used and self._fallback_failure_is_unsupported(receipt):
             self.store.append_event(
                 run_id,
                 "test.execution.incomplete",
@@ -222,6 +224,16 @@ class ProjectTestRunner:
     @staticmethod
     def _pytest_is_missing(receipt: ExecutionResult) -> bool:
         return receipt.exit_code != 0 and "no module named pytest" in receipt.stderr.casefold()
+
+    @staticmethod
+    def _fallback_failure_is_unsupported(receipt: ExecutionResult) -> bool:
+        stderr = receipt.stderr.casefold()
+        return (
+            "unsupported pytest fixture:" in stderr
+            or "no module named pytest" in stderr
+            or "no module named 'pytest'" in stderr
+            or ("modulenotfounderror" in stderr and "pytest" in stderr)
+        )
 
     @staticmethod
     def _target_hashes(

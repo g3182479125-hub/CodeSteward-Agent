@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -215,9 +217,45 @@ def test_missing_pytest_does_not_turn_unsupported_fixture_into_failure_evidence(
         item for item in fallback.files if item.relative_path == ".devpilot/plain_test_runner.py"
     )
     assert b'rglob("*.py")' in runner.content
+    assert b'test_file.name.startswith("test_")' in runner.content
+    assert b'test_file.name.endswith("_test.py")' in runner.content
+    plain_project = tmp_path / "plain-project"
+    plain_tests = plain_project / "tests"
+    plain_tests.mkdir(parents=True)
+    (plain_tests / "conftest.py").write_text(
+        "raise RuntimeError('conftest must not run')\n", encoding="utf-8"
+    )
+    (plain_project / "test_root.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    runner_path = plain_project / "plain_test_runner.py"
+    runner_path.write_bytes(runner.content)
+    plain_result = subprocess.run(
+        [sys.executable, str(runner_path)],
+        cwd=plain_project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert plain_result.returncode == 0, plain_result.stderr
     state = store.get_run_state(result.run_id)
     assert "test.execution.incomplete" in [event["event_type"] for event in state["events"]]
     assert "test_check.failed" not in [event["event_type"] for event in state["events"]]
+    assert ProjectTestRunner._fallback_failure_is_unsupported(  # pyright: ignore[reportPrivateUsage]
+        ExecutionResult(
+            backend="test-backend",
+            sandbox_id="sandbox-plain",
+            exit_code=1,
+            stdout="",
+            stderr="ModuleNotFoundError: No module named 'pytest'",
+            duration_ms=1,
+            command_profile="project-pytest",
+            bundle_bytes=1,
+            output_truncated=False,
+            side_effect_count=0,
+            permission_violation=False,
+        )
+    )
 
 
 def test_project_test_api_requires_explicit_project_trust(tmp_path: Path) -> None:
