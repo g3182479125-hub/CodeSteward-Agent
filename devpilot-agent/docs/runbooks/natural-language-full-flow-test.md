@@ -70,6 +70,27 @@ $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
 $dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
 $allowedRoots = "$workspacePath;$repoRoot"
 $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable('DEVPILOT_CONTROL_PLANE_TOKEN', 'User')
+$controlPlaneHealthy = $false
+try {
+  Invoke-RestMethod -Uri 'http://127.0.0.1:18800/healthz' -TimeoutSec 2 | Out-Null
+  $controlPlaneHealthy = $true
+} catch {
+  $controlPlaneHealthy = $false
+}
+if ($controlPlaneHealthy -and -not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+  throw '已有控制面正在运行，但本机没有它的共享 token；请先设置 DEVPILOT_CONTROL_PLANE_TOKEN。'
+}
+if (-not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+  $tokenBytes = New-Object byte[] 32
+  $randomNumberGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $randomNumberGenerator.GetBytes($tokenBytes)
+  } finally {
+    $randomNumberGenerator.Dispose()
+  }
+  $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Convert]::ToBase64String($tokenBytes)
+  [Environment]::SetEnvironmentVariable('DEVPILOT_CONTROL_PLANE_TOKEN', $env:DEVPILOT_CONTROL_PLANE_TOKEN, 'User')
+}
 $env:DEVPILOT_FC_ALLOWED_PROJECTS = $project
 $env:DEVPILOT_FC_INSTALL_PYTEST = '1'
 $env:DEVPILOT_FC_NETWORK_POLICY_MODE = 'provider-default'
