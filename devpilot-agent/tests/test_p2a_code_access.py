@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 
 from devpilot import nanobot_tools
 from devpilot.code_access import CodeAccessError, CodeAccessService
@@ -136,6 +137,43 @@ def test_nanobot_search_and_read_tools_use_registered_project(
     assert isinstance(denied, ToolResult)
     assert denied.is_error is True
     assert "PATH_DENIED" in str(denied)
+
+
+def test_code_tools_reuse_current_turn_repo_analysis_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal natural-language turn need not restate the inspect run ID."""
+
+    project = tmp_path / "project"
+    project.mkdir()
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DEVPILOT_ALLOWED_ROOTS", str(tmp_path))
+    captured: list[str | None] = []
+
+    class Access:
+        def read(self, _project_id: str, _path: str, **kwargs: object) -> SimpleNamespace:
+            captured.append(kwargs.get("evidence_run_id"))
+            return SimpleNamespace(to_dict=lambda: {"path": "main.py", "sha256": "a" * 64})
+
+    monkeypatch.setattr(nanobot_tools, "_code_access_service", lambda _workspace: Access())
+    context = RequestContext(
+        channel="websocket",
+        chat_id="chat",
+        attributes={
+            "devpilot_repo_analysis": {"project_id": "project-1", "run_id": "analysis-1"}
+        },
+    )
+    token = bind_request_context(context)
+    try:
+        result = asyncio.run(
+            ReadCodeTool(tmp_path).execute(project_id="project-1", path="main.py")
+        )
+    finally:
+        reset_request_context(token)
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert captured == ["analysis-1"]
 
 
 def test_inspect_tool_does_not_block_the_agent_event_loop(

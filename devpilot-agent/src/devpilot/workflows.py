@@ -166,6 +166,9 @@ class BugFixProposal:
             "change_set_id": self.change_set_id,
             "project_id": self.project_id,
             "run_id": self.run_id,
+            # The confirmation tuple binds plan_hash to the immutable patch
+            # hash for this workflow, just as the preview contract does.
+            "plan_hash": self.patch_hash,
             "patch_hash": self.patch_hash,
             "scope_hash": self.scope_hash,
             "verification_profile": self.verification_profile.value,

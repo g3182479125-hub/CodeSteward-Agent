@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from collections.abc import Callable, Mapping
@@ -14,6 +15,7 @@ from typing import Any, cast
 from .redaction import redact_execution_output, redact_sensitive_text
 
 MAX_CONFIRMATION_TTL = timedelta(minutes=5)
+_broker_logger = logging.getLogger(__name__)
 _ACTIONS = frozenset({"apply", "verify", "rollback", "apply_verify"})
 _CAPABILITIES = {
     "apply": "r1.apply",
@@ -311,10 +313,14 @@ class ActionBroker:
 
     def execute(self, request: BrokerActionRequest) -> BrokerActionResult:
         reserved = False
+        stage = "start"
         try:
+            stage = "request.validate"
             request.validate()
+            stage = "context.validate_time"
             now = self._clock().astimezone(UTC)
             request.context.validate_time(now)
+            stage = "canonical.signature"
             capability = _CAPABILITIES[request.action]
             canonical = canonical_confirmation_string(
                 request.context,
@@ -337,20 +343,24 @@ class ActionBroker:
             )
             if not valid:
                 raise BrokerError("APPROVAL_BROKER_UNAVAILABLE")
+            stage = "snapshot"
             self._check_snapshot(request)
             candidate_key = f"broker-{secrets.token_urlsafe(32)}"
+            stage = "confirmation.consume"
             reservation = self._consume_confirmation(request, candidate_key)
             if reservation.terminal_result is not None:
                 return self._result_from_replay(request, reservation.terminal_result)
             reserved = True
             idempotency_key = reservation.idempotency_key
             request = replace(request, idempotency_key=idempotency_key)
+            stage = "executor"
             result = (
                 self._execute_apply_verify(request)
                 if request.action == "apply_verify"
                 else self._execute_one(request, request.action, idempotency_key)
             )
             if self._confirmation_finisher is not None:
+                stage = "confirmation.finish"
                 if not self._finish_confirmation(request, result.status, result.to_dict()):
                     return BrokerActionResult(
                         status="indeterminate",
@@ -360,6 +370,12 @@ class ActionBroker:
                     )
             return result
         except BrokerError as exc:
+            _broker_logger.warning(
+                "DevPilot broker rejection: stage=%s action=%s code=%s",
+                stage,
+                request.action,
+                exc.code,
+            )
             if reserved and self._confirmation_finisher is not None:
                 self._finish_confirmation(
                     request, "rejected", self._rejection_payload(request, exc.code)
@@ -371,6 +387,11 @@ class ActionBroker:
                 error_code=exc.code,
             )
         except Exception:
+            _broker_logger.warning(
+                "DevPilot broker exception: stage=%s action=%s",
+                stage,
+                request.action,
+            )
             if reserved and self._confirmation_finisher is not None:
                 self._finish_confirmation(
                     request,

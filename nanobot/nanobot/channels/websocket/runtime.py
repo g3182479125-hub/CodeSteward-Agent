@@ -524,7 +524,12 @@ class WebSocketChannel(BaseChannel):
         self, chat_id: str, metadata: Mapping[str, Any]
     ) -> None:
         """Consume internal metadata from a streamed completion without sending it."""
-        self._register_devpilot_proposal(chat_id, metadata.get("_devpilot_proposal"))
+        registered = self._register_devpilot_proposal(chat_id, metadata.get("_devpilot_proposal"))
+        self.logger.info(
+            "DevPilot proposal registration: chat_id={} source=outbound registered={}",
+            chat_id,
+            registered,
+        )
 
     def _resolve_devpilot_tuple(
         self, chat_id: str, confirmation: object
@@ -1721,6 +1726,19 @@ class WebSocketChannel(BaseChannel):
         """Signal that the agent has fully finished processing the current turn."""
         conns = list(self._subs.get(chat_id, ()))
         body: dict[str, Any] = {"event": "turn_end", "chat_id": chat_id}
+        private_proposal = (metadata or {}).get("_devpilot_proposal")
+        if private_proposal is not None:
+            registered = self._register_devpilot_proposal(chat_id, private_proposal)
+            self.logger.info(
+                "DevPilot proposal registration: chat_id={} source=turn_end registered={}",
+                chat_id,
+                registered,
+            )
+        safe_metadata = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key != "_devpilot_proposal"
+        }
         if latency_ms is not None:
             body["latency_ms"] = int(latency_ms)
         if goal_state is not None:
@@ -1733,7 +1751,7 @@ class WebSocketChannel(BaseChannel):
         persisted = self._persist_turn_transcript_event(
             chat_id,
             body,
-            metadata=metadata,
+            metadata=safe_metadata,
             phase="complete",
             transcript_overrides=(
                 {WEBUI_TRANSCRIPT_INCOMPLETE_KEY: True}

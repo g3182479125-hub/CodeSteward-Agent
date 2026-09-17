@@ -229,7 +229,17 @@ class TurnDelivery:
     ) -> None:
         completed_channel = self.lifecycle_message.channel
         completed_chat_id = self.lifecycle_message.chat_id
+        # Keep the private proposal reference on the lifecycle message as well
+        # as the response.  WebUI confirmations are registered from the final
+        # lifecycle event, and this closes the gap when a provider emits a
+        # streamed-response sentinel instead of a regular message.
+        proposal = (self.route.metadata or {}).get("_devpilot_proposal")
+        if isinstance(proposal, dict):
+            self.lifecycle_message.metadata["_devpilot_proposal"] = dict(proposal)
         if response is not None:
+            response_proposal = (response.metadata or {}).get("_devpilot_proposal")
+            if isinstance(response_proposal, dict):
+                self.lifecycle_message.metadata["_devpilot_proposal"] = dict(response_proposal)
             await self.bus.publish_outbound(response)
             completed_channel = response.channel
             completed_chat_id = response.chat_id

@@ -162,6 +162,11 @@ class AgentRunResult:
     stop_reason: str = "completed"
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
+    # Keep the server-owned tool outputs available to the host turn finalizer.
+    # This is intentionally not persisted or exposed to the model; it lets
+    # host integrations bind private delivery metadata without reparsing a
+    # provider-shaped transcript.
+    tool_outputs: list[tuple[str, Any]] = field(default_factory=list, repr=False)
     had_injections: bool = False
     # Terminal tail to emit when the preceding final-content prefix was already streamed.
     pending_stream_content: str | None = None
@@ -462,6 +467,7 @@ class AgentRunner:
         error: str | None = None
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
+        tool_outputs: list[tuple[str, Any]] = []
         external_lookup_counts: dict[str, int] = {}
         # Per-turn throttle for repeated attempts against the same outside target.
         workspace_violation_counts: dict[str, int] = {}
@@ -691,6 +697,10 @@ class AgentRunner:
                     workspace_violation_counts,
                     hook,
                     context,
+                )
+                tool_outputs.extend(
+                    (tool_call.name, result)
+                    for tool_call, result in zip(response.tool_calls, results)
                 )
                 tool_events.extend(new_events)
                 tools_used.extend(
@@ -1015,6 +1025,7 @@ class AgentRunner:
             stop_reason=stop_reason,
             error=error,
             tool_events=tool_events,
+            tool_outputs=tool_outputs,
             had_injections=had_injections,
             pending_stream_content=pending_stream_content,
             provider_state=conversation_state.finish(messages),

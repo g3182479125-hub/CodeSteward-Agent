@@ -809,6 +809,14 @@ class ChannelManager:
     async def _send_once(channel: BaseChannel, msg: OutboundMessage) -> None:
         """Send one outbound message without retry policy."""
         event = outbound_event_from_message(msg)
+        # Proposal delivery must not depend on whether a provider happened to
+        # expose this particular response as a streamed completion.  The
+        # metadata is private to the gateway and is consumed before ordinary
+        # response rendering; the websocket implementation never forwards it
+        # to the browser.
+        register = getattr(channel, "register_private_outbound_metadata", None)
+        if callable(register) and "_devpilot_proposal" in (msg.metadata or {}):
+            register(msg.chat_id, msg.metadata)
         if isinstance(event, ProgressEvent) and event.reasoning_end:
             await ChannelManager._send_reasoning_end(channel, msg, event)
         elif isinstance(event, ProgressEvent) and event.reasoning_delta:
@@ -828,9 +836,7 @@ class ChannelManager:
         elif isinstance(event, StreamEndEvent):
             await ChannelManager._send_stream_event(channel, msg, event)
         elif isinstance(event, StreamedResponseEvent):
-            register = getattr(channel, "register_private_outbound_metadata", None)
-            if callable(register):
-                register(msg.chat_id, msg.metadata)
+            return
         else:
             await channel.send(msg)
 

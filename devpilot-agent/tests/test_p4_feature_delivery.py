@@ -553,6 +553,40 @@ def test_feature_delivery_nanobot_adapter_binds_proposal_to_request_context(
     }
 
 
+def test_feature_delivery_nanobot_adapter_keeps_chat_keyed_transport_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devpilot import nanobot_tools
+
+    proposal = {
+        "change_set_id": "cs-chat",
+        "plan_hash": "plan-chat",
+        "patch_hash": "patch-chat",
+        "scope_hash": "scope-chat",
+        "project_id": "project-chat",
+    }
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_feature_proposal",
+        lambda _payload: dict(proposal),
+    )
+    request_context = SimpleNamespace(attributes={}, chat_id="chat-transport")
+    tool = FeatureDeliveryProposeTool()
+    tool.set_context(request_context)
+
+    result = asyncio.run(
+        tool.execute(
+            project_path="E:/project",
+            patches=[{"relative_path": "app.py", "operation": "create", "content": "ok\n"}],
+            evidence_ids=["run-chat"],
+        )
+    )
+
+    assert not isinstance(result, ToolResult) or not result.is_error
+    assert nanobot_tools.take_current_turn_proposal("chat-transport") == proposal
+    assert nanobot_tools.take_current_turn_proposal("chat-transport") is None
+
+
 def test_feature_delivery_nanobot_adapter_maps_http_error_without_body_leak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

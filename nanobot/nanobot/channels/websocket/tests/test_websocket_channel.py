@@ -2017,6 +2017,63 @@ async def test_send_turn_end_emits_turn_end_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_turn_end_registers_and_hides_private_devpilot_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = _ch(MessageBus())
+    proposal = {"change_set_id": "cs-1", "project_id": "project-1"}
+    registered: list[tuple[str, dict[str, str]]] = []
+    persisted: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        channel,
+        "_register_devpilot_proposal",
+        lambda chat_id, value: registered.append((chat_id, value)),
+    )
+    monkeypatch.setattr(
+        channel,
+        "_persist_turn_transcript_event",
+        lambda _chat_id, _body, **kwargs: persisted.update(kwargs) or True,
+    )
+
+    await channel.send_turn_end(
+        "chat-1",
+        metadata={"webui": True, "_devpilot_proposal": proposal},
+    )
+
+    assert registered == [("chat-1", proposal)]
+    assert persisted["metadata"] == {"webui": True}
+
+
+@pytest.mark.asyncio
+async def test_regular_response_registers_private_devpilot_proposal() -> None:
+    """Non-streamed providers must still make a later plain confirmation valid."""
+    from nanobot.channels.manager import ChannelManager
+
+    channel = _ch(MessageBus())
+    proposal = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+    assert channel._devpilot_pending_proposals == {}
+
+    await ChannelManager._send_once(
+        channel,
+        OutboundMessage(
+            channel="websocket",
+            chat_id="chat-1",
+            content="proposal ready",
+            metadata={"_devpilot_proposal": proposal},
+        ),
+    )
+
+    assert channel._devpilot_pending_proposals["chat-1"] == proposal
+
+
+@pytest.mark.asyncio
 async def test_system_command_turn_end_only_refreshes_session_metadata() -> None:
     bus = MagicMock()
     channel = WebSocketChannel(

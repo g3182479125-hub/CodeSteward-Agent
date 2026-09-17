@@ -68,13 +68,61 @@ def test_nanobot_confirmation_does_not_reuse_stale_inbound_envelope() -> None:
         bind_request_context,
         reset_request_context,
     )
+    from nanobot.bus.events import set_current_inbound_attributes
 
     from devpilot.nanobot_tools import _trusted_confirmation_attributes
+
+    set_current_inbound_attributes({})
     token = bind_request_context(RequestContext(channel="websocket", chat_id="chat", attributes={}))
     try:
         assert _trusted_confirmation_attributes() is None
     finally:
         reset_request_context(token)
+
+
+def test_nanobot_confirmation_falls_back_to_inbound_bus_snapshot() -> None:
+    from nanobot.agent.tools.context import (
+        RequestContext,
+        bind_request_context,
+        reset_request_context,
+    )
+    from nanobot.bus.events import set_current_inbound_attributes
+
+    from devpilot.nanobot_tools import _trusted_confirmation_attributes
+
+    set_current_inbound_attributes(
+        {"devpilot_confirmation": {"action": "apply_verify", "confirmation_id": "bus"}}
+    )
+    token = bind_request_context(RequestContext(channel="websocket", chat_id="chat", attributes={}))
+    try:
+        assert _trusted_confirmation_attributes() == {
+            "action": "apply_verify",
+            "confirmation_id": "bus",
+        }
+    finally:
+        reset_request_context(token)
+
+
+def test_confirmed_action_tool_falls_back_to_registry_request_context() -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    from devpilot.nanobot_tools import ConfirmedActionTool
+
+    context = RequestContext(
+        channel="websocket",
+        chat_id="chat",
+        attributes={"devpilot_confirmation": {"action": "apply_verify"}},
+    )
+    tool = ConfirmedActionTool()
+    tool.set_context(context)
+
+    # The tool registry carries the authoritative context even when a child
+    # task does not inherit the ContextVar snapshot.
+    from devpilot.nanobot_tools import _trusted_confirmation_attributes
+
+    assert _trusted_confirmation_attributes(tool._request_context) == {
+        "action": "apply_verify"
+    }
 
 
 def test_confirmed_action_tool_applies_and_verifies_real_file_after_websocket_confirmation(

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -22,6 +23,7 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -31,6 +33,9 @@ _CURRENT_TURN_PROPOSAL: ContextVar[dict[str, str] | None] = ContextVar(
     "devpilot_current_turn_proposal",
     default=None,
 )
+_TURN_PROPOSALS: dict[str, dict[str, str]] = {}
+_TURN_PROPOSALS_LOCK = Lock()
+_transport_logger = logging.getLogger(__name__)
 
 try:
     from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
@@ -171,13 +176,33 @@ def _broker_terminal_status(status: str) -> str:
     return "completed" if status in _BROKER_SUCCESS_STATUSES else status
 
 
-def _trusted_confirmation_attributes() -> dict[str, Any] | None:
+def _trusted_confirmation_attributes(request_context: Any | None = None) -> dict[str, Any] | None:
     """Read the WebUI-only confirmation envelope; it is never model input."""
     try:
         from nanobot.agent.tools.context import current_request_context
 
         context = current_request_context()
         value = context.attributes.get("devpilot_confirmation") if context is not None else None
+        if isinstance(value, dict):
+            return value
+    except (ImportError, TypeError, ValueError):
+        pass
+    # Tool calls can run in a child task whose ContextVar snapshot was created
+    # before the runner bound the current turn.  The registry already injects
+    # the same authoritative RequestContext into ContextAware tools; use that
+    # object only as a trusted transport fallback, never from model arguments.
+    value = getattr(request_context, "attributes", {}).get("devpilot_confirmation")
+    if isinstance(value, dict):
+        return value
+    # The inbound message bus keeps the gateway-supplied attributes in its own
+    # task-local ContextVar before dispatching the turn.  A tool call may run
+    # in a child asyncio task whose request-context object was created before
+    # that dispatch boundary; recover the same trusted envelope from the bus
+    # snapshot as the final trusted transport fallback.
+    try:
+        from nanobot.bus.events import current_inbound_attributes
+
+        value = current_inbound_attributes().get("devpilot_confirmation")
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None
@@ -194,26 +219,57 @@ def _record_current_turn_proposal(
         for key in ("change_set_id", "plan_hash", "patch_hash", "scope_hash", "project_id")
     }
     if not all(isinstance(value, str) and value for value in values.values()):
+        _transport_logger.info(
+            "DevPilot proposal capture: valid=False context=%s values=%s",
+            type(request_context).__name__ if request_context is not None else None,
+            sorted(key for key, value in values.items() if isinstance(value, str) and value),
+        )
         return
     proposal = cast(dict[str, str], values)
-    if request_context is not None:
+    context = request_context
+    if context is None:
         try:
-            request_context.attributes["devpilot_proposal"] = dict(proposal)
+            from nanobot.agent.tools.context import current_request_context
+
+            context = current_request_context()
+        except (ImportError, TypeError, ValueError):
+            context = None
+    if context is not None:
+        try:
+            context.attributes["devpilot_proposal"] = dict(proposal)
+            chat_id = getattr(context, "chat_id", None)
+            if isinstance(chat_id, str) and chat_id:
+                with _TURN_PROPOSALS_LOCK:
+                    _TURN_PROPOSALS[chat_id] = dict(proposal)
+                _transport_logger.info(
+                    "DevPilot proposal capture: chat_id=%s stored=True",
+                    chat_id,
+                )
         except (AttributeError, TypeError, ValueError):
             pass
     _CURRENT_TURN_PROPOSAL.set(dict(proposal))
     try:
         from nanobot.agent.tools.context import current_request_context
 
-        context = current_request_context()
-        if context is not None:
-            context.attributes["devpilot_proposal"] = dict(proposal)
+        current = current_request_context()
+        if current is not None:
+            current.attributes["devpilot_proposal"] = dict(proposal)
     except (ImportError, TypeError, ValueError):
         return
 
 
-def take_current_turn_proposal() -> dict[str, str] | None:
+def take_current_turn_proposal(chat_id: str | None = None) -> dict[str, str] | None:
     """Consume the proposal created in this task when the request context was replaced."""
+    if isinstance(chat_id, str) and chat_id:
+        with _TURN_PROPOSALS_LOCK:
+            proposal = _TURN_PROPOSALS.pop(chat_id, None)
+        _transport_logger.info(
+            "DevPilot proposal consume: chat_id=%s found=%s",
+            chat_id,
+            proposal is not None,
+        )
+        if proposal is not None:
+            return dict(proposal)
     proposal = _CURRENT_TURN_PROPOSAL.get()
     _CURRENT_TURN_PROPOSAL.set(None)
     return dict(proposal) if proposal is not None else None
@@ -429,6 +485,21 @@ class InspectProjectTool(Tool):
             # them off nanobot's single event loop so a slow filesystem or
             # database lock cannot freeze WebUI health and unrelated chats.
             outcome = await asyncio.to_thread(_service(self.workspace).inspect, project_path)
+            try:
+                from nanobot.agent.tools.context import current_request_context
+
+                request_context = current_request_context()
+                if request_context is not None:
+                    # A repo-analysis run remains open while bounded search/read
+                    # facts are collected.  Remember the server-issued ID for
+                    # the current turn so a weaker model need not reproduce it
+                    # exactly in every following tool argument.
+                    request_context.attributes["devpilot_repo_analysis"] = {
+                        "project_id": outcome.project_id,
+                        "run_id": outcome.run_id,
+                    }
+            except ImportError:
+                pass
             payload = {
                 "project_id": outcome.project_id,
                 "run_id": outcome.run_id,
@@ -580,17 +651,32 @@ class SearchCodeTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            evidence_run_id = kwargs.get("evidence_run_id")
+            if evidence_run_id is None:
+                try:
+                    from nanobot.agent.tools.context import current_request_context
+
+                    request_context = current_request_context()
+                    analysis = (
+                        request_context.attributes.get("devpilot_repo_analysis")
+                        if request_context is not None
+                        else None
+                    )
+                    if (
+                        isinstance(analysis, Mapping)
+                        and analysis.get("project_id") == str(kwargs["project_id"])
+                        and isinstance(analysis.get("run_id"), str)
+                    ):
+                        evidence_run_id = analysis["run_id"]
+                except ImportError:
+                    pass
             result = _code_access_service(self.workspace).search(
                 str(kwargs["project_id"]),
                 str(kwargs["query"]),
                 glob=str(kwargs["glob"]) if kwargs.get("glob") is not None else None,
                 limit=int(kwargs.get("limit", 50)),
                 case_sensitive=bool(kwargs.get("case_sensitive", False)),
-                evidence_run_id=(
-                    str(kwargs["evidence_run_id"])
-                    if kwargs.get("evidence_run_id") is not None
-                    else None
-                ),
+                evidence_run_id=str(evidence_run_id) if evidence_run_id is not None else None,
             )
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
         except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
@@ -651,16 +737,31 @@ class ReadCodeTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            evidence_run_id = kwargs.get("evidence_run_id")
+            if evidence_run_id is None:
+                try:
+                    from nanobot.agent.tools.context import current_request_context
+
+                    request_context = current_request_context()
+                    analysis = (
+                        request_context.attributes.get("devpilot_repo_analysis")
+                        if request_context is not None
+                        else None
+                    )
+                    if (
+                        isinstance(analysis, Mapping)
+                        and analysis.get("project_id") == str(kwargs["project_id"])
+                        and isinstance(analysis.get("run_id"), str)
+                    ):
+                        evidence_run_id = analysis["run_id"]
+                except ImportError:
+                    pass
             result = _code_access_service(self.workspace).read(
                 str(kwargs["project_id"]),
                 str(kwargs["path"]),
                 start_line=int(kwargs.get("start_line", 1)),
                 end_line=(int(kwargs["end_line"]) if kwargs.get("end_line") is not None else None),
-                evidence_run_id=(
-                    str(kwargs["evidence_run_id"])
-                    if kwargs.get("evidence_run_id") is not None
-                    else None
-                ),
+                evidence_run_id=str(evidence_run_id) if evidence_run_id is not None else None,
             )
             return json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True)
         except (KeyError, TypeError, ValueError, OSError, CodeAccessError) as exc:
@@ -1256,6 +1357,13 @@ class ConfirmedActionTool(Tool):
 
     _scopes = {"core"}
 
+    def __init__(self) -> None:
+        self._request_context: Any | None = None
+
+    def set_context(self, context: Any) -> None:
+        """Keep the authoritative request context for child-task execution."""
+        self._request_context = context
+
     @property
     def name(self) -> str:
         return "devpilot_confirmed_action"
@@ -1278,8 +1386,19 @@ class ConfirmedActionTool(Tool):
         return True
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
-        attributes = _trusted_confirmation_attributes()
+        attributes = _trusted_confirmation_attributes(self._request_context)
+        _transport_logger.warning(
+            "DevPilot confirmation entry: has_attributes=%s action=%s attr_keys=%s",
+            attributes is not None,
+            kwargs.get("action"),
+            sorted(attributes) if isinstance(attributes, dict) else [],
+        )
         if attributes is None or attributes.get("action") != kwargs.get("action"):
+            _transport_logger.warning(
+                "DevPilot confirmation rejected at entry: expected_action=%s actual_action=%s",
+                kwargs.get("action"),
+                attributes.get("action") if isinstance(attributes, dict) else None,
+            )
             return ToolResult.error("P5 action rejected: APPROVAL_BROKER_UNAVAILABLE")
         try:
             verifier = cast(Callable[[str, str], bool], attributes.get("verifier"))

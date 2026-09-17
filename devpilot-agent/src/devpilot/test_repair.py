@@ -73,6 +73,9 @@ class TestRepairProposal:
             "root_change_set_id": self.root_change_set_id,
             "attempt": self.attempt,
             "max_attempts": self.max_attempts,
+            # The confirmation tuple binds plan_hash to the immutable patch
+            # hash for this workflow, just as the preview contract does.
+            "plan_hash": self.patch_hash,
             "patch_hash": self.patch_hash,
             "scope_hash": self.scope_hash,
             "verification_profile": self.verification_profile.value,

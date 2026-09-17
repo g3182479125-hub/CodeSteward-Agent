@@ -212,6 +212,47 @@ async def test_prepare_outbound_forwards_proposal_only_as_internal_metadata() ->
 
 
 @pytest.mark.asyncio
+async def test_prepare_outbound_carries_proposal_to_turn_completion_metadata() -> None:
+    loop = object.__new__(AgentLoop)
+    loop._assemble_outbound = lambda *_args, **_kwargs: SimpleNamespace(metadata={})
+    proposal = {
+        "change_set_id": "cs-completion",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-completion",
+    }
+    route = SimpleNamespace(metadata={})
+    lifecycle_message = SimpleNamespace(metadata={})
+    ctx = SimpleNamespace(
+        suppress_response=False,
+        kind=TurnKind.USER,
+        msg=SimpleNamespace(),
+        final_content="done",
+        stop_reason="stop",
+        had_injections=False,
+        streamed_content=False,
+        turn_latency_ms=None,
+        require_session=lambda: SimpleNamespace(
+            policy=SimpleNamespace(log_content=True)
+        ),
+        request_context=RequestContext(
+            channel="websocket",
+            chat_id="chat",
+            attributes={"devpilot_proposal": proposal},
+        ),
+        delivery=SimpleNamespace(route=route, lifecycle_message=lifecycle_message),
+        ephemeral=False,
+    )
+
+    await loop._prepare_outbound(ctx)
+
+    assert ctx.outbound.metadata == {"_devpilot_proposal": proposal}
+    assert route.metadata == {"_devpilot_proposal": proposal}
+    assert lifecycle_message.metadata == {"_devpilot_proposal": proposal}
+
+
+@pytest.mark.asyncio
 async def test_prepare_outbound_uses_turn_scoped_proposal_when_context_was_replaced() -> None:
     from devpilot.nanobot_tools import _record_current_turn_proposal
 

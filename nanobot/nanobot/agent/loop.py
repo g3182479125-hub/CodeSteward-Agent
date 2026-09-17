@@ -508,6 +508,10 @@ class AgentLoop:
         # When a session has an active task, new messages for that session
         # are routed here instead of creating a new task.
         self._pending_queues: dict[str, asyncio.Queue[InboundMessage]] = {}
+        # Server-owned proposal handoff for the current turn.  The tool runner
+        # and WebSocket finalizer may use different request-context chat ids,
+        # so keep the exact proposal keyed by the visible inbound chat id.
+        self._devpilot_turn_proposals: dict[str, dict[str, str]] = {}
         self._deferred_automation_turns: dict[str, list[InboundMessage]] = {}
         self._cron_turns = CronTurnCoordinator(
             publish_inbound=self.bus.publish_inbound,
@@ -1730,6 +1734,7 @@ class AgentLoop:
         tools: ToolRegistry | None = None,
         request_context: RequestContext | None = None,
         provider_state: ProviderConversationState | None = None,
+        transport_chat_id: str | None = None,
     ) -> tuple[str | None, list[str], list[dict[str, Any]], str, bool]:
         """Run the agent iteration loop.
 
@@ -2306,6 +2311,80 @@ class AgentLoop:
             reset_workspace_scope(workspace_token)
             reset_request_context(request_token)
             reset_file_states(file_state_token)
+        # Bind the proposal from the actual server-owned tool return before
+        # any provider/transcript normalization can wrap or omit it.  The
+        # exact tuple is accepted only from the two proposal tools and is kept
+        # in request attributes for the private WebSocket delivery seam.
+        for tool_name, tool_output in result.tool_outputs:
+            if tool_name not in {
+                "devpilot_bug_fix_propose",
+                "devpilot_test_repair_propose",
+            }:
+                continue
+            decoded: Any = tool_output
+            for _ in range(3):
+                if isinstance(decoded, str):
+                    try:
+                        decoded = json.loads(decoded)
+                    except (TypeError, ValueError):
+                        break
+                if not isinstance(decoded, dict):
+                    break
+                candidate = {
+                    key: decoded.get(key)
+                    for key in (
+                        "change_set_id",
+                        "plan_hash",
+                        "patch_hash",
+                        "scope_hash",
+                        "project_id",
+                    )
+                }
+                logger.info(
+                    "DevPilot proposal candidate: tool={} keys={} values={}",
+                    tool_name,
+                    sorted(candidate),
+                    {key: (value[:16] + "..." if isinstance(value, str) and len(value) > 16 else value) for key, value in candidate.items()},
+                )
+                if all(isinstance(value, str) and value for value in candidate.values()):
+                    request_ctx.attributes["devpilot_proposal"] = candidate
+                    if transport_chat_id:
+                        self._devpilot_turn_proposals[transport_chat_id] = dict(candidate)
+                    break
+                nested = decoded.get("content")
+                if not isinstance(nested, (str, dict)):
+                    break
+                decoded = nested
+            if request_ctx.attributes.get("devpilot_proposal"):
+                break
+        if transport_chat_id:
+            proposal_from_context = request_ctx.attributes.get("devpilot_proposal")
+            if isinstance(proposal_from_context, dict):
+                self._devpilot_turn_proposals[transport_chat_id] = dict(proposal_from_context)
+        logger.info(
+            "DevPilot proposal handoff: transport_chat_id={} keys={}",
+            transport_chat_id,
+            sorted(self._devpilot_turn_proposals.get(transport_chat_id, {})),
+        )
+        output_summaries = []
+        for _, output in result.tool_outputs:
+            summary = {"type": type(output).__name__, "keys": None, "text_keys": None}
+            if isinstance(output, dict):
+                summary["keys"] = sorted(output)
+            elif isinstance(output, str):
+                try:
+                    decoded_output = json.loads(output)
+                except (TypeError, ValueError):
+                    decoded_output = None
+                if isinstance(decoded_output, dict):
+                    summary["text_keys"] = sorted(decoded_output)
+            output_summaries.append(summary)
+        logger.info(
+            "DevPilot raw proposal outputs: count={} names={} summaries={}",
+            len(result.tool_outputs),
+            [name for name, _ in result.tool_outputs],
+            output_summaries,
+        )
         if session is not None and loop_guard is not None and profile is not None:
             if result.stop_reason == "completed" and result.error is None:
                 session.metadata.pop(TASK_LOOP_GUARD_METADATA_KEY, None)
@@ -3128,6 +3207,7 @@ class AgentLoop:
             tools=ctx.tools,
             request_context=ctx.request_context,
             provider_state=ctx.provider_state,
+            transport_chat_id=ctx.msg.chat_id,
         )
         final_content, _, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
@@ -3216,18 +3296,120 @@ class AgentLoop:
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.outbound is not None and ctx.request_context is not None:
+            transport_chat_id = getattr(ctx.msg, "chat_id", None)
+            delivery = getattr(ctx, "delivery", None)
+            all_messages = getattr(ctx, "all_messages", None) or []
+            proposal_registry = getattr(self, "_devpilot_turn_proposals", None)
+            proposal = (
+                proposal_registry.pop(transport_chat_id, None)
+                if isinstance(proposal_registry, dict)
+                and isinstance(transport_chat_id, str)
+                else None
+            )
+            logger.info(
+                "DevPilot proposal handoff consume: chat_id={} hit={}",
+                transport_chat_id,
+                isinstance(proposal, dict),
+            )
             fallback_proposal = None
             try:
                 from devpilot.nanobot_tools import take_current_turn_proposal
 
-                fallback_proposal = take_current_turn_proposal()
+                fallback_proposal = take_current_turn_proposal(transport_chat_id)
             except ImportError:
                 pass
-            proposal = ctx.request_context.attributes.get("devpilot_proposal")
+            if not isinstance(proposal, dict):
+                proposal = ctx.request_context.attributes.get("devpilot_proposal")
             if not isinstance(proposal, dict):
                 proposal = fallback_proposal
+            if not isinstance(proposal, dict):
+                # Some tool calls run in an execution context whose ContextVar
+                # is intentionally isolated from the turn finalizer.  The
+                # tool result is still part of this turn's server-owned
+                # message list, so recover only the exact proposal shape from
+                # the two proposal tools.  This keeps confirmation metadata
+                # independent of async task/thread context propagation.
+                for message in reversed(all_messages):
+                    if not isinstance(message, dict) or message.get("role") != "tool":
+                        continue
+                    if message.get("name") not in {
+                        "devpilot_bug_fix_propose",
+                        "devpilot_test_repair_propose",
+                    }:
+                        continue
+                    content = message.get("content")
+                    if not isinstance(content, str):
+                        continue
+                    try:
+                        decoded = json.loads(content)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(decoded, dict):
+                        continue
+                    nested_content = decoded.get("content")
+                    if isinstance(nested_content, str):
+                        try:
+                            nested = json.loads(nested_content)
+                        except (TypeError, ValueError):
+                            nested = None
+                        if isinstance(nested, dict):
+                            decoded = nested
+                    candidate = {
+                        key: decoded.get(key)
+                        for key in (
+                            "change_set_id",
+                            "plan_hash",
+                            "patch_hash",
+                            "scope_hash",
+                            "project_id",
+                        )
+                    }
+                    if all(isinstance(value, str) and value for value in candidate.values()):
+                        proposal = candidate
+                        break
+            logger.info(
+                "DevPilot proposal transport: chat_id={} found={} route_metadata={} lifecycle_metadata={} message_tail={}",
+                transport_chat_id,
+                isinstance(proposal, dict),
+                isinstance(getattr(getattr(delivery, "route", None), "metadata", None), dict),
+                isinstance(
+                    getattr(getattr(delivery, "lifecycle_message", None), "metadata", None),
+                    dict,
+                ),
+                [
+                    {
+                        "role": item.get("role") if isinstance(item, dict) else type(item).__name__,
+                        "name": item.get("name") if isinstance(item, dict) else None,
+                        "content_type": type(item.get("content")).__name__
+                        if isinstance(item, dict)
+                        else None,
+                        "content_prefix": str(item.get("content", ""))[:80]
+                        if isinstance(item, dict)
+                        else "",
+                    }
+                    for item in all_messages[-6:]
+                ],
+            )
             if isinstance(proposal, dict):
                 ctx.outbound.metadata["_devpilot_proposal"] = dict(proposal)
+                # A streamed response is rendered before its final completion
+                # event reaches the gateway.  Preserve the server-produced
+                # tuple on that completion event as well, so the WebUI can
+                # register the proposal before it accepts a later plain-text
+                # confirmation such as "执行".  The websocket channel strips
+                # this private field before persistence or client delivery.
+                route = getattr(delivery, "route", None)
+                route_metadata = getattr(route, "metadata", None)
+                if isinstance(route_metadata, dict):
+                    route_metadata["_devpilot_proposal"] = dict(proposal)
+                delivery_metadata = getattr(delivery, "delivery_message", None)
+                delivery_metadata = getattr(delivery_metadata, "metadata", None)
+                if isinstance(delivery_metadata, dict):
+                    delivery_metadata["_devpilot_proposal"] = dict(proposal)
+                lifecycle_message = getattr(delivery, "lifecycle_message", None)
+                lifecycle_metadata = getattr(lifecycle_message, "metadata", None)
+                if isinstance(lifecycle_metadata, dict):
+                    lifecycle_metadata["_devpilot_proposal"] = dict(proposal)
         if ctx.ephemeral and ctx.outbound is not None:
             ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
 

@@ -157,6 +157,22 @@ inspect/read/search 的只读分析，并已真实调用 FC。控制面重启后
 `provider-default` 允许出网，每次 Python 项目测试都会临时安装 pytest。安装失败时仍必须保留
 `unknown`，不得伪造失败证据。
 
+### 已完成：提案确认元数据跨异步/流式边界传递
+
+随后发现一个独立的 WebUI 阻塞：专用提案工具已经返回完整 ChangeSet，但工具执行上下文、Agent
+回合收尾和 WebSocket `turn_end` 可能使用不同的 request-context 或流式完成路径，导致下一轮用户发送
+“执行”时，确认注册表拿不到 `change_set_id`、`plan_hash`、`patch_hash`、`scope_hash` 和 `project_id`
+这组服务端绑定信息。
+
+本次已修复：Agent Runner 保留本回合服务端工具输出，AgentLoop 按可见 chat ID 暂存提案元数据；普通
+响应、流式响应和 `turn_end` 都走同一私有元数据注册入口；WebSocket 在持久化和发送给浏览器前剥离
+`_devpilot_proposal`，所以模型上下文、用户消息和转录文本不会得到可伪造的确认字段。确认门禁、签名、
+哈希、项目绑定和用户确认要求没有放宽。
+
+自动化验收：DevPilot 受影响测试通过；Nanobot AgentLoop 与 WebSocket 受影响测试 `186 passed`；
+Ruff 检查通过。Windows 默认 pytest 临时目录存在历史权限噪声，验证时使用仓库 `work/` 下的独立
+`--basetemp`。
+
 ### 其他后续项
 
 1. 为目标训练项目恢复一个可用的 FC 执行后端后，按录屏稿从镜头 3 重新取得真实失败 Run；再验证专用 `bug-fix` 提案、Apply、验证和 Rollback。
