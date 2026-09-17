@@ -29,7 +29,16 @@
 | Ruff（变更文件） | passed |
 | `git diff --check` | passed |
 
-测试命令需要把当前 checkout 的 `devpilot-agent/src` 和 `nanobot` 放在 `PYTHONPATH` 前面；否则本机遗留环境可能导入另一份旧的 `devpilot` 源码。
+测试命令需要把当前 checkout 的 `devpilot-agent/src` 和 `nanobot` 放在 `PYTHONPATH` 前面，并在本次回归中设置 `DEVPILOT_ENABLE_SKILL_IMPROVEMENT=0`；否则本机遗留环境可能导入另一份旧的 `devpilot` 源码，或让临时测试项目进入未准备 P8 Skill 快照的试验路径。
+
+示例：
+
+```powershell
+$env:PYTHONPATH = "<checkout>\devpilot-agent\src;<checkout>\nanobot"
+$env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = "0"
+python -m pytest -q tests/agent/test_task_profiles.py
+python -m pytest -q tests/agent/test_loop_runner_integration.py tests/agent/test_loop_handoff.py tests/agent/test_loop_save_turn.py
+```
 
 ## 预期用户行为
 

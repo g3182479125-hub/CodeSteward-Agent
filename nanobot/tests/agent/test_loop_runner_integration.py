@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nanobot.agent.goal_permission import goal_mutation_allowed, goal_mutation_permission
+from nanobot.agent.task_profiles import TaskLoopGuard
+from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse, ToolCallRequest
@@ -23,6 +25,23 @@ from nanobot.utils.llm_runtime import LLMRuntime
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 _GOAL_RUNTIME_GUIDANCE_TAG = "[Goal Runtime Guidance — host instructions]"
+
+
+class _PersistentErrorTool(Tool):
+    @property
+    def name(self) -> str:
+        return "persistent_error"
+
+    @property
+    def description(self) -> str:
+        return "Return a deterministic error for loop-guard tests."
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **_kwargs):
+        return ToolResult.error("Error: persistent diagnostic failure")
 
 
 def _make_loop(tmp_path):
@@ -61,6 +80,69 @@ async def test_ephemeral_runner_enters_and_restores_turn_scopes(tmp_path):
     )
 
     assert goal_mutation_allowed() is False
+
+
+@pytest.mark.asyncio
+async def test_new_inbound_turn_does_not_restore_diagnostic_guard_state(tmp_path):
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.session.manager import Session
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.generation = GenerationSettings()
+    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    loop.tools.register(_PersistentErrorTool())
+    session = Session(
+        key="websocket:diagnostic-guard",
+        metadata={
+            "task_profile": "bug-fix",
+            "task_profile_version": "1",
+        },
+    )
+    previous = TaskLoopGuard()
+    previous.observe("tool-a", {}, "Error: first")
+    previous.observe("tool-b", {}, "Error: second")
+    previous.observe("tool-c", {}, "Error: third")
+    session.metadata["task_loop_guard"] = previous.to_state("bug-fix@1")
+
+    provider.chat_with_retry = AsyncMock(side_effect=[
+        LLMResponse(
+            content="try the failing tool",
+            tool_calls=[ToolCallRequest(id="call-1", name="persistent_error", arguments={})],
+            usage={},
+        ),
+        LLMResponse(content="new inbound turn completed", tool_calls=[], usage={}),
+    ])
+
+    final_content, _, _, stop_reason, _ = await loop._run_agent_loop(
+        [],
+        runtime=loop.llm_runtime(),
+        session=session,
+        metadata={},
+    )
+
+    assert stop_reason == "completed"
+    assert final_content == "new inbound turn completed"
+    assert provider.chat_with_retry.await_count == 2
+
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
+        content="retry the failing tool",
+        tool_calls=[ToolCallRequest(id="call-2", name="persistent_error", arguments={})],
+        usage={},
+    ))
+    session.metadata["task_loop_guard"] = previous.to_state("bug-fix@1")
+
+    final_content, _, _, stop_reason, _ = await loop._run_agent_loop(
+        [],
+        runtime=loop.llm_runtime(),
+        session=session,
+        metadata={"_internal_continuation": True},
+    )
+
+    assert stop_reason == "tool_error"
+    assert final_content is not None
+    assert "bounded diagnostic-branch budget was exhausted" in final_content
 
 
 @pytest.mark.asyncio
