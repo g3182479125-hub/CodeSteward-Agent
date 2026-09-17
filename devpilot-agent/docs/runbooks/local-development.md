@@ -34,6 +34,8 @@ $env:E2B_API_KEY = "<API key from the FC console>"
 $env:E2B_API_URL = "https://api.<region>.e2b.fc.aliyuncs.com"
 $env:E2B_DOMAIN = "<region>.e2b.fc.aliyuncs.com"
 $env:DEVPILOT_FC_TEMPLATE = "code-interpreter-v1"
+# Python project tests temporarily install pytest in each new Sandbox.
+$env:DEVPILOT_FC_INSTALL_PYTEST = "1"
 ```
 
 The strict default sends a network-deny policy. Alibaba FC endpoints may reject that
@@ -46,6 +48,13 @@ $env:DEVPILOT_FC_NETWORK_POLICY_MODE = "provider-default"
 
 This mode is reported as degraded and does not claim network isolation; do not use it
 for untrusted code or sensitive snapshots.
+
+When `DEVPILOT_FC_INSTALL_PYTEST` is `1` (the default), only the server-owned
+`project-pytest` profile runs `python -m pip install --disable-pip-version-check pytest`
+before the test command. The install is temporary and the Sandbox is still destroyed
+after the run. Set it to `0` only when using a template that already contains pytest.
+The install requires the provider to permit outbound package access; in strict mode,
+set `$env:DEVPILOT_FC_ALLOW_NETWORK = "1"` explicitly.
 
 Run the harmless connectivity/lifecycle check below. It creates a temporary Sandbox,
 writes one non-secret fixture file, runs a fixed `python3` print command, and destroys

@@ -144,6 +144,93 @@ def test_fc_backend_uses_short_lived_sandbox_lifecycle(monkeypatch: pytest.Monke
     assert backend.get_run_state("run-1")["status"] == "completed"
 
 
+def test_fc_backend_bootstraps_pytest_before_project_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[object, ...]] = []
+
+    class FakeFiles:
+        def make_dir(self, path: str) -> None:
+            events.append(("mkdir", path))
+
+        def write(self, path: str, content: bytes) -> None:
+            events.append(("write", path, content))
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
+            events.append(("run", command, timeout, cwd))
+            return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "pytest-bootstrap-sandbox"
+        files = FakeFiles()
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            events.append(("kill",))
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            events.append(("create",))
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+
+    result = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            network_policy_mode="provider-default",
+        )
+    ).run(valid_request(command_profile="project-pytest", command="python -m pytest -q"))
+
+    assert result.exit_code == 0
+    run_events = [event for event in events if event[0] == "run"]
+    assert run_events[0] == (
+        "run",
+        "python -m pip install --disable-pip-version-check pytest",
+        120,
+        None,
+    )
+    assert run_events[1] == ("run", "python -m pytest -q", 300, "/workspace/devpilot")
+
+
+def test_fc_backend_reports_pytest_bootstrap_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
+            assert command == "python -m pip install --disable-pip-version-check pytest"
+            return SimpleNamespace(exit_code=1, stdout="", stderr="network unavailable")
+
+    class FakeSandbox:
+        sandbox_id = "pytest-bootstrap-failure-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            return None
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+
+    with pytest.raises(ExecutionError, match="FC_PYTEST_INSTALL_FAILED"):
+        FCSandboxBackend(
+            FCSandboxConfig(
+                api_key="test-key",
+                api_url="https://api.example.invalid",
+                domain="example.invalid",
+                network_policy_mode="provider-default",
+            )
+        ).run(valid_request(command_profile="project-pytest", command="python -m pytest -q"))
+
+
 def test_fc_backend_runs_uploaded_project_from_its_sandbox_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -536,6 +623,37 @@ def test_fc_config_reads_explicit_project_allowlist(monkeypatch: pytest.MonkeyPa
     config = FCSandboxConfig.from_environment()
 
     assert config.allowed_project_paths == ("E:\\fixtures\\a", "E:\\fixtures\\b")
+
+
+def test_fc_config_enables_pytest_bootstrap_by_default_and_allows_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
+    monkeypatch.setenv("E2B_API_URL", "https://api.example.invalid")
+    monkeypatch.setenv("E2B_DOMAIN", "example.invalid")
+    monkeypatch.delenv("DEVPILOT_FC_INSTALL_PYTEST", raising=False)
+
+    assert FCSandboxConfig.from_environment().install_pytest is True
+
+    monkeypatch.setenv("DEVPILOT_FC_INSTALL_PYTEST", "0")
+    assert FCSandboxConfig.from_environment().install_pytest is False
+
+    monkeypatch.setenv("DEVPILOT_FC_INSTALL_PYTEST", "maybe")
+    with pytest.raises(ExecutionError, match="FC_CONFIG_INVALID"):
+        FCSandboxConfig.from_environment()
+
+
+def test_fc_backend_requires_network_permission_for_pytest_bootstrap() -> None:
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+        )
+    )
+
+    with pytest.raises(ExecutionError, match="FC_PYTEST_INSTALL_NETWORK_DENIED"):
+        backend.run(valid_request(command_profile="project-pytest", command="python -m pytest -q"))
 
 
 def test_fc_backend_exposes_only_real_evidenced_profiles() -> None:

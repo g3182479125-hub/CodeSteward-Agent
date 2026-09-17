@@ -4,15 +4,19 @@
 
 - 仓库：<https://github.com/g3182479125-hub/devflow-agent>
 - 分支：`codex/h11-complete-handoff`
-- 本次提交包含：FC 项目测试兼容、WebUI 搜索不阻塞事件循环、自然语言 Bug-fix 证据门槛修复、录屏稿和相应回归测试；最新 FC fallback 修复为 `e5d168e`、`d722a67`、`bf70a22`。
+- 本次提交包含：FC 项目测试兼容、默认 pytest 临时启动安装、WebUI 搜索不阻塞事件循环、自然语言 Bug-fix 证据门槛修复、录屏稿和相应回归测试；FC fallback 修复为 `e5d168e`、`d722a67`、`bf70a22`，pytest 启动安装由本次交付加入。
 - 不包含：API Key、`.env`、SQLite、日志、临时 pytest 目录、训练项目目录，以及 `nanobot/webui/package-lock.json` 的既有本地变更。
 
 ## 本次完成内容
 
 ### 1. 真实 FC 项目测试
 
-- FC Code Interpreter 的项目测试改为使用 `python -m pytest -q`；若镜像没有 pytest，自动运行仅支持零参数 `test_*` 函数的无依赖测试运行器。
+- FC Code Interpreter 的 Python 项目测试改为在测试命令前先运行服务端固定的
+  `python -m pip install --disable-pip-version-check pytest`，每次 Sandbox 临时安装，
+  再执行 `python -m pytest -q`；`DEVPILOT_FC_INSTALL_PYTEST=0` 时才回退到旧的
+  纯 Python 兼容运行器。
 - FC 命令从上传项目根目录执行，避免上传代码无法被项目测试导入。
+- 安装失败、网络不允许或回执不完整只记录为未知执行结果，不生成 `failure_run_id`。
 - `provider-default` 不被表述成绝对断网；回执仍记录宿主机无文件写入、受限命令和沙箱信息。
 
 ### 2. WebUI 卡住修复
@@ -50,12 +54,11 @@ $py = '.\devpilot-agent\.venv\Scripts\python.exe'
 3. 真实 WebUI 项目测试已打到 `fc-agent-sandbox`。最新 Run 为
    `69971ca9-7f4c-42d0-9eb5-1db9a2e53f1f`，实际命令是
    `python /workspace/devpilot/.devpilot/plain_test_runner.py`，退出码为 `1`；
-4. 这次退出不是项目断言失败，而是镜像缺少 `pytest`。最新代码已将该结果归类为
-   `unknown`，记录 `TEST_FALLBACK_UNSUPPORTED`，不生成 `failure_run_id`，也不写入
-   `test_check.failed`，所以不能拿它当作 Bug-fix 失败证据；
-5. 若要录制“真实项目缺陷 → 专用提案 → Apply → 验证 → Rollback”，FC 模板必须提供
-   `pytest`，或者训练项目必须使用无依赖、零参数的纯 Python 测试。当前模板含
-   `import pytest` 和 pytest fixture，尚未取得真实断言失败证据。
+4. 之前的退出不是项目断言失败，而是镜像缺少 `pytest`；本次已改为每个 Python 项目
+   测试在 FC Sandbox 内临时安装 pytest。安装失败仍归类为 `unknown`，不生成
+   `failure_run_id`，也不写入 `test_check.failed`；
+5. 当前演示项目含 `import pytest` 和 pytest fixture，重新启动最新代码后可以取得真实
+   断言失败证据，继续录制“真实项目缺陷 → 专用提案 → Apply → 验证 → Rollback”。
 
 网络策略：本机用户环境已配置 `DEVPILOT_FC_NETWORK_POLICY_MODE=provider-default`，因为
 当前 FC 端点拒绝严格网络隔离模式。该模式只表示采用提供商默认网络策略，不能宣称网络隔离已证明；
@@ -123,8 +126,9 @@ Standards / Spec 双轴复核，记录见：
 
 **2026-09-17 现场状态：**新 WebUI 已实测可选择训练项目、切换 `bug-fix` profile、完成
 inspect/read/search 的只读分析，并已真实调用 FC。控制面重启后需要重新登记项目 trust；本机已用
-内部认证重新登记训练项目。当前阻塞点不是后端不可达，而是 FC 模板没有 pytest，因此只能得到
-`unknown`，不能生成伪造失败证据。换用带 pytest 的模板后，按录屏稿继续第 3 镜头即可。
+内部认证重新登记训练项目。当前代码已绕过“模板没有 pytest”的阻塞：只要当前 FC
+`provider-default` 允许出网，每次 Python 项目测试都会临时安装 pytest。安装失败时仍必须保留
+`unknown`，不得伪造失败证据。
 
 ### 其他后续项
 

@@ -34,6 +34,8 @@ from .redaction import redact_execution_output
 
 SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
+PYTEST_INSTALL_COMMAND = "python -m pip install --disable-pip-version-check pytest"
+PYTEST_INSTALL_TIMEOUT_SECONDS = 120
 _PERSIST_LOCK = RLock()
 FC_VERIFICATION_PROFILES = frozenset(
     {"python-syntax", "python-run", "node-syntax", "project-pytest", "project-npm-test"}
@@ -71,6 +73,7 @@ class FCSandboxConfig:
     api_url: str
     domain: str
     template: str = "code-interpreter-v1"
+    install_pytest: bool = True
     allow_network: bool = False
     max_timeout_seconds: int = 900
     region: str = ""
@@ -102,6 +105,12 @@ class FCSandboxConfig:
                 "FC_CONFIG_INVALID",
                 "DEVPILOT_FC_NETWORK_POLICY_MODE must be required or provider-default",
             )
+        install_pytest_value = os.environ.get("DEVPILOT_FC_INSTALL_PYTEST", "1").strip()
+        if install_pytest_value not in {"0", "1"}:
+            raise ExecutionError(
+                "FC_CONFIG_INVALID",
+                "DEVPILOT_FC_INSTALL_PYTEST must be 0 or 1",
+            )
         domain = required("E2B_DOMAIN")
         allowed_project_paths = tuple(
             str(os.path.abspath(item.strip()))
@@ -114,6 +123,7 @@ class FCSandboxConfig:
             domain=domain,
             template=os.environ.get("DEVPILOT_FC_TEMPLATE", "code-interpreter-v1").strip()
             or "code-interpreter-v1",
+            install_pytest=install_pytest_value == "1",
             allow_network=os.environ.get("DEVPILOT_FC_ALLOW_NETWORK", "0") == "1",
             max_timeout_seconds=max_timeout_seconds,
             region=os.environ.get("DEVPILOT_FC_REGION", domain.split(".", 1)[0]).strip(),
@@ -247,6 +257,35 @@ class FCSandboxBackend:
         except (TypeError, ValueError):
             return False
         return resolved in self.config.allowed_project_paths
+
+    def _should_install_pytest(self, request: ExecutionRequest) -> bool:
+        return self.config.install_pytest and request.command_profile == "project-pytest"
+
+    def _install_pytest(self, sandbox_handle: Any) -> None:
+        """Install the fixed test runner dependency inside this short-lived sandbox."""
+
+        try:
+            try:
+                result = sandbox_handle.commands.run(
+                    PYTEST_INSTALL_COMMAND,
+                    timeout=PYTEST_INSTALL_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                if not isinstance(getattr(exc, "exit_code", None), int):
+                    raise
+                result = exc
+        except Exception as exc:
+            raise ExecutionError(
+                "FC_PYTEST_INSTALL_FAILED",
+                "FC Sandbox could not install pytest",
+            ) from exc
+        exit_code = getattr(result, "exit_code", None)
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != 0:
+            raise ExecutionError(
+                "FC_PYTEST_INSTALL_FAILED",
+                "FC Sandbox could not install pytest",
+                details={"exit_code": exit_code},
+            )
 
     def _reserve_run(self, run_id: str) -> _FCSandboxRun:
         with self._lock:
@@ -628,24 +667,43 @@ class FCSandboxBackend:
             raise ExecutionError(
                 "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
             )
+        install_pytest = self._should_install_pytest(request)
+        if (
+            install_pytest
+            and self.config.network_policy_mode == "required"
+            and not self.config.allow_network
+        ):
+            raise ExecutionError(
+                "FC_PYTEST_INSTALL_NETWORK_DENIED",
+                "pytest bootstrap requires an explicitly permitted FC network policy",
+            )
         state = self._reserve_run(request.run_id)
         sandbox_cls = _sandbox_class()
         sandbox: Any | None = None
         started = time.monotonic()
         stage = "create"
         primary_error: ExecutionError | None = None
+        effective_network_policy = self.config.network_policy_mode
         try:
             create_kwargs: dict[str, Any] = {
                 "template": self.config.template,
                 "api_key": self.config.api_key,
                 "api_url": self.config.api_url,
                 "domain": self.config.domain,
-                "timeout": request.timeout_seconds,
+                "timeout": min(
+                    self.config.max_timeout_seconds,
+                    request.timeout_seconds
+                    + (PYTEST_INSTALL_TIMEOUT_SECONDS if install_pytest else 0),
+                ),
             }
             if self.config.network_policy_mode == "required":
                 create_kwargs["allow_internet_access"] = (
-                    self.config.allow_network and request.network_allowed
+                    self.config.allow_network
+                    if install_pytest
+                    else self.config.allow_network and request.network_allowed
                 )
+                if install_pytest and self.config.allow_network:
+                    effective_network_policy = "required-with-pytest-bootstrap"
             sandbox_handle: Any = sandbox_cls.create(**create_kwargs)
             if sandbox_handle is None:
                 raise ExecutionError("FC_SANDBOX_CREATE_FAILED", "FC Sandbox returned no handle")
@@ -667,6 +725,12 @@ class FCSandboxBackend:
             with self._lock:
                 if state.cancel_requested:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
+            if install_pytest:
+                stage = "dependency"
+                self._install_pytest(sandbox_handle)
+                with self._lock:
+                    if state.cancel_requested:
+                        raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
             stage = "execute"
             try:
                 try:
@@ -716,7 +780,7 @@ class FCSandboxBackend:
                 bundle_bytes=execution_bundle_bytes(request),
                 region=self.config.region,
                 template=self.config.template,
-                network_policy=self.config.network_policy_mode,
+                network_policy=effective_network_policy,
                 output_truncated=output_truncated,
                 # The adapter creates a short-lived sandbox from the explicit
                 # bundle and only admits server-owned verification commands.

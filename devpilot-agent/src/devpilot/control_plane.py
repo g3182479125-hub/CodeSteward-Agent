@@ -1626,6 +1626,7 @@ def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
             "network_policy": str(getattr(config, "network_policy_mode", "unknown")),
             "region": str(getattr(config, "region", "")),
             "template": str(getattr(config, "template", "")),
+            "pytest_bootstrap": bool(getattr(config, "install_pytest", False)),
         }
     ]
 
