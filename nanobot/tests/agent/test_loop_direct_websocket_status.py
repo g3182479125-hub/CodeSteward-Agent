@@ -11,6 +11,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import WebSocketChannel
 from nanobot.providers.base import GenerationSettings, LLMResponse
 from nanobot.session import webui_turns as wth
+from nanobot.session.goal_state import DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
 from nanobot.session.webui_turns import WebuiTurnCoordinator, WebuiTurnRoutePolicy
 from nanobot.webui.metadata import WEBSOCKET_TURN_OWNER_METADATA_KEY
 
@@ -109,7 +110,7 @@ async def test_webui_turn_uses_strict_interactive_llm_timeout(tmp_path, monkeypa
 
     assert response is not None
     spec = loop.runner.run.call_args.args[0]
-    assert spec.llm_timeout_s == 75.0
+    assert spec.llm_timeout_s == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
     assert spec.strict_streaming_timeout is True
 
 

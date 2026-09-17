@@ -6,6 +6,7 @@ from nanobot.session.goal_state import (
     DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S,
     GOAL_STATE_KEY,
     MAX_GOAL_OBJECTIVE_CHARS,
+    MAX_WEBUI_INTERACTIVE_LLM_TIMEOUT_S,
     discard_legacy_goal_state_key,
     explicit_goal_requested,
     goal_state_runtime_lines,
@@ -159,6 +160,11 @@ def test_webui_interactive_timeout_only_applies_to_webui_turns(monkeypatch):
     assert webui_interactive_llm_timeout_s(
         channel="websocket", message_metadata={"webui": True}
     ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "nan")
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
     assert webui_interactive_llm_timeout_s(
         channel="websocket",
         message_metadata={"webui": True, "_cron_trigger": {"job_id": "daily"}},
@@ -176,7 +182,14 @@ def test_webui_interactive_timeout_allows_explicit_opt_out_and_uses_safe_default
         channel="websocket", message_metadata={"webui": True}
     ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
 
-    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "nan")
+
+def test_webui_interactive_timeout_caps_positive_values_at_six_hours(monkeypatch):
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "21600")
     assert webui_interactive_llm_timeout_s(
         channel="websocket", message_metadata={"webui": True}
-    ) == DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+    ) == MAX_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
+
+    monkeypatch.setenv("NANOBOT_WEBUI_LLM_TIMEOUT_S", "21601")
+    assert webui_interactive_llm_timeout_s(
+        channel="websocket", message_metadata={"webui": True}
+    ) == MAX_WEBUI_INTERACTIVE_LLM_TIMEOUT_S

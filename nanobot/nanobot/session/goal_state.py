@@ -22,7 +22,8 @@ MAX_GOAL_OBJECTIVE_CHARS = 4000
 # Older builds stored the same JSON blob under this key.
 _LEGACY_GOAL_STATE_SESSION_KEY = "thread_goal"
 _MAX_OBJECTIVE_WS = 600
-DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S = 75.0
+DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S = 21600.0
+MAX_WEBUI_INTERACTIVE_LLM_TIMEOUT_S = 21600.0
 _WEBUI_INTERACTIVE_LLM_TIMEOUT_ENV = "NANOBOT_WEBUI_LLM_TIMEOUT_S"
 
 
@@ -149,6 +150,7 @@ def webui_interactive_llm_timeout_s(
     interactive chat turn must eventually produce a terminal event so the browser
     can release its running state and accept the next message.  ``0`` is an
     explicit operator opt-out; malformed values fall back to the safe default.
+    Positive values are capped at the six-hour maximum.
     """
     if (
         channel != "websocket"
@@ -167,4 +169,4 @@ def webui_interactive_llm_timeout_s(
         return DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
     if not math.isfinite(timeout_s):
         return DEFAULT_WEBUI_INTERACTIVE_LLM_TIMEOUT_S
-    return timeout_s if timeout_s > 0 else None
+    return min(timeout_s, MAX_WEBUI_INTERACTIVE_LLM_TIMEOUT_S) if timeout_s > 0 else None
