@@ -1152,6 +1152,17 @@
         "navigateHint": "↑↓ Pilih",
         "selectHint": "Enter/Tab Sisipkan",
         "closeHint": "Esc Tutup",
+        "taskProfiles": {
+          "ariaLabel": "Profil tugas",
+          "title": "Pilih profil tugas",
+          "backHint": "Esc untuk kembali",
+          "options": {
+            "bugFix": { "title": "Perbaikan bug", "description": "Analisis masalah, ajukan perubahan minimal, verifikasi, dan batalkan bila perlu." },
+            "repoAnalysis": { "title": "Analisis repositori", "description": "Baca dan jelaskan proyek tanpa mengubah berkasnya." },
+            "featureDelivery": { "title": "Pengiriman fitur", "description": "Rencanakan dan kirim fitur kecil dengan pengujian dan verifikasi." },
+            "off": { "title": "Matikan profil tugas", "description": "Kembali ke alat nanobot yang dikonfigurasi biasa." }
+          }
+        },
         "commands": {
           "new": {
             "title": "Obrolan baru",

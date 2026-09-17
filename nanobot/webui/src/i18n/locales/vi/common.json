@@ -1152,6 +1152,17 @@
         "navigateHint": "↑↓ Chọn",
         "selectHint": "Enter/Tab Chèn",
         "closeHint": "Esc Đóng",
+        "taskProfiles": {
+          "ariaLabel": "Hồ sơ tác vụ",
+          "title": "Chọn hồ sơ tác vụ",
+          "backHint": "Esc để quay lại",
+          "options": {
+            "bugFix": { "title": "Sửa lỗi", "description": "Phân tích lỗi, đề xuất bản sửa tối thiểu, kiểm tra và hoàn tác khi cần." },
+            "repoAnalysis": { "title": "Phân tích kho mã", "description": "Đọc và giải thích dự án mà không thay đổi tệp." },
+            "featureDelivery": { "title": "Phát hành tính năng", "description": "Lập kế hoạch và phát hành tính năng nhỏ cùng kiểm thử và xác minh." },
+            "off": { "title": "Tắt hồ sơ tác vụ", "description": "Trở lại các công cụ nanobot được cấu hình thông thường." }
+          }
+        },
         "commands": {
           "new": {
             "title": "Cuộc trò chuyện mới",

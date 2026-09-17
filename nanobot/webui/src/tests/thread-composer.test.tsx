@@ -1308,12 +1308,12 @@ describe("ThreadComposer", () => {
     fireEvent.change(input, { target: { value: "/" } });
     fireEvent.mouseDown(screen.getByRole("option", { name: /Select task profile/i }));
 
-    const profilePalette = screen.getByRole("listbox", { name: "Task profiles" });
+    const profilePalette = screen.getByTestId("task-profile-palette");
     expect(profilePalette).toBeInTheDocument();
-    expect(within(profilePalette).getByRole("option", { name: /Bug fix bug-fix/i })).toBeInTheDocument();
+    expect(within(profilePalette).getByRole("option", { name: /bug-fix/i })).toBeInTheDocument();
 
     fireEvent.mouseDown(
-      within(profilePalette).getByRole("option", { name: /Bug fix bug-fix/i }),
+      within(profilePalette).getByRole("option", { name: /bug-fix/i }),
     );
 
     expect(onSend).toHaveBeenCalledWith(
@@ -1322,7 +1322,58 @@ describe("ThreadComposer", () => {
       { sideChannel: true },
     );
     expect(input).toHaveValue("");
-    expect(screen.queryByRole("listbox", { name: "Task profiles" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("task-profile-palette")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["bug-fix", 0, "Enter"],
+    ["repo-analysis", 1, "Enter"],
+    ["feature-delivery", 2, "Tab"],
+    ["off", 3, "Enter"],
+  ] as const)("selects %s from the task profile menu with the keyboard", (profile, moves, key) => {
+    const onSend = vi.fn();
+    render(
+      <ThreadComposer
+        onSend={onSend}
+        placeholder="Type your message..."
+        slashCommands={[TASK_PROFILE_COMMAND]}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "/" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByTestId("task-profile-palette")).toBeInTheDocument();
+    for (let index = 0; index < moves; index += 1) {
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+    }
+    fireEvent.keyDown(input, { key });
+
+    expect(onSend).toHaveBeenCalledWith(
+      `/task-profile ${profile}`,
+      undefined,
+      { sideChannel: true },
+    );
+    expect(input).toHaveValue("");
+    expect(screen.queryByTestId("task-profile-palette")).not.toBeInTheDocument();
+  });
+
+  it("returns from the task profile menu to the slash command menu with Escape", () => {
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Type your message..."
+        slashCommands={[TASK_PROFILE_COMMAND]}
+      />,
+    );
+
+    const input = screen.getByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "/" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByTestId("task-profile-palette")).not.toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: /slash/i })).toBeInTheDocument();
   });
 
   it("renders slash commands as direct actions with current status", () => {

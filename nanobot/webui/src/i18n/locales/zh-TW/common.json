@@ -1152,6 +1152,17 @@
         "navigateHint": "↑↓ 選擇",
         "selectHint": "Enter/Tab 填入",
         "closeHint": "Esc 關閉",
+        "taskProfiles": {
+          "ariaLabel": "任務模式",
+          "title": "選擇任務模式",
+          "backHint": "按 Esc 返回",
+          "options": {
+            "bugFix": { "title": "修復 Bug", "description": "分析問題、提出最小修改、驗證結果，並支援回滾。" },
+            "repoAnalysis": { "title": "分析專案", "description": "只讀專案並解釋結構，不修改檔案。" },
+            "featureDelivery": { "title": "交付功能", "description": "規劃並交付小功能，同時補充測試和驗證。" },
+            "off": { "title": "關閉任務模式", "description": "恢復 nanobot 原本設定的工具。" }
+          }
+        },
         "commands": {
           "new": {
             "title": "新增話題",

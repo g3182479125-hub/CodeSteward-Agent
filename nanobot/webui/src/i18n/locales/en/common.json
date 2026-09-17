@@ -1166,6 +1166,17 @@
         "navigateHint": "↑↓ Navigate",
         "selectHint": "Enter/Tab Select",
         "closeHint": "Esc Close",
+        "taskProfiles": {
+          "ariaLabel": "Task profiles",
+          "title": "Choose a task profile",
+          "backHint": "Esc to go back",
+          "options": {
+            "bugFix": { "title": "Bug fix", "description": "Analyze a defect, propose a minimal patch, verify it, and roll it back." },
+            "repoAnalysis": { "title": "Repository analysis", "description": "Read and explain a project without changing its files." },
+            "featureDelivery": { "title": "Feature delivery", "description": "Plan and deliver a small feature with tests and verification." },
+            "off": { "title": "Turn off task profile", "description": "Return this chat to nanobot's ordinary configured tools." }
+          }
+        },
         "badges": {
           "current": "Current",
           "recent": "Recent"

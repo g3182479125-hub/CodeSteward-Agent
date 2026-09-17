@@ -399,31 +399,14 @@ interface SlashPaletteCommand {
 
 interface TaskProfileOption {
   name: string;
-  title: string;
-  description: string;
+  key: "bugFix" | "repoAnalysis" | "featureDelivery" | "off";
 }
 
 const TASK_PROFILE_OPTIONS: TaskProfileOption[] = [
-  {
-    name: "bug-fix",
-    title: "Bug fix",
-    description: "Analyze a defect, propose a minimal patch, verify it, and roll it back.",
-  },
-  {
-    name: "repo-analysis",
-    title: "Repository analysis",
-    description: "Read and explain a project without changing its files.",
-  },
-  {
-    name: "feature-delivery",
-    title: "Feature delivery",
-    description: "Plan and deliver a small feature with tests and verification.",
-  },
-  {
-    name: "off",
-    title: "Turn off task profile",
-    description: "Return this chat to nanobot's ordinary configured tools.",
-  },
+  { name: "bug-fix", key: "bugFix" },
+  { name: "repo-analysis", key: "repoAnalysis" },
+  { name: "feature-delivery", key: "featureDelivery" },
+  { name: "off", key: "off" },
 ];
 
 function skillMatchRank(skill: SkillSummary, query: string): number | null {
@@ -2932,6 +2915,7 @@ function TaskProfilePalette({
   onHover,
   onChoose,
 }: TaskProfilePaletteProps) {
+  const { t } = useTranslation();
   const listMaxHeight = Math.max(
     0,
     layout.maxHeight - SLASH_PALETTE_CHROME_PX,
@@ -2940,7 +2924,8 @@ function TaskProfilePalette({
   return (
     <div
       role="listbox"
-      aria-label="Task profiles"
+      aria-label={t("thread.composer.taskProfiles.ariaLabel")}
+      data-testid="task-profile-palette"
       style={{ maxHeight: layout.maxHeight }}
       className={cn(
         floatingSurfaceVisualClassName,
@@ -2951,12 +2936,16 @@ function TaskProfilePalette({
     >
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-[12px] text-muted-foreground">
         <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
-        <span className="font-medium text-foreground">Choose a task profile</span>
-        <span className="ml-auto">Esc to go back</span>
+        <span className="font-medium text-foreground">
+          {t("thread.composer.taskProfiles.title")}
+        </span>
+        <span className="ml-auto">{t("thread.composer.taskProfiles.backHint")}</span>
       </div>
       <div ref={listRef} className="overflow-y-auto pr-0.5" style={{ maxHeight: listMaxHeight }}>
         {profiles.map((profile, index) => {
           const selected = index === selectedIndex;
+          const title = t(`thread.composer.taskProfiles.options.${profile.key}.title`);
+          const description = t(`thread.composer.taskProfiles.options.${profile.key}.description`);
           return (
             <button
               key={profile.name}
@@ -2964,7 +2953,7 @@ function TaskProfilePalette({
               role="option"
               data-palette-index={index}
               aria-selected={selected}
-              aria-label={`${profile.title} ${profile.name} ${profile.description}`}
+              aria-label={`${title} ${profile.name} ${description}`}
               onMouseEnter={() => onHover(index)}
               onMouseDown={(event) => {
                 event.preventDefault();
@@ -2983,10 +2972,10 @@ function TaskProfilePalette({
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2">
                 <span className="min-w-0 shrink-0 text-[13.5px] font-semibold tracking-normal text-foreground">
-                  {profile.title}
+                  {title}
                 </span>
                 <span className="min-w-0 truncate text-[13px] text-muted-foreground">
-                  {profile.description}
+                  {description}
                 </span>
               </span>
               <span className="font-mono text-[12px] text-muted-foreground/60">

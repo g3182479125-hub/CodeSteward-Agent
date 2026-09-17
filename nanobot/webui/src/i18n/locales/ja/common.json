@@ -1152,6 +1152,17 @@
         "navigateHint": "↑↓ 選択",
         "selectHint": "Enter/Tab 入力",
         "closeHint": "Esc 閉じる",
+        "taskProfiles": {
+          "ariaLabel": "タスクプロファイル",
+          "title": "タスクプロファイルを選択",
+          "backHint": "Esc で戻る",
+          "options": {
+            "bugFix": { "title": "バグ修正", "description": "問題を分析し、最小限の修正を提案・検証し、必要なら戻します。" },
+            "repoAnalysis": { "title": "リポジトリ分析", "description": "ファイルを変更せずにプロジェクトを読み解きます。" },
+            "featureDelivery": { "title": "機能提供", "description": "テストと検証を含めて小さな機能を計画・提供します。" },
+            "off": { "title": "タスクプロファイルを無効化", "description": "nanobot の通常設定のツールに戻します。" }
+          }
+        },
         "commands": {
           "new": {
             "title": "新しいチャット",

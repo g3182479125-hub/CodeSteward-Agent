@@ -1166,6 +1166,17 @@
         "navigateHint": "↑↓ Navegar",
         "selectHint": "Enter/Tab Selecionar",
         "closeHint": "Esc Fechar",
+        "taskProfiles": {
+          "ariaLabel": "Perfis de tarefa",
+          "title": "Escolher um perfil de tarefa",
+          "backHint": "Esc para voltar",
+          "options": {
+            "bugFix": { "title": "Correção de bug", "description": "Analisa um problema, propõe uma correção mínima, verifica e permite reverter." },
+            "repoAnalysis": { "title": "Análise do repositório", "description": "Lê e explica um projeto sem alterar seus arquivos." },
+            "featureDelivery": { "title": "Entrega de funcionalidade", "description": "Planeja e entrega uma pequena função com testes e verificação." },
+            "off": { "title": "Desativar perfil de tarefa", "description": "Volta às ferramentas normalmente configuradas no nanobot." }
+          }
+        },
         "badges": {
           "current": "Atual",
           "recent": "Recente"

@@ -1152,6 +1152,17 @@
         "navigateHint": "↑↓ Naviguer",
         "selectHint": "Entrée/Tab Insérer",
         "closeHint": "Échap Fermer",
+        "taskProfiles": {
+          "ariaLabel": "Profils de tâche",
+          "title": "Choisir un profil de tâche",
+          "backHint": "Échap pour revenir",
+          "options": {
+            "bugFix": { "title": "Correction de bug", "description": "Analyse un problème, propose un correctif minimal, le vérifie et permet de l'annuler." },
+            "repoAnalysis": { "title": "Analyse du dépôt", "description": "Lit et explique un projet sans modifier ses fichiers." },
+            "featureDelivery": { "title": "Livraison de fonctionnalité", "description": "Planifie et livre une petite fonctionnalité avec tests et vérification." },
+            "off": { "title": "Désactiver le profil", "description": "Revient aux outils normalement configurés pour nanobot." }
+          }
+        },
         "commands": {
           "new": {
             "title": "Nouvelle discussion",
