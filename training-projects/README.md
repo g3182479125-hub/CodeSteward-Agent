@@ -67,7 +67,7 @@ API Key、SQLite 数据库、日志或确认令牌。
 ```powershell
 $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
 foreach ($skillName in @('bug-fix', 'repo-analysis', 'feature-delivery')) {
-  & "$repoRoot\devpilot-agent\.venv\Scripts\python.exe" `
+  & "$repoRoot\nanobot\.venv\Scripts\python.exe" `
     "$repoRoot\devpilot-agent\scripts\publish_skill.py" `
     --skill "$project\skills\$skillName\SKILL.md" `
     --workspace $workspacePath
