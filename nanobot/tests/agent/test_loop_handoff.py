@@ -56,6 +56,25 @@ def test_h8_switches_at_safe_boundary_without_replacing_session(tmp_path) -> Non
     assert restored.owner_generation > pending.owner_generation
 
 
+def test_h8_fresh_turn_can_advance_while_old_side_effect_stays_uncertain(tmp_path) -> None:
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    manager.ensure(_checkpoint(uncertain=("run_id:old",)))
+
+    strict = ManagedLoopDriver(manager, "session-1")
+    assert strict.next_action(
+        StepInput("session-1", "task-1", "project-1", 3, 9, 2)
+    ).kind is DriverActionKind.PAUSE
+
+    fresh = ManagedLoopDriver(
+        manager,
+        "session-1",
+        allow_unresolved_side_effects=True,
+    )
+    assert fresh.next_action(
+        StepInput("session-1", "task-1", "project-1", 3, 9, 2)
+    ).kind is DriverActionKind.REQUEST_MODEL
+
+
 def test_h9_new_task_can_start_with_selected_driver_without_replacing_old_owner(tmp_path) -> None:
     manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
     old = manager.ensure(_checkpoint())

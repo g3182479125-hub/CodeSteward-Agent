@@ -38,6 +38,20 @@ def test_checkpoint_round_trips_only_serializable_handoff_facts() -> None:
     assert "checkpoint_schema" in restored.to_dict()
 
 
+def test_checkpoint_round_trips_old_tool_replay_fingerprints() -> None:
+    checkpoint = LoopCheckpoint(
+        session_id="s",
+        task_id="t",
+        project_id="p",
+        step=2,
+        message_position=4,
+        remaining_iterations=3,
+        blocked_tool_call_fingerprints=("a" * 64,),
+    )
+
+    assert LoopCheckpoint.from_dict(checkpoint.to_dict()) == checkpoint
+
+
 def test_checkpoint_rejects_unknown_schema() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         LoopCheckpoint.from_dict({"checkpoint_schema": "unknown"})

@@ -69,6 +69,8 @@ class HandoffRecord:
 class LoopHandoffStore(Protocol):
     def load(self, session_id: str) -> HandoffRecord | None: ...
 
+    def delete(self, session_id: str) -> None: ...
+
     def save(
         self, record: HandoffRecord, *, expected_generation: int | None = None
     ) -> HandoffRecord: ...
@@ -208,6 +210,14 @@ class SqliteLoopHandoffStore:
                         raise RuntimeError("loop handoff ownership changed")
         return record
 
+    def delete(self, session_id: str) -> None:
+        with closing(self._connect()) as connection:
+            self._check_table(connection)
+            with connection:
+                connection.execute(
+                    f"delete from {_TABLE} where session_id = ?", (session_id,)
+                )
+
 
 class LoopHandoffManager:
     """Coordinates requested switches without allowing stale owners to dispatch."""
@@ -237,6 +247,10 @@ class LoopHandoffManager:
             owner_generation=1,
         )
         return self.store.save(record)
+
+    def reset(self, session_id: str) -> None:
+        """Forget the active H8 owner when the user explicitly starts /new."""
+        self.store.delete(session_id)
 
     def initial_driver(self, name: str, version: str) -> LoopDriver:
         """Resolve a trusted H9 selection only when a task has no owner yet."""
@@ -419,9 +433,16 @@ class ManagedLoopDriver:
     by the next action without rebuilding the AgentLoop or its session.
     """
 
-    def __init__(self, manager: LoopHandoffManager, session_id: str) -> None:
+    def __init__(
+        self,
+        manager: LoopHandoffManager,
+        session_id: str,
+        *,
+        allow_unresolved_side_effects: bool = False,
+    ) -> None:
         self.manager = manager
         self.session_id = session_id
+        self.allow_unresolved_side_effects = allow_unresolved_side_effects
         self._last_record: HandoffRecord | None = None
         self._last_decision_step: StepInput | None = None
         self._dispatch_generation: int | None = None
@@ -471,7 +492,7 @@ class ManagedLoopDriver:
         unresolved_external_refs = tuple(
             ref for ref in checkpoint.uncertain_side_effect_refs if not ref.startswith("tool_call:")
         )
-        if unresolved_external_refs:
+        if unresolved_external_refs and not self.allow_unresolved_side_effects:
             return DriverAction(DriverActionKind.PAUSE, "uncertain_side_effect_requires_recovery")
         if step.step < checkpoint.step or step.message_position < checkpoint.message_position:
             return DriverAction(DriverActionKind.PAUSE, "stale_step_input_rejected")

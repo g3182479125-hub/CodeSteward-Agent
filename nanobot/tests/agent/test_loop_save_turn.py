@@ -9,7 +9,7 @@ from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
-from nanobot.agent.loop_driver import LoopCheckpoint
+from nanobot.agent.loop_driver import LoopCheckpoint, tool_call_fingerprint
 from nanobot.agent.loop_handoff import LoopHandoffManager, SqliteLoopHandoffStore
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
@@ -22,7 +22,12 @@ from nanobot.bus.outbound_events import (
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.cron.session_turns import CRON_HISTORY_META, CRON_TRIGGER_META
-from nanobot.providers.base import LLMProvider, LLMResponse, ProviderConversationState
+from nanobot.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    ProviderConversationState,
+    ToolCallRequest,
+)
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
@@ -218,6 +223,43 @@ async def test_new_with_bot_suffix_does_not_persist_command(tmp_path: Path) -> N
     assert response.content == "New session started."
     session = loop.sessions.get_or_create("websocket:chat-1")
     assert session.messages == []
+
+
+@pytest.mark.asyncio
+async def test_new_retire_old_h7_owner_and_starts_clean_session(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    session = loop.sessions.get_or_create("websocket:new-h7")
+    checkpoint = LoopCheckpoint(
+        session_id=session.key,
+        task_id="task-1",
+        project_id="project-1",
+        step=2,
+        message_position=0,
+        remaining_iterations=3,
+        uncertain_side_effect_refs=("run_id:old",),
+    )
+    manager.ensure(checkpoint)
+    loop.loop_handoff_manager = manager
+    session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
+        "h7_loop_checkpoint": checkpoint.to_dict(),
+    }
+    loop.sessions.save(session)
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="new-h7",
+            content="/new",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "New session started."
+    assert manager.store.load(session.key) is None
+    assert loop.sessions.get_or_create(session.key).messages == []
+    assert AgentLoop._H7_HANDOFF_PAUSE_KEY not in session.metadata
 
 
 @pytest.mark.asyncio
@@ -744,7 +786,90 @@ async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) 
     assert response is not None
     assert response.content == "new answer"
     loop.provider.chat_with_retry.assert_awaited_once()
-    assert manager.store.load(session.key) == before
+    after = manager.store.load(session.key)
+    assert before is not None and after is not None
+    assert after.owner_generation > before.owner_generation
+    assert after.checkpoint.message_position > before.checkpoint.message_position
+
+
+@pytest.mark.asyncio
+async def test_h7_recovery_turn_persists_new_tool_facts_and_blocks_exact_replay(
+    tmp_path: Path,
+) -> None:
+    loop = _make_full_loop(tmp_path)
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    session = loop.sessions.get_or_create("websocket:paused-tool")
+    old_pending = {
+        "id": "old-call",
+        "type": "function",
+        "function": {"name": "list_dir", "arguments": '{"path":"old"}'},
+    }
+    checkpoint = LoopCheckpoint(
+        session_id=session.key,
+        task_id="task-1",
+        project_id="project-1",
+        step=2,
+        message_position=0,
+        remaining_iterations=3,
+        pending_tool_calls=("old-call",),
+        uncertain_side_effect_refs=("run_id:run-1",),
+        business_references={"run_id:run-1": "run-1"},
+        blocked_tool_call_fingerprints=(
+            tool_call_fingerprint("list_dir", {"path": "old"}),
+        ),
+    )
+    manager.ensure(checkpoint)
+    loop.loop_handoff_manager = manager
+    session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
+        "checkpoint": {"pending_tool_calls": [old_pending]},
+        "h7_loop_checkpoint": checkpoint.to_dict(),
+    }
+    loop.sessions.save(session)
+    before = manager.store.load(session.key)
+    loop.provider.chat_with_retry = AsyncMock(
+        side_effect=[
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="replay-call",
+                        name="list_dir",
+                        arguments={"path": "old"},
+                    )
+                ],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="new-call",
+                        name="list_dir",
+                        arguments={"path": "."},
+                    )
+                ],
+            ),
+            LLMResponse(content="new tool task completed"),
+        ]
+    )
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="paused-tool",
+            content="列一下当前这个新任务的目录，不要重做上一轮",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "new tool task completed"
+    loop.provider.chat_with_retry.assert_awaited()
+    after = manager.store.load(session.key)
+    assert before is not None and after is not None
+    assert after.owner_generation > before.owner_generation
+    assert "new-call" in after.checkpoint.completed_tool_results
+    assert any("exact tool call belongs to an earlier operation" in str(message.get("content"))
+               for message in session.messages if message.get("role") == "tool")
 
 
 @pytest.mark.asyncio

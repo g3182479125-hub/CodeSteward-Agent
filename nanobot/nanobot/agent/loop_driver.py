@@ -24,6 +24,24 @@ _BUSINESS_REFERENCE_KEYS = (
 _UNCERTAIN_STATUSES = frozenset({"unknown", "pending", "running", "in_progress"})
 
 
+def tool_call_fingerprint(name: str, arguments: object) -> str:
+    """Hash one tool proposal without persisting its arguments in H8 state."""
+    normalized_arguments = arguments
+    if isinstance(arguments, str):
+        try:
+            normalized_arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            normalized_arguments = arguments
+    payload = json.dumps(
+        {"name": name, "arguments": normalized_arguments},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class DriverActionKind(StrEnum):
     REQUEST_MODEL = "request_model"
     DISPATCH_TOOLS = "dispatch_tools"
@@ -250,6 +268,7 @@ class LoopCheckpoint:
     business_references: Mapping[str, str] = field(default_factory=dict)
     uncertain_side_effect_refs: tuple[str, ...] = ()
     checkpoint_schema: str = "h7-v1"
+    blocked_tool_call_fingerprints: tuple[str, ...] = ()
 
     _MAX_SERIALIZED_BYTES = 64 * 1024
 
@@ -279,6 +298,7 @@ class LoopCheckpoint:
             value.get("completed_tool_results", ()),
             value.get("pending_tool_calls", ()),
             value.get("uncertain_side_effect_refs", ()),
+            value.get("blocked_tool_call_fingerprints", ()),
         )
         if (
             not isinstance(versions, Mapping)
@@ -303,6 +323,9 @@ class LoopCheckpoint:
             versions=dict(versions),
             business_references=dict(business_references),
             uncertain_side_effect_refs=tuple(value.get("uncertain_side_effect_refs", ())),
+            blocked_tool_call_fingerprints=tuple(
+                value.get("blocked_tool_call_fingerprints", ())
+            ),
         )
         checkpoint.to_dict()
         return checkpoint

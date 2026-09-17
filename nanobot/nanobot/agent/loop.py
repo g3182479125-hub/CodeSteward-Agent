@@ -37,6 +37,7 @@ from nanobot.agent.loop_driver import (
     RemoteStrategyDriver,
     merge_business_facts,
     session_message_prefix_hash,
+    tool_call_fingerprint,
 )
 from nanobot.agent.loop_handoff import (
     LoopHandoffManager,
@@ -1458,6 +1459,36 @@ class AgentLoop:
             )
         ]
 
+    def _h7_blocked_tool_call_fingerprints(self, session: Session) -> frozenset[str]:
+        """Return exact old calls that must not be replayed in a fresh turn."""
+        raw_state = session.metadata.get(self._H7_HANDOFF_PAUSE_KEY)
+        if not isinstance(raw_state, Mapping):
+            return frozenset()
+        checkpoint = raw_state.get("checkpoint")
+        signatures: set[str] = set()
+        if isinstance(checkpoint, Mapping):
+            pending_tool_calls = checkpoint.get("pending_tool_calls")
+            if isinstance(pending_tool_calls, list):
+                for raw_call in pending_tool_calls:
+                    if not isinstance(raw_call, Mapping):
+                        continue
+                    function = raw_call.get("function")
+                    if not isinstance(function, Mapping):
+                        continue
+                    name = function.get("name")
+                    if isinstance(name, str) and name:
+                        signatures.add(
+                            tool_call_fingerprint(name, function.get("arguments", {}))
+                        )
+        h7_checkpoint = raw_state.get("h7_loop_checkpoint")
+        if isinstance(h7_checkpoint, Mapping):
+            fingerprints = h7_checkpoint.get("blocked_tool_call_fingerprints")
+            if isinstance(fingerprints, (list, tuple)):
+                signatures.update(
+                    item for item in fingerprints if isinstance(item, str)
+                )
+        return frozenset(signatures)
+
     async def _resolve_runtime_context_for_request(
         self,
         request: RequestContext,
@@ -1577,6 +1608,14 @@ class AgentLoop:
         assert record.operation_id is not None
         return record.operation_id
 
+    def reset_loop_handoff(self, session_id: str) -> None:
+        """Retire the current H8 owner for an explicit fresh-session command."""
+        if self.loop_handoff_manager is not None:
+            self.loop_handoff_manager.reset(session_id)
+        session = self.sessions.get_cached(session_id)
+        if session is not None:
+            session.metadata.pop(self._H7_HANDOFF_PAUSE_KEY, None)
+
     def request_remote_loop_driver_switch(
         self,
         session_id: str,
@@ -1664,14 +1703,45 @@ class AgentLoop:
         h7_business_references: dict[str, str] = {}
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
         h8_completed_tool_result_ids: set[str] = set()
+        h7_blocked_tool_call_fingerprints = set(
+            self._h7_blocked_tool_call_fingerprints(session)
+            if session is not None
+            else ()
+        )
+        current_tool_call_fingerprints: dict[str, str] = {}
         h8_driver: LoopDriver = DefaultReactDriver()
-        # A new user turn after an unresolved operation is deliberately
-        # independent from that old H8 dispatch.  We retain the old durable
-        # record for query/recovery, but do not let its managed driver reject
-        # every new model request.
+        # A new user turn after an unresolved operation is a fresh Host
+        # boundary. The durable H8 record remains authoritative and is still
+        # advanced for this turn; its managed driver only relaxes the old
+        # unresolved-ref gate, while the Host blocks exact legacy replays.
         h7_recovery_turn = bool(
             session is not None and self._H7_HANDOFF_PAUSE_KEY in session.metadata
         )
+        if h7_recovery_turn and session is not None:
+            raw_pause = session.metadata.get(self._H7_HANDOFF_PAUSE_KEY)
+            raw_checkpoint = (
+                raw_pause.get("h7_loop_checkpoint")
+                if isinstance(raw_pause, Mapping)
+                else None
+            )
+            if isinstance(raw_checkpoint, Mapping):
+                try:
+                    recovered_checkpoint = LoopCheckpoint.from_dict(raw_checkpoint)
+                except ValueError:
+                    recovered_checkpoint = None
+                if recovered_checkpoint is not None:
+                    h7_business_references = dict(
+                        recovered_checkpoint.business_references
+                    )
+                    h7_uncertain_side_effect_refs = tuple(
+                        recovered_checkpoint.uncertain_side_effect_refs
+                    )
+                    h8_completed_tool_result_ids.update(
+                        recovered_checkpoint.completed_tool_results
+                    )
+                    h7_blocked_tool_call_fingerprints.update(
+                        recovered_checkpoint.blocked_tool_call_fingerprints
+                    )
         h8_initial_step = 0
         h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
         # A handoff record establishes task/project ownership for its whole
@@ -1727,6 +1797,21 @@ class AgentLoop:
                 for item in completed
                 if isinstance(item, dict) and item.get("tool_call_id")
             )
+            for item in completed:
+                if isinstance(item, dict) and isinstance(item.get("tool_call_id"), str):
+                    current_tool_call_fingerprints.pop(str(item["tool_call_id"]), None)
+            for item in pending:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    continue
+                function = item.get("function")
+                if not isinstance(function, dict):
+                    continue
+                name = function.get("name")
+                if isinstance(name, str) and name:
+                    current_tool_call_fingerprints[str(item["id"])] = tool_call_fingerprint(
+                        name,
+                        function.get("arguments", {}),
+                    )
             checkpoint = LoopCheckpoint(
                 session_id=session.key,
                 task_id=h8_task_id,
@@ -1747,10 +1832,16 @@ class AgentLoop:
                 versions={"loop_driver": f"{driver_name}@{driver_version}"},
                 business_references=h7_business_references,
                 uncertain_side_effect_refs=h7_uncertain_side_effect_refs,
+                blocked_tool_call_fingerprints=tuple(
+                    sorted(
+                        h7_blocked_tool_call_fingerprints
+                        | set(current_tool_call_fingerprints.values())
+                    )
+                ),
             )
             public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
             self._set_runtime_checkpoint(session, public_payload, fsync=True)
-            if self.loop_handoff_manager is not None and not h7_recovery_turn:
+            if self.loop_handoff_manager is not None:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
                     generation_getter = getattr(h8_driver, "checkpoint_generation", None)
@@ -1902,11 +1993,7 @@ class AgentLoop:
             or self.plugin_manager.project_id_for_path(effective_scope.project_path)
         )
         profile = self.task_profile_for_session(session) if session is not None else None
-        if (
-            self.loop_handoff_manager is not None
-            and session is not None
-            and not h7_recovery_turn
-        ):
+        if self.loop_handoff_manager is not None and session is not None:
             try:
                 initial_checkpoint = LoopCheckpoint(
                     session_id=session.key,
@@ -1962,25 +2049,16 @@ class AgentLoop:
                 h7_business_references = dict(record.checkpoint.business_references)
                 h7_uncertain_side_effect_refs = tuple(record.checkpoint.uncertain_side_effect_refs)
                 h8_completed_tool_result_ids.update(record.checkpoint.completed_tool_results)
-                h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
+                h7_blocked_tool_call_fingerprints.update(
+                    record.checkpoint.blocked_tool_call_fingerprints
+                )
+                h8_driver = ManagedLoopDriver(
+                    self.loop_handoff_manager,
+                    session.key,
+                    allow_unresolved_side_effects=h7_recovery_turn,
+                )
             except RuntimeError:
                 h8_driver = DefaultReactDriver()
-        elif h7_recovery_turn and self.loop_handoff_manager is not None and session is not None:
-            # Seed the in-memory checkpoint facts from the old operation, but
-            # never mutate that H8 record from this independent turn.  Any new
-            # side effect is protected by the ordinary runtime checkpoint and
-            # can become a fresh H7 pause if the process stops mid-turn.
-            try:
-                record = self.loop_handoff_manager.store.load(session.key)
-            except (OSError, RuntimeError, ValueError):
-                record = None
-            if record is not None:
-                h8_task_id = record.task_id
-                h8_project_id = record.project_id
-                h8_initial_step = record.checkpoint.step
-                h7_business_references = dict(record.checkpoint.business_references)
-                h7_uncertain_side_effect_refs = tuple(record.checkpoint.uncertain_side_effect_refs)
-                h8_completed_tool_result_ids.update(record.checkpoint.completed_tool_results)
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
@@ -2130,6 +2208,15 @@ class AgentLoop:
                         else None
                     ),
                     loop_driver=h8_driver,
+                    blocked_tool_call_fingerprints=(
+                        frozenset(h7_blocked_tool_call_fingerprints)
+                        if session is not None and h7_recovery_turn
+                        else frozenset()
+                    ),
+                    block_unidentified_tool_calls=(
+                        bool(h7_recovery_turn and h7_uncertain_side_effect_refs)
+                        and not h7_blocked_tool_call_fingerprints
+                    ),
                     initial_step=h8_initial_step,
                     host_message_position=(len(session.messages) if session is not None else None),
                     remote_decision_callback=(

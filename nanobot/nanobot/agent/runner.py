@@ -18,7 +18,13 @@ from nanobot.agent.context_governance import (
     ContextGovernor,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
-from nanobot.agent.loop_driver import DefaultReactDriver, DriverActionKind, LoopDriver, StepInput
+from nanobot.agent.loop_driver import (
+    DefaultReactDriver,
+    DriverActionKind,
+    LoopDriver,
+    StepInput,
+    tool_call_fingerprint,
+)
 from nanobot.agent.loop_driver_projection import build_remote_projection, validate_remote_decision
 from nanobot.agent.task_profiles import TaskLoopGuard
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
@@ -137,6 +143,12 @@ class AgentRunSpec:
     # comparing a filtered prompt length with an unfiltered checkpoint.
     host_message_position: int | None = None
     remote_decision_callback: RemoteDecisionCallback | None = None
+    # Exact calls recovered from an older unresolved turn are blocked at the
+    # Host tool boundary. New, unrelated calls remain available to the model.
+    blocked_tool_call_fingerprints: frozenset[str] = field(default_factory=frozenset)
+    # Legacy H7 records may not have fingerprints. Fail closed for side effects
+    # in that case; the user can start a clean task with /new.
+    block_unidentified_tool_calls: bool = False
 
 
 @dataclass(slots=True)
@@ -1580,6 +1592,26 @@ class AgentRunner:
     ) -> tuple[Any, dict[str, str], BaseException | None]:
         hook = hook or AgentHook()
         context = context or AgentHookContext(iteration=0, messages=[])
+        is_blocked_replay = (
+            tool_call_fingerprint(tool_call.name, tool_call.arguments)
+            in spec.blocked_tool_call_fingerprints
+        )
+        if is_blocked_replay or (
+            spec.block_unidentified_tool_calls
+            and not spec.blocked_tool_call_fingerprints
+        ):
+            detail = (
+                "This exact tool call belongs to an earlier operation whose result is unknown; "
+                "it was not replayed. Query or recover that operation instead."
+                if is_blocked_replay
+                else "An earlier operation has an unknown result; this tool call was not replayed. "
+                "Start a new task with /new or query/recover the earlier operation."
+            )
+            return (
+                f"Error: {detail}",
+                {"name": tool_call.name, "status": "blocked", "detail": detail},
+                None,
+            )
         hint = "\n\n[Analyze the error above and try a different approach.]"
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
