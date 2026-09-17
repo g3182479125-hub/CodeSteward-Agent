@@ -5,7 +5,8 @@
 - 仓库：<https://github.com/g3182479125-hub/devflow-agent>
 - 分支：`codex/h11-complete-handoff`
 - 本次提交包含：FC 项目测试兼容、默认 pytest 临时启动安装、WebUI 搜索不阻塞事件循环、自然语言 Bug-fix 证据门槛修复、录屏稿和相应回归测试；FC fallback 修复为 `e5d168e`、`d722a67`、`bf70a22`，pytest 启动安装由本次交付加入。
-- 不包含：API Key、`.env`、SQLite、日志、临时 pytest 目录、训练项目目录，以及 `nanobot/webui/package-lock.json` 的既有本地变更。
+- 不包含：API Key、`.env`、SQLite、日志、临时 pytest 目录，以及 `nanobot/webui/package-lock.json` 的既有本地变更。
+- 已包含：`training-projects/python-project-template-bugfix` 这份独立、故意故障的录制训练项目；不包含其他本机临时训练目录。
 
 ## 本次完成内容
 
@@ -105,7 +106,11 @@ git pull --ff-only origin codex/h11-complete-handoff
 
 ## 演示项目说明
 
-本机验证用的 `recording-unknown-bug-demo` 位于状态工作区之外，不会随 Git 提交。换电脑录制前，需要按录屏稿准备一个独立、未修复的 Python 项目：README、`pricing.py` 和至少一个失败测试即可。不要把问题答案告诉 Agent；只在录制前由操作者将该项目加入 AllowedRoots、FC 白名单并登记为可信项目。
+录制训练项目已经上传到 `training-projects/python-project-template-bugfix`，其中有 `main.py`、
+`tests/main_test.py`、`CHALLENGE.md` 和三个项目级 Skill。它保持未修复基线，录制开始前应看到
+`3 failed, 2 passed`；不要把它当作正常产品源码，也不要提前手动修复来伪造 Agent 的结果。
+换电脑后直接按 [`training-projects/README.md`](../../../training-projects/README.md) 克隆、启动、
+登记项目和录制。只在录制前由操作者将该项目加入 AllowedRoots、FC 白名单并登记为可信项目。
 
 ## 下一步建议
 

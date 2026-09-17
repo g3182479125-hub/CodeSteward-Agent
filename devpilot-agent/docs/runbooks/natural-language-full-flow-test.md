@@ -6,7 +6,7 @@
 
 演示项目是 python-project-template-bugfix，它是从 GitHub 开源模板复制出来的独立训练副本：
 
-- 项目目录：D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix
+- 项目目录：仓库根目录下的 `training-projects/python-project-template-bugfix`
 - 上游项目：[pamelafox/python-project-template](https://github.com/pamelafox/python-project-template)
 - 入口文件：main.py
 - 测试文件：tests/main_test.py
@@ -23,7 +23,9 @@
 打开 PowerShell，执行：
 
 ~~~~powershell
-Set-Location 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix'
+$repoRoot = (Resolve-Path .).Path
+$project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
+Set-Location $project
 python -m pytest -q tests/main_test.py
 ~~~~
 
@@ -33,18 +35,18 @@ python -m pytest -q tests/main_test.py
 
 ### 2. 检查三个 Profile 的 Skill
 
-新电脑从 GitHub 拉下来的主仓库不会自动带上未跟踪的 training-projects 目录，也不会自动带上这个训练项目里的 skills 目录。录制前要确认下面三个文件存在：
+训练项目已经随当前分支上传到 GitHub。录制前要确认下面三个文件存在：
 
 ~~~~text
-D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix\skills\bug-fix\SKILL.md
-D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix\skills\repo-analysis\SKILL.md
-D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix\skills\feature-delivery\SKILL.md
+<repoRoot>\training-projects\python-project-template-bugfix\skills\bug-fix\SKILL.md
+<repoRoot>\training-projects\python-project-template-bugfix\skills\repo-analysis\SKILL.md
+<repoRoot>\training-projects\python-project-template-bugfix\skills\feature-delivery\SKILL.md
 ~~~~
 
-如果缺文件，在仓库根目录执行下面的准备命令。已有文件不要覆盖，因为它可能是人工确认过的版本：
+如果缺文件，在仓库根目录执行下面的准备命令。正常从当前分支拉取后不需要执行；已有文件不要覆盖：
 
 ~~~~powershell
-$repoRoot = 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate'
+$repoRoot = (Resolve-Path .).Path
 $project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
 Set-Location (Join-Path $repoRoot 'devpilot-agent')
 
@@ -61,21 +63,23 @@ foreach ($skillName in @('bug-fix', 'repo-analysis', 'feature-delivery')) {
 下面的路径是本机示例。换电脑时只替换路径，不要把 config.json 内容、API Key、数据库或日志录进视频。
 
 ~~~~powershell
-$repoRoot = 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate'
+$repoRoot = (Resolve-Path .).Path
 $project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
-$configPath = 'D:\Users\tianmin.li\.nanobot\config.json'
-$workspacePath = 'D:\Users\tianmin.li\.nanobot\workspace'
-$dataPath = 'D:\Users\tianmin.li\.nanobot\devpilot-data-recording'
-$trainingRoot = Join-Path $repoRoot 'training-projects'
-$allowedRoots = "$workspacePath;$trainingRoot"
+$configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
+$workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
+$dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
+$allowedRoots = "$workspacePath;$repoRoot"
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable('DEVPILOT_CONTROL_PLANE_TOKEN', 'User')
 $env:DEVPILOT_FC_ALLOWED_PROJECTS = $project
+$env:DEVPILOT_FC_INSTALL_PYTEST = '1'
+$env:DEVPILOT_FC_NETWORK_POLICY_MODE = 'provider-default'
 Set-Location $repoRoot
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1 -ConfigPath $configPath -WorkspacePath $workspacePath -DataPath $dataPath -AllowedRoots $allowedRoots -ValidateOnly
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1 -ConfigPath $configPath -WorkspacePath $workspacePath -DataPath $dataPath -AllowedRoots $allowedRoots
 ~~~~
 
-第一条应输出：Harness paths are valid. Workspace is constrained to the configured allowed roots。第二条会以前台方式启动 nanobot WebUI，并同时检查或启动本机 DevPilot 控制面。
+第一条应输出：Harness paths are valid. Workspace is constrained to the configured allowed roots。第二条会以前台方式启动 nanobot WebUI，并同时检查或启动本机 DevPilot 控制面。换电脑时只替换 `$repoRoot`、本机配置路径和状态目录，不要复制另一台电脑的模型密钥或 `config.json` 私密内容。
 
 打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)，在项目选择器里选择上面的完整项目目录。录制时同时显示 WebUI 和项目终端。
 
@@ -134,7 +138,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts
 切到项目终端，再执行一次：
 
 ~~~~powershell
-Set-Location 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix'
+$repoRoot = (Resolve-Path .).Path
+$project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
+Set-Location $project
 python -m pytest -q tests/main_test.py
 ~~~~
 
@@ -283,7 +289,9 @@ Agent 开始处理后点击“停止响应”，刷新页面，再回到同一�
 回到项目目录，执行：
 
 ~~~~powershell
-Set-Location 'D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\python-project-template-bugfix'
+$repoRoot = (Resolve-Path .).Path
+$project = Join-Path $repoRoot 'training-projects\python-project-template-bugfix'
+Set-Location $project
 python -m pytest -q tests/main_test.py
 git status --short
 ~~~~
@@ -311,7 +319,7 @@ git status --short
 
 ## 五、换电脑时要带什么
 
-主仓库地址：<https://github.com/g3182479125-hub/devflow-agent>。换电脑后先拉取当前分支，安装集成依赖，再按 devpilot-agent/docs/runbooks/local-nanobot-devpilot.md 配置本机模型和路径。训练项目当前是工作区里的独立未跟踪目录，主仓库不会自动带上；需要另外复制或重新从上游模板准备，并重新保留三个故障。旧机器的 SQLite、日志、模型密钥、确认 token 和 Skill 候选不要复制到新电脑。
+主仓库地址：<https://github.com/g3182479125-hub/devflow-agent>。换电脑后拉取当前分支，训练项目会在 `training-projects/python-project-template-bugfix`，不需要另外复制或从上游重新制作。安装集成依赖后，按 `training-projects/README.md` 和 `devpilot-agent/docs/runbooks/local-nanobot-devpilot.md` 配置本机模型和路径。旧机器的 SQLite、日志、模型密钥、确认 token 和 Skill 候选不要复制到新电脑。
 
 相关文档：
 
