@@ -10,6 +10,7 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.loop_driver import LoopCheckpoint
+from nanobot.agent.loop_handoff import LoopHandoffManager, SqliteLoopHandoffStore
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
@@ -665,7 +666,9 @@ def test_restore_h7_uncertain_operation_pauses_without_interrupted_tool_result()
 
 
 @pytest.mark.asyncio
-async def test_h7_paused_handoff_blocks_new_message_dispatch(tmp_path: Path) -> None:
+async def test_h7_paused_handoff_allows_new_message_without_replaying_old_work(
+    tmp_path: Path,
+) -> None:
     loop = _make_full_loop(tmp_path)
     session = loop.sessions.get_or_create("websocket:paused")
     session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
@@ -687,13 +690,61 @@ async def test_h7_paused_handoff_blocks_new_message_dispatch(tmp_path: Path) -> 
     }
     loop.sessions.save(session)
 
+    loop.provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="continued"))
+
     response = await loop._process_message(
-        InboundMessage(channel="websocket", sender_id="user", chat_id="paused", content="continue")
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="paused",
+            content="你好，先回答我现在这个新问题",
+        )
     )
 
     assert response is not None
-    assert "任务已暂停" in response.content
-    loop.provider.chat_with_retry.assert_not_awaited()
+    assert response.content == "continued"
+    loop.provider.chat_with_retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    session = loop.sessions.get_or_create("websocket:paused-managed")
+    checkpoint = LoopCheckpoint(
+        session_id=session.key,
+        task_id="task-1",
+        project_id="project-1",
+        step=2,
+        message_position=0,
+        remaining_iterations=3,
+        pending_tool_calls=("call-1",),
+        uncertain_side_effect_refs=("run_id:run-1",),
+        business_references={"run_id:run-1": "run-1"},
+    )
+    manager.ensure(checkpoint)
+    loop.loop_handoff_manager = manager
+    session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
+        "checkpoint": {},
+        "h7_loop_checkpoint": checkpoint.to_dict(),
+    }
+    loop.sessions.save(session)
+    before = manager.store.load(session.key)
+    loop.provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="new answer"))
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="paused-managed",
+            content="只回答这个新的问题，不要继续上一次操作",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "new answer"
+    loop.provider.chat_with_retry.assert_awaited_once()
+    assert manager.store.load(session.key) == before
 
 
 @pytest.mark.asyncio

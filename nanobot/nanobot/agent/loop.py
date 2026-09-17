@@ -99,6 +99,7 @@ from nanobot.runtime_context import (
     append_runtime_context,
     resolve_runtime_context,
     runtime_context_blocks_from_metadata,
+    wrap_runtime_context_lines,
 )
 from nanobot.security.workspace_access import (
     WorkspaceScopeResolver,
@@ -1423,6 +1424,40 @@ class AgentLoop:
             ctx.tools or self.tools,
         )
 
+    def _h7_recovery_context_blocks(self, session: Session) -> list[RuntimeContextBlock]:
+        """Tell a fresh turn about an older unknown operation without locking it.
+
+        H7 facts are safety metadata, not a reason to reject unrelated user
+        messages.  Keep the warning model-only so the visible conversation is
+        not polluted, and keep the wording bounded to durable references.
+        """
+        raw_state = session.metadata.get(self._H7_HANDOFF_PAUSE_KEY)
+        if not isinstance(raw_state, Mapping):
+            return []
+        checkpoint = raw_state.get("h7_loop_checkpoint")
+        if not isinstance(checkpoint, Mapping):
+            return []
+        references = checkpoint.get("business_references")
+        reference_lines = [
+            f"- {key}: {value}"
+            for key, value in references.items()
+            if isinstance(key, str) and isinstance(value, str)
+        ] if isinstance(references, Mapping) else []
+        lines = [
+            "An earlier operation in this conversation has an unknown or unfinished result.",
+            "Do not replay that earlier tool call or claim that it succeeded.",
+            "Handle the current user request independently; use the available status or recovery action only if the user asks about that earlier operation.",
+        ]
+        if reference_lines:
+            lines.append("Durable references for that earlier operation:")
+            lines.extend(reference_lines[:16])
+        return [
+            RuntimeContextBlock(
+                source="h7_recovery",
+                content=wrap_runtime_context_lines(lines),
+            )
+        ]
+
     async def _resolve_runtime_context_for_request(
         self,
         request: RequestContext,
@@ -1630,6 +1665,13 @@ class AgentLoop:
         h7_uncertain_side_effect_refs: tuple[str, ...] = ()
         h8_completed_tool_result_ids: set[str] = set()
         h8_driver: LoopDriver = DefaultReactDriver()
+        # A new user turn after an unresolved operation is deliberately
+        # independent from that old H8 dispatch.  We retain the old durable
+        # record for query/recovery, but do not let its managed driver reject
+        # every new model request.
+        h7_recovery_turn = bool(
+            session is not None and self._H7_HANDOFF_PAUSE_KEY in session.metadata
+        )
         h8_initial_step = 0
         h8_iteration_budget = max_iterations if max_iterations is not None else self.max_iterations
         # A handoff record establishes task/project ownership for its whole
@@ -1708,7 +1750,7 @@ class AgentLoop:
             )
             public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
             self._set_runtime_checkpoint(session, public_payload, fsync=True)
-            if self.loop_handoff_manager is not None:
+            if self.loop_handoff_manager is not None and not h7_recovery_turn:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
                     generation_getter = getattr(h8_driver, "checkpoint_generation", None)
@@ -1860,7 +1902,11 @@ class AgentLoop:
             or self.plugin_manager.project_id_for_path(effective_scope.project_path)
         )
         profile = self.task_profile_for_session(session) if session is not None else None
-        if self.loop_handoff_manager is not None and session is not None:
+        if (
+            self.loop_handoff_manager is not None
+            and session is not None
+            and not h7_recovery_turn
+        ):
             try:
                 initial_checkpoint = LoopCheckpoint(
                     session_id=session.key,
@@ -1919,6 +1965,22 @@ class AgentLoop:
                 h8_driver = ManagedLoopDriver(self.loop_handoff_manager, session.key)
             except RuntimeError:
                 h8_driver = DefaultReactDriver()
+        elif h7_recovery_turn and self.loop_handoff_manager is not None and session is not None:
+            # Seed the in-memory checkpoint facts from the old operation, but
+            # never mutate that H8 record from this independent turn.  Any new
+            # side effect is protected by the ordinary runtime checkpoint and
+            # can become a fresh H7 pause if the process stops mid-turn.
+            try:
+                record = self.loop_handoff_manager.store.load(session.key)
+            except (OSError, RuntimeError, ValueError):
+                record = None
+            if record is not None:
+                h8_task_id = record.task_id
+                h8_project_id = record.project_id
+                h8_initial_step = record.checkpoint.step
+                h7_business_references = dict(record.checkpoint.business_references)
+                h7_uncertain_side_effect_refs = tuple(record.checkpoint.uncertain_side_effect_refs)
+                h8_completed_tool_result_ids.update(record.checkpoint.completed_tool_results)
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
         workspace_token = bind_workspace_scope(effective_scope)
@@ -2686,13 +2748,14 @@ class AgentLoop:
 
         if self._restore_runtime_checkpoint(session):
             self.sessions.save(session)
-        if self._H7_HANDOFF_PAUSE_KEY in session.metadata:
-            ctx.final_content = (
-                "任务已暂停：上一次操作的结果尚未确认。"
-                "系统已保留运行引用，后续只能查询或恢复，不能重放执行。"
-            )
-            ctx.stop_reason = "h7_handoff_paused"
-            return
+        # An unresolved H7 operation is scoped to the earlier execution, not
+        # to the whole conversation.  The old behavior returned here for every
+        # inbound message, which meant even a greeting or a read-only question
+        # permanently locked the WebUI session.  Keep the durable marker so
+        # explicit query/recovery actions can still find it, but let this new
+        # user turn proceed.  _build_turn adds a model-only advisory and
+        # _run_agent_loop uses a fresh default driver so the old tool call is
+        # never replayed.
         if self._restore_pending_user_turn(session):
             self.sessions.save(session)
 
@@ -2810,6 +2873,9 @@ class AgentLoop:
         ctx.request_context = self._request_context_for_turn(ctx)
         if ctx.kind is TurnKind.USER:
             ctx.runtime_context_blocks = await self._resolve_runtime_context_for_turn(ctx)
+            ctx.runtime_context_blocks.extend(
+                self._h7_recovery_context_blocks(session)
+            )
         staged_provider_state = False
         if stored_state is not None and runtime.provider.can_resume_conversation_state(
             stored_state,
