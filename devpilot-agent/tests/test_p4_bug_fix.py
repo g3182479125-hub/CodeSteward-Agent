@@ -192,6 +192,23 @@ def test_bug_fix_proposal_reuses_the_latest_complete_same_project_analysis(
     assert proposal.preview["analysis_evidence_ids"] == (complete_analysis_id,)
 
 
+def test_bug_fix_proposal_reuses_complete_history_beyond_many_incomplete_runs(
+    tmp_path: Path,
+) -> None:
+    store, project, manager, complete_analysis_id, failure_id = _setup(tmp_path)
+    analysis_service = ProjectAnalysisService(
+        allowed_roots=manager.patch_service.allowed_roots,
+        store=store,
+    )
+    incomplete = analysis_service.inspect(project)
+    for _ in range(32):
+        incomplete = analysis_service.inspect(project)
+
+    proposal = _propose(manager, project, incomplete.run_id, failure_id)
+
+    assert proposal.analysis_evidence_ids == (complete_analysis_id,)
+
+
 def test_bug_fix_proposal_rejects_incomplete_analysis_without_same_project_history(
     tmp_path: Path,
 ) -> None:
