@@ -323,18 +323,10 @@ class TaskLoopGuard:
         return None
 
     def observe_success(self) -> None:
-        """Reset the current diagnostic sequence after new evidence succeeds.
-
-        A successful tool call establishes fresh evidence.  Errors before that
-        success must not consume the bounded diagnostic budget for the next
-        step: ordinary multi-step tasks routinely recover from a malformed
-        tool call, inspect more code, and then encounter an unrelated error.
-        """
+        """Reset only the consecutive-error streak after new evidence succeeds."""
 
         self._last_fingerprint = None
         self._consecutive = 0
-        self._seen_errors.clear()
-        self._branches = 0
 
     def to_state(self, profile_binding: str) -> dict[str, Any]:
         """Serialize bounded counters and hashes for the current profile version."""

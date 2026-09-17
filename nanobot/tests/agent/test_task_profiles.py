@@ -130,19 +130,6 @@ def test_task_loop_guard_resets_consecutive_streak_after_success() -> None:
     assert guard.observe("tool", {}, "Error: transient") is None
 
 
-def test_task_loop_guard_resets_diagnostic_branches_after_success() -> None:
-    guard = TaskLoopGuard()
-
-    assert guard.observe("tool", {"hypothesis": 1}, "Error: first") is None
-    assert guard.observe("tool", {"hypothesis": 2}, "Error: second") is None
-    guard.observe_success()
-
-    # This is a new diagnostic sequence, not a continuation of the earlier
-    # recovered failures.
-    assert guard.observe("tool", {"hypothesis": 3}, "Error: third") is None
-    assert guard.observe("tool", {"hypothesis": 4}, "Error: fourth") is None
-
-
 def test_task_loop_guard_state_restores_for_the_same_profile_version() -> None:
     guard = TaskLoopGuard()
     for _ in range(2):
