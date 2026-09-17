@@ -115,7 +115,7 @@ D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\pyt
 ### 本次 WebUI 没有通过、不能假装通过
 
 - 当前 DeepSeek V4.1 Flash 在读取 Run/项目工具后出现“工具调用完成，但没有生成最终答复”；
-- 继续追问会触发“上一次操作的结果尚未确认”，H8 正确暂停并禁止重放；
+- 旧操作结果未知时，H8 仍保留运行引用并禁止重放原副作用调用；但新的普通消息、只读问题和状态/恢复查询可以继续处理，不再把整条会话锁死；
 - 普通 bug-fix WebUI Profile 没有 shell/exec 工具，Agent 不会替用户在本机终端执行 pytest；
 - devpilot_bug_fix_propose 需要服务端保存的失败 Run 和分析 Run；聊天里手动说“3 failed”不是合法失败证据；
 - 因此本轮没有把 bug-fix 的正式 Diff、Apply、Verify、Rollback 记为 WebUI 通过；
@@ -132,7 +132,7 @@ D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate\training-projects\pyt
 5. 按录屏稿中的 -ValidateOnly 命令检查路径，再启动 Harness。
 6. 打开 http://127.0.0.1:8765，选择训练项目，先发 /task-profile bug-fix。
 7. 每次只发一条短消息；等当前回合结束后再发下一条。
-8. 如果出现“上一次操作的结果尚未确认”，新开浏览器标签页和新会话，不要在暂停会话中重发。
+8. 如果出现“上一次操作的结果尚未确认”，不要重复发送原来的副作用请求；可以在原会话继续发普通消息、只读问题或状态/恢复查询，需要完全换任务时再发 `/new`。
 9. 测试结果以项目终端和服务端持久状态为准，不以聊天中的“应该通过”作为证据。
 
 ## 7. 下一位开发者先做什么

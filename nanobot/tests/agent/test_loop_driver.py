@@ -148,6 +148,18 @@ def test_business_facts_settle_completed_pending_tool_without_losing_unknown_run
     assert uncertain == ("run_id:run-1",)
 
 
+def test_business_facts_clear_unknown_run_after_terminal_status() -> None:
+    references, uncertain = merge_business_facts(
+        {},
+        ("run_id:run-1",),
+        [{"content": '{"status":"completed","run_id":"run-1"}'}],
+        [],
+    )
+
+    assert references == {"run_id:run-1": "run-1"}
+    assert uncertain == ()
+
+
 @pytest.mark.asyncio
 async def test_runner_calls_driver_at_model_and_tool_boundaries() -> None:
     class RecordingDriver:

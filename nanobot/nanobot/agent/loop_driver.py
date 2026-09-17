@@ -22,6 +22,7 @@ _BUSINESS_REFERENCE_KEYS = (
     "approval_id",
 )
 _UNCERTAIN_STATUSES = frozenset({"unknown", "pending", "running", "in_progress"})
+_SETTLED_STATUSES = frozenset({"completed", "failed", "cancelled", "rejected", "not_found"})
 
 
 def tool_call_fingerprint(name: str, arguments: object) -> str:
@@ -235,9 +236,14 @@ def merge_business_facts(
         for key, item in identifiers.items():
             merged[f"{key}:{item[:256]}"] = item[:256]
         status = value.get("status")
-        if isinstance(status, str) and status.lower() in _UNCERTAIN_STATUSES:
-            for key, item in identifiers.items():
-                uncertain.add(f"{key}:{item[:256]}")
+        if isinstance(status, str):
+            normalized_status = status.lower()
+            if normalized_status in _UNCERTAIN_STATUSES:
+                for key, item in identifiers.items():
+                    uncertain.add(f"{key}:{item[:256]}")
+            elif normalized_status in _SETTLED_STATUSES:
+                for key, item in identifiers.items():
+                    uncertain.discard(f"{key}:{item[:256]}")
         for item in value.values():
             record(item)
 

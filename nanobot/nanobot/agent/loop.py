@@ -1841,6 +1841,7 @@ class AgentLoop:
             )
             public_payload["h7_loop_checkpoint"] = checkpoint.to_dict()
             self._set_runtime_checkpoint(session, public_payload, fsync=True)
+            handoff_boundary_committed = self.loop_handoff_manager is None
             if self.loop_handoff_manager is not None:
                 try:
                     self.loop_handoff_manager.ensure(checkpoint, h8_driver)
@@ -1856,11 +1857,24 @@ class AgentLoop:
                     note_committed = getattr(h8_driver, "note_checkpoint_committed", None)
                     if callable(note_committed):
                         note_committed(committed)
+                    handoff_boundary_committed = True
                 except (OSError, RuntimeError, ValueError) as exc:
                     # Keep the exact Host checkpoint even when optional H8
                     # handoff persistence cannot advance.  A later restore
                     # therefore pauses rather than replaying unknown work.
                     logger.warning("Loop handoff checkpoint was not committed: {}", exc)
+            if (
+                h7_recovery_turn
+                and checkpoint.switch_safe
+                and handoff_boundary_committed
+                and self._H7_HANDOFF_PAUSE_KEY in session.metadata
+            ):
+                # A status/recovery action has settled the old operation at a
+                # committed boundary.  Remove only the recovery marker; the
+                # durable checkpoint remains the source of truth for the new
+                # conversation state.
+                session.metadata.pop(self._H7_HANDOFF_PAUSE_KEY, None)
+                self.sessions.save(session, fsync=True)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
             """Drain follow-up messages from the pending queue.
