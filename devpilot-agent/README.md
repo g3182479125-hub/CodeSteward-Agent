@@ -22,26 +22,17 @@ P8 的必读实施规格：[Skill 持续改进](docs/plans/SKILL_IMPROVEMENT.md)
 
 ## 当前状态
 
-项目已完成 P0/P1、P2A 和 P2B：提供受限代码访问、结构化 ChangeSet、人工审批、
-Apply、Rollback 和持久化恢复。当前还没有把仓库代码交给本机任意 Shell 执行；
-FC Agent Sandbox 的可选执行端口已实现，但云端连通性必须由用户配置凭据后单独验证。
-项目不改写 nanobot 的 Runtime、权限和执行边界；当前主流程通过 nanobot Tool 和对话确认完成
-Changeset 提案和状态查看。R1/R2 动作仍需受信任的本地 Action Broker；Broker 完成前不得
-声称“仅靠聊天即可执行”。独立审批 WebUI 已移除，主流程只使用 nanobot 自带 WebUI。
+截至 2026-09-17，P0–P8 与 H1–H11 已按当前冻结计划完成，并保留各节点的 evidence、
+测试和 Standards/Spec 双轴 review。当前不应再依据旧 README 中“只完成 H1–H4”或“H6–H10
+尚未开始”的历史描述判断项目状态；详细事实以 [当前精简执行计划](docs/plans/CURRENT_PLAN.md)
+和[最终换机交接](docs/handoffs/2026-09-17-final-cross-machine-handoff.md)为准。
 
-运行中可重组 Harness 扩展目前已完成 H1–H4；H5 的模型候选受控试运行已形成代码检查点
-`c115aef`，但双轴增量 Review 仍为 `NEEDS_FIX`，H6–H10 尚未开始。当前事实、测试结果、
-FC 现场记录和换机步骤以 [H5 交接文档](docs/handoffs/2026-09-11-h5-github-handoff.md)
-和 [H5 证据](docs/evidence/live-harness/h5-candidate-execution.md) 为准。
+最近一批维护修复了工具失败后的用户体验：普通聊天、只读问题、状态/恢复查询可以继续；
+旧未知副作用调用仍禁止重放，审批、执行、回滚门禁不变。当前项目仍以 nanobot 为唯一主
+Runtime，DevPilot 提供受控代码交付与验证，FC 需要每台电脑自行配置并复验。
 
-新 AI/开发者接手本项目时，先阅读
- [当前精简执行计划](docs/plans/CURRENT_PLAN.md) 和
- [计划修订依据](docs/adr/ADR-0006-nanobot-first-personal-agent.md) 和
- [Harness 借鉴落点](docs/plans/HARNESS_ADOPTION.md)。以下交接仅用于历史定位：
-[P4-01 问题复盘与项目模块地图](docs/handoffs/2026-09-03-project-map-and-p4-01-lessons.md)，
-以及最新的
-[P5 → P6 交接文档](docs/handoffs/2026-09-04-p5-p6-handoff.md)，
-再按其中的顺序读取冻结计划、当前 evidence 和模块代码。
+新开发者接手时，先完整阅读当前精简执行计划、ADR-0004、相关 Skill、
+[Harness 借鉴落点](docs/plans/HARNESS_ADOPTION.md)和[最终换机交接](docs/handoffs/2026-09-17-final-cross-machine-handoff.md)。
 
 ## 本地目录约定
 
