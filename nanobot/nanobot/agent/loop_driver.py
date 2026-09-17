@@ -242,15 +242,20 @@ def merge_business_facts(
                 for key, item in identifiers.items():
                     uncertain.add(f"{key}:{item[:256]}")
             elif normalized_status in _SETTLED_STATUSES:
+                settled_refs = {
+                    f"{key}:{item[:256]}" for key, item in identifiers.items()
+                }
+                settles_existing_operation = bool(settled_refs & uncertain)
                 for key, item in identifiers.items():
                     uncertain.discard(f"{key}:{item[:256]}")
-                # A terminal recovery result settles the stale in-process
-                # intent that led to this business operation as well. Any
-                # tool calls in the current checkpoint are re-added below,
-                # so this only retires older unknown intents.
-                for ref in tuple(uncertain):
-                    if ref.startswith("tool_call:"):
-                        uncertain.discard(ref)
+                if settles_existing_operation:
+                    # A matching terminal recovery result settles the stale
+                    # in-process intent that led to this business operation
+                    # as well. Any tool calls in the current checkpoint are
+                    # re-added below, so this only retires older intents.
+                    for ref in tuple(uncertain):
+                        if ref.startswith("tool_call:"):
+                            uncertain.discard(ref)
         for item in value.values():
             record(item)
 
