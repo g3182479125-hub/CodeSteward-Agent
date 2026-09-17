@@ -23,7 +23,7 @@
 | 检查 | 结果 |
 |---|---|
 | `tests/agent/test_task_profiles.py`（当前仓库源码路径） | 10 passed |
-| `tests/agent/test_loop_runner_integration.py` | 16 passed |
+| `tests/agent/test_loop_runner_integration.py` | 17 passed |
 | `tests/agent/test_loop_handoff.py` | 36 passed |
 | `tests/agent/test_loop_save_turn.py` | 77 passed |
 | Ruff（变更文件） | passed |
