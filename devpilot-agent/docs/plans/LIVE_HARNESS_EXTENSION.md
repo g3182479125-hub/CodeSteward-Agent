@@ -1,6 +1,6 @@
 # DevFlow：运行中可重组 Harness 扩展计划
 
-版本：0.7，2026-09-15；状态：H1–H10 已完成节点验收；H10-A/H10-B/H10-C/H10-D 均已完成，交付复核见 `docs/reviews/h10-product-review-2026-09-15.md`。H11“权限模式驱动候选工具自主策略”已完成 H11-A–E 验收，并按 ADR-0004 通过 Standards/Spec 双轴增量复核；最终候选为 `fd7de83`，证据见 `docs/evidence/live-harness/h11-autonomy-policy.md`。
+版本：0.8，2026-09-17；状态：H1–H10 已完成节点验收；H10-A/H10-B/H10-C/H10-D 均已完成，交付复核见 `docs/reviews/h10-product-review-2026-09-15.md`。H11“权限模式驱动候选工具自主策略”已完成 H11-A–E 验收，并按 ADR-0004 通过 Standards/Spec 双轴增量复核；H7/H8 另完成一次不新增范围的“不确定回合恢复”维护性修正，代码候选为 `331beaa`；证据见 `docs/evidence/live-harness/h7-h8-uncertain-turn-recovery-correction.md`。
 当前实现：H1 已在固定候选 `2930119` 完成并通过 Standards / Spec 双轴审查；H2 已在固定候选
 `b8141f0` 完成并通过增量 Standards / Spec 双轴复核；H3 已在固定候选 `6159add` 完成并通过
 增量 Standards / Spec 双轴复核；H4 已在固定候选 `78456c6` 完成并通过增量 Standards / Spec 双轴复核；H5 已在 `e08299e` 完成，并由同一对 reviewer 对 `9d216c7...e08299e` 做增量 Standards / Spec 双轴复核且均为 `PASS`；H6 代码、自动化测试、真实 DeepSeek + nanobot WebUI + 杭州 FC 场景验收及最终增量复核均已完成；H7 已在 `0cdb1eb` 完成 Host/Driver 边界、托管检查点和双轴增量复核；H8 已完成真实验收；H9 已完成固定 Host oracle、插件/Loop 选择账本、安全回执和最终双轴复核。H10-A 已通过真实 DeepSeek + nanobot WebUI + 既有 FC 配置完成全链路证据，H10-B/H10-C/H10-D 已完成；本轮本地 fake 仍单独标注，不计入 H10-A。本文件仍是 H 阶段的
@@ -272,7 +272,10 @@ Checkpoint 补充 driver_state、driver_state_schema，JSON 编码上限 64 KiB�
 6. 活动步骤期间只标 switch_pending，允许用户继续看流式输出并取消；不会为切换强制重启。
 
 验收 H7-A：默认 Driver 跑过既有三 Profile 主链路。H7-B：pending 工具/取消/并发消息均被 checkpoint 明确处理。H7-C：不确定副作用阻止切换。H7-D：旧记录无需破坏性迁移即可读取。
-失败恢复：特性开关关闭时回到原 Loop；新 checkpoint 可忽略但不删除会话。
+失败恢复：特性开关关闭时回到原 Loop；新 checkpoint 可忽略但不删除会话。冻结后修正
+补充了不确定回合语义：旧副作用继续保持 query-only/精确重放阻断，但新的普通、只读、
+状态和恢复回合可以继续处理；缺少持久 replay fingerprint 的 legacy checkpoint 对工具
+调用 fail-closed。
 
 ### H8：真实 Loop 替换和长任务接续
 
@@ -294,12 +297,13 @@ H8 已完成验收：已实现 `default-react@1` 与 `plan-then-act@1` 两个受
 并由同一 Host/AgentRunner 调度；`loop_handoff_state` 使用既有 DevPilot SQLite
 数据库中的独立表保存 owner generation、不可变 Driver state 和 H7 checkpoint。
 `/plugins switch-loop` 仅创建 pending operation，工具运行/未知副作用期间不交接；
-安全边界到达后同一 session/task 自动继续。当前仍需完成远端受限 Driver、跨存储崩溃
-对账和 H8-A–I 现场验收均已通过；现场证据见
+安全边界到达后同一 session/task 自动继续。H8 的远端策略只通过 Host-owned、脱敏投影
+和 FC 受限候选路径提供接口；不允许模型生成代码直接进入宿主，也不把远端策略当作
+第二套执行器。H8-A–I 的证据见
 `docs/evidence/live-harness/h8-loop-handoff.md`，双轴审查见
 `docs/reviews/h8-standards-review-2026-09-14.md` 与
-`docs/reviews/h8-spec-review-2026-09-14.md`。H9 之前不接受远端或模型生成
-Driver，避免未授权投影和本机执行。
+`docs/reviews/h8-spec-review-2026-09-14.md`。只有已登记、已试用、受作用域和预算约束
+的远端候选才能由 Host 代办；任意未登记的远端或模型生成 Driver 仍然拒绝。
 
 ### H9：以任务反馈选择插件/Loop 版本
 
@@ -421,15 +425,15 @@ Driver，避免未授权投影和本机执行。
 | H4 | 已完成并通过双轴审查 | `docs/evidence/live-harness/h4-plugin-dependencies.md`、`docs/reviews/h4-*-review-78456c6.md` |
 | H5 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h5-candidate-execution.md`、`docs/reviews/h5-*-review-e08299e.md` |
 | H6 | 已完成；最终增量复核 PASS | `docs/evidence/live-harness/h6-model-candidates.md`、`docs/reviews/h6-final-review-b55c027.md`；包含 H6-A/H6-F 现场证据及最终修复 |
-| H7 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h7-loop-driver-boundaries.md`、`docs/reviews/h7-final-review-0cdb1eb.md` |
-| H8 | 已完成 | H8-A–I 真实验收、证据与双轴审查均已通过；可进入 H9 |
+| H7 | 已完成并通过双轴增量复核；冻结后维护性修正已复核 | `docs/evidence/live-harness/h7-loop-driver-boundaries.md`、`docs/evidence/live-harness/h7-h8-uncertain-turn-recovery-correction.md`、`docs/reviews/h7-final-review-0cdb1eb.md`、`docs/reviews/2026-09-17-uncertain-turn-standards-review.md`、`docs/reviews/2026-09-17-uncertain-turn-spec-review.md` |
+| H8 | 已完成并通过双轴增量复核；冻结后维护性修正已复核 | `docs/evidence/live-harness/h8-loop-handoff.md`、`docs/evidence/live-harness/h7-h8-uncertain-turn-recovery-correction.md`、`docs/reviews/h8-standards-review-2026-09-14.md`、`docs/reviews/h8-spec-review-2026-09-14.md`、`docs/reviews/2026-09-17-uncertain-turn-standards-review.md`、`docs/reviews/2026-09-17-uncertain-turn-spec-review.md` |
 | H9 | 已完成并通过双轴增量复核 | `docs/evidence/live-harness/h9-selection.md`、`docs/reviews/h9-*-review-2026-09-14.md`；provider-default 无安全回执时 fail-closed |
 | H10 | 已完成并通过交付复核 | `docs/evidence/live-harness/h10-delivery.md`、`docs/reviews/h10-product-review-2026-09-15.md`：启动门禁、原生 WebUI 会话、并发、50 次装卸、隔离恢复、生产 build、用户指南及命令历史回归已完成；本轮同一真实 WebUI 会话已补齐既有 FC 配置下的项目提案→聊天确认→FC 验证→结果查询→受保护撤销→刷新重连→回滚后哈希复核；fake 证据仍单独标注。 |
 | H11 | 已完成并通过双轴增量复核 | 本文 §6 H11；实现与 H11-A–E 证据见 `docs/evidence/live-harness/h11-autonomy-policy.md`，首轮报告见 `docs/reviews/h11-standards-review-62540b5.md`、`docs/reviews/h11-spec-review-62540b5.md`，最终增量报告见 `docs/reviews/h11-standards-recheck-fd7de83.md`、`docs/reviews/h11-spec-recheck-fd7de83.md`。复用现有 WebUI 默认/完全访问权限，不新增按钮；provider-default 限制保持明确。 |
 
 ## 8. 后续变更入口
 
-当前冻结范围 H1–H11 已完成。后续若有新需求，先更新计划并明确新增节点、验收项和证据路径；不得仅凭“继续开发”重做已完成节点或扩大 provider-default、权限和持久化范围。涉及代码变更时，继续按 AGENTS、CURRENT_PLAN §0/§6/§7 与 ADR-0004 执行批量开发、测试及双轴 review。
+当前冻结范围 H1–H11 已完成；本次不确定回合恢复只是 H7/H8 的维护性修正，不是新增节点。后续若有新需求，先更新计划并明确新增节点、验收项和证据路径；不得仅凭“继续开发”重做已完成节点或扩大 provider-default、权限和持久化范围。涉及代码变更时，继续按 AGENTS、CURRENT_PLAN §0/§6/§7 与 ADR-0004 执行批量开发、测试及双轴 review。
 
 ## 9. 本次一次审查与一轮修订记录
 

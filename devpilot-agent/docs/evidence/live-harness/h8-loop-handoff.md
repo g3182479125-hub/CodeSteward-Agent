@@ -65,11 +65,15 @@ and verifies that the handoff table is present.
   normal pytest temporary directory and `--basetemp D:\\tmp\\h8-pathfix`; the
   post-fix complete focused suite passes `88 passed in 4.13s`.
 
-## Remaining completion gate
+## Completion gate
 
-This evidence does not replace ADR-0004's mandatory independent Standards and
-Spec reviews.  H8 remains in verification until both reviews explicitly pass
-the final candidate and their reports are saved under `docs/reviews/`.
+The original H8 completion gate is closed: the independent Standards and Spec
+reports are saved under `docs/reviews/h8-standards-review-2026-09-14.md` and
+`docs/reviews/h8-spec-review-2026-09-14.md`. The later H7/H8 uncertain-turn
+maintenance correction was reviewed separately against the same contracts; its
+candidate and evidence are recorded in
+`docs/evidence/live-harness/h7-h8-uncertain-turn-recovery-correction.md` and
+the two `docs/reviews/2026-09-17-uncertain-turn-*-review.md` reports.
 
 ## Deliberate boundaries
 
