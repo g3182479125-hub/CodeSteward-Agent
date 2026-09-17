@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from nanobot.agent.loop import AgentLoop
 from nanobot.agent.task_profiles import (
     DEFAULT_TASK_PROFILES,
     TaskContextState,
@@ -13,6 +14,7 @@ from nanobot.agent.task_profiles import (
 )
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.session.manager import Session
 
 
 class _StubTool(Tool):
@@ -143,6 +145,24 @@ def test_task_loop_guard_state_restores_for_the_same_profile_version() -> None:
     assert restored.observe("tool", {}, "Error: persistent") is not None
     fresh = TaskLoopGuard.from_state(guard.to_state("feature-delivery@1"), "bug-fix@1")
     assert fresh.observe("tool", {}, "Error: persistent") is None
+
+
+def test_task_loop_guard_starts_fresh_for_a_new_inbound_turn() -> None:
+    profile = TaskProfileCatalog().get("bug-fix")
+    previous = TaskLoopGuard()
+    for _ in range(2):
+        assert previous.observe("tool", {}, "Error: persistent") is None
+
+    session = Session(key="websocket:test")
+    session.metadata["task_loop_guard"] = previous.to_state(
+        f"{profile.name}@{profile.version}"
+    )
+
+    fresh_turn = AgentLoop._task_loop_guard(session, profile)
+    resumed_turn = AgentLoop._task_loop_guard(session, profile, restore_existing=True)
+
+    assert fresh_turn.observe("tool", {}, "Error: persistent") is None
+    assert resumed_turn.observe("tool", {}, "Error: persistent") is not None
 
 
 def test_task_profile_version_is_part_of_the_session_binding() -> None:

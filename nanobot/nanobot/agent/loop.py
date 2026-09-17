@@ -1358,8 +1358,24 @@ class AgentLoop:
             logger.warning("H9 task-result evidence was not recorded: {}", exc)
 
     @staticmethod
-    def _task_loop_guard(session: Session, profile: TaskProfile) -> TaskLoopGuard:
+    def _task_loop_guard(
+        session: Session,
+        profile: TaskProfile,
+        *,
+        restore_existing: bool = False,
+    ) -> TaskLoopGuard:
+        """Load diagnostic state only when one agent run is being continued.
+
+        A failed tool call is evidence for the current bounded diagnostic run,
+        not a lock on the whole conversation.  Fresh user turns must start
+        with a new guard so a later request can provide new evidence, correct a
+        path, ask a status question, or choose another approach.  Internal
+        continuation slices are the one case where carrying the guard forward
+        is intentional.
+        """
         binding = f"{profile.name}@{profile.version}"
+        if not restore_existing:
+            return TaskLoopGuard()
         return TaskLoopGuard.from_state(
             session.metadata.get(TASK_LOOP_GUARD_METADATA_KEY),
             binding,
@@ -2157,7 +2173,13 @@ class AgentLoop:
             policy=profile.dynamic_plugins if profile is not None else None,
         )
         loop_guard = (
-            self._task_loop_guard(session, profile) if session is not None and profile else None
+            self._task_loop_guard(
+                session,
+                profile,
+                restore_existing=turn_continuation.internal_continuation_inbound(metadata),
+            )
+            if session is not None and profile
+            else None
         )
         try:
             for scope in turn_scopes or ():
