@@ -11,6 +11,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.loop_driver import LoopCheckpoint, tool_call_fingerprint
 from nanobot.agent.loop_handoff import LoopHandoffManager, SqliteLoopHandoffStore
+from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
@@ -828,6 +829,100 @@ async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) 
     assert before is not None and after is not None
     assert after.owner_generation > before.owner_generation
     assert after.checkpoint.message_position > before.checkpoint.message_position
+
+
+@pytest.mark.asyncio
+async def test_h7_terminal_query_clears_old_tool_intent_and_recovery_marker(
+    tmp_path: Path,
+) -> None:
+    class GetRunStatusTool(Tool):
+        @property
+        def name(self) -> str:
+            return "get_run_status"
+
+        @property
+        def description(self) -> str:
+            return "Read the status of a run."
+
+        @property
+        def parameters(self) -> dict[str, object]:
+            return {
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"],
+            }
+
+        @property
+        def read_only(self) -> bool:
+            return True
+
+        async def execute(self, *, run_id: str) -> str:
+            return json.dumps({"status": "completed", "run_id": run_id})
+
+    loop = _make_full_loop(tmp_path)
+    loop.tools.register(GetRunStatusTool())
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    session = loop.sessions.get_or_create("websocket:terminal-recovery")
+    old_call = {
+        "id": "old-call",
+        "type": "function",
+        "function": {
+            "name": "apply_change",
+            "arguments": '{"run_id":"run-1"}',
+        },
+    }
+    checkpoint = LoopCheckpoint(
+        session_id=session.key,
+        task_id="task-1",
+        project_id="project-1",
+        step=2,
+        message_position=0,
+        remaining_iterations=0,
+        pending_tool_calls=("old-call",),
+        uncertain_side_effect_refs=("tool_call:old-call", "run_id:run-1"),
+        business_references={"run_id:run-1": "run-1"},
+        blocked_tool_call_fingerprints=(
+            tool_call_fingerprint("apply_change", {"run_id": "run-1"}),
+        ),
+    )
+    manager.ensure(checkpoint)
+    loop.loop_handoff_manager = manager
+    session.metadata[AgentLoop._H7_HANDOFF_PAUSE_KEY] = {
+        "checkpoint": {"pending_tool_calls": [old_call]},
+        "h7_loop_checkpoint": checkpoint.to_dict(),
+    }
+    loop.sessions.save(session)
+    loop.provider.chat_with_retry = AsyncMock(
+        side_effect=[
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="status-call",
+                        name="get_run_status",
+                        arguments={"run_id": "run-1"},
+                    )
+                ],
+            ),
+            LLMResponse(content="旧操作已经确认完成，可以继续了。"),
+        ]
+    )
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="terminal-recovery",
+            content="查一下刚才那个运行现在是不是已经结束了。",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "旧操作已经确认完成，可以继续了。"
+    assert AgentLoop._H7_HANDOFF_PAUSE_KEY not in session.metadata
+    durable = manager.store.load(session.key)
+    assert durable is not None
+    assert durable.checkpoint.switch_safe is True
 
 
 @pytest.mark.asyncio

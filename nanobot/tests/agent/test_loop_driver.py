@@ -151,7 +151,7 @@ def test_business_facts_settle_completed_pending_tool_without_losing_unknown_run
 def test_business_facts_clear_unknown_run_after_terminal_status() -> None:
     references, uncertain = merge_business_facts(
         {},
-        ("run_id:run-1",),
+        ("run_id:run-1", "tool_call:old-call"),
         [{"content": '{"status":"completed","run_id":"run-1"}'}],
         [],
     )
