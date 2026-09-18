@@ -2315,7 +2315,12 @@ class AgentLoop:
         # any provider/transcript normalization can wrap or omit it.  The
         # exact tuple is accepted only from the two proposal tools and is kept
         # in request attributes for the private WebSocket delivery seam.
-        for tool_name, tool_output in result.tool_outputs:
+        # Keep compatibility with lightweight runner doubles and older
+        # AgentRunResult-shaped objects that predate proposal handoff
+        # metadata.  The proposal bridge is optional; an absent collection
+        # must not turn an otherwise completed turn into an AttributeError.
+        tool_outputs = getattr(result, "tool_outputs", ()) or ()
+        for tool_name, tool_output in tool_outputs:
             if tool_name not in {
                 "devpilot_bug_fix_propose",
                 "devpilot_test_repair_propose",
@@ -2367,7 +2372,7 @@ class AgentLoop:
             sorted(self._devpilot_turn_proposals.get(transport_chat_id, {})),
         )
         output_summaries = []
-        for _, output in result.tool_outputs:
+        for _, output in tool_outputs:
             summary = {"type": type(output).__name__, "keys": None, "text_keys": None}
             if isinstance(output, dict):
                 summary["keys"] = sorted(output)
@@ -2381,8 +2386,8 @@ class AgentLoop:
             output_summaries.append(summary)
         logger.info(
             "DevPilot raw proposal outputs: count={} names={} summaries={}",
-            len(result.tool_outputs),
-            [name for name, _ in result.tool_outputs],
+            len(tool_outputs),
+            [name for name, _ in tool_outputs],
             output_summaries,
         )
         if session is not None and loop_guard is not None and profile is not None:

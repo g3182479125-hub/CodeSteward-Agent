@@ -126,6 +126,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts
 
 确认词必须单独发送：`执行`、`撤销`、`确认试用`、`确认启用`。其它话可以使用自然语言。
 
+## 本次拉取后继续开发
+
+从本分支拉取后复查发现，最近的提案确认跨传输修复对旧版/轻量 Runner 结果形状不兼容：
+当结果没有可选的 `tool_outputs` 字段时，普通回合会在收尾阶段抛出
+`AttributeError`。现已在 `nanobot/nanobot/agent/loop.py` 做兼容处理，缺失字段按空结果
+处理，不改变正式 Runner 的提案确认绑定。
+
+验证记录见：
+`devpilot-agent/docs/evidence/phase-7/2026-09-18-cross-machine-runner-compatibility-fix.md`。
+
+- 目标回归：`1 passed`；
+- Loop/Runner/WebSocket 影响范围：`279 passed`；
+- DevPilot 提案/交付/Action Broker：`77 passed`；
+- Ruff：通过。
+
+这次是已完成代码维护，不代表换机后的模型、FC、项目 trust 或控制面状态已经自动配置；
+仍按上面的换机步骤在新电脑准备本机配置后再录制。
+
 ## 已知边界
 
 - 当前 FC 是 `provider-default`，不要表述成已经证明严格断网；
