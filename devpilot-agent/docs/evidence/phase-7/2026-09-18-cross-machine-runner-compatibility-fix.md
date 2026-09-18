@@ -1,5 +1,7 @@
 # 2026-09-18：跨电脑回归中的 Runner 结果兼容修复
 
+候选提交：`1f8c6a2`；固定基线：`74470a6`。
+
 ## 背景
 
 从 `codex/h11-complete-handoff` 拉取 `74470a6` 后，按交接文档复查全量回归。已知的
@@ -36,10 +38,10 @@ AttributeError: 'types.SimpleNamespace' object has no attribute 'tool_outputs'
 
 ```powershell
 $env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = '0'
-python -m pytest tests/agent/tools/test_subagent_tools.py::test_agent_loop_syncs_updated_max_iterations_before_run -q
+& '.\.venv\Scripts\python.exe' -m pytest tests/agent/tools/test_subagent_tools.py::test_agent_loop_syncs_updated_max_iterations_before_run -q --tb=short --basetemp 'D:\Users\tianmin.li\AppData\Local\Temp\devflow-pytest-loop-regression'
 ```
 
-结果：`1 passed`。
+工作目录：`nanobot`；退出码：`0`；结果：`1 passed`。
 
 受影响的 Loop/Runner/WebSocket 回归集合：
 
@@ -50,7 +52,14 @@ tests/agent/test_loop_save_turn.py
 nanobot/channels/websocket/tests/test_websocket_channel.py
 ```
 
-结果：`279 passed`。
+实际命令（工作目录：`nanobot`）：
+
+```powershell
+$env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = '0'
+& '.\.venv\Scripts\python.exe' -m pytest tests/agent/tools/test_subagent_tools.py tests/agent/test_loop_tool_context.py tests/agent/test_loop_save_turn.py nanobot/channels/websocket/tests/test_websocket_channel.py -q --tb=short --basetemp 'D:\Users\tianmin.li\AppData\Local\Temp\devflow-pytest-loop-impact'
+```
+
+退出码：`0`；结果：`279 passed`。
 
 DevPilot 提案、交付和 Action Broker 回归集合：
 
@@ -60,12 +69,35 @@ tests/test_p4_feature_delivery.py
 tests/test_p5_action_broker.py
 ```
 
-结果：`77 passed`。
+实际命令（工作目录：`devpilot-agent`）：
 
-Ruff 对变更文件检查通过。完整 nanobot 测试的本次运行不能作为全绿证据：Windows 下整套
+```powershell
+$env:PYTHONPATH = "$((Resolve-Path '.\src').Path);$((Resolve-Path '..\nanobot').Path)"
+& '..\nanobot\.venv\Scripts\python.exe' -m pytest tests/test_p4_bug_fix.py tests/test_p4_feature_delivery.py tests/test_p5_action_broker.py --override-ini addopts= -q --tb=short --basetemp 'D:\Users\tianmin.li\AppData\Local\Temp\devflow-pytest-devpilot-proposal-fix-count'
+```
+
+退出码：`0`；结果：`77 passed`。
+
+Ruff 实际命令（工作目录：`nanobot`）：
+
+```powershell
+& '.\.venv\Scripts\python.exe' -m ruff check nanobot/agent/loop.py tests/agent/tools/test_subagent_tools.py
+```
+
+退出码：`0`；检查通过。完整 nanobot 测试的本次运行不能作为全绿证据：Windows 下整套
 `pytest` 进程在约 64% 处以退出码 0 结束但没有正常汇总；该仓库在相近测试范围包含会启动
 独立强制退出子进程的 H3 测试，具体截断原因仍需拆分测试批次继续定位。因此本证据只报告
 实际完成的针对性回归，不把未完成的全量扫描写成通过。
+
+完整扫描实际命令（工作目录：`nanobot`）为：
+
+```powershell
+$env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = '0'
+& '.\.venv\Scripts\python.exe' -m pytest -q --tb=short --basetemp 'D:\Users\tianmin.li\AppData\Local\Temp\devflow-pytest-nanobot-full-fixed'
+```
+
+观察到的退出码为 `0`，但输出在约 `64%` 截断且没有 pytest 汇总，故状态仍记为“未完成”，
+不能把该退出码解释为全量通过。
 
 ## 后续
 

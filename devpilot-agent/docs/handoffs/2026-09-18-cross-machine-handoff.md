@@ -136,6 +136,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts
 验证记录见：
 `devpilot-agent/docs/evidence/phase-7/2026-09-18-cross-machine-runner-compatibility-fix.md`。
 
+本次维护候选提交为 `1f8c6a2`，固定基线为 `74470a6`。
+
 - 目标回归：`1 passed`；
 - Loop/Runner/WebSocket 影响范围：`279 passed`；
 - DevPilot 提案/交付/Action Broker：`77 passed`；
