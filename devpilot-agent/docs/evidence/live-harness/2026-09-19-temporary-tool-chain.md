@@ -24,7 +24,7 @@ points.
 
 ```text
 devpilot-agent/tests/test_temporary_tools.py
-17 passed
+19 passed
 
 devpilot-agent/tests/test_h6_model_plugins.py
 20 passed
@@ -37,8 +37,11 @@ nanobot plugin/profile/loop/WebSocket regression selection
 ```
 
 The temporary-tool chain test covers `generate → FC validate → hot-load → run
-cleanup → project persistence`. A deterministic `FC_TIMEOUT` backend test also
-confirms timeout rejection has no activation path.
+cleanup → project persistence`, including the persisted lifecycle sidecar and
+invalid-history rejection. A deterministic `FC_TIMEOUT` backend test also
+confirms timeout rejection has no activation path. Sensitive capability
+activation/persistence requires a gateway-signed, one-shot confirmation bound
+to the exact session, Run, project, tool, version, source hash and capability.
 
 Ruff passed for the changed DevPilot temporary-tool files and the changed
 nanobot plugin/loop files. Entry-point discovery after editable installation
@@ -49,5 +52,7 @@ reported all six temporary-tool tools, including the high-level
 
 The real WebUI visual recording is a separate manual evidence step. The server
 side WebSocket regression suite passed, including Full Access scope and
-confirmation-envelope cases. A final independent Standards + Spec review is
-still required before this plan is marked formally accepted.
+confirmation-envelope cases. An initial independent review found and blocked
+three gaps; commit `7296572` fixes the bound confirmation and lifecycle
+durability issues. The final independent Standards + Spec review is still
+required before this plan is marked formally accepted.
