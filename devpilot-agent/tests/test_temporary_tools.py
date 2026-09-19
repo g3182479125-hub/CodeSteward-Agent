@@ -350,6 +350,9 @@ class TemporaryLookupTool(Tool):
         assert TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact).state is (
             TemporaryToolState.RETIRING
         )
+        TemporaryToolArtifactStore(tmp_path).transition_lifecycle(
+            artifact, TemporaryToolState.PERSISTENCE_REQUESTED
+        )
         with request_context(request):
             pending = await TemporaryToolPersistTool(tmp_path).execute()
         assert json.loads(str(pending))["code"] == "USER_CONFIRMATION_REQUIRED"

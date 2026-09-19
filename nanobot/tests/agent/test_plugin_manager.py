@@ -201,6 +201,7 @@ async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: 
         "temporary-lookup",
         "1.0.0",
         session_id="websocket:temporary",
+        run_id="run-1",
     )
 
     assert loaded.ok is True

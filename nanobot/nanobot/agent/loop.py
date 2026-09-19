@@ -3290,7 +3290,9 @@ class AgentLoop:
                     + "\n\n**这个临时工具已完成本次任务，要保存为可复用插件吗？**"
                 )
                 ctx.attributes["temporary_tool_persistence_prompt"] = True
-            if cleanup:
+                # Only a successfully completed Run creates a server-owned
+                # persistence state. Error/cancel cleanup must never become
+                # eligible for a later model-triggered save.
                 request_attributes = (
                     ctx.request_context.attributes if ctx.request_context is not None else ctx.attributes
                 )
@@ -3303,25 +3305,51 @@ class AgentLoop:
                             ctx.request_context.workspace
                         )
                 if isinstance(project_id, str) and project_id:
-                    candidate = cleanup[-1]
-                    if all(
-                        isinstance(candidate.get(key), str) and candidate[key]
-                        for key in ("tool_id", "version", "source_hash")
-                    ):
+                    for candidate in cleanup:
+                        if candidate.get("artifact") != "pending_persistence":
+                            continue
+                        if not all(
+                            isinstance(candidate.get(key), str) and candidate[key]
+                            for key in ("tool_id", "version", "source_hash", "run_id")
+                        ):
+                            continue
+                        try:
+                            from devpilot.temporary_tools import (
+                                TemporaryToolArtifactStore,
+                                TemporaryToolState,
+                            )
+
+                            store = TemporaryToolArtifactStore(
+                                os.environ.get(
+                                    "DEVPILOT_DATA_DIR",
+                                    str(Path.home() / ".nanobot-skill-improvement"),
+                                )
+                            )
+                            artifact = store.load_for_session(
+                                session_id=ctx.session_key,
+                                run_id=candidate["run_id"],
+                                tool_id=candidate["tool_id"],
+                                version=candidate["version"],
+                                source_hash=candidate["source_hash"],
+                            )
+                            lifecycle = store.load_lifecycle(artifact)
+                            if lifecycle.state is TemporaryToolState.RETIRING:
+                                store.transition_lifecycle(
+                                    artifact, TemporaryToolState.PERSISTENCE_REQUESTED
+                                )
+                            if store.load_lifecycle(artifact).state is not TemporaryToolState.PERSISTENCE_REQUESTED:
+                                continue
+                        except (OSError, ValueError, RuntimeError):
+                            continue
                         ctx.attributes["devpilot_temporary_persistence_binding"] = {
                             "session_id": ctx.session_key,
-                            "run_id": str(
-                                request_attributes.get("devpilot_run_id")
-                                or request_attributes.get("devpilot_task_id")
-                                or ctx.attributes.get("devpilot_run_id")
-                                or ctx.attributes.get("devpilot_task_id")
-                                or ""
-                            ),
+                            "run_id": candidate["run_id"],
                             "project_id": project_id,
                             "tool_id": candidate["tool_id"],
                             "version": candidate["version"],
                             "source_hash": candidate["source_hash"],
                         }
+                        break
         if not ctx.ephemeral:
             await self.runtime_event_publisher.session_turn_persisted(
                 ctx.msg,

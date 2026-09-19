@@ -78,7 +78,11 @@ class _ActiveRoute:
 
     def _scope_key(self) -> ScopeKey:
         manifest = self.registration.record.manifest
-        binding = self.registration.registration_key[3]
+        binding = (
+            self.registration.record.session_id
+            if manifest.scope is PluginScope.SESSION
+            else self.registration.record.project_id
+        ) or ""
         return (manifest.scope, binding)
 
 
@@ -646,10 +650,11 @@ class PluginManager:
         version: str,
         *,
         session_id: str,
+        run_id: str,
         policy: DynamicPluginPolicy | None = None,
     ) -> PluginOperationResult:
         """Activate one FC-validated temporary Tool in the live session route."""
-        registration = self._find_visible(plugin_id, version, session_id, None)
+        registration = self._find_visible(plugin_id, version, session_id, None, run_id=run_id)
         if registration is None or registration.record.source is not PluginSource.TEMPORARY:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_FOUND,
@@ -673,6 +678,7 @@ class PluginManager:
             version,
             session_id=session_id,
             policy=policy,
+            _run_id=run_id,
         )
 
     def register_persisted_version(
@@ -782,6 +788,7 @@ class PluginManager:
                 manifest.plugin_id,
                 manifest.version,
                 session_id=session_id,
+                _run_id=run_id,
                 operation_details={"temporary_cleanup": "run_end"},
             )
             row = {
@@ -1293,9 +1300,12 @@ class PluginManager:
         project_id: str | None = None,
         policy: DynamicPluginPolicy | None = None,
         _candidate_activation: bool = False,
+        _run_id: str | None = None,
     ) -> PluginOperationResult:
         """Load one exact registered version into the current scope."""
-        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        registration = self._find_visible(
+            plugin_id, version, session_id, project_id, run_id=_run_id
+        )
         if registration is None:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_FOUND,
@@ -1795,6 +1805,7 @@ class PluginManager:
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
         operation_details: Mapping[str, str] | None = None,
+        _run_id: str | None = None,
     ) -> PluginOperationResult:
         """Remove an inactive metadata record without deleting its artifact."""
         if operation_id is not None and (prior := self._operations.get(operation_id)) is not None:
@@ -1814,7 +1825,9 @@ class PluginManager:
                 )
                 or prior.result
             )
-        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        registration = self._find_visible(
+            plugin_id, version, session_id, project_id, run_id=_run_id
+        )
         if registration is None:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_FOUND,
@@ -2417,6 +2430,8 @@ class PluginManager:
     def _registration_key(record: PluginRecord) -> RegistrationKey:
         manifest = record.manifest
         binding = record.session_id if manifest.scope is PluginScope.SESSION else record.project_id
+        if record.source is PluginSource.TEMPORARY:
+            binding = f"{binding}\x00{record.run_id or ''}"
         return (manifest.plugin_id, manifest.version, manifest.scope.value, binding or "")
 
     @staticmethod
@@ -2450,7 +2465,10 @@ class PluginManager:
             item
             for item in self._registered.values()
             if item.record.manifest.scope is scope
-            and self._registration_key(item.record)[3] == binding
+            and (
+                (item.record.session_id if scope is PluginScope.SESSION else item.record.project_id)
+                == binding
+            )
         )
 
     def _service_registry_for_scope(self, scope_key: ScopeKey) -> dict[str, Any]:
@@ -2711,6 +2729,8 @@ class PluginManager:
         version: str,
         session_id: str,
         project_id: str | None,
+        *,
+        run_id: str | None = None,
     ) -> _RegisteredPlugin | None:
         matches = [
             item
@@ -2718,6 +2738,7 @@ class PluginManager:
             if item.record.manifest.plugin_id == plugin_id
             and item.record.manifest.version == version
             and self._is_visible(item.record, session_id, project_id)
+            and (run_id is None or item.record.run_id == run_id)
         ]
         return sorted(matches, key=self._sort_key)[0] if matches else None
 

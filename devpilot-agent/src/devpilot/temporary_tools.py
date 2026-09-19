@@ -1061,6 +1061,7 @@ class TemporaryToolActivateTool(Tool):
                 artifact.manifest.tool_id,
                 artifact.manifest.version,
                 session_id=session_id,
+                run_id=run_id,
             )
             payload = activated.to_dict()
             if activated.ok:
@@ -1263,6 +1264,26 @@ class TemporaryToolPersistTool(Tool):
                     },
                     ensure_ascii=False,
                 )
+            if store.load_lifecycle(artifact).state is not TemporaryToolState.PERSISTENCE_REQUESTED:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "code": "TEMPORARY_TOOL_PERSISTENCE_NOT_REQUESTED",
+                    },
+                    ensure_ascii=False,
+                )
+            validation = TemporaryToolValidator(
+                build_fc_backend_from_environment()
+            ).validate(artifact)
+            if validation.status != TemporaryToolState.VALIDATED.value:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "code": "TEMPORARY_TOOL_REVALIDATION_FAILED",
+                        **validation.to_dict(),
+                    },
+                    ensure_ascii=False,
+                )
             lifecycle = store.load_lifecycle(artifact)
             if lifecycle.state in {
                 TemporaryToolState.GENERATED,
@@ -1283,17 +1304,36 @@ class TemporaryToolPersistTool(Tool):
             )
             root.mkdir(parents=True, exist_ok=True)
             destination = root / artifact.manifest.entry_module
+            manifest_destination = root / "manifest.json"
+            source_bytes = artifact.source_path.read_bytes()
+            manifest_bytes = json.dumps(
+                artifact.manifest.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
             if (
                 destination.exists()
-                and destination.read_bytes() != artifact.source_path.read_bytes()
+                and destination.read_bytes() != source_bytes
             ):
                 raise TemporaryToolArtifactConflict(
                     "persistent artifact already contains other content"
                 )
             if not destination.exists():
-                import shutil
-
-                shutil.copy2(artifact.source_path, destination)
+                temporary_destination = destination.with_suffix(destination.suffix + ".tmp")
+                temporary_destination.write_bytes(source_bytes)
+                os.replace(temporary_destination, destination)
+            if (
+                manifest_destination.exists()
+                and manifest_destination.read_bytes() != manifest_bytes
+            ):
+                raise TemporaryToolArtifactConflict(
+                    "persistent manifest already contains other content"
+                )
+            if not manifest_destination.exists():
+                temporary_manifest = manifest_destination.with_suffix(".json.tmp")
+                temporary_manifest.write_bytes(manifest_bytes)
+                os.replace(temporary_manifest, manifest_destination)
             manifest = PluginManifest.from_mapping(
                 {
                     "plugin_id": artifact.manifest.tool_id,
@@ -1326,6 +1366,11 @@ class TemporaryToolPersistTool(Tool):
                 session_id=session_id,
                 project_id=project_id,
             )
+            if not loaded.ok:
+                return json.dumps(
+                    {"ok": False, "code": "TEMPORARY_TOOL_PERSIST_LOAD_FAILED", **loaded.to_dict()},
+                    ensure_ascii=False,
+                )
             store.transition_lifecycle(artifact, TemporaryToolState.PERSISTED)
             store.delete_artifact(artifact)
             return json.dumps(
