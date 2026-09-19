@@ -3294,7 +3294,9 @@ class AgentLoop:
                 request_attributes = (
                     ctx.request_context.attributes if ctx.request_context is not None else ctx.attributes
                 )
-                project_id = request_attributes.get("devpilot_project_id")
+                project_id = request_attributes.get("devpilot_project_id") or ctx.attributes.get(
+                    "devpilot_project_id"
+                )
                 if not isinstance(project_id, str) or not project_id:
                     if ctx.request_context is not None:
                         project_id = self.plugin_manager.project_id_for_path(
@@ -3311,6 +3313,8 @@ class AgentLoop:
                             "run_id": str(
                                 request_attributes.get("devpilot_run_id")
                                 or request_attributes.get("devpilot_task_id")
+                                or ctx.attributes.get("devpilot_run_id")
+                                or ctx.attributes.get("devpilot_task_id")
                                 or ""
                             ),
                             "project_id": project_id,

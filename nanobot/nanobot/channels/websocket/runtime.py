@@ -387,6 +387,7 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_changeset_threads: dict[str, str] = {}
         self._devpilot_pending_proposals: dict[str, dict[str, str]] = {}
         self._devpilot_changeset_chats: dict[str, str] = {}
+        self._devpilot_pending_temporary_tools: dict[str, dict[str, str]] = {}
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
@@ -410,15 +411,10 @@ class WebSocketChannel(BaseChannel):
         self, connection: ServerConnection, chat_id: str, content: str,
         turn_id: str | None, confirmation: object = None,
     ) -> dict[str, Any]:
-        """Return non-persisted intent evidence for an exact trusted WebUI confirmation."""
+        """Return non-persisted intent evidence for a trusted WebUI confirmation."""
         if connection not in self._webui_connections:
             return {}
-        action = {
-            "执行": "apply_verify",
-            "仅应用": "apply",
-            "验证": "verify",
-            "撤销": "rollback",
-        }.get(content.strip())
+        action = self._devpilot_user_action(content)
         if action is None:
             return {}
         if not isinstance(confirmation, dict):
@@ -498,6 +494,35 @@ class WebSocketChannel(BaseChannel):
             }
         }
 
+    @staticmethod
+    def _devpilot_user_action(content: str) -> str | None:
+        """Translate user language to an internal action without granting it.
+
+        The DevPilot package is installed alongside the integrated gateway in
+        production. The small fallback keeps the standalone nanobot package
+        usable in tests and preserves the same high-signal aliases.
+        """
+        try:
+            from devpilot.user_intent import classify_user_intent
+        except ImportError:
+            normalized = re.sub(r"\s+", "", content).casefold()
+            if normalized in {"撤回", "撤销", "回滚", "恢复原样", "恢复原版本", "把这次修改去掉"}:
+                return "rollback"
+            if normalized in {"验证", "验证一下", "跑测试", "跑一下测试"}:
+                return "verify"
+            if normalized in {"仅应用", "可以改", "按这个方案做", "开始修复"}:
+                return "apply"
+            if normalized in {"执行", "改完跑测试", "执行并验证", "直接修好并验证"}:
+                return "apply_verify"
+            return None
+        result = classify_user_intent(content)
+        return {
+            "apply": "apply",
+            "apply_verify": "apply_verify",
+            "verify": "verify",
+            "rollback": "rollback",
+        }.get(result.intent)
+
     def _register_devpilot_proposal(
         self, chat_id: str, proposal: object
     ) -> bool:
@@ -525,18 +550,112 @@ class WebSocketChannel(BaseChannel):
     ) -> None:
         """Consume internal metadata from a streamed completion without sending it."""
         registered = self._register_devpilot_proposal(chat_id, metadata.get("_devpilot_proposal"))
+        temporary_binding = metadata.get("_devpilot_temporary_tool_persistence")
+        temporary_registered = self._register_devpilot_temporary_tool(
+            chat_id, temporary_binding
+        )
         self.logger.info(
-            "DevPilot proposal registration: chat_id={} source=outbound registered={}",
+            "DevPilot private metadata registration: chat_id={} proposal={} temporary={}",
             chat_id,
             registered,
+            temporary_registered,
         )
+
+    def _register_devpilot_temporary_tool(
+        self, chat_id: str, binding: object
+    ) -> bool:
+        """Keep the exact server-owned candidate binding for the next user turn."""
+        if not isinstance(binding, Mapping):
+            return False
+        required = {
+            "session_id",
+            "run_id",
+            "project_id",
+            "tool_id",
+            "version",
+            "source_hash",
+        }
+        if set(binding) != required or any(
+            not isinstance(binding.get(key), str) or not binding[key]
+            for key in required
+        ):
+            return False
+        values = {key: str(binding[key]) for key in required}
+        existing = self._devpilot_pending_temporary_tools.get(chat_id)
+        if existing is not None and existing != values:
+            return False
+        self._devpilot_pending_temporary_tools[chat_id] = values
+        return True
+
+    @staticmethod
+    def _temporary_persistence_user_confirmed(content: str) -> bool:
+        normalized = content.strip().casefold()
+        if not normalized or any(word in normalized for word in ("不要", "不保存", "拒绝", "取消")):
+            return False
+        return any(word in normalized for word in ("保存", "保留", "沉淀", "留着", "需要", "可以"))
+
+    def _devpilot_temporary_confirmation_attributes(
+        self,
+        connection: ServerConnection,
+        chat_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        """Sign one persistence confirmation after the bold post-Run prompt."""
+        if connection not in self._webui_connections:
+            return {}
+        binding = self._devpilot_pending_temporary_tools.get(chat_id)
+        if binding is None or not self._temporary_persistence_user_confirmed(content):
+            return {}
+        thread_id = self._devpilot_thread_ids.setdefault(chat_id, uuid.uuid4().hex)
+        sequence = self._devpilot_confirmation_sequences.get(thread_id, 0) + 1
+        self._devpilot_confirmation_sequences[thread_id] = sequence
+        now = datetime.now(UTC)
+        issued_at = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+        confirmation_id = uuid.uuid4().hex
+        nonce = secrets.token_hex(16)
+        context = {
+            **binding,
+            "capability": "persist_temporary_tool",
+            "confirmation_id": confirmation_id,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "user_event_nonce": nonce,
+        }
+        canonical = "\n".join(
+            (
+                "temporary-tool-confirmation-v1",
+                "temporary_tool_persist",
+                binding["session_id"],
+                binding["run_id"],
+                binding["project_id"],
+                binding["tool_id"],
+                binding["version"],
+                binding["source_hash"],
+                context["capability"],
+                confirmation_id,
+                issued_at,
+                expires_at,
+                nonce,
+            )
+        )
+        context["signature"] = self._devpilot_signer._sign(canonical.encode())
+        # A single user response must not authorize a different candidate later.
+        self._devpilot_pending_temporary_tools.pop(chat_id, None)
+        return {
+            "devpilot_confirmation": {
+                "action": "temporary_tool_persist",
+                "context": context,
+                "verifier": self._devpilot_signer.verify,
+            }
+        }
 
     def _resolve_devpilot_tuple(
         self, chat_id: str, confirmation: object
     ) -> dict[str, str] | None:
         """Resolve the server-registered proposal against the current ChangeSet.
 
-        A WebUI confirmation is an exact user intent (for example ``执行``), not
+        A WebUI confirmation is a user intent (for example ``按这个方案执行``), not
         a request for the browser to replay internal hashes.  The gateway owns
         the proposal tuple it delivered to that chat and revalidates it against
         the loopback control plane immediately before it signs the action.
@@ -1239,6 +1358,14 @@ class WebSocketChannel(BaseChannel):
                 if trusted_webui
                 else {}
             )
+            if trusted_webui:
+                attributes.update(
+                    self._devpilot_temporary_confirmation_attributes(
+                        connection,
+                        cid,
+                        content,
+                    )
+                )
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps
@@ -1429,10 +1556,13 @@ class WebSocketChannel(BaseChannel):
         proposal = msg.metadata.get("_devpilot_proposal")
         if proposal is not None:
             self._register_devpilot_proposal(msg.chat_id, proposal)
+        temporary_binding = msg.metadata.get("_devpilot_temporary_tool_persistence")
+        if temporary_binding is not None:
+            self._register_devpilot_temporary_tool(msg.chat_id, temporary_binding)
         transcript_metadata = {
             key: value
             for key, value in msg.metadata.items()
-            if key != "_devpilot_proposal"
+            if key not in {"_devpilot_proposal", "_devpilot_temporary_tool_persistence"}
         }
         event = outbound_event_from_message(msg)
         progress_event = event if isinstance(event, ProgressEvent) else None
@@ -1734,10 +1864,18 @@ class WebSocketChannel(BaseChannel):
                 chat_id,
                 registered,
             )
+        temporary_binding = (metadata or {}).get("_devpilot_temporary_tool_persistence")
+        if temporary_binding is not None:
+            registered = self._register_devpilot_temporary_tool(chat_id, temporary_binding)
+            self.logger.info(
+                "DevPilot temporary persistence registration: chat_id={} registered={}",
+                chat_id,
+                registered,
+            )
         safe_metadata = {
             key: value
             for key, value in (metadata or {}).items()
-            if key != "_devpilot_proposal"
+            if key not in {"_devpilot_proposal", "_devpilot_temporary_tool_persistence"}
         }
         if latency_ms is not None:
             body["latency_ms"] = int(latency_ms)

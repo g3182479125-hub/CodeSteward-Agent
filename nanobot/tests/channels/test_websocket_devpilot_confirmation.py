@@ -179,6 +179,57 @@ def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
     assert channel._devpilot_confirmation_attributes("attacker", "chat", "执行", None, {}) == {}
 
 
+def test_gateway_signs_one_shot_temporary_tool_persistence_confirmation() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_pending_temporary_tools = {}
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    binding = {
+        "session_id": "websocket:instance:chat",
+        "run_id": "run-1",
+        "project_id": "project-1",
+        "tool_id": "temporary-lookup",
+        "version": "1.0.0",
+        "source_hash": "a" * 64,
+    }
+    assert channel._register_devpilot_temporary_tool("chat", binding)
+
+    attrs = channel._devpilot_temporary_confirmation_attributes(
+        "trusted", "chat", "好的，保存这个工具"
+    )
+    confirmation = attrs["devpilot_confirmation"]
+    context = confirmation["context"]
+    assert confirmation["action"] == "temporary_tool_persist"
+    assert context["capability"] == "persist_temporary_tool"
+    assert set(context) == {
+        *binding,
+        "capability",
+        "confirmation_id",
+        "issued_at",
+        "expires_at",
+        "user_event_nonce",
+        "signature",
+    }
+    canonical = "\n".join(
+        (
+            "temporary-tool-confirmation-v1",
+            "temporary_tool_persist",
+            *(binding[key] for key in binding),
+            context["capability"],
+            context["confirmation_id"],
+            context["issued_at"],
+            context["expires_at"],
+            context["user_event_nonce"],
+        )
+    )
+    assert confirmation["verifier"](canonical, context["signature"])
+    assert channel._devpilot_temporary_confirmation_attributes(
+        "trusted", "chat", "保存"
+    ) == {}
+
+
 def test_gateway_resolves_server_registered_confirmation_against_current_control_plane(
     monkeypatch,
 ) -> None:
