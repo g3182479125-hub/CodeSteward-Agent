@@ -1,8 +1,8 @@
-"""Contracts for model-authored, session-scoped temporary tools.
+"""Contracts and artifact creation for model-authored temporary tools.
 
-This module deliberately contains no code loader and no execution side effect.
-T1 only defines the immutable records and lifecycle guard that later phases use
-to connect candidate validation to ``DynamicPluginRegistry``.
+This module deliberately contains no code loader and never imports candidate
+source. T1/T2 define immutable records, lifecycle guards, and the frozen
+artifact written before FC validation connects it to ``DynamicPluginRegistry``.
 """
 
 from __future__ import annotations
@@ -12,11 +12,16 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
+from nanobot.agent.tools.context import ToolContext, current_request_context
+from nanobot.security.workspace_access import current_workspace_scope
 
 _ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -239,6 +244,144 @@ class TemporaryToolArtifactStore:
             ) from None
 
 
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "tool_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+            "version": {"type": "string", "minLength": 1, "maxLength": 128},
+            "name": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+            "description": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "entry_class": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+            },
+            "source": {"type": "string", "minLength": 1, "maxLength": 262144},
+            "parameter_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+            "declared_capabilities": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 128},
+                "maxItems": 16,
+            },
+            "expires_in_seconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 86400,
+            },
+        },
+        "required": [
+            "tool_id",
+            "version",
+            "name",
+            "description",
+            "entry_class",
+            "source",
+            "parameter_schema",
+            "output_schema",
+        ],
+        "additionalProperties": False,
+    }
+)
+class TemporaryToolCreateTool(Tool):
+    """Create a frozen candidate artifact; never imports or executes its source."""
+
+    _scopes = {"core"}
+
+    def __init__(self, data_dir: Path | None = None) -> None:
+        self._data_dir = data_dir or Path(
+            os.environ.get("DEVPILOT_DATA_DIR", str(Path.home() / ".nanobot-skill-improvement"))
+        )
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> TemporaryToolCreateTool:
+        del ctx
+        return cls()
+
+    @property
+    def name(self) -> str:
+        return "devpilot_create_temporary_tool"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create a Full Access, session-scoped Python Tool candidate artifact. "
+            "The source is only syntax/protocol checked here and must pass FC "
+            "validation before it can be activated."
+        )
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        scope = current_workspace_scope()
+        if scope is None or not temporary_tools_allowed(
+            scope.access_mode, source_channel=scope.source_channel
+        ):
+            return ToolResult.error(
+                "TEMPORARY_TOOL_FULL_ACCESS_REQUIRED: temporary tools require Full Access"
+            )
+        request = current_request_context()
+        if request is None or not request.sender_id:
+            return ToolResult.error("TEMPORARY_TOOL_CONTEXT_MISSING: no active WebUI request")
+        session_id = request.session_key or request.chat_id
+        run_id = request.attributes.get("devpilot_run_id")
+        if not isinstance(run_id, str) or not run_id:
+            run_id = request.attributes.get("devpilot_task_id")
+        if not isinstance(run_id, str) or not run_id:
+            return ToolResult.error("TEMPORARY_TOOL_RUN_MISSING: no active Run binding")
+        project_id = request.attributes.get("devpilot_project_id")
+        if not isinstance(project_id, str) or not project_id:
+            project_id = hashlib.sha256(str(scope.project_path).encode("utf-8")).hexdigest()[:16]
+        try:
+            source = kwargs.get("source")
+            entry_class = kwargs.get("entry_class")
+            if not isinstance(source, str) or not isinstance(entry_class, str):
+                raise TemporaryToolContractError("source and entry_class are required")
+            expires_in = kwargs.get("expires_in_seconds", 3600)
+            if not isinstance(expires_in, int) or isinstance(expires_in, bool):
+                raise TemporaryToolContractError("expires_in_seconds must be an integer")
+            capabilities = kwargs.get("declared_capabilities", [])
+            if not isinstance(capabilities, list):
+                raise TemporaryToolContractError("declared_capabilities must be a list")
+            now = int(time.time())
+            manifest = TemporaryToolManifest.from_mapping(
+                {
+                    "tool_id": kwargs.get("tool_id"),
+                    "version": kwargs.get("version"),
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "project_id": project_id,
+                    "name": kwargs.get("name"),
+                    "description": kwargs.get("description"),
+                    "parameter_schema": kwargs.get("parameter_schema"),
+                    "output_schema": kwargs.get("output_schema"),
+                    "entry_module": "candidate.py",
+                    "entry_class": entry_class,
+                    "source_hash": source_sha256(source),
+                    "declared_capabilities": capabilities,
+                    "created_at": now,
+                    "expires_at": now + expires_in,
+                    "scope": "session",
+                }
+            )
+            artifact = TemporaryToolArtifactStore(self._data_dir).write(manifest, source)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "state": TemporaryToolState.GENERATED.value,
+                    "tool_id": manifest.tool_id,
+                    "version": manifest.version,
+                    "source_hash": manifest.source_hash,
+                    "session_id": manifest.session_id,
+                    "run_id": manifest.run_id,
+                    "artifact": artifact.root.name,
+                    "next_step": "FC validation is required before activation",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except (TemporaryToolContractError, OSError, TypeError, ValueError) as exc:
+            return ToolResult.error(f"TEMPORARY_TOOL_DEFINITION_INVALID: {type(exc).__name__}")
+
+
 @dataclass(frozen=True, slots=True)
 class ToolCapabilityGap:
     """A session-local explanation of why existing tools are insufficient."""
@@ -301,6 +444,7 @@ class TemporaryToolManifest:
             _required_binding(getattr(self, field_name), field_name)
         _required_text(self.version, "version", max_length=128)
         _required_text(self.name, "name", max_length=128)
+        _required_id(self.name, "name")
         _required_text(self.description, "description")
         if not _SHA256.fullmatch(self.source_hash):
             raise TemporaryToolContractError("source_hash must be a lowercase SHA-256")

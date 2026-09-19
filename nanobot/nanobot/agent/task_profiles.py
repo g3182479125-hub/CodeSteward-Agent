@@ -124,6 +124,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_watch_run",
             "devpilot_confirmed_action",
             "devpilot_model_plugin",
+            "devpilot_create_temporary_tool",
         }),
         output_contract=(
             "facts_and_evidence",
@@ -152,6 +153,7 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_skill_feedback",
             "devpilot_skill_candidate",
             "devpilot_model_plugin",
+            "devpilot_create_temporary_tool",
         }),
         output_contract=(
             "failure_evidence",
