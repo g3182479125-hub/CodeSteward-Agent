@@ -47,6 +47,8 @@ class PluginSource(_ValueEnum):
     ENTRY_POINT = "entry_point"
     DEVELOPER = "developer"
     MODEL_CANDIDATE = "model_candidate"
+    TEMPORARY = "temporary"
+    PERSISTED = "persisted"
 
 
 class PluginLifecycle(_ValueEnum):

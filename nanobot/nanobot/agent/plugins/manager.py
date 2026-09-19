@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import shutil
 import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
@@ -127,6 +128,7 @@ class PluginManager:
         if self._state_store is None and state_path is not None:
             self._state_store = SqlitePluginStateStore(state_path)
         self._registered: dict[RegistrationKey, _RegisteredPlugin] = {}
+        self._orphaned_temporary: list[Path] = []
         self._lifecycles: dict[RegistrationKey, PluginLifecycle] = {}
         self._routes: dict[ScopeKey, dict[str, _ActiveRoute]] = {}
         self._retired_routes: dict[RouteKey, _ActiveRoute] = {}
@@ -201,6 +203,7 @@ class PluginManager:
                     "source": item.record.source.value,
                     "session_id": item.record.session_id,
                     "project_id": item.record.project_id,
+                    "run_id": item.record.run_id,
                     "online_lifecycle": item.record.online_lifecycle,
                     "candidate_status": (
                         item.record.candidate_status.value
@@ -291,11 +294,19 @@ class PluginManager:
                 continue
             try:
                 manifest = PluginManifest.from_mapping(raw["manifest"])
+                source = PluginSource(raw["source"])
+                root = Path(raw["artifact_root"]).resolve()
+                if source is PluginSource.TEMPORARY:
+                    # A process restart must never revive model-authored code.
+                    # Keep only the exact artifact root for startup cleanup.
+                    self._orphaned_temporary.append(root)
+                    continue
                 record = PluginRecord(
                     manifest,
-                    PluginSource(raw["source"]),
+                    source,
                     session_id=raw.get("session_id"),
                     project_id=raw.get("project_id"),
+                    run_id=raw.get("run_id"),
                     candidate_status=(
                         PluginCandidateStatus(raw["candidate_status"])
                         if raw.get("candidate_status") is not None
@@ -304,7 +315,6 @@ class PluginManager:
                     online_lifecycle=bool(raw.get("online_lifecycle", False)),
                 )
                 key = self._registration_key(record)
-                root = Path(raw["artifact_root"]).resolve()
                 self._registered[key] = _RegisteredPlugin(record, root, key)
                 try:
                     entry = manifest.resolve_entry(root)
@@ -551,6 +561,258 @@ class PluginManager:
             version=manifest.version,
             details={"state": PluginLifecycle.INACTIVE.value},
         )
+
+    def register_temporary_version(
+        self,
+        record: PluginRecord,
+        artifact_root: str | Path,
+    ) -> PluginOperationResult:
+        """Register a validated, session-scoped temporary Tool artifact.
+
+        The caller is the DevPilot temporary-tool controller.  It must only
+        call this after the artifact has passed the FC validation contract;
+        this method still repeats the immutable hash, scope and declaration
+        checks before the source can enter the managed loader.
+        """
+        manifest = record.manifest
+        if record.source is not PluginSource.TEMPORARY:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_SOURCE_UNTRUSTED,
+                "temporary registration requires the temporary source",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        if (
+            manifest.kind is not PluginKind.TOOL
+            or manifest.scope is not PluginScope.SESSION
+            or record.session_id is None
+            or record.run_id is None
+            or manifest.execution_mode is not PluginExecutionMode.IN_PROCESS
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_MANIFEST,
+                "temporary tools must be session-scoped in-process tools",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        registration_key = self._registration_key(record)
+        if registration_key in self._registered:
+            return PluginOperationResult.failure(
+                PluginErrorCode.DUPLICATE_VERSION,
+                "temporary tool version is already registered",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        try:
+            root = Path(artifact_root).resolve()
+            entry = manifest.resolve_entry(root)
+            if not entry.is_file():
+                raise OSError("entry is not a file")
+            if hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
+                raise ValueError("temporary entry content hash does not match the manifest")
+            catalog = PluginCatalog.from_registry(
+                session_id=record.session_id,
+                project_id=None,
+                registry=self._base_registry,
+            )
+            catalog.register(record)
+        except PluginContractError as exc:
+            return PluginOperationResult.failure(
+                exc.code,
+                str(exc),
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        except (OSError, ValueError):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_LOAD_FAILED,
+                "temporary artifact failed registration checks",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        self._registered[registration_key] = _RegisteredPlugin(record, root, registration_key)
+        self._lifecycles[registration_key] = PluginLifecycle.INACTIVE
+        self._save_state()
+        return PluginOperationResult.success(
+            "temporary tool version registered",
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            details={"state": PluginLifecycle.INACTIVE.value, "source": PluginSource.TEMPORARY.value},
+        )
+
+    def activate_temporary(
+        self,
+        plugin_id: str,
+        version: str,
+        *,
+        session_id: str,
+        policy: DynamicPluginPolicy | None = None,
+    ) -> PluginOperationResult:
+        """Activate one FC-validated temporary Tool in the live session route."""
+        registration = self._find_visible(plugin_id, version, session_id, None)
+        if registration is None or registration.record.source is not PluginSource.TEMPORARY:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "the temporary tool version is not visible in this session",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        active, _scope_key = self._find_active(plugin_id, session_id, None)
+        if (
+            active is not None
+            and active.registration.registration_key == registration.registration_key
+        ):
+            return PluginOperationResult.success(
+                "temporary tool is already active",
+                plugin_id=plugin_id,
+                version=version,
+                details={"state": PluginLifecycle.ACTIVE.value, "tool": active.tool.name},
+            )
+        return self.load(
+            plugin_id,
+            version,
+            session_id=session_id,
+            policy=policy,
+        )
+
+    def register_persisted_version(
+        self,
+        record: PluginRecord,
+        artifact_root: str | Path,
+    ) -> PluginOperationResult:
+        """Register a user-approved project-scoped temporary snapshot."""
+        manifest = record.manifest
+        if record.source is not PluginSource.PERSISTED:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_SOURCE_UNTRUSTED,
+                "persistent registration requires the persisted source",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        if (
+            manifest.kind is not PluginKind.TOOL
+            or manifest.scope is not PluginScope.PROJECT
+            or record.project_id is None
+            or manifest.execution_mode is not PluginExecutionMode.IN_PROCESS
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.INVALID_MANIFEST,
+                "persisted tools must be project-scoped in-process tools",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        key = self._registration_key(record)
+        if key in self._registered:
+            return PluginOperationResult.failure(
+                PluginErrorCode.DUPLICATE_VERSION,
+                "persistent tool version is already registered",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        try:
+            root = Path(artifact_root).resolve()
+            entry = manifest.resolve_entry(root)
+            if not entry.is_file():
+                raise OSError("entry is not a file")
+            if hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
+                raise ValueError("persistent entry content hash does not match the manifest")
+            catalog = PluginCatalog.from_registry(
+                session_id="__project__",
+                project_id=record.project_id,
+                registry=self._base_registry,
+            )
+            catalog.register(record)
+        except PluginContractError as exc:
+            return PluginOperationResult.failure(
+                exc.code,
+                str(exc),
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        except (OSError, ValueError):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_LOAD_FAILED,
+                "persistent artifact failed registration checks",
+                plugin_id=manifest.plugin_id,
+                version=manifest.version,
+            )
+        self._registered[key] = _RegisteredPlugin(record, root, key)
+        self._lifecycles[key] = PluginLifecycle.INACTIVE
+        self._save_state()
+        return PluginOperationResult.success(
+            "persistent tool version registered",
+            plugin_id=manifest.plugin_id,
+            version=manifest.version,
+            details={"state": PluginLifecycle.INACTIVE.value, "source": PluginSource.PERSISTED.value},
+        )
+
+    async def cleanup_temporary_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[dict[str, str], ...]:
+        """Stop, drain and unregister temporary tools, retaining exact artifacts for consent."""
+        if not run_id:
+            return ()
+        self.authorize(session_id)
+        rows = [
+            item
+            for item in self._registered.values()
+            if item.record.source is PluginSource.TEMPORARY
+            and item.record.session_id == session_id
+            and item.record.run_id == run_id
+        ]
+        results: list[dict[str, str]] = []
+        for item in rows:
+            manifest = item.record.manifest
+            stopped = self.stop(
+                manifest.plugin_id,
+                session_id=session_id,
+                operation_details={"temporary_cleanup": "run_end"},
+            )
+            if stopped.operation_id:
+                await self.wait_operation(
+                    stopped.operation_id,
+                    session_id=session_id,
+                    timeout=self._drain_timeout_s,
+                )
+            removed = self.remove(
+                manifest.plugin_id,
+                manifest.version,
+                session_id=session_id,
+                operation_details={"temporary_cleanup": "run_end"},
+            )
+            row = {
+                "tool_id": manifest.plugin_id,
+                "version": manifest.version,
+                "stop": stopped.code.value if stopped.code is not None else "ok",
+                "remove": removed.code.value if removed.code is not None else "ok",
+            }
+            if removed.ok:
+                # The route and registry entry are gone now. Keep the exact
+                # snapshot until the post-Run persistence question is answered.
+                row["artifact"] = "pending_persistence"
+            results.append(row)
+        return tuple(results)
+
+    async def cleanup_orphaned_temporary(self) -> tuple[str, ...]:
+        """Delete exact temporary artifact roots left by an interrupted process."""
+        roots = tuple(self._orphaned_temporary)
+        self._orphaned_temporary.clear()
+        deleted: list[str] = []
+        for root in roots:
+            try:
+                shutil.rmtree(root)
+            except FileNotFoundError:
+                deleted.append(str(root))
+            except OSError:
+                self._orphaned_temporary.append(root)
+            else:
+                deleted.append(str(root))
+        if roots and not self._orphaned_temporary:
+            self._save_state()
+        return tuple(deleted)
 
     def register_candidate_version(
         self,
@@ -971,6 +1233,15 @@ class PluginManager:
         return (PluginScope.SESSION, session_id) in self._authorized or (
             project_id is not None and (PluginScope.PROJECT, project_id) in self._authorized
         )
+
+    def authorize_persisted_project(self, project_id: str) -> None:
+        """Re-enable explicitly saved project tools for a new session."""
+        if any(
+            item.record.source is PluginSource.PERSISTED
+            and item.record.project_id == project_id
+            for item in self._registered.values()
+        ):
+            self.authorize("", project_id)
 
     def list_view(
         self,
@@ -2078,7 +2349,12 @@ class PluginManager:
             # H2 keeps the legacy ``ToolContext`` factory annotation, while
             # H3 supplies the compatible managed context at runtime.
             tool = tool_cls.create(cast(ToolContext, cast(object, plugin_context)))
-            self._validate_loaded_tool(manifest.provides, tool)
+            self._validate_loaded_tool(
+                manifest.provides,
+                tool,
+                require_read_only=registration.record.source
+                not in {PluginSource.TEMPORARY, PluginSource.PERSISTED},
+            )
             return tool, plugin_context
         except BaseException as exc:
             raise _PluginLoadError(exc, plugin_context) from exc
@@ -2098,11 +2374,16 @@ class PluginManager:
             )
 
     @staticmethod
-    def _validate_loaded_tool(provides: Collection[str], tool: Tool) -> None:
+    def _validate_loaded_tool(
+        provides: Collection[str],
+        tool: Tool,
+        *,
+        require_read_only: bool = True,
+    ) -> None:
         declared = [name.removeprefix("tool:") for name in provides if name.startswith("tool:")]
         if len(declared) != 1 or declared[0] != tool.name:
             raise ValueError("manifest tool capability does not match the loaded tool")
-        if not tool.read_only or tool.exclusive or not tool.concurrency_safe:
+        if require_read_only and (not tool.read_only or tool.exclusive or not tool.concurrency_safe):
             raise ValueError("H2 plugin must be a non-exclusive read-only tool")
 
     @staticmethod

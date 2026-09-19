@@ -80,6 +80,51 @@ class BlockingTool(Tool):
     return PluginRecord(manifest, PluginSource.DEVELOPER, session_id=session_id), tmp_path
 
 
+def _temporary_record(tmp_path: Path, session_id: str = "websocket:temporary") -> tuple[PluginRecord, Path]:
+    source = tmp_path / "temporary.py"
+    source.write_text(
+        """
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]})
+class TemporaryTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "Temporary test tool."
+
+    async def execute(self, value):
+        return f"temporary:{value}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = PluginManifest.from_mapping(
+        {
+            "plugin_id": "temporary-lookup",
+            "version": "1.0.0",
+            "content_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "kind": "tool",
+            "api_version": "devpilot.temporary/v1",
+            "scope": "session",
+            "entry": "temporary.py",
+            "requires": [],
+            "provides": ["tool:temporary_lookup"],
+            "requested_capabilities": [],
+            "execution_mode": "in_process",
+        }
+    )
+    return PluginRecord(
+        manifest,
+        PluginSource.TEMPORARY,
+        session_id=session_id,
+        run_id="run-1",
+    ), tmp_path
+
+
 @pytest.mark.asyncio
 async def test_load_and_stop_change_only_the_dynamic_view() -> None:
     base = ToolRegistry()
@@ -138,10 +183,37 @@ def test_disabled_profile_hides_an_authorized_dynamic_route() -> None:
         "cli:direct",
         policy=DynamicPluginPolicy(),
     )
-
     assert "demo_greeting" in ordinary_view.tool_names
     assert disabled_view is base
     assert "demo_greeting" not in disabled_view.tool_names
+
+
+@pytest.mark.asyncio
+async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: Path) -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _temporary_record(tmp_path)
+    registered = manager.register_temporary_version(record, root)
+
+    assert registered.ok is True
+    manager.authorize("websocket:temporary")
+    loaded = manager.activate_temporary(
+        "temporary-lookup",
+        "1.0.0",
+        session_id="websocket:temporary",
+    )
+
+    assert loaded.ok is True
+    view = manager.live_tools_for_session(base, "websocket:temporary")
+    assert "temporary_lookup" in view.tool_names
+    assert await view.execute("temporary_lookup", {"value": "ok"}) == "temporary:ok"
+
+    cleaned = await manager.cleanup_temporary_run(
+        session_id="websocket:temporary",
+        run_id="run-1",
+    )
+    assert cleaned[0]["remove"] == "ok"
+    assert "temporary_lookup" not in view.tool_names
 
 
 def test_session_routes_do_not_leak_to_another_session() -> None:

@@ -25,6 +25,16 @@ metadata:
 
 # Bug fix
 
+## Full Access 直通规则
+
+当前 WebUI 回合明确处于 Full Access 时，普通项目修复不需要先取得失败证据、项目 trust、
+Approval Token 或 ChangeSet 二次确认。先读取必要源码并生成最小补丁，再调用
+`devpilot_bug_fix_propose`；该工具会直接生成 Diff、应用修改并运行可用验证。不要在普通
+代码修改前要求用户回复“执行”。
+
+只有补丁、读取结果或准备外发的数据疑似包含密钥、凭据、个人文件、聊天记录或浏览器数据
+时，才停止并请求一次隐私确认。Default 模式继续遵循下面的受控流程。
+
 ## 适用场景
 
 用户提供了可复现的失败检查或错误现象，希望定位一个最小缺陷、查看 Diff、确认回归验证
@@ -67,7 +77,7 @@ Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用�
 3. 用 inspect/search/read 取得相关源码事实，不能把模型猜测当作失败证据；
 4. 生成最小修复 proposal，绑定 failure evidence、symptom、expected behavior 和回归 profile；
 5. 创建 ChangeSet/Diff，展示允许文件、风险、前后 hash、验证和回滚方式；
-6. 等待用户对精确 ChangeSet 回复“执行”，再调用 `devpilot_request_approval`；
+6. 展示精确 ChangeSet 并等待用户明确表达意图；系统支持自然语言确认（例如“按这个方案修好并跑测试”或“把这次修改撤回”），只有语义不明确或互相冲突时才追问一次，不要求用户记忆固定口令；
 7. 控制面执行 Apply 和服务端 allowlisted Verification；P6 前只允许 Fake 自动化验证；
 8. 输出成功或失败 Artifact，验证失败不得宣称修复完成。
 
@@ -84,3 +94,12 @@ Fake 合同验证，不代表真实 React/npm 测试或 Sandbox 隔离已经执�
 失败证据缺失或不属于目标项目、前置 hash 变化、路径越界、范围漂移、审批缺失、验证失败、
 Artifact 写入失败或后端不可用时立即停止。不得改用 nanobot Shell、自动扩大范围、伪造通过
 或自动回滚未获用户确认的修改。
+
+如果 `approval_pending` 或 `APPROVAL_BROKER_UNAVAILABLE`，要把动作状态说明为“已记录/等待审批，尚未执行”，本轮直接结束，不再要求用户重复确认同一个动作。
+
+## 当前 Run 的临时工具
+
+只有在 Full Access 的 WebSocket 会话中，且现有工具确实无法完成目标时，才调用
+`devpilot_ensure_temporary_tool`。它会自动完成生成、FC 校验和当前 Run 热加载；验证失败不得改用
+本机直接执行。Run 结束后如果出现加粗的保存询问，只有用户明确同意时才调用
+`devpilot_persist_temporary_tool`，用户拒绝则调用 `devpilot_discard_temporary_tools`。

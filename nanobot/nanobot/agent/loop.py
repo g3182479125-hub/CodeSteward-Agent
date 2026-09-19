@@ -588,6 +588,12 @@ class AgentLoop:
             ),
             candidate_tool_factory=candidate_tool_factory,
         )
+        try:
+            from devpilot.temporary_tools import bind_temporary_tool_manager
+
+            bind_temporary_tool_manager(self.plugin_manager)
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            logger.debug("Temporary tool manager adapter unavailable: {}", type(exc).__name__)
         self.loop_handoff_manager: LoopHandoffManager | None = None
         if os.environ.get("DEVPILOT_ENABLE_LOOP_HANDOFF") == "1" and plugin_state_path is not None:
             try:
@@ -2171,6 +2177,9 @@ class AgentLoop:
                 )
                 if not selected.ok:
                     logger.warning("H9 candidate was not loaded for new task: {}", selected.message)
+        self.plugin_manager.authorize_persisted_project(
+            self.plugin_manager.project_id_for_path(effective_scope.project_path)
+        )
         effective_tools = self.plugin_manager.live_tools_for_session(
             effective_tools,
             active_session_key or "",
@@ -2455,6 +2464,7 @@ class AgentLoop:
         self._running = True
         try:
             await self._connect_mcp()
+            await self.plugin_manager.cleanup_orphaned_temporary()
             logger.info("Agent loop started")
 
             while self._running:
@@ -2590,6 +2600,7 @@ class AgentLoop:
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=asyncio.CancelledError())
                     logger.info("Task cancelled for session {}", session_key)
+                    await self._cleanup_temporary_run(session_key, msg.attributes)
                     try:
                         await delivery.abort_stream()
                     except Exception:
@@ -3271,6 +3282,17 @@ class AgentLoop:
         if not preserve_h7_pause:
             self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
+        if (
+            ctx.stop_reason == "completed"
+            and not turn_continuation.internal_continuation_pending(ctx.msg.metadata)
+        ):
+            cleanup = await self._cleanup_temporary_run(ctx.session_key, ctx.attributes)
+            if cleanup:
+                ctx.final_content = (
+                    (ctx.final_content or "").rstrip()
+                    + "\n\n**这个临时工具已完成本次任务，要保存为可复用插件吗？**"
+                )
+                ctx.attributes["temporary_tool_persistence_prompt"] = True
         if not ctx.ephemeral:
             await self.runtime_event_publisher.session_turn_persisted(
                 ctx.msg,
@@ -3864,6 +3886,7 @@ class AgentLoop:
         if channel == "system":
             raise ValueError("channel 'system' is reserved for internal messages")
         await self._connect_mcp()
+        await self.plugin_manager.cleanup_orphaned_temporary()
         message_metadata: dict[str, Any] = dict(metadata or {})
         if not persist_user_message:
             message_metadata[turn_continuation.SKIP_USER_PERSIST_META] = True
@@ -3904,13 +3927,47 @@ class AgentLoop:
                     kwargs["on_runtime_admitted"] = on_runtime_admitted
                 if attributes is not None:
                     kwargs["attributes"] = dict(attributes)
-                return await self._process_message(
+                response = await self._process_message(
                     msg,
                     **kwargs,
                 )
+                return response
         finally:
+            await self._cleanup_temporary_run(session_key, attributes)
             await self.runtime_event_publisher.run_status_changed(msg, session_key, "idle")
             self.runtime_event_publisher.clear_turn(session_key)
+
+    async def _cleanup_temporary_run(
+        self,
+        session_key: str,
+        attributes: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, str], ...]:
+        """Retire model-authored tools when their owning Run is complete."""
+        raw = dict(attributes or {})
+        run_id = raw.get("devpilot_run_id") or raw.get("devpilot_task_id")
+        if not isinstance(run_id, str) or not run_id:
+            return ()
+        try:
+            rows = await self.plugin_manager.cleanup_temporary_run(
+                session_id=session_key,
+                run_id=run_id,
+            )
+            if rows:
+                logger.info(
+                    "Temporary tool Run cleanup completed: session={} run={} tools={}",
+                    session_key,
+                    run_id,
+                    len(rows),
+                )
+            return rows
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "Temporary tool Run cleanup failed: session={} run={} error={}",
+                session_key,
+                run_id,
+                type(exc).__name__,
+            )
+            return ()
 
     def _get_session_lock(self, session_key: str) -> asyncio.Lock:
         """Return the shared lock while allowing idle session entries to expire."""

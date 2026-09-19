@@ -66,7 +66,7 @@ MODEL_CANDIDATE_POLICY = DynamicPluginPolicy(
     enabled=True,
     allowed_kinds=frozenset({"tool", "loop"}),
     allowed_capabilities=frozenset(),
-    allowed_actions=frozenset({"activate", "stop", "remove", "switch-loop"}),
+    allowed_actions=frozenset({"activate", "load", "stop", "remove", "switch-loop"}),
     allowed_scopes=frozenset({"session", "project"}),
     max_active_plugins=3,
 )
@@ -125,6 +125,11 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_confirmed_action",
             "devpilot_model_plugin",
             "devpilot_create_temporary_tool",
+            "devpilot_validate_temporary_tool",
+            "devpilot_activate_temporary_tool",
+            "devpilot_ensure_temporary_tool",
+            "devpilot_persist_temporary_tool",
+            "devpilot_discard_temporary_tools",
         }),
         output_contract=(
             "facts_and_evidence",
@@ -154,6 +159,11 @@ DEFAULT_TASK_PROFILES: Mapping[str, TaskProfile] = {
             "devpilot_skill_candidate",
             "devpilot_model_plugin",
             "devpilot_create_temporary_tool",
+            "devpilot_validate_temporary_tool",
+            "devpilot_activate_temporary_tool",
+            "devpilot_ensure_temporary_tool",
+            "devpilot_persist_temporary_tool",
+            "devpilot_discard_temporary_tools",
         }),
         output_contract=(
             "failure_evidence",

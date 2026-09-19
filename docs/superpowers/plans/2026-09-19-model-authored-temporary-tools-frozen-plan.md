@@ -8,8 +8,21 @@
 
 - T1 已完成：`ToolCapabilityGap`、`TemporaryToolManifest`、生命周期状态转换、Full Access/WebSocket 入口判断和契约测试；提交 `2b8aaee`。
 - T2 已完成第一批：不可变 artifact store、源码 AST 协议预检、哈希/路径/冲突校验，以及 `devpilot_create_temporary_tool` Entry Point；提交 `35ca016`、`f56c29f`。
-- 尚未完成：FC 验证器、验证后动态挂载、Run 结束清理、沉淀询问和正式插件保存。当前新工具只会生成候选 artifact，不能执行候选源码。
-- T1/T2 验收：临时工具契约测试 `14 passed`；nanobot 插件契约/生命周期回归 `20 passed`；Ruff 通过。
+- T3 已完成：FC 合约验证器会在沙箱内编译、导入最小 Tool shim、实例化、序列化 schema 并执行受控参数校验；验证回执绑定 sandbox/run/hash，FC 失败不得激活。
+- T4 已完成：`PluginSource.TEMPORARY`、`register_temporary_version`、`activate_temporary` 接入现有 `PluginManager`/`DynamicPluginRegistry`；真实工具可在当前 Run 下一轮 schema 中热加载，并通过 managed lease 排空。
+- T5 已完成：`devpilot_ensure_temporary_tool` 串起生成、FC 校验和热加载；Full Access/WebSocket 才可用；隐私能力声明没有可信确认信封时返回一次确认要求。
+- T6 已完成：Run 完成时停止、排空、移除临时 route，快照进入待用户决定区；加粗询问后，明确同意可转 project 持久插件，拒绝可删除；进程重启只清理遗留临时 route/源，不恢复活动临时工具。
+- T7 进行中：已完成真实 FC 成功和导入失败证据；待完成受影响全量回归、证据归档和独立子 Agent Standards + Spec review。
+- 当前验收：临时工具链测试 `16 passed`；nanobot 插件/任务 profile 回归 `42 passed`；另有插件 manager 回归 `21 passed`；Ruff 通过。
+
+## 最终 Review 门禁
+
+T7 的代码、测试、真实 FC 证据和 WebUI 证据全部完成后，必须启动独立子 Agent 做两条互相独立的 Review：
+
+1. Standards Review：核对 Full Access、隐私确认、session/Run 隔离、候选不落地、FC 前置验证、清理和回滚等既有标准是否被违反。
+2. Spec Review：逐条核对本文和设计说明的 T1–T7 需求、验收标准、失败处理和明确非目标是否实现，区分“未覆盖”与“失败”。
+
+主 Agent 必须向子 Agent 提供 baseline/candidate、diff、实际命令与退出码、FC Run ID、覆盖范围和已知限制。两个 Review 都通过、没有待修复项，并完成受影响回归后，才能把本计划标记为正式验收；任一 Review 发现有效问题，都必须修复并进行增量 Review，不能先验收后补记录。
 
 ## 冻结产品约束
 
@@ -53,7 +66,7 @@
 **实现：**
 
 1. 新增 `TemporaryToolValidator`，基于 `fc_sandbox.py` 和候选运行器创建固定验证 profile。
-2. 固定检查：编译、导入、`Tool` 子类/`execute()`、Schema 序列化、成功/无效参数/受控错误 fixture。
+2. 固定检查：编译、通过最小 Tool shim 导入、`Tool` 子类/`execute()`、Schema 序列化、成功/无效参数/受控错误 fixture；真实主机导入仍延后到 managed loader 的 staged load。
 3. 保存 FC Run ID、退出码、输出摘要、沙箱 ID、哈希和验证版本；FC 不可用时不允许激活。
 4. 在验证结束至加载前二次校验候选快照哈希，避免 TOCTOU 篡改。
 

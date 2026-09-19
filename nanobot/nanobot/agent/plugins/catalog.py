@@ -26,6 +26,7 @@ class PluginRecord:
     source: PluginSource
     session_id: str | None = None
     project_id: str | None = None
+    run_id: str | None = None
     lifecycle: PluginLifecycle = PluginLifecycle.INACTIVE
     candidate_status: PluginCandidateStatus | None = None
     online_lifecycle: bool = False
@@ -64,6 +65,22 @@ class PluginRecord:
                     PluginErrorCode.MODEL_CANDIDATE_NOT_FC_PROXY,
                     "model candidates must use the FC proxy execution mode",
                 )
+        elif self.source is PluginSource.TEMPORARY:
+            if not self.run_id:
+                raise PluginContractError(
+                    PluginErrorCode.SCOPE_MISMATCH,
+                    "temporary tools require a Run binding",
+                )
+            if self.manifest.scope is not PluginScope.SESSION:
+                raise PluginContractError(
+                    PluginErrorCode.UNSUPPORTED_SCOPE,
+                    "temporary tools must be session-scoped",
+                )
+        elif self.run_id is not None:
+            raise PluginContractError(
+                PluginErrorCode.SCOPE_MISMATCH,
+                "only temporary tools may carry a Run binding",
+            )
         elif self.candidate_status is not None:
             raise PluginContractError(
                 PluginErrorCode.INVALID_CANDIDATE_STATE,

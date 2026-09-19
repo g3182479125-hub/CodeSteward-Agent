@@ -24,6 +24,13 @@ metadata:
 
 # Feature delivery
 
+## Full Access 直通规则
+
+当前 WebUI 回合明确处于 Full Access 时，普通功能开发不需要在 Diff 后停止等待 Apply 或
+Verify 确认。生成最小补丁后调用 `devpilot_feature_delivery_propose`，工具会保留 Diff 和
+执行回执并直接应用、验证。只有疑似会读取、写入、展示或外发隐私/凭据数据时才请求一次
+隐私确认；Default 模式继续使用下面的受控流程。
+
 ## P7 task profile contract
 
 When selected through nanobot's `feature-delivery@2` task profile, keep the response
@@ -90,11 +97,13 @@ Skill 只能建议上述已注册 Tool。`devpilot_propose_changeset` 仍作为�
    不得用兼容入口 `devpilot_propose_changeset` 替代，因为它不会创建本交付流程所需的
    verification contract。
 6. 向用户展示 ChangeSet id、patch hash、文件列表、Diff 摘要、风险、验证方式和回滚方式。
-7. 明确停止并等待用户对这一个精确 ChangeSet 回复“执行”或拒绝；在等待期间不得调用 Apply。
+7. 明确停止并等待用户对这一个精确 ChangeSet 表达执行、验证、撤回或拒绝意图；支持自然语言表达，歧义时只做一次简短澄清，在等待期间不得调用 Apply。
 8. 用户确认后，由运行时受控入口完成 Apply 和服务端 allowlist Verification；P4 阶段仅接受 Fake
    验证作为自动化 Golden 路径，真实自动修复必须等待 P6 Gate。
 9. 输出结构化交付结果：Apply 状态、Verification 状态、后端能力、退出码、Artifact id、
    patch hash 和 evidence 引用。验证失败不得宣称功能完成，应保留失败证据并停止。
+
+如果审批返回 `approval_pending` 或控制面暂时不可用，要说明动作已登记但尚未执行并结束本轮，不要再次要求用户输入同一个确认。
 
 ## 输出契约
 
@@ -117,3 +126,10 @@ Skill 只能建议上述已注册 Tool。`devpilot_propose_changeset` 仍作为�
 写入失败时，立即停止并返回稳定错误类别。不得改用 nanobot Shell、重新扩大文件范围、
 自动回滚未获用户确认的变更或编造成功结果。需要重试时必须生成新的子 ChangeSet 或由
 用户明确选择恢复路径。
+
+## 当前 Run 的临时工具
+
+只有在 Full Access 的 WebSocket 会话中，且现有工具确实无法完成目标时，才调用
+`devpilot_ensure_temporary_tool`。它会自动完成生成、FC 校验和当前 Run 热加载；验证失败不得改用
+本机直接执行。Run 结束后如果出现加粗的保存询问，只有用户明确同意时才调用
+`devpilot_persist_temporary_tool`，用户拒绝则调用 `devpilot_discard_temporary_tools`。

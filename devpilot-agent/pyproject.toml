@@ -35,6 +35,11 @@ devpilot_confirmed_action = "devpilot.nanobot_tools:ConfirmedActionTool"
 devpilot_skill_feedback = "devpilot.nanobot_tools:SkillFeedbackTool"
 devpilot_skill_candidate = "devpilot.nanobot_tools:SkillCandidateTool"
 devpilot_create_temporary_tool = "devpilot.temporary_tools:TemporaryToolCreateTool"
+devpilot_validate_temporary_tool = "devpilot.temporary_tools:TemporaryToolValidateTool"
+devpilot_activate_temporary_tool = "devpilot.temporary_tools:TemporaryToolActivateTool"
+devpilot_ensure_temporary_tool = "devpilot.temporary_tools:TemporaryToolEnsureTool"
+devpilot_persist_temporary_tool = "devpilot.temporary_tools:TemporaryToolPersistTool"
+devpilot_discard_temporary_tools = "devpilot.temporary_tools:TemporaryToolDiscardTool"
 
 [project.optional-dependencies]
 fc-sandbox = [
