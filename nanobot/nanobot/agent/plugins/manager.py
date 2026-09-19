@@ -786,6 +786,9 @@ class PluginManager:
             row = {
                 "tool_id": manifest.plugin_id,
                 "version": manifest.version,
+                "session_id": session_id,
+                "run_id": run_id,
+                "source_hash": manifest.content_hash,
                 "stop": stopped.code.value if stopped.code is not None else "ok",
                 "remove": removed.code.value if removed.code is not None else "ok",
             }

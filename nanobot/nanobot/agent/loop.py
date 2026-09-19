@@ -3282,17 +3282,42 @@ class AgentLoop:
         if not preserve_h7_pause:
             self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
-        if (
-            ctx.stop_reason == "completed"
-            and not turn_continuation.internal_continuation_pending(ctx.msg.metadata)
-        ):
+        if not turn_continuation.internal_continuation_pending(ctx.msg.metadata):
             cleanup = await self._cleanup_temporary_run(ctx.session_key, ctx.attributes)
-            if cleanup:
+            if cleanup and ctx.stop_reason == "completed":
                 ctx.final_content = (
                     (ctx.final_content or "").rstrip()
                     + "\n\n**这个临时工具已完成本次任务，要保存为可复用插件吗？**"
                 )
                 ctx.attributes["temporary_tool_persistence_prompt"] = True
+            if cleanup:
+                request_attributes = (
+                    ctx.request_context.attributes if ctx.request_context is not None else ctx.attributes
+                )
+                project_id = request_attributes.get("devpilot_project_id")
+                if not isinstance(project_id, str) or not project_id:
+                    if ctx.request_context is not None:
+                        project_id = self.plugin_manager.project_id_for_path(
+                            ctx.request_context.workspace
+                        )
+                if isinstance(project_id, str) and project_id:
+                    candidate = cleanup[-1]
+                    if all(
+                        isinstance(candidate.get(key), str) and candidate[key]
+                        for key in ("tool_id", "version", "source_hash")
+                    ):
+                        ctx.attributes["devpilot_temporary_persistence_binding"] = {
+                            "session_id": ctx.session_key,
+                            "run_id": str(
+                                request_attributes.get("devpilot_run_id")
+                                or request_attributes.get("devpilot_task_id")
+                                or ""
+                            ),
+                            "project_id": project_id,
+                            "tool_id": candidate["tool_id"],
+                            "version": candidate["version"],
+                            "source_hash": candidate["source_hash"],
+                        }
         if not ctx.ephemeral:
             await self.runtime_event_publisher.session_turn_persisted(
                 ctx.msg,
@@ -3322,6 +3347,14 @@ class AgentLoop:
             log_content=ctx.require_session().policy.log_content,
             turn_latency_ms=ctx.turn_latency_ms,
         )
+        if ctx.outbound is not None:
+            temporary_binding = getattr(ctx, "attributes", {}).get(
+                "devpilot_temporary_persistence_binding"
+            )
+            if isinstance(temporary_binding, dict):
+                ctx.outbound.metadata["_devpilot_temporary_tool_persistence"] = dict(
+                    temporary_binding
+                )
         if ctx.outbound is not None and ctx.request_context is not None:
             transport_chat_id = getattr(ctx.msg, "chat_id", None)
             delivery = getattr(ctx, "delivery", None)
