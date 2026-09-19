@@ -12,8 +12,8 @@
 - T4 已完成：`PluginSource.TEMPORARY`、`register_temporary_version`、`activate_temporary` 接入现有 `PluginManager`/`DynamicPluginRegistry`；真实工具可在当前 Run 下一轮 schema 中热加载，并通过 managed lease 排空。
 - T5 已完成：`devpilot_ensure_temporary_tool` 串起生成、FC 校验和热加载；Full Access/WebSocket 才可用；隐私能力声明没有可信确认信封时返回一次确认要求。
 - T6 已完成：Run 完成时停止、排空、移除临时 route，快照进入待用户决定区；加粗询问后，明确同意可转 project 持久插件，拒绝可删除；进程重启只清理遗留临时 route/源，不恢复活动临时工具。
-- T7 进行中：已完成真实 FC 成功和导入失败证据；待完成受影响全量回归、证据归档和独立子 Agent Standards + Spec review。
-- 当前验收：临时工具链测试 `16 passed`；nanobot 插件/任务 profile 回归 `42 passed`；另有插件 manager 回归 `21 passed`；Ruff 通过。
+- T7 进行中：真实 FC 成功和导入失败证据、受影响回归和过期快照清理修复已完成；等待独立子 Agent Standards + Spec review 返回最终 verdict。
+- 当前验收：临时工具链测试 `18 passed`；H6 `20 passed`；H5 `46 passed`；nanobot 插件/profile/loop/WebSocket 回归 `267 passed`；另有 loop/profile 增量回归 `37 passed`；Ruff 通过。最新修复提交 `1ef44a6`。
 
 ## 最终 Review 门禁
 
