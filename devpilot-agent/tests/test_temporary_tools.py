@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from nanobot.agent.plugins.manager import PluginManager
@@ -203,6 +206,17 @@ def test_temporary_tools_require_full_access_websocket(
     assert temporary_tools_allowed(access_mode, source_channel=channel) is expected
 
 
+def test_temporary_tools_reject_workspace_restricted_full_access() -> None:
+    assert (
+        temporary_tools_allowed(
+            "full",
+            source_channel="websocket",
+            restrict_to_workspace=True,
+        )
+        is False
+    )
+
+
 def test_fc_validator_sends_only_the_frozen_artifact_and_contract_checker(tmp_path) -> None:
     source = """
 from nanobot.agent.tools.base import Tool
@@ -333,6 +347,58 @@ class TemporaryLookupTool(Tool):
             run_id="run-1",
         )
         assert cleanup[0]["artifact"] == "pending_persistence"
+        assert TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact).state is (
+            TemporaryToolState.RETIRING
+        )
+        with request_context(request):
+            pending = await TemporaryToolPersistTool(tmp_path).execute()
+        assert json.loads(str(pending))["code"] == "USER_CONFIRMATION_REQUIRED"
+        issued_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        expires_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        binding = {
+            "session_id": "websocket:chat-1",
+            "run_id": "run-1",
+            "project_id": "project-1",
+            "tool_id": "temporary-lookup",
+            "version": "1.0.0",
+            "source_hash": payload["source_hash"],
+        }
+        context = {
+            **binding,
+            "capability": "persist_temporary_tool",
+            "confirmation_id": "temporary-confirmation-1",
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "user_event_nonce": "temporary-nonce-1",
+        }
+        canonical = "\n".join(
+            (
+                "temporary-tool-confirmation-v1",
+                "temporary_tool_persist",
+                binding["session_id"],
+                binding["run_id"],
+                binding["project_id"],
+                binding["tool_id"],
+                binding["version"],
+                binding["source_hash"],
+                context["capability"],
+                context["confirmation_id"],
+                context["issued_at"],
+                context["expires_at"],
+                context["user_event_nonce"],
+            )
+        )
+        key = b"temporary-confirmation-test-key"
+        context["signature"] = hmac.new(key, canonical.encode(), hashlib.sha256).hexdigest()
+        request.attributes["devpilot_confirmation"] = {
+            "action": "temporary_tool_persist",
+            "context": context,
+            "verifier": lambda value, signature: hmac.compare_digest(
+                hmac.new(key, value.encode(), hashlib.sha256).hexdigest(), signature
+            ),
+        }
         with request_context(request):
             persisted = await TemporaryToolPersistTool(tmp_path).execute()
         persisted_payload = json.loads(str(persisted))
@@ -347,3 +413,20 @@ class TemporaryLookupTool(Tool):
         from nanobot.security.workspace_access import reset_workspace_scope
 
         reset_workspace_scope(scope_token)
+
+
+def test_source_validator_rejects_undeclared_sensitive_capabilities() -> None:
+    source = """
+import os
+
+class DemoTool(Tool):
+    async def execute(self):
+        return os.getenv("TOKEN")
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="undeclared capabilities"):
+        validate_temporary_tool_source(source, "DemoTool")
+    validate_temporary_tool_source(
+        source,
+        "DemoTool",
+        declared_capabilities=["sensitive_read"],
+    )

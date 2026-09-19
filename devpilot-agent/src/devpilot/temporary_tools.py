@@ -72,7 +72,9 @@ _CONSUMED_TEMPORARY_CONFIRMATIONS: set[str] = set()
 _SENSITIVE_CAPABILITIES = frozenset(
     {
         "sensitive_read",
+        "sensitive_write",
         "privacy_read",
+        "privacy_write",
         "external_send",
         "privacy_external_send",
     }
@@ -123,7 +125,11 @@ _TRANSITIONS: dict[TemporaryToolState, frozenset[TemporaryToolState]] = {
         {TemporaryToolState.VALIDATED, TemporaryToolState.REJECTED}
     ),
     TemporaryToolState.VALIDATED: frozenset(
-        {TemporaryToolState.ACTIVE, TemporaryToolState.RETIRING}
+        {
+            TemporaryToolState.ACTIVE,
+            TemporaryToolState.RETIRING,
+            TemporaryToolState.REJECTED,
+        }
     ),
     TemporaryToolState.ACTIVE: frozenset(
         {TemporaryToolState.RETIRING, TemporaryToolState.PERSISTENCE_REQUESTED}
@@ -246,6 +252,8 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
                     "connect",
                 }:
                     required.add("external_send")
+                elif node.attr in {"write_text", "write_bytes", "unlink", "rmtree"}:
+                    required.add("sensitive_write")
                 else:
                     required.add("sensitive_read")
     return frozenset(required)
@@ -724,7 +732,11 @@ def _consume_temporary_confirmation(
     """Verify and consume one gateway-signed, scope-bound confirmation."""
 
     envelope = _trusted_temporary_confirmation_attributes(request)
-    if not isinstance(envelope, dict) or envelope.get("action") != action:
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) != {"action", "context", "verifier"}
+        or envelope.get("action") != action
+    ):
         return False
     verifier = envelope.get("verifier")
     context = envelope.get("context")
@@ -789,7 +801,7 @@ def _consume_temporary_confirmation(
     try:
         if not verifier(payload, signature):
             return False
-    except (TypeError, ValueError):
+    except Exception:
         return False
     with _TEMPORARY_CONFIRMATION_LOCK:
         if confirmation_id in _CONSUMED_TEMPORARY_CONFIRMATIONS:
@@ -836,7 +848,9 @@ class TemporaryToolValidateTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         scope = current_workspace_scope()
         if scope is None or not temporary_tools_allowed(
-            scope.access_mode, source_channel=scope.source_channel
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
         ):
             return ToolResult.error(
                 "TEMPORARY_TOOL_FULL_ACCESS_REQUIRED: temporary tools require Full Access"
@@ -930,7 +944,9 @@ class TemporaryToolActivateTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         scope = current_workspace_scope()
         if scope is None or not temporary_tools_allowed(
-            scope.access_mode, source_channel=scope.source_channel
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
         ):
             return ToolResult.error(
                 "TEMPORARY_TOOL_FULL_ACCESS_REQUIRED: temporary tools require Full Access"
@@ -967,12 +983,7 @@ class TemporaryToolActivateTool(Tool):
             )
             if artifact.manifest.expires_at <= int(time.time()):
                 raise TemporaryToolContractError("temporary tool artifact has expired")
-            sensitive_capabilities = {
-                "sensitive_read",
-                "privacy_read",
-                "external_send",
-                "privacy_external_send",
-            }
+            sensitive_capabilities = _SENSITIVE_CAPABILITIES
             if sensitive_capabilities.intersection(artifact.manifest.declared_capabilities):
                 if not _temporary_tool_confirmation_matches(request, artifact):
                     return json.dumps(
@@ -1042,6 +1053,9 @@ class TemporaryToolActivateTool(Tool):
                 and result.code is not None
                 and result.code.value != "duplicate_version"
             ):
+                lifecycle = store.load_lifecycle(artifact)
+                if lifecycle.state is TemporaryToolState.VALIDATED:
+                    store.transition_lifecycle(artifact, TemporaryToolState.REJECTED)
                 return json.dumps({"ok": False, **result.to_dict()}, ensure_ascii=False)
             activated = manager.activate_temporary(
                 artifact.manifest.tool_id,
@@ -1053,6 +1067,18 @@ class TemporaryToolActivateTool(Tool):
                 lifecycle = store.load_lifecycle(artifact)
                 if lifecycle.state is TemporaryToolState.VALIDATED:
                     store.transition_lifecycle(artifact, TemporaryToolState.ACTIVE)
+            else:
+                # Activation failure must not leave a registered candidate or
+                # a misleading validated state behind.
+                manager.remove(
+                    artifact.manifest.tool_id,
+                    artifact.manifest.version,
+                    session_id=session_id,
+                    operation_details={"temporary_activation": "rollback"},
+                )
+                lifecycle = store.load_lifecycle(artifact)
+                if lifecycle.state is TemporaryToolState.VALIDATED:
+                    store.transition_lifecycle(artifact, TemporaryToolState.REJECTED)
             payload.update(
                 {
                     "state": TemporaryToolState.ACTIVE.value if activated.ok else "rejected",
@@ -1197,7 +1223,9 @@ class TemporaryToolPersistTool(Tool):
         manager = _TEMPORARY_PLUGIN_MANAGER
         request = current_request_context()
         if scope is None or not temporary_tools_allowed(
-            scope.access_mode, source_channel=scope.source_channel
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
         ):
             return ToolResult.error("TEMPORARY_TOOL_FULL_ACCESS_REQUIRED")
         if request is None or not request.sender_id or manager is None:
@@ -1347,7 +1375,9 @@ class TemporaryToolDiscardTool(Tool):
         scope = current_workspace_scope()
         request = current_request_context()
         if scope is None or not temporary_tools_allowed(
-            scope.access_mode, source_channel=scope.source_channel
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
         ):
             return ToolResult.error("TEMPORARY_TOOL_FULL_ACCESS_REQUIRED")
         if request is None or not request.sender_id:
@@ -1450,7 +1480,9 @@ class TemporaryToolCreateTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         scope = current_workspace_scope()
         if scope is None or not temporary_tools_allowed(
-            scope.access_mode, source_channel=scope.source_channel
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
         ):
             return ToolResult.error(
                 "TEMPORARY_TOOL_FULL_ACCESS_REQUIRED: temporary tools require Full Access"
@@ -1726,14 +1758,24 @@ def _temporary_tool_confirmation_matches(
         "version": artifact.manifest.version,
         "source_hash": artifact.manifest.source_hash,
     }
+    action = "temporary_tool_sensitive:" + ",".join(sorted(sensitive))
     return _consume_temporary_confirmation(
         request,
-        action="temporary_tool_sensitive",
+        action=action,
         binding=binding,
         capability=",".join(sorted(sensitive)),
     )
 
 
-def temporary_tools_allowed(access_mode: str, *, source_channel: str | None) -> bool:
+def temporary_tools_allowed(
+    access_mode: str,
+    *,
+    source_channel: str | None,
+    restrict_to_workspace: bool = False,
+) -> bool:
     """Return whether model-authored temporary tools may be created for a turn."""
-    return access_mode == "full" and source_channel == "websocket"
+    return (
+        access_mode == "full"
+        and source_channel == "websocket"
+        and restrict_to_workspace is False
+    )

@@ -766,6 +766,7 @@ class PluginManager:
         results: list[dict[str, str]] = []
         for item in rows:
             manifest = item.record.manifest
+            self._mark_temporary_artifact_retiring(item.artifact_root)
             stopped = self.stop(
                 manifest.plugin_id,
                 session_id=session_id,
@@ -798,6 +799,29 @@ class PluginManager:
                 row["artifact"] = "pending_persistence"
             results.append(row)
         return tuple(results)
+
+    @staticmethod
+    def _mark_temporary_artifact_retiring(artifact_root: Path) -> None:
+        """Durably record route retirement before the source is retained or removed."""
+        lifecycle_path = artifact_root / "lifecycle.json"
+        try:
+            raw = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+            history = raw.get("history")
+            state = raw.get("state")
+            if not isinstance(history, list) or not history or history[-1] != state:
+                return
+            if state == "active":
+                history.append("retiring")
+                raw["state"] = "retiring"
+                lifecycle_path.write_text(
+                    json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # Cleanup remains best-effort; a malformed sidecar must not prevent
+            # the route from being stopped and removed.
+            return
 
     async def cleanup_orphaned_temporary(self) -> tuple[str, ...]:
         """Delete exact temporary artifact roots left by an interrupted process."""

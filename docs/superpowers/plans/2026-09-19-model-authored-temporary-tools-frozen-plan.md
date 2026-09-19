@@ -12,13 +12,13 @@
 - T4 已完成：`PluginSource.TEMPORARY`、`register_temporary_version`、`activate_temporary` 接入现有 `PluginManager`/`DynamicPluginRegistry`；真实工具可在当前 Run 下一轮 schema 中热加载，并通过 managed lease 排空。
 - T5 已完成：`devpilot_ensure_temporary_tool` 串起生成、FC 校验和热加载；Full Access/WebSocket 才可用；隐私能力声明没有可信确认信封时返回一次确认要求。
 - T6 已完成：Run 完成时停止、排空、移除临时 route，快照进入待用户决定区；加粗询问后，明确同意可转 project 持久插件，拒绝可删除；进程重启只清理遗留临时 route/源，不恢复活动临时工具。
-- T7 进行中：真实 FC 成功和导入失败证据、受影响回归、过期快照清理、生命周期落盘和绑定确认修复已完成；等待增量独立子 Agent Standards + Spec review 返回最终 verdict。
-- 当前验收：临时工具链测试 `19 passed`；H6 `20 passed`；H5 `46 passed`；nanobot 插件/profile/loop/WebSocket 回归 `267 passed`；另有 loop/profile 增量回归 `37 passed`；Ruff 通过。最新修复提交 `7296572`。
+- T7 代码与证据已完成：真实 FC 成功和导入失败证据、受影响回归、过期快照清理、生命周期落盘、精确绑定确认、清理状态推进和激活失败回滚均已完成；当前只执行最终独立子 Agent Standards + Spec review 门禁。
+- 当前验收：临时工具链测试 `19 passed`；H6 `20 passed`；H5 `46 passed`；nanobot 插件/profile/loop/WebSocket 回归 `268 passed`；另有 loop/profile 增量回归 `37 passed`；Ruff 通过。最新修复提交待本轮 review 后记录。
 
 ### Review 记录
 
 - 首轮独立 review（子 Agent `01a0b919-2d7e-7650-8b39-556f92fd06da`）未通过：隐私确认未绑定具体工具动作、生命周期未显式落盘、T7 尚未完成门禁登记。
-- 已修复：敏感能力确认现在绑定 session、Run、project、tool、version、source hash、capability，并要求网关签名且一次性消费；每个 artifact 新增 `lifecycle.json`，状态历史经过转移校验；补齐 19 条临时工具回归。
+- 已修复：敏感能力确认现在绑定 session、Run、project、tool、version、source hash 和精确 capability action，并要求网关签名且一次性消费；每个 artifact 新增 `lifecycle.json`，状态历史经过转移校验；Run 清理推进 `retiring`，激活失败会回滚 route；补齐 19 条临时工具回归。
 
 ## 最终 Review 门禁
 
