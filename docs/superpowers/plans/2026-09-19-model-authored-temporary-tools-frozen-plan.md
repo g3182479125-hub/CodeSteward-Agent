@@ -4,6 +4,13 @@
 
 本计划依赖并实现 `docs/superpowers/specs/2026-09-19-model-authored-temporary-tools-design.md`。后续工作严格按阶段推进：先读取当前工作区、确认已有 H1–H11 能力是否可复用，再实施一个阶段，运行该阶段验收，并记录证据。不得因为临时工具目标而回退 Full Access 已确认的直通体验。
 
+## 当前实施进度
+
+- T1 已完成：`ToolCapabilityGap`、`TemporaryToolManifest`、生命周期状态转换、Full Access/WebSocket 入口判断和契约测试；提交 `2b8aaee`。
+- T2 已完成第一批：不可变 artifact store、源码 AST 协议预检、哈希/路径/冲突校验，以及 `devpilot_create_temporary_tool` Entry Point；提交 `35ca016`、`f56c29f`。
+- 尚未完成：FC 验证器、验证后动态挂载、Run 结束清理、沉淀询问和正式插件保存。当前新工具只会生成候选 artifact，不能执行候选源码。
+- T1/T2 验收：临时工具契约测试 `14 passed`；nanobot 插件契约/生命周期回归 `20 passed`；Ruff 通过。
+
 ## 冻结产品约束
 
 - 仅 Full Access 启用模型创作、验证、热加载临时工具。
@@ -131,4 +138,3 @@ T1 契约
 | 工具执行失败 | 返回真实失败，不能因工具刚生成而自动继续重写/重试 |
 | 卸载失败 | 标记 cleanup pending，阻止同名再次激活，进程重启后接续清理 |
 | 用户不保存 | 删除临时源/fixture，保留最小记录 |
-
