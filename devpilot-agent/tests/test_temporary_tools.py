@@ -74,7 +74,34 @@ class TemporaryLookupTool(Tool):
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
     assert artifact.source_path.read_text(encoding="utf-8") == source
     assert (artifact.root / "manifest.json").exists()
+    lifecycle = TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact)
+    assert lifecycle.state is TemporaryToolState.GENERATED
+    assert json.loads((artifact.root / "lifecycle.json").read_text()) == {
+        "history": ["generated"],
+        "state": "generated",
+    }
     assert TemporaryToolArtifactStore(tmp_path).write(manifest, source).root == artifact.root
+
+
+def test_lifecycle_sidecar_round_trips_and_rejects_invalid_history(tmp_path) -> None:
+    source = "class TemporaryLookupTool(Tool):\n    async def execute(self):\n        return 1\n"
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
+    )
+    store = TemporaryToolArtifactStore(tmp_path)
+    artifact = store.write(manifest, source)
+    store.transition_lifecycle(artifact, TemporaryToolState.VALIDATING)
+    store.transition_lifecycle(artifact, TemporaryToolState.REJECTED)
+    assert store.load_lifecycle(artifact).to_dict() == {
+        "state": "rejected",
+        "history": ["generated", "validating", "rejected"],
+    }
+    (artifact.root / "lifecycle.json").write_text(
+        json.dumps({"state": "active", "history": ["generated", "active"]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(TemporaryToolContractError, match="transition"):
+        store.load_lifecycle(artifact)
 
 
 def test_artifact_store_rejects_same_hash_path_with_different_content(tmp_path) -> None:
@@ -288,6 +315,16 @@ class TemporaryLookupTool(Tool):
             "validate": "validated",
             "activate": "active",
         }
+        artifact = TemporaryToolArtifactStore(tmp_path).load_for_session(
+            session_id="websocket:chat-1",
+            run_id="run-1",
+            tool_id="temporary-lookup",
+            version="1.0.0",
+            source_hash=payload["source_hash"],
+        )
+        assert TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact).state is (
+            TemporaryToolState.ACTIVE
+        )
         assert backend.requests[0].command == "python /workspace/devpilot/contract_check.py"
         view = manager.live_tools_for_session(manager._base_registry, "websocket:chat-1")
         assert "temporary_lookup" in view.tool_names

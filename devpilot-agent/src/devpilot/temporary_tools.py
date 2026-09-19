@@ -15,8 +15,10 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from typing import Any
 
 from nanobot.agent.plugins.catalog import PluginRecord
@@ -65,6 +67,30 @@ _ALLOWED_MANIFEST_FIELDS = frozenset(
 )
 
 _TEMPORARY_PLUGIN_MANAGER: PluginManager | None = None
+_TEMPORARY_CONFIRMATION_LOCK = RLock()
+_CONSUMED_TEMPORARY_CONFIRMATIONS: set[str] = set()
+_SENSITIVE_CAPABILITIES = frozenset(
+    {
+        "sensitive_read",
+        "privacy_read",
+        "external_send",
+        "privacy_external_send",
+    }
+)
+_EXTERNAL_MODULES = frozenset(
+    {
+        "aiohttp",
+        "ftplib",
+        "http",
+        "httpx",
+        "requests",
+        "smtplib",
+        "socket",
+        "urllib",
+        "websocket",
+    }
+)
+_PRIVACY_MODULES = frozenset({"browser_cookie3", "keyring", "winreg"})
 
 
 def bind_temporary_tool_manager(manager: PluginManager) -> None:
@@ -91,17 +117,23 @@ class TemporaryToolState(StrEnum):
 _TRANSITIONS: dict[TemporaryToolState, frozenset[TemporaryToolState]] = {
     TemporaryToolState.GAP_DETECTED: frozenset({TemporaryToolState.GENERATED}),
     TemporaryToolState.GENERATED: frozenset(
-        {TemporaryToolState.VALIDATING, TemporaryToolState.REJECTED}
+        {TemporaryToolState.VALIDATING, TemporaryToolState.REJECTED, TemporaryToolState.RETIRING}
     ),
     TemporaryToolState.VALIDATING: frozenset(
         {TemporaryToolState.VALIDATED, TemporaryToolState.REJECTED}
     ),
-    TemporaryToolState.VALIDATED: frozenset({TemporaryToolState.ACTIVE}),
+    TemporaryToolState.VALIDATED: frozenset(
+        {TemporaryToolState.ACTIVE, TemporaryToolState.RETIRING}
+    ),
     TemporaryToolState.ACTIVE: frozenset(
         {TemporaryToolState.RETIRING, TemporaryToolState.PERSISTENCE_REQUESTED}
     ),
     TemporaryToolState.RETIRING: frozenset(
-        {TemporaryToolState.DISPOSED, TemporaryToolState.REJECTED}
+        {
+            TemporaryToolState.DISPOSED,
+            TemporaryToolState.REJECTED,
+            TemporaryToolState.PERSISTENCE_REQUESTED,
+        }
     ),
     TemporaryToolState.PERSISTENCE_REQUESTED: frozenset(
         {TemporaryToolState.PERSISTED, TemporaryToolState.DISPOSED}
@@ -157,7 +189,74 @@ def source_sha256(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def validate_temporary_tool_source(source: str, entry_class: str) -> None:
+def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
+    """Infer capabilities for direct I/O so a candidate cannot hide them.
+
+    This is intentionally a conservative static contract.  It does not try to
+    classify arbitrary business logic; it catches the standard Python escape
+    hatches used to read local data or contact an external endpoint.  The
+    manifest still declares the intended capability, and activation gates the
+    sensitive declarations on a trusted one-shot confirmation.
+    """
+
+    required: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = (
+                alias.name.split(".", 1)[0]
+                for alias in node.names
+            )
+            for root in names:
+                if root in _EXTERNAL_MODULES:
+                    required.add("external_send")
+                if root in _PRIVACY_MODULES:
+                    required.add("sensitive_read")
+                if root in {"os", "pathlib", "shutil", "tempfile"}:
+                    required.add("sensitive_read")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in {"open", "__import__"}:
+                required.add("sensitive_read")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in {
+                "environ",
+                "getenv",
+                "read_text",
+                "read_bytes",
+                "write_text",
+                "write_bytes",
+                "unlink",
+                "rmtree",
+                "urlopen",
+                "request",
+                "get",
+                "post",
+                "put",
+                "patch",
+                "send",
+                "connect",
+            }:
+                if node.attr in {
+                    "urlopen",
+                    "request",
+                    "get",
+                    "post",
+                    "put",
+                    "patch",
+                    "send",
+                    "connect",
+                }:
+                    required.add("external_send")
+                else:
+                    required.add("sensitive_read")
+    return frozenset(required)
+
+
+def validate_temporary_tool_source(
+    source: str,
+    entry_class: str,
+    *,
+    declared_capabilities: tuple[str, ...] | list[str] = (),
+) -> None:
     """Check the Python shape without importing or executing model code.
 
     Capability and side-effect checks belong to the FC validation phase. T2 only
@@ -195,6 +294,12 @@ def validate_temporary_tool_source(source: str, entry_class: str) -> None:
         for node in entry.body
     ):
         raise TemporaryToolContractError("temporary tool entry class must define execute")
+    required_capabilities = _source_capability_requirements(tree)
+    undeclared = required_capabilities.difference(declared_capabilities)
+    if undeclared:
+        raise TemporaryToolContractError(
+            "temporary tool uses undeclared capabilities: " + ",".join(sorted(undeclared))
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +333,11 @@ class TemporaryToolArtifactStore:
         )
 
     def write(self, manifest: TemporaryToolManifest, source: str) -> TemporaryToolArtifact:
-        validate_temporary_tool_source(source, manifest.entry_class)
+        validate_temporary_tool_source(
+            source,
+            manifest.entry_class,
+            declared_capabilities=manifest.declared_capabilities,
+        )
         if source_sha256(source) != manifest.source_hash:
             raise TemporaryToolContractError("temporary tool source hash does not match manifest")
         root = self.root_for(manifest)
@@ -254,7 +363,54 @@ class TemporaryToolArtifactStore:
             self._write_new(source_path, expected_source)
         if existing_manifest is None:
             self._write_new(manifest_path, expected_manifest)
-        return TemporaryToolArtifact(root=root, manifest=manifest)
+        artifact = TemporaryToolArtifact(root=root, manifest=manifest)
+        self.ensure_lifecycle(artifact)
+        return artifact
+
+    @staticmethod
+    def lifecycle_path(artifact: TemporaryToolArtifact) -> Path:
+        return artifact.root / "lifecycle.json"
+
+    def load_lifecycle(self, artifact: TemporaryToolArtifact) -> TemporaryToolLifecycle:
+        path = self.lifecycle_path(artifact)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise TemporaryToolContractError("temporary tool lifecycle is invalid") from exc
+        return TemporaryToolLifecycle.from_mapping(raw)
+
+    def ensure_lifecycle(self, artifact: TemporaryToolArtifact) -> TemporaryToolLifecycle:
+        path = self.lifecycle_path(artifact)
+        if path.is_file():
+            return self.load_lifecycle(artifact)
+        lifecycle = TemporaryToolLifecycle(TemporaryToolState.GENERATED)
+        self._write_new(
+            path,
+            json.dumps(
+                lifecycle.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        return lifecycle
+
+    def transition_lifecycle(
+        self, artifact: TemporaryToolArtifact, target: TemporaryToolState
+    ) -> TemporaryToolLifecycle:
+        lifecycle = self.load_lifecycle(artifact)
+        lifecycle.transition(target)
+        self.lifecycle_path(artifact).write_text(
+            json.dumps(
+                lifecycle.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        return lifecycle
 
     def load_for_session(
         self,
@@ -298,7 +454,9 @@ class TemporaryToolArtifactStore:
         source = source_path.read_text(encoding="utf-8")
         if source_sha256(source) != manifest.source_hash:
             raise TemporaryToolContractError("temporary tool artifact hash changed")
-        return TemporaryToolArtifact(root=root, manifest=manifest)
+        artifact = TemporaryToolArtifact(root=root, manifest=manifest)
+        self.ensure_lifecycle(artifact)
+        return artifact
 
     def pending_for_session(self, session_id: str) -> tuple[TemporaryToolArtifact, ...]:
         """List exact generated snapshots awaiting the post-Run decision."""
@@ -510,6 +668,136 @@ class TemporaryToolValidator:
         )
 
 
+def _trusted_temporary_confirmation_attributes(
+    request_context: Any | None = None,
+) -> dict[str, Any] | None:
+    """Read a gateway-owned confirmation envelope, never model arguments."""
+
+    try:
+        context = current_request_context()
+        value = context.attributes.get("devpilot_confirmation") if context is not None else None
+        if isinstance(value, dict):
+            return value
+    except (ImportError, TypeError, ValueError):
+        pass
+    value = getattr(request_context, "attributes", {}).get("devpilot_confirmation")
+    if isinstance(value, dict):
+        return value
+    try:
+        from nanobot.bus.events import current_inbound_attributes
+
+        value = current_inbound_attributes().get("devpilot_confirmation")
+        return value if isinstance(value, dict) else None
+    except (ImportError, TypeError, ValueError):
+        return None
+
+
+def _temporary_confirmation_payload(
+    *, action: str, binding: Mapping[str, str], context: Mapping[str, object]
+) -> str:
+    return "\n".join(
+        (
+            "temporary-tool-confirmation-v1",
+            action,
+            binding["session_id"],
+            binding["run_id"],
+            binding["project_id"],
+            binding["tool_id"],
+            binding["version"],
+            binding["source_hash"],
+            str(context["capability"]),
+            str(context["confirmation_id"]),
+            str(context["issued_at"]),
+            str(context["expires_at"]),
+            str(context["user_event_nonce"]),
+        )
+    )
+
+
+def _consume_temporary_confirmation(
+    request: ToolContext,
+    *,
+    action: str,
+    binding: Mapping[str, str],
+    capability: str,
+) -> bool:
+    """Verify and consume one gateway-signed, scope-bound confirmation."""
+
+    envelope = _trusted_temporary_confirmation_attributes(request)
+    if not isinstance(envelope, dict) or envelope.get("action") != action:
+        return False
+    verifier = envelope.get("verifier")
+    context = envelope.get("context")
+    if not callable(verifier) or not isinstance(context, Mapping):
+        return False
+    expected = {
+        "session_id",
+        "run_id",
+        "project_id",
+        "tool_id",
+        "version",
+        "source_hash",
+        "capability",
+        "confirmation_id",
+        "issued_at",
+        "expires_at",
+        "user_event_nonce",
+        "signature",
+    }
+    if set(context) != expected:
+        return False
+    if any(context.get(key) != value for key, value in binding.items()):
+        return False
+    if context.get("capability") != capability:
+        return False
+    confirmation_id = context.get("confirmation_id")
+    signature = context.get("signature")
+    issued_at = context.get("issued_at")
+    expires_at = context.get("expires_at")
+    nonce = context.get("user_event_nonce")
+    if not all(
+        isinstance(value, str)
+        and value
+        and len(value) <= 256
+        and not any(ord(char) < 0x20 for char in value)
+        for value in (confirmation_id, signature, issued_at, expires_at, nonce)
+    ):
+        return False
+    if not _SHA256.fullmatch(signature):
+        return False
+    try:
+        issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        now = datetime.now(UTC)
+        if issued.tzinfo is None or expires.tzinfo is None:
+            return False
+        issued = issued.astimezone(UTC)
+        expires = expires.astimezone(UTC)
+        if (
+            expires <= issued
+            or (expires - issued).total_seconds() > 300
+            or not (issued <= now < expires)
+        ):
+            return False
+    except (TypeError, ValueError, OverflowError):
+        return False
+    payload = _temporary_confirmation_payload(
+        action=action,
+        binding=binding,
+        context=context,
+    )
+    try:
+        if not verifier(payload, signature):
+            return False
+    except (TypeError, ValueError):
+        return False
+    with _TEMPORARY_CONFIRMATION_LOCK:
+        if confirmation_id in _CONSUMED_TEMPORARY_CONFIRMATIONS:
+            return False
+        _CONSUMED_TEMPORARY_CONFIRMATIONS.add(confirmation_id)
+    return True
+
+
 @tool_parameters(
     {
         "type": "object",
@@ -578,9 +866,21 @@ class TemporaryToolValidateTool(Tool):
                 version=version,
                 source_hash=source_hash,
             )
+            store = TemporaryToolArtifactStore(self._data_dir)
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state is TemporaryToolState.GENERATED:
+                store.transition_lifecycle(artifact, TemporaryToolState.VALIDATING)
             result = TemporaryToolValidator(
                 build_fc_backend_from_environment()
             ).validate(artifact)
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state is TemporaryToolState.VALIDATING:
+                store.transition_lifecycle(
+                    artifact,
+                    TemporaryToolState.VALIDATED
+                    if result.status == TemporaryToolState.VALIDATED.value
+                    else TemporaryToolState.REJECTED,
+                )
             return json.dumps(
                 {"ok": result.status == "validated", **result.to_dict()},
                 ensure_ascii=False,
@@ -674,22 +974,34 @@ class TemporaryToolActivateTool(Tool):
                 "privacy_external_send",
             }
             if sensitive_capabilities.intersection(artifact.manifest.declared_capabilities):
-                confirmation = request.attributes.get("devpilot_confirmation")
-                if not isinstance(confirmation, dict):
+                if not _temporary_tool_confirmation_matches(request, artifact):
                     return json.dumps(
                         {
                             "ok": False,
                             "code": "USER_CONFIRMATION_REQUIRED",
                             "requires_user_confirmation": True,
                             "message": (
-                                "该临时工具声明会读取隐私数据或向外发送数据，需要一次明确确认。"
+                                "该临时工具声明会读取隐私数据或向外发送数据，"
+                                "需要针对本工具和本次 Run 的明确确认。"
                             ),
                         },
                         ensure_ascii=False,
                     )
+            store = TemporaryToolArtifactStore(self._data_dir)
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state is TemporaryToolState.GENERATED:
+                store.transition_lifecycle(artifact, TemporaryToolState.VALIDATING)
             validation = TemporaryToolValidator(
                 build_fc_backend_from_environment()
             ).validate(artifact)
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state is TemporaryToolState.VALIDATING:
+                store.transition_lifecycle(
+                    artifact,
+                    TemporaryToolState.VALIDATED
+                    if validation.status == TemporaryToolState.VALIDATED.value
+                    else TemporaryToolState.REJECTED,
+                )
             if validation.status != TemporaryToolState.VALIDATED.value:
                 return json.dumps(
                     {
@@ -737,6 +1049,10 @@ class TemporaryToolActivateTool(Tool):
                 session_id=session_id,
             )
             payload = activated.to_dict()
+            if activated.ok:
+                lifecycle = store.load_lifecycle(artifact)
+                if lifecycle.state is TemporaryToolState.VALIDATED:
+                    store.transition_lifecycle(artifact, TemporaryToolState.ACTIVE)
             payload.update(
                 {
                     "state": TemporaryToolState.ACTIVE.value if activated.ok else "rejected",
@@ -894,7 +1210,41 @@ class TemporaryToolPersistTool(Tool):
         if not pending:
             return ToolResult.error("TEMPORARY_TOOL_PENDING_NOT_FOUND")
         artifact = pending[0]
+        store = TemporaryToolArtifactStore(self._data_dir)
         try:
+            binding = {
+                "session_id": artifact.manifest.session_id,
+                "run_id": artifact.manifest.run_id,
+                "project_id": project_id,
+                "tool_id": artifact.manifest.tool_id,
+                "version": artifact.manifest.version,
+                "source_hash": artifact.manifest.source_hash,
+            }
+            if not _consume_temporary_confirmation(
+                request,
+                action="temporary_tool_persist",
+                binding=binding,
+                capability="persist_temporary_tool",
+            ):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "code": "USER_CONFIRMATION_REQUIRED",
+                        "requires_user_confirmation": True,
+                        "message": "保存临时工具需要针对本工具、项目和本次 Run 的明确确认。",
+                    },
+                    ensure_ascii=False,
+                )
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state in {
+                TemporaryToolState.GENERATED,
+                TemporaryToolState.VALIDATED,
+                TemporaryToolState.ACTIVE,
+            }:
+                store.transition_lifecycle(artifact, TemporaryToolState.RETIRING)
+            lifecycle = store.load_lifecycle(artifact)
+            if lifecycle.state is TemporaryToolState.RETIRING:
+                store.transition_lifecycle(artifact, TemporaryToolState.PERSISTENCE_REQUESTED)
             root = (
                 self._data_dir
                 / "persistent-tools"
@@ -948,7 +1298,8 @@ class TemporaryToolPersistTool(Tool):
                 session_id=session_id,
                 project_id=project_id,
             )
-            TemporaryToolArtifactStore.delete_artifact(artifact)
+            store.transition_lifecycle(artifact, TemporaryToolState.PERSISTED)
+            store.delete_artifact(artifact)
             return json.dumps(
                 {
                     "ok": loaded.ok,
@@ -1007,6 +1358,19 @@ class TemporaryToolDiscardTool(Tool):
         removed = 0
         for artifact in pending:
             try:
+                lifecycle = store.load_lifecycle(artifact)
+                if lifecycle.state in {
+                    TemporaryToolState.GENERATED,
+                    TemporaryToolState.VALIDATED,
+                    TemporaryToolState.ACTIVE,
+                }:
+                    store.transition_lifecycle(artifact, TemporaryToolState.RETIRING)
+                lifecycle = store.load_lifecycle(artifact)
+                if lifecycle.state in {
+                    TemporaryToolState.RETIRING,
+                    TemporaryToolState.PERSISTENCE_REQUESTED,
+                }:
+                    store.transition_lifecycle(artifact, TemporaryToolState.DISPOSED)
                 store.delete_artifact(artifact)
             except OSError:
                 continue
@@ -1305,6 +1669,30 @@ class TemporaryToolLifecycle:
     def __post_init__(self) -> None:
         if not self.history:
             self.history.append(self.state)
+        if self.history[-1] is not self.state:
+            raise TemporaryToolContractError("lifecycle state must match its history tail")
+        for previous, target in zip(self.history, self.history[1:], strict=False):
+            if target not in _TRANSITIONS[previous]:
+                raise TemporaryToolContractError(
+                    "invalid persisted temporary tool transition: "
+                    f"{previous.value} -> {target.value}"
+                )
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> TemporaryToolLifecycle:
+        if not isinstance(raw, Mapping):
+            raise TemporaryToolContractError("temporary tool lifecycle must be an object")
+        raw_history = raw.get("history")
+        if not isinstance(raw_history, list) or not raw_history:
+            raise TemporaryToolContractError("temporary tool lifecycle history is required")
+        try:
+            history = [TemporaryToolState(value) for value in raw_history]
+            state = TemporaryToolState(raw.get("state"))
+        except (TypeError, ValueError) as exc:
+            raise TemporaryToolContractError("temporary tool lifecycle state is invalid") from exc
+        if state is not history[-1]:
+            raise TemporaryToolContractError("temporary tool lifecycle state is inconsistent")
+        return cls(state=state, history=history)
 
     def transition(self, target: TemporaryToolState) -> None:
         if target not in _TRANSITIONS[self.state]:
@@ -1319,6 +1707,31 @@ class TemporaryToolLifecycle:
             "state": self.state.value,
             "history": [item.value for item in self.history],
         }
+
+
+def _temporary_tool_confirmation_matches(
+    request: Any, artifact: TemporaryToolArtifact
+) -> bool:
+    """Accept only a gateway-signed confirmation for this exact tool action."""
+    sensitive = _SENSITIVE_CAPABILITIES.intersection(
+        artifact.manifest.declared_capabilities
+    )
+    if not sensitive:
+        return True
+    binding = {
+        "session_id": artifact.manifest.session_id,
+        "run_id": artifact.manifest.run_id,
+        "project_id": artifact.manifest.project_id,
+        "tool_id": artifact.manifest.tool_id,
+        "version": artifact.manifest.version,
+        "source_hash": artifact.manifest.source_hash,
+    }
+    return _consume_temporary_confirmation(
+        request,
+        action="temporary_tool_sensitive",
+        binding=binding,
+        capability=",".join(sorted(sensitive)),
+    )
 
 
 def temporary_tools_allowed(access_mode: str, *, source_channel: str | None) -> bool:
