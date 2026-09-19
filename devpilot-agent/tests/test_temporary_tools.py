@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from devpilot.temporary_tools import (
+    TemporaryToolArtifactConflict,
+    TemporaryToolArtifactStore,
     TemporaryToolContractError,
     TemporaryToolLifecycle,
     TemporaryToolManifest,
@@ -10,6 +12,7 @@ from devpilot.temporary_tools import (
     ToolCapabilityGap,
     source_sha256,
     temporary_tools_allowed,
+    validate_temporary_tool_source,
 )
 
 
@@ -41,6 +44,51 @@ def test_manifest_round_trips_and_is_session_scoped() -> None:
 
     assert manifest.to_dict()["scope"] == "session"
     assert TemporaryToolManifest.from_mapping(manifest.to_dict()) == manifest
+
+
+def test_artifact_store_freezes_a_tool_package_without_importing_it(tmp_path) -> None:
+    source = """
+from nanobot.agent.tools.base import Tool
+
+class TemporaryLookupTool(Tool):
+    name = "temporary_lookup"
+
+    async def execute(self, value: str):
+        return value
+""".lstrip()
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
+    )
+
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+
+    assert artifact.source_path.read_text(encoding="utf-8") == source
+    assert (artifact.root / "manifest.json").exists()
+    # Writing the exact same immutable artifact is idempotent.
+    assert TemporaryToolArtifactStore(tmp_path).write(manifest, source).root == artifact.root
+
+
+def test_artifact_store_rejects_same_hash_path_with_different_content(tmp_path) -> None:
+    source = "class TemporaryLookupTool(Tool):\n    async def execute(self):\n        return 1\n"
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
+    )
+    store = TemporaryToolArtifactStore(tmp_path)
+    artifact = store.write(manifest, source)
+    artifact.source_path.write_text(source.replace("return 1", "return 2"), encoding="utf-8")
+
+    with pytest.raises(TemporaryToolArtifactConflict):
+        store.write(manifest, source)
+
+
+def test_source_validator_checks_shape_without_running_code() -> None:
+    valid = "class DemoTool(Tool):\n    async def execute(self):\n        return 1\n"
+    validate_temporary_tool_source(valid, "DemoTool")
+
+    with pytest.raises(TemporaryToolContractError, match="inherit Tool"):
+        validate_temporary_tool_source(
+            "class DemoTool:\n    async def execute(self):\n        return 1\n", "DemoTool"
+        )
 
 
 @pytest.mark.parametrize(
@@ -101,4 +149,3 @@ def test_temporary_tools_require_full_access_websocket(
     access_mode: str, channel: str, expected: bool
 ) -> None:
     assert temporary_tools_allowed(access_mode, source_channel=channel) is expected
-

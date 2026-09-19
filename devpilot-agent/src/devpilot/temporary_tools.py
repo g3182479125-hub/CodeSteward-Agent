@@ -7,12 +7,15 @@ to connect candidate validation to ``DynamicPluginRegistry``.
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
@@ -83,6 +86,10 @@ class TemporaryToolContractError(ValueError):
     """Raised when a model-authored temporary-tool record is invalid."""
 
 
+class TemporaryToolArtifactConflict(TemporaryToolContractError):
+    """Raised when an immutable candidate path already contains other content."""
+
+
 def _required_id(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
         raise TemporaryToolContractError(f"{field_name} must be a safe lowercase identifier")
@@ -118,6 +125,118 @@ def _schema(value: object, field_name: str) -> dict[str, Any]:
 def source_sha256(source: str) -> str:
     """Return the canonical UTF-8 SHA-256 used by the temporary manifest."""
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def validate_temporary_tool_source(source: str, entry_class: str) -> None:
+    """Check the Python shape without importing or executing model code.
+
+    Capability and side-effect checks belong to the FC validation phase. T2 only
+    rejects malformed source and ensures the declared class exposes the Tool
+    protocol expected by the future loader.
+    """
+    if not isinstance(source, str) or not source.strip():
+        raise TemporaryToolContractError("temporary tool source must be non-empty text")
+    if len(source.encode("utf-8")) > 256 * 1024:
+        raise TemporaryToolContractError("temporary tool source exceeds 256 KiB")
+    if _SYMBOL.fullmatch(entry_class) is None:
+        raise TemporaryToolContractError("entry_class must be a Python class name")
+    try:
+        tree = ast.parse(source, filename="candidate.py", mode="exec")
+    except SyntaxError as exc:
+        raise TemporaryToolContractError("temporary tool source has invalid Python syntax") from exc
+    classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == entry_class
+    ]
+    if len(classes) != 1:
+        raise TemporaryToolContractError("temporary tool source must define its entry class once")
+    entry = classes[0]
+    inherits_tool = any(
+        (isinstance(base, ast.Name) and base.id == "Tool")
+        or (isinstance(base, ast.Attribute) and base.attr == "Tool")
+        for base in entry.bases
+    )
+    if not inherits_tool:
+        raise TemporaryToolContractError("temporary tool entry class must inherit Tool")
+    if not any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "execute"
+        for node in entry.body
+    ):
+        raise TemporaryToolContractError("temporary tool entry class must define execute")
+
+
+@dataclass(frozen=True, slots=True)
+class TemporaryToolArtifact:
+    """The immutable on-disk candidate produced before FC validation."""
+
+    root: Path
+    manifest: TemporaryToolManifest
+
+    @property
+    def source_path(self) -> Path:
+        return self.root / self.manifest.entry_module
+
+
+class TemporaryToolArtifactStore:
+    """Write and read session-scoped candidate artifacts without importing them."""
+
+    def __init__(self, data_dir: str | Path) -> None:
+        self.data_dir = Path(data_dir).expanduser().resolve()
+
+    def root_for(self, manifest: TemporaryToolManifest) -> Path:
+        session_hash = hashlib.sha256(manifest.session_id.encode("utf-8")).hexdigest()[:16]
+        return (
+            self.data_dir
+            / "temporary-tools"
+            / session_hash
+            / manifest.run_id
+            / manifest.tool_id
+            / manifest.version
+            / manifest.source_hash
+        )
+
+    def write(self, manifest: TemporaryToolManifest, source: str) -> TemporaryToolArtifact:
+        validate_temporary_tool_source(source, manifest.entry_class)
+        if source_sha256(source) != manifest.source_hash:
+            raise TemporaryToolContractError("temporary tool source hash does not match manifest")
+        root = self.root_for(manifest)
+        root.mkdir(parents=True, exist_ok=True)
+        source_path = root / manifest.entry_module
+        manifest_path = root / "manifest.json"
+        existing_source = source_path.read_text(encoding="utf-8") if source_path.exists() else None
+        existing_manifest = (
+            manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else None
+        )
+        expected_source = source
+        expected_manifest = json.dumps(
+            manifest.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if existing_source not in (None, expected_source) or existing_manifest not in (
+            None,
+            expected_manifest,
+        ):
+            raise TemporaryToolArtifactConflict(
+                "temporary tool artifact already contains other content"
+            )
+        if existing_source is None:
+            self._write_new(source_path, expected_source)
+        if existing_manifest is None:
+            self._write_new(manifest_path, expected_manifest)
+        return TemporaryToolArtifact(root=root, manifest=manifest)
+
+    @staticmethod
+    def _write_new(path: Path, content: str) -> None:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        try:
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(content)
+        except FileExistsError:
+            raise TemporaryToolArtifactConflict(
+                "temporary tool artifact was concurrently created"
+            ) from None
 
 
 @dataclass(frozen=True, slots=True)
