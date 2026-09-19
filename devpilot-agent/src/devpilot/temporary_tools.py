@@ -329,6 +329,16 @@ class TemporaryToolArtifactStore:
                 continue
             if manifest.expires_at > int(time.time()):
                 found.append(artifact)
+            else:
+                # Expired snapshots are no longer eligible for persistence.
+                # Remove only the exact validated artifact root so stale
+                # source code cannot accumulate or be revived later.
+                try:
+                    self.delete_artifact(artifact)
+                except OSError:
+                    # A later startup/recovery sweep can retry cleanup; an
+                    # expired artifact must never become a pending candidate.
+                    continue
         return tuple(sorted(found, key=lambda item: item.manifest.created_at, reverse=True))
 
     @staticmethod

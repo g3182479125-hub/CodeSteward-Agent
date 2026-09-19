@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from nanobot.agent.plugins.manager import PluginManager
@@ -86,6 +87,24 @@ def test_artifact_store_rejects_same_hash_path_with_different_content(tmp_path) 
     artifact.source_path.write_text(source.replace("return 1", "return 2"), encoding="utf-8")
     with pytest.raises(TemporaryToolArtifactConflict):
         store.write(manifest, source)
+
+
+def test_expired_pending_snapshot_is_deleted(tmp_path) -> None:
+    source = "class TemporaryLookupTool(Tool):\n    async def execute(self):\n        return 1\n"
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(
+            source_hash=source_sha256(source),
+            entry_class="TemporaryLookupTool",
+            session_id="session-expired",
+            run_id="run-expired",
+            expires_at=int(time.time()) - 1,
+        )
+    )
+    store = TemporaryToolArtifactStore(tmp_path)
+    artifact = store.write(manifest, source)
+
+    assert store.pending_for_session("session-expired") == ()
+    assert not artifact.root.exists()
 
 
 def test_source_validator_checks_shape_without_running_code() -> None:
