@@ -785,6 +785,49 @@ async def test_webui_confirmation_envelope_reaches_bus_with_signed_action_contex
 
 
 @pytest.mark.asyncio
+async def test_webui_natural_language_rollback_reaches_bus_with_signed_action_context(
+    bus: MagicMock,
+    monkeypatch,
+) -> None:
+    channel = _ch(bus)
+    conn = MagicMock()
+    conn.remote_address = ("127.0.0.1", 50125)
+    channel._webui_connections.add(conn)
+    proposal = {
+        "change_set_id": "cs-natural-rollback",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-natural-rollback",
+    }
+    resolved = {
+        **proposal,
+        "verification_profile": "python-syntax",
+        "verification_profile_version": "1",
+        "verification_snapshot_hash": "d" * 64,
+        "verification_check_set_hash": "e" * 64,
+    }
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    assert channel._register_devpilot_proposal("chat-natural-rollback", proposal)
+    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args: resolved)
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": "chat-natural-rollback",
+            "content": "把这次修改去掉，恢复原版本",
+            "webui": True,
+            "turn_id": "turn-natural-rollback",
+        },
+    )
+
+    msg = bus.publish_inbound.await_args.args[0]
+    assert msg.attributes["devpilot_confirmation"]["action"] == "rollback"
+
+
+@pytest.mark.asyncio
 async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     bus: MagicMock,
     tmp_path,

@@ -257,13 +257,20 @@ class FCSandboxBackend:
         return profile in self.supported_profiles
 
     def project_allowed(self, project_path: str) -> bool:
-        """Require an explicit operator allowlist before sending a snapshot to FC."""
+        """Require the project to sit inside an explicit operator allowlist root."""
 
         try:
-            resolved = os.path.abspath(project_path)
+            resolved = os.path.normcase(os.path.abspath(project_path))
         except (TypeError, ValueError):
             return False
-        return resolved in self.config.allowed_project_paths
+        for allowed_root in self.config.allowed_project_paths:
+            try:
+                normalized_root = os.path.normcase(os.path.abspath(allowed_root))
+                if os.path.commonpath((resolved, normalized_root)) == normalized_root:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def _should_install_pytest(self, request: ExecutionRequest) -> bool:
         return self.config.install_pytest and request.command_profile in {

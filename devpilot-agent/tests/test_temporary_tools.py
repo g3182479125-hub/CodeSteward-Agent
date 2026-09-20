@@ -3,8 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from nanobot.agent.plugins.manager import PluginManager
@@ -13,18 +17,20 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.security.workspace_access import bind_workspace_scope, build_workspace_scope
 
 from devpilot import temporary_tools as temporary_tools_module
-from devpilot.execution import ExecutionError, FakeExecutionBackend
+from devpilot.execution import ExecutionError, ExecutionResult, FakeExecutionBackend
 from devpilot.temporary_tools import (
     TemporaryToolArtifactConflict,
     TemporaryToolArtifactStore,
     TemporaryToolContractError,
     TemporaryToolEnsureTool,
+    TemporaryToolGapReportTool,
     TemporaryToolLifecycle,
     TemporaryToolManifest,
     TemporaryToolPersistTool,
     TemporaryToolState,
     TemporaryToolValidator,
     ToolCapabilityGap,
+    ToolCapabilityGapStore,
     bind_temporary_tool_manager,
     source_sha256,
     temporary_tools_allowed,
@@ -179,6 +185,23 @@ def test_capability_gap_is_bound_to_one_session_and_run() -> None:
     assert gap.to_dict()["existing_tools"] == ["devpilot_read_code", "devpilot_test_run"]
 
 
+def test_capability_gap_store_persists_redacted_gap_before_candidate(tmp_path) -> None:
+    gap = ToolCapabilityGap(
+        session_id="session-1",
+        run_id="run-1",
+        project_id="project-1",
+        reason="现有工具没有 import graph 能力",
+        requested_capability="import_graph",
+        existing_tools=("devpilot_read_code",),
+        suggested_tool_id="import-graph",
+    )
+    store = ToolCapabilityGapStore(tmp_path)
+    path = store.write(gap)
+    assert json.loads(path.read_text(encoding="utf-8"))["status"] == "gap_detected"
+    assert store.has_for_run(session_id="session-1", run_id="run-1") is True
+    assert TemporaryToolGapReportTool().name == "devpilot_report_tool_gap"
+
+
 def test_lifecycle_accepts_valid_path_and_rejects_skipping_validation() -> None:
     lifecycle = TemporaryToolLifecycle(TemporaryToolState.GAP_DETECTED)
     for state in (
@@ -233,6 +256,11 @@ class TemporaryLookupTool(Tool):
     result = TemporaryToolValidator(backend).validate(artifact)
     assert result.status == "validated"
     assert result.receipt is not None
+    assert result.execution_run_id == backend.requests[0].run_id
+    receipt = json.loads((artifact.root / "validation.json").read_text(encoding="utf-8"))
+    assert receipt["validation_version"] == "temporary-tool-validation/v1"
+    assert receipt["status"] == TemporaryToolState.VALIDATED.value
+    assert receipt["execution_run_id"] == backend.requests[0].run_id
     assert backend.requests[0].command == "python /workspace/devpilot/contract_check.py"
     assert {item.relative_path for item in backend.requests[0].files} == {
         "candidate.py",
@@ -244,6 +272,78 @@ class TemporaryLookupTool(Tool):
         "nanobot/agent/tools/base.py",
     }
     assert backend.requests[0].network_allowed is False
+
+
+def test_fc_contract_checker_executes_candidate_and_reports_controlled_fixture(tmp_path) -> None:
+    source = """
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({"type": "object", "properties": {}, "additionalProperties": False})
+class TemporaryLookupTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "fixture"
+
+    async def execute(self):
+        return {}
+""".lstrip()
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(
+            source_hash=source_sha256(source),
+            entry_class="TemporaryLookupTool",
+            parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            output_schema={"type": "object"},
+        )
+    )
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+
+    class SubprocessExecutionBackend:
+        name = "local-contract-fixture"
+
+        def run(self, request):
+            root = tmp_path / "fc-workspace"
+            for item in request.files:
+                path = root / item.relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(item.content)
+            completed = subprocess.run(
+                [sys.executable, str(root / "contract_check.py")],
+                cwd=root,
+                env={**os.environ, "DEVPILOT_CONTRACT_ROOT": str(root)},
+                capture_output=True,
+                text=True,
+                timeout=request.timeout_seconds,
+                check=False,
+            )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="local-contract-fixture",
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                duration_ms=0,
+                command_profile=request.command_profile,
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    result = TemporaryToolValidator(SubprocessExecutionBackend()).validate(artifact)
+    assert result.status == "validated", (
+        result.error_code,
+        result.receipt.stdout if result.receipt else None,
+        result.receipt.stderr if result.receipt else None,
+    )
+    assert result.receipt is not None
+    fixture_output = json.loads(result.receipt.stdout)
+    assert fixture_output["fixtures"] == {
+        "controlled_error": True,
+        "invalid_params": True,
+        "success": True,
+    }
 
 
 def test_fc_validator_maps_timeout_without_activation(tmp_path) -> None:
@@ -340,7 +440,11 @@ class TemporaryLookupTool(Tool):
             TemporaryToolState.ACTIVE
         )
         assert backend.requests[0].command == "python /workspace/devpilot/contract_check.py"
-        view = manager.live_tools_for_session(manager._base_registry, "websocket:chat-1")
+        assert len(backend.requests) == 2
+        assert backend.requests[0].run_id != backend.requests[1].run_id
+        view = manager.live_tools_for_session(
+            manager._base_registry, "websocket:chat-1", project_id="project-1"
+        )
         assert "temporary_lookup" in view.tool_names
         cleanup = await manager.cleanup_temporary_run(
             session_id="websocket:chat-1",
@@ -431,5 +535,150 @@ class DemoTool(Tool):
     validate_temporary_tool_source(
         source,
         "DemoTool",
-        declared_capabilities=["sensitive_read"],
+        declared_capabilities=["privacy_read"],
     )
+
+
+def test_workspace_file_reads_are_not_privacy_reads_but_environment_is() -> None:
+    workspace_source = """
+from pathlib import Path
+
+class DemoTool(Tool):
+    async def execute(self):
+        return Path('README.md').read_text()
+""".lstrip()
+    validate_temporary_tool_source(
+        workspace_source, "DemoTool", declared_capabilities=["sensitive_read"]
+    )
+    environment_source = """
+import os
+
+class DemoTool(Tool):
+    async def execute(self):
+        return os.getenv('TOKEN')
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="privacy_read"):
+        validate_temporary_tool_source(environment_source, "DemoTool")
+
+
+def test_literal_workspace_escape_is_privacy_gated() -> None:
+    source = """
+from pathlib import Path
+
+class DemoTool(Tool):
+    async def execute(self):
+        return Path('C:/Users/secret.txt').read_text()
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="privacy_read"):
+        validate_temporary_tool_source(source, "DemoTool")
+
+
+def test_parent_and_runtime_computed_paths_are_privacy_gated() -> None:
+    parent_source = """
+from pathlib import Path
+
+class DemoTool(Tool):
+    async def execute(self):
+        return Path('../secret.txt').read_text()
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="privacy_read"):
+        validate_temporary_tool_source(parent_source, "DemoTool")
+
+    runtime_source = """
+class DemoTool(Tool):
+    async def execute(self, path):
+        return open(path).read()
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="privacy_read"):
+        validate_temporary_tool_source(runtime_source, "DemoTool")
+
+    external_source = """
+import subprocess
+
+class DemoTool(Tool):
+    async def execute(self):
+        return subprocess.run(['echo', 'ok'])
+""".lstrip()
+    with pytest.raises(TemporaryToolContractError, match="external_send"):
+        validate_temporary_tool_source(external_source, "DemoTool")
+
+
+def test_capability_gap_persistence_redacts_credential_shaped_text(tmp_path: Path) -> None:
+    gap = temporary_tools_module.ToolCapabilityGap(
+        session_id="session-1",
+        run_id="run-1",
+        project_id="project-1",
+        reason="need api_key=super-secret and bearer abc123",
+        requested_capability="token=another-secret",
+    )
+    record = json.loads(
+        temporary_tools_module.ToolCapabilityGapStore(tmp_path).write(gap).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "super-secret" not in json.dumps(record)
+    assert "another-secret" not in json.dumps(record)
+    assert "[REDACTED]" in record["reason"]
+
+
+def test_validation_receipt_redacts_provider_output(tmp_path: Path) -> None:
+    source = "class TemporaryLookupTool(Tool):\n    async def execute(self):\n        return {}\n"
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
+    )
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+    result = TemporaryToolValidator(
+        FakeExecutionBackend(stdout='{"token": "provider-secret"}')
+    ).validate(artifact)
+    receipt = json.loads((artifact.root / "validation.json").read_text(encoding="utf-8"))
+    assert "provider-secret" not in json.dumps(receipt)
+    assert result.status == "validated"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DEVPILOT_RUN_LIVE_FC"),
+    reason="live FC evidence is opt-in",
+)
+def test_fc_validator_final_checker_live_backend(tmp_path: Path) -> None:
+    """Run the final checker version once through the configured FC provider."""
+    source = """
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({"type": "object", "properties": {}, "additionalProperties": False})
+class TemporaryLookupTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "live FC fixture"
+
+    async def execute(self):
+        return {}
+""".lstrip()
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(
+            source_hash=source_sha256(source),
+            entry_class="TemporaryLookupTool",
+            parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            output_schema={"type": "object"},
+        )
+    )
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+    result = TemporaryToolValidator(
+        temporary_tools_module.build_fc_backend_from_environment()
+    ).validate(artifact)
+    assert result.status == "validated"
+    assert result.receipt is not None
+    fixtures = json.loads(result.receipt.stdout)["fixtures"]
+    assert fixtures == {
+        "controlled_error": True,
+        "invalid_params": True,
+        "success": True,
+    }
+
+
+def test_full_access_workspace_reads_do_not_trigger_privacy_confirmation() -> None:
+    assert "sensitive_read" not in temporary_tools_module._SENSITIVE_CAPABILITIES
+    assert "privacy_read" in temporary_tools_module._SENSITIVE_CAPABILITIES

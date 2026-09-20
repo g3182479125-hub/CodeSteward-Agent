@@ -293,6 +293,10 @@ export interface ToolProgressEvent {
   error?: unknown;
   files?: unknown[];
   embeds?: unknown[];
+  /** Stable backend execution outcome for policy-aware UI/logging. */
+  code?: string;
+  decision?: string;
+  retryable?: boolean;
 }
 
 export interface UIFileDiff {

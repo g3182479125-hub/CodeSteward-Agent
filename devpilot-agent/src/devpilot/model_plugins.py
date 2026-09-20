@@ -55,6 +55,7 @@ from .harness_oracle import HarnessOracleContractError
 from .redaction import is_sensitive_field_name, redact_sensitive_payload
 from .remote_loop_strategy import RemoteStrategyArtifact, RemoteStrategyCatalog
 from .storage import ProjectStore
+from .user_intent import confirmation_matches
 
 if TYPE_CHECKING:
     from .harness_selection import HarnessSelectionStore
@@ -814,15 +815,7 @@ class ModelCandidateController:
         if grant is not None:
             self._authorizations.pop(key, None)
             manager.revoke_authorization(session_id)
-        confirmation = (request.original_user_text or "").strip().casefold()
-        explicit = confirmation in {
-            "确认试用",
-            "确认启用",
-            "确认插件",
-            "执行试用",
-            "confirm plugin",
-            "approve plugin",
-        }
+        explicit = confirmation_matches(request.original_user_text or "", "plugin_confirm")
         if not explicit:
             if h11_confirmation:
                 return _error(
@@ -833,7 +826,10 @@ class ModelCandidateController:
                 )
             return _error(
                 "PLUGIN_AUTHORIZATION_REQUIRED",
-                "请先在 nanobot 对话中明确回复‘确认试用’或‘确认启用’，再执行候选插件动作",
+                (
+                    "请在 nanobot 对话中明确表达是否允许试用或启用这个候选插件；"
+                    "如果表达有歧义，我会再向你确认"
+                ),
                 requires_user_confirmation=True,
             )
         # Model candidates are session-scoped.  Do not turn one chat's explicit

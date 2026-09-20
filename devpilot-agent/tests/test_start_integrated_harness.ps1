@@ -1,6 +1,13 @@
 $scriptPath = Join-Path $PSScriptRoot "..\scripts\start-integrated-harness.ps1"
 
 Describe "start-integrated-harness" {
+    It "defaults the FC test allowlist to the configured allowed roots" {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should Match 'DEVPILOT_FC_ALLOWED_PROJECTS'
+        $scriptText | Should Match '\$allowedRootList -join \[System\.IO\.Path\]::PathSeparator'
+    }
+
     It "accepts explicitly separated runtime paths inside the configured project root" {
         $allowedRoot = Join-Path $TestDrive "allowed-projects"
         $workspacePath = Join-Path $allowedRoot "workspace"

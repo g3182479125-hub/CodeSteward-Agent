@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.agent.tools.context import ContextAware, current_request_context
+from nanobot.security.execution_policy import classify_exception
 
 if TYPE_CHECKING:
     from nanobot.runtime_context import RuntimeContextProvider
@@ -134,7 +135,9 @@ class ToolRegistry:
             hint = f" Did you mean '{suggestion}'? Tool names must match exactly." if suggestion else ""
             return None, params, (
                 ToolResult.error(
-                    f"Error: Tool '{name}' not found.{hint} Available: {', '.join(self.tool_names)}"
+                    f"Error: Tool '{name}' not found.{hint} Available: {', '.join(self.tool_names)}",
+                    code="TOOL_UNAVAILABLE",
+                    decision="CAPABILITY_UNAVAILABLE",
                 )
             )
         # Compatibility for external tools that still implement the legacy
@@ -149,7 +152,9 @@ class ToolRegistry:
                 ToolResult.error(
                     f"Error: Tool '{name}' parameters must be a JSON object, got "
                     f"{type(params).__name__}. Use named parameters like "
-                    'tool_name(param1="value1", param2="value2") matching the tool schema.'
+                    'tool_name(param1="value1", param2="value2") matching the tool schema.',
+                    code="INVALID_ARGUMENT",
+                    decision="PRECONDITION_FAILED",
                 )
             )
 
@@ -157,7 +162,11 @@ class ToolRegistry:
         errors = tool.validate_params(cast_params)
         if errors:
             return tool, cast_params, (
-                ToolResult.error(f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors))
+                ToolResult.error(
+                    f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors),
+                    code="INVALID_ARGUMENT",
+                    decision="PRECONDITION_FAILED",
+                )
             )
         return tool, cast_params, None
 
@@ -204,16 +213,24 @@ class ToolRegistry:
         hint = "\n\n[Analyze the error above and try a different approach.]"
         tool, params, error = self.prepare_call(name, params)
         if error:
+            if isinstance(error, ToolResult):
+                return error.with_content(str(error) + hint)
             return ToolResult.error(str(error) + hint)
 
         try:
             assert tool is not None  # guarded by prepare_call()
             result = await tool.execute(**params)
             if is_tool_error_result(result):
-                return ToolResult.error(str(result) + hint)
+                return result.with_content(str(result) + hint)
             return result
         except Exception as e:
-            return ToolResult.error(f"Error executing {name}: {str(e)}" + hint)
+            classification = classify_exception(e)
+            return ToolResult.error(
+                f"Error executing {name}: {str(e)}" + hint,
+                code=classification.code,
+                decision=classification.decision,
+                retryable=classification.retryable,
+            )
 
     @property
     def tool_names(self) -> list[str]:

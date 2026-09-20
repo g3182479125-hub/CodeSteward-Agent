@@ -20,6 +20,7 @@ from nanobot.agent.tools.schema import (
     tool_parameters_schema,
 )
 from nanobot.config_base import Base
+from nanobot.security.execution_policy import error_result
 from nanobot.security.workspace_access import current_tool_workspace
 from nanobot.utils.helpers import build_image_content_blocks, detect_image_mime
 
@@ -499,9 +500,9 @@ class ReadFileTool(_FsTool):
             self._file_states.record_read(fp, offset=offset, limit=limit)
             return result
         except PermissionError as e:
-            return ToolResult.error(f"Error: {e}")
+            return error_result(f"Error: {e}", e)
         except Exception as e:
-            return ToolResult.error(f"Error reading file: {e}")
+            return error_result(f"Error reading file: {e}", e)
 
     def _read_pdf(self, fp: Path, pages: str | None) -> str:
         from nanobot.utils.document import PdfPageRangeError, PdfSafetyError, extract_pdf_pages
@@ -594,9 +595,9 @@ class WriteFileTool(_FsTool):
             self._file_states.record_write(fp)
             return f"Successfully wrote {len(content)} characters to {fp}"
         except PermissionError as e:
-            return ToolResult.error(f"Error: {e}")
+            return error_result(f"Error: {e}", e)
         except Exception as e:
-            return ToolResult.error(f"Error writing file: {e}")
+            return error_result(f"Error writing file: {e}", e)
 
 
 # ---------------------------------------------------------------------------
@@ -1052,9 +1053,9 @@ class EditFileTool(_FsTool):
                 msg = f"{warning}\n{msg}"
             return msg
         except PermissionError as e:
-            return ToolResult.error(f"Error: {e}")
+            return error_result(f"Error: {e}", e)
         except Exception as e:
-            return ToolResult.error(f"Error editing file: {e}")
+            return error_result(f"Error editing file: {e}", e)
 
     def _file_not_found_msg(self, path: str, fp: Path) -> str:
         """Build an error message with 'Did you mean ...?' suggestions."""
@@ -1181,6 +1182,6 @@ class ListDirTool(_FsTool):
                 result += f"\n\n(truncated, showing first {cap} of {total} entries)"
             return result
         except PermissionError as e:
-            return ToolResult.error(f"Error: {e}")
+            return error_result(f"Error: {e}", e)
         except Exception as e:
-            return ToolResult.error(f"Error listing directory: {e}")
+            return error_result(f"Error listing directory: {e}", e)

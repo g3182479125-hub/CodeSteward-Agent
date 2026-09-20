@@ -34,6 +34,9 @@ from .patches import (
     PatchFileRecord,
     PatchPlan,
     StructuredPatchService,
+    _forbidden_path,
+    _read_text_bytes,
+    _safe_relative_parts,
     _Snapshot,
 )
 from .paths import AllowedRoots, PathBoundaryError
@@ -44,6 +47,7 @@ from .redaction import (
 )
 from .storage import ProjectStore
 from .test_runs import ProjectTestRunner, ProjectTestTrustError
+from .user_intent import capability_confirmation_matches, confirmation_matches
 from .verification import VerificationProfile, build_verification_request, verification_binding
 
 DEFAULT_HOST = "127.0.0.1"
@@ -53,7 +57,19 @@ APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
 INTERNAL_AUTH_HEADER = "X-DevPilot-Internal-Token"
-_INTERNAL_AUTH_PATHS = frozenset({"/approve", "/trust", "/revoke"})
+_INTERNAL_AUTH_PATHS = frozenset(
+    {"/approve", "/trust", "/revoke", "/full-access-apply-verify"}
+)
+
+
+class ReplacementPayload(BaseModel):
+    """One exact, bounded text replacement used to build a proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    find: str = Field(min_length=1, max_length=20_000)
+    replace: str = Field(max_length=20_000)
+    count: int = Field(default=1, ge=1, le=20)
 
 
 class PatchPayload(BaseModel):
@@ -63,9 +79,41 @@ class PatchPayload(BaseModel):
     operation: FileOperation
     content: str | None = None
     expected_sha256: str | None = None
+    replacements: list[ReplacementPayload] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
 
-    def to_file_patch(self) -> FilePatch:
-        return FilePatch(self.relative_path, self.operation, self.content, self.expected_sha256)
+    def to_file_patch(self, *, source_content: str | None = None) -> FilePatch:
+        if self.replacements is not None:
+            if self.operation is not FileOperation.UPDATE:
+                raise PatchError(
+                    "PATCH_REPLACEMENT_INVALID",
+                    "replacements are supported only for update patches",
+                )
+            if self.content is not None:
+                raise PatchError(
+                    "PATCH_REPLACEMENT_INVALID",
+                    "content and replacements cannot be used together",
+                )
+            if source_content is None:
+                raise PatchError(
+                    "PATCH_REPLACEMENT_INVALID",
+                    "replacement source content is unavailable",
+                )
+            content = source_content
+            for replacement in self.replacements:
+                matches = content.count(replacement.find)
+                if matches != replacement.count:
+                    raise PatchError(
+                        "PATCH_REPLACEMENT_NOT_UNIQUE",
+                        "each replacement must match its requested count",
+                    )
+                content = content.replace(
+                    replacement.find, replacement.replace, replacement.count
+                )
+        else:
+            content = self.content
+        return FilePatch(self.relative_path, self.operation, content, self.expected_sha256)
 
 
 class PreviewRequest(BaseModel):
@@ -92,9 +140,7 @@ class ApprovalIntentRequest(BaseModel):
         default=APPLY_CAPABILITY,
         pattern=r"^(?:r1\.(?:apply|rollback)|r2\.verify)$",
     )
-    user_confirmation: str = Field(
-        pattern=r"^(?:执行|确认执行|验证|确认验证|撤销|确认撤销|confirmed)$"
-    )
+    user_confirmation: str = Field(min_length=1, max_length=4000)
 
 
 class VerificationRequest(BaseModel):
@@ -116,7 +162,7 @@ class ProjectTestRequest(BaseModel):
 class TrustProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    confirmation: str = Field(pattern=r"^(?:信任项目|trust)$")
+    confirmation: str = Field(min_length=1, max_length=4000)
 
 
 class FeatureDeliveryRequest(BaseModel):
@@ -681,7 +727,7 @@ class ControlPlaneManager:
         self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
     ) -> dict[str, Any]:
         """Record the user's final acceptance without changing project files."""
-        if user_confirmation not in {"接受", "确认接受", "confirmed"}:
+        if not confirmation_matches(user_confirmation, "accept"):
             raise PatchError(
                 "USER_CONFIRMATION_REQUIRED", "explicit acceptance confirmation is required"
             )
@@ -734,7 +780,7 @@ class ControlPlaneManager:
         self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
     ) -> dict[str, Any]:
         """Record a stop decision; it never claims success or rolls files back."""
-        if user_confirmation not in {"停止", "确认停止", "confirmed"}:
+        if not confirmation_matches(user_confirmation, "stop"):
             raise PatchError("USER_CONFIRMATION_REQUIRED", "explicit stop confirmation is required")
         with self._mutex:
             entry = self._require(change_set_id)
@@ -859,11 +905,13 @@ class ControlPlaneManager:
         profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
         idempotency_key: str | None = None,
         finalize_run: bool = True,
+        full_access: bool = False,
     ) -> dict[str, Any]:
         """Run one allowlisted verification profile in the configured backend."""
         with self._mutex:
             entry = self._require(change_set_id)
-            self._require_trusted_project(entry)
+            if not full_access:
+                self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key,
                 "verify",
@@ -940,7 +988,8 @@ class ControlPlaneManager:
                     "VERIFICATION_PROFILE_UNSUPPORTED",
                     "verification profile is not supported",
                 ) from exc
-            self._consume_approval(entry, approval_token, VERIFY_CAPABILITY)
+            if not full_access:
+                self._consume_approval(entry, approval_token, VERIFY_CAPABILITY)
             self._reserve_idempotency(
                 idempotency_key,
                 "verify",
@@ -1034,17 +1083,30 @@ class ControlPlaneManager:
             return response
 
     def apply(
-        self, change_set_id: str, approval_token: str, *, idempotency_key: str | None = None
+        self,
+        change_set_id: str,
+        approval_token: str,
+        *,
+        idempotency_key: str | None = None,
+        full_access: bool = False,
     ) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
-            self._require_trusted_project(entry)
+            if not full_access:
+                self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key, "apply", change_set_id, approval_token
             )
             if replay is not None:
                 return replay
-            approval = self._consume_approval(entry, approval_token, APPLY_CAPABILITY)
+            approval = (
+                {
+                    "expires_at": _now() + self.token_ttl,
+                    "id": f"full-access-{uuid.uuid4()}",
+                }
+                if full_access
+                else self._consume_approval(entry, approval_token, APPLY_CAPABILITY)
+            )
             self._reserve_idempotency(idempotency_key, "apply", change_set_id, approval_token)
             reserved = idempotency_key is not None
             grant = AuthorizationGrant(
@@ -1081,6 +1143,43 @@ class ControlPlaneManager:
             }
             self._complete(idempotency_key, result)
             return result
+
+    def full_access_apply_verify(
+        self,
+        change_set_id: str,
+        *,
+        profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply and verify a ChangeSet for a trusted WebUI Full Access turn.
+
+        This skips project trust and approval-token checks, while preserving
+        patch preconditions, project locks, rollback receipts, verification
+        backend checks and redacted execution output.
+        """
+
+        if idempotency_key is None:
+            raise PatchError("IDEMPOTENCY_REQUIRED", "Idempotency-Key is required")
+        apply_result = self.apply(
+            change_set_id,
+            "full-access",
+            idempotency_key=f"{idempotency_key}:apply",
+            full_access=True,
+        )
+        verify_result = self.verify(
+            change_set_id,
+            "full-access",
+            profile=profile,
+            idempotency_key=f"{idempotency_key}:verify",
+            full_access=True,
+        )
+        return {
+            "change_set_id": change_set_id,
+            "status": verify_result["status"],
+            "mode": "full_access",
+            "apply": apply_result,
+            "verify": verify_result,
+        }
 
     def rollback(
         self, change_set_id: str, approval_token: str, *, idempotency_key: str | None = None
@@ -1125,7 +1224,7 @@ class ControlPlaneManager:
             return {"change_set_id": change_set_id, "revoked": count}
 
     def trust_project(self, project_id: str, confirmation: str) -> dict[str, Any]:
-        if confirmation not in {"信任项目", "trust"}:
+        if not confirmation_matches(confirmation, "trust_project"):
             raise PatchError(
                 "PROJECT_TRUST_CONFIRMATION_REQUIRED", "explicit project trust is required"
             )
@@ -1148,14 +1247,9 @@ class ControlPlaneManager:
         self, change_set_id: str, capability: str, user_confirmation: str
     ) -> dict[str, Any]:
         """Record a confirmed approval intent without issuing a capability token."""
-        expected_confirmations = {
-            APPLY_CAPABILITY: {"执行", "确认执行", "confirmed"},
-            VERIFY_CAPABILITY: {"验证", "确认验证", "confirmed"},
-            ROLLBACK_CAPABILITY: {"撤销", "确认撤销", "confirmed"},
-        }
-        if capability not in expected_confirmations:
+        if capability not in {APPLY_CAPABILITY, VERIFY_CAPABILITY, ROLLBACK_CAPABILITY}:
             raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
-        if user_confirmation not in expected_confirmations[capability]:
+        if not capability_confirmation_matches(user_confirmation, capability):
             raise PatchError("USER_CONFIRMATION_REQUIRED", "confirmation does not match capability")
         with self._mutex:
             entry = self._require(change_set_id)
@@ -1533,6 +1627,40 @@ def _contract_payload(request: Request, payload: dict[str, Any]) -> dict[str, An
     return _public_payload(payload)
 
 
+def _materialize_patch_payloads(
+    manager: ControlPlaneManager,
+    project_path: str,
+    payloads: list[PatchPayload],
+) -> list[FilePatch]:
+    """Resolve compact proposal replacements without touching project files.
+
+    This is proposal-time read-only work.  The resulting complete replacements
+    still go through StructuredPatchService, evidence/hash checks, approval,
+    apply, verification, and rollback exactly as before.
+    """
+    project = manager.patch_service.allowed_roots.require_project(project_path)
+    materialized: list[FilePatch] = []
+    for payload in payloads:
+        source_content: str | None = None
+        if payload.replacements is not None:
+            parts = _safe_relative_parts(payload.relative_path)
+            if _forbidden_path(parts):
+                raise PatchError("PATH_DENIED", "proposal target is not an allowed text file")
+            candidate = (project.joinpath(*parts)).resolve()
+            if project not in candidate.parents or not candidate.is_file():
+                raise PatchError("FILE_READ_FAILED", "replacement source file is unavailable")
+            try:
+                source_content = _read_text_bytes(candidate).decode("utf-8")
+            except PatchError:
+                raise
+            except OSError as exc:
+                raise PatchError(
+                    "FILE_READ_FAILED", "replacement source file is unavailable"
+                ) from exc
+        materialized.append(payload.to_file_patch(source_content=source_content))
+    return materialized
+
+
 async def _json_response_with_request_id(
     response: Any,
     request_id: str,
@@ -1858,7 +1986,7 @@ def create_app(
         return _contract_payload(request, manager.preview(
             project_path=payload.project_path,
             project_id=payload.project_id,
-            patches=[item.to_file_patch() for item in payload.patches],
+            patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
         ))
 
     @app.post("/api/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
@@ -1871,7 +1999,7 @@ def create_app(
         try:
             proposal = FeatureDeliveryWorkflow(manager).propose(
                 project_path=payload.project_path,
-                patches=[item.to_file_patch() for item in payload.patches],
+                patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
                 evidence_ids=payload.evidence_ids,
                 verification_profile=payload.verification_profile,
             )
@@ -1887,7 +2015,7 @@ def create_app(
         try:
             proposal = BugFixWorkflow(manager).propose(
                 project_path=payload.project_path,
-                patches=[item.to_file_patch() for item in payload.patches],
+                patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
                 analysis_evidence_ids=payload.analysis_evidence_ids,
                 failure_evidence_ids=payload.failure_evidence_ids,
                 symptom=payload.symptom,
@@ -1908,7 +2036,7 @@ def create_app(
         try:
             proposal = TestRepairWorkflow(manager).propose(
                 project_path=payload.project_path,
-                patches=[item.to_file_patch() for item in payload.patches],
+                patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
                 analysis_evidence_ids=payload.analysis_evidence_ids,
                 failure_evidence_ids=payload.failure_evidence_ids,
                 symptom=payload.symptom,
@@ -2120,6 +2248,19 @@ def create_app(
         return manager.verify(
             change_set_id,
             _header_token(authorization),
+            profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
+            idempotency_key=idempotency_key,
+        )
+
+    @app.post("/api/v1/change-sets/{change_set_id}/full-access-apply-verify")
+    @app.post("/v1/change-sets/{change_set_id}/full-access-apply-verify")
+    def full_access_apply_verify(
+        change_set_id: str,
+        payload: VerificationRequest | None = None,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return manager.full_access_apply_verify(
+            change_set_id,
             profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
             idempotency_key=idempotency_key,
         )

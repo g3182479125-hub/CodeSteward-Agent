@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import sys
+import uuid
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,7 +78,10 @@ def run_sandbox_check() -> int:
     from .fc_sandbox import build_fc_backend_from_environment
 
     request = ExecutionRequest(
-        run_id="sandbox-check",
+        # A diagnostic invocation must always be a fresh lifecycle check.
+        # Reusing a persisted run ID makes a healthy provider look broken with
+        # FC_RUN_DUPLICATE after the first successful check.
+        run_id=f"sandbox-check-{uuid.uuid4()}",
         project_id="sandbox-check",
         files=(
             ExecutionFile(

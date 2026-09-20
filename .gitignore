@@ -36,3 +36,14 @@
 **/*.swp
 **/*~
 
+# Local test, sandbox, and agent runtime artifacts
+.pytest*/
+**/.pytest*/
+pytest-*/
+**/pytest-*/
+codex-localpytest*/
+**/codex-localpytest*/
+.codex-live-logs/
+**/.codex-live-logs/
+work/
+**/work/

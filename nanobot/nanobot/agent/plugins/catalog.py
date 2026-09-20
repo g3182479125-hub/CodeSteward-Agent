@@ -33,10 +33,12 @@ class PluginRecord:
 
     def __post_init__(self) -> None:
         if self.manifest.scope is PluginScope.SESSION:
-            if not self.session_id or self.project_id is not None:
+            if not self.session_id or (
+                self.project_id is not None and self.source is not PluginSource.TEMPORARY
+            ):
                 raise PluginContractError(
                     PluginErrorCode.SCOPE_MISMATCH,
-                    "session plugins require only a session_id",
+                    "session plugins require a session_id; temporary tools may also bind a project",
                 )
         elif self.manifest.scope is PluginScope.PROJECT:
             if not self.project_id or self.session_id is not None:

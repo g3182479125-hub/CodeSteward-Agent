@@ -118,6 +118,12 @@ $env:DEVPILOT_ENABLE_LOOP_HANDOFF = "1"
 $env:DEVPILOT_ENABLE_HARNESS_SELECTION = "1"
 $env:DEVPILOT_CONTROL_PLANE_URL = "http://127.0.0.1:18800"
 $env:DEVPILOT_ALLOWED_ROOTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
+# FC accepts only explicitly declared project roots.  The integrated Harness
+# already owns the allowed roots, so use them as the default test allowlist.
+# A caller can still supply a narrower explicit list before startup.
+if (-not $env:DEVPILOT_FC_ALLOWED_PROJECTS) {
+    $env:DEVPILOT_FC_ALLOWED_PROJECTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
+}
 $env:DEVPILOT_DATA_DIR = $DataPath
 $env:DEVPILOT_DATABASE_URL = $databaseUrl
 

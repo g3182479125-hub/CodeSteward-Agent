@@ -38,6 +38,7 @@ from nanobot.agent.tools.schema import (
 )
 from nanobot.config.paths import get_media_dir
 from nanobot.config_base import Base
+from nanobot.security.execution_policy import ExecutionDecision, ExecutionErrorCode, error_result
 from nanobot.security.workspace_access import current_scope_allows_loopback, current_tool_workspace
 from nanobot.security.workspace_policy import is_path_within
 
@@ -312,7 +313,11 @@ class ExecTool(Tool):
         command = command or cmd
         working_dir = working_dir or workdir
         if not command:
-            return ToolResult.error("Error: Missing command. Provide command or cmd.")
+            return ToolResult.error(
+                "Error: Missing command. Provide command or cmd.",
+                code=ExecutionErrorCode.INVALID_ARGUMENT,
+                decision=ExecutionDecision.PRECONDITION_FAILED,
+            )
         if max_output_chars is None:
             max_output_chars = max_output_tokens
 
@@ -340,7 +345,12 @@ class ExecTool(Tool):
                 )
             except asyncio.TimeoutError:
                 await self._kill_process(process)
-                return ToolResult.error(f"Error: Command timed out after {prepared.timeout} seconds")
+                return ToolResult.error(
+                    f"Error: Command timed out after {prepared.timeout} seconds",
+                    code=ExecutionErrorCode.TIMEOUT,
+                    decision=ExecutionDecision.PRECONDITION_FAILED,
+                    retryable=True,
+                )
             except asyncio.CancelledError:
                 await self._kill_process(process)
                 raise
@@ -373,6 +383,13 @@ class ExecTool(Tool):
                     + result[-half:]
                 )
 
+            if process.returncode:
+                return ToolResult.error(
+                    result,
+                    code=ExecutionErrorCode.COMMAND_FAILED,
+                    decision=ExecutionDecision.AUTO_EXECUTE,
+                    retryable=True,
+                )
             return result
 
         except Exception as e:
@@ -380,7 +397,7 @@ class ExecTool(Tool):
             # error prevented communicate() from completing.
             if process is not None:
                 await self._kill_process(process)
-            return ToolResult.error(f"Error executing command: {str(e)}")
+            return error_result(f"Error executing command: {str(e)}", e)
 
     async def _execute_session(
         self,
@@ -406,9 +423,18 @@ class ExecTool(Tool):
                 ),
             )
             result = format_session_poll(session_id, poll)
-            return ToolResult.error(result) if poll.timed_out else result
+            return (
+                ToolResult.error(
+                    result,
+                    code=ExecutionErrorCode.TIMEOUT,
+                    decision=ExecutionDecision.PRECONDITION_FAILED,
+                    retryable=True,
+                )
+                if poll.timed_out
+                else result
+            )
         except Exception as exc:
-            return ToolResult.error(f"Error executing command: {exc}")
+            return error_result(f"Error executing command: {exc}", exc)
 
     def _resolve_timeout(self, timeout: int | None) -> int | None:
         """Resolve the effective hard timeout in seconds (None = no limit).
@@ -451,13 +477,17 @@ class ExecTool(Tool):
                 resolved_root = Path(workspace_root).expanduser().resolve()
             except Exception:
                 return ToolResult.error(
-                    "Error: working_dir could not be resolved"
-                    + _WORKSPACE_BOUNDARY_NOTE
+                    "Error: working_dir could not be resolved" + _WORKSPACE_BOUNDARY_NOTE,
+                    code=ExecutionErrorCode.POLICY_DENIED,
+                    decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                    retryable=False,
                 )
             if not is_path_within(requested, resolved_root):
                 return ToolResult.error(
-                    "Error: working_dir is outside the configured workspace"
-                    + _WORKSPACE_BOUNDARY_NOTE
+                    "Error: working_dir is outside the configured workspace" + _WORKSPACE_BOUNDARY_NOTE,
+                    code=ExecutionErrorCode.POLICY_DENIED,
+                    decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                    retryable=False,
                 )
 
         guard_error = self._guard_command(
@@ -627,7 +657,11 @@ class ExecTool(Tool):
         if not shell:
             return None, None
         if "\0" in shell or "\n" in shell or "\r" in shell:
-            return None, ToolResult.error("Error: shell contains invalid characters")
+            return None, ToolResult.error(
+                "Error: shell contains invalid characters",
+                code=ExecutionErrorCode.INVALID_ARGUMENT,
+                decision=ExecutionDecision.PRECONDITION_FAILED,
+            )
         if _IS_WINDOWS:
             win_allowed = {"powershell", "powershell.exe", "pwsh", "pwsh.exe", "cmd", "cmd.exe"}
             path = Path(shell).expanduser()
@@ -636,17 +670,29 @@ class ExecTool(Tool):
                 if name not in win_allowed:
                     return None, ToolResult.error(
                         f"Error: unsupported shell {shell!r}. "
-                        "Allowed: powershell, pwsh, cmd"
+                        "Allowed: powershell, pwsh, cmd",
+                        code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                        decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
                     )
                 if not path.is_file():
-                    return None, ToolResult.error(f"Error: shell is not found: {shell}")
+                    return None, ToolResult.error(
+                        f"Error: shell is not found: {shell}",
+                        code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                        decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+                    )
                 return str(path), None
             if "/" in shell or "\\" in shell:
-                return None, ToolResult.error("Error: shell must be a shell name or absolute path")
+                return None, ToolResult.error(
+                    "Error: shell must be a shell name or absolute path",
+                    code=ExecutionErrorCode.INVALID_ARGUMENT,
+                    decision=ExecutionDecision.PRECONDITION_FAILED,
+                )
             if shell.lower() not in win_allowed:
                 return None, ToolResult.error(
                     f"Error: unsupported shell {shell!r}. "
-                    "Allowed: powershell, pwsh, cmd"
+                    "Allowed: powershell, pwsh, cmd",
+                    code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                    decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
                 )
             if shell.lower() in ("cmd", "cmd.exe"):
                 resolved = os.environ.get("COMSPEC") or shutil.which("cmd") or "cmd"
@@ -657,17 +703,37 @@ class ExecTool(Tool):
         path = Path(shell).expanduser()
         if path.is_absolute():
             if path.name not in allowed:
-                return None, ToolResult.error(f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh")
+                return None, ToolResult.error(
+                    f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh",
+                    code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                    decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+                )
             if not path.is_file() or not os.access(path, os.X_OK):
-                return None, ToolResult.error(f"Error: shell is not executable: {shell}")
+                return None, ToolResult.error(
+                    f"Error: shell is not executable: {shell}",
+                    code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                    decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+                )
             return str(path), None
         if "/" in shell or "\\" in shell:
-            return None, ToolResult.error("Error: shell must be a shell name or absolute path")
+            return None, ToolResult.error(
+                "Error: shell must be a shell name or absolute path",
+                code=ExecutionErrorCode.INVALID_ARGUMENT,
+                decision=ExecutionDecision.PRECONDITION_FAILED,
+            )
         if shell not in allowed:
-            return None, ToolResult.error(f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh")
+            return None, ToolResult.error(
+                f"Error: unsupported shell {shell!r}. Allowed: bash, sh, zsh",
+                code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+            )
         resolved = shutil.which(shell)
         if not resolved:
-            return None, ToolResult.error(f"Error: shell not found: {shell}")
+            return None, ToolResult.error(
+                f"Error: shell not found: {shell}",
+                code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+            )
         return resolved, None
 
     @staticmethod
@@ -795,10 +861,20 @@ class ExecTool(Tool):
         if not explicitly_allowed:
             for pattern in self.deny_patterns:
                 if re.search(pattern, lower):
-                    return ToolResult.error("Error: Command blocked by deny pattern filter")
+                    return ToolResult.error(
+                        "Error: Command blocked by deny pattern filter",
+                        code=ExecutionErrorCode.POLICY_DENIED,
+                        decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                        retryable=False,
+                    )
 
             if self.allow_patterns:
-                return ToolResult.error("Error: Command blocked by allowlist filter (not in allowlist)")
+                return ToolResult.error(
+                    "Error: Command blocked by allowlist filter (not in allowlist)",
+                    code=ExecutionErrorCode.POLICY_DENIED,
+                    decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                    retryable=False,
+                )
 
         from nanobot.security.network import contains_internal_url
         if contains_internal_url(
@@ -808,14 +884,22 @@ class ExecTool(Tool):
             ),
         ):
             # The runner turns this marker into a non-retryable security hint.
-            return ToolResult.error("Error: Command blocked by safety guard (internal/private URL detected)")
+            return ToolResult.error(
+                "Error: Command blocked by safety guard (internal/private URL detected)",
+                code=ExecutionErrorCode.POLICY_DENIED,
+                decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                retryable=False,
+            )
 
         should_restrict = self.restrict_to_workspace if restrict_to_workspace is None else restrict_to_workspace
         if should_restrict:
             if "..\\" in cmd or "../" in cmd:
                 return ToolResult.error(
                     "Error: Command blocked by safety guard (path traversal detected)"
-                    + _WORKSPACE_BOUNDARY_NOTE
+                    + _WORKSPACE_BOUNDARY_NOTE,
+                    code=ExecutionErrorCode.POLICY_DENIED,
+                    decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                    retryable=False,
                 )
 
             cwd_path = Path(cwd).resolve()
@@ -855,7 +939,10 @@ class ExecTool(Tool):
                 if p.is_absolute() and not allowed:
                     return ToolResult.error(
                         "Error: Command blocked by safety guard (path outside working dir)"
-                        + _WORKSPACE_BOUNDARY_NOTE
+                        + _WORKSPACE_BOUNDARY_NOTE,
+                        code=ExecutionErrorCode.POLICY_DENIED,
+                        decision=ExecutionDecision.BLOCKED_BY_POLICY,
+                        retryable=False,
                     )
 
         return None

@@ -20,9 +20,9 @@ from .control_plane import ControlPlaneManager
 from .execution import FakeExecutionBackend
 from .patches import FilePatch, PatchError
 from .paths import PathBoundaryError
+from .user_intent import confirmation_matches
 from .verification import VerificationProfile
 
-_CONFIRMATIONS = frozenset({"执行", "确认执行", "confirmed"})
 _STOP_CONDITIONS = (
     "stale_hash",
     "path_denied",
@@ -440,7 +440,7 @@ class FeatureDeliveryWorkflow:
         user_confirmation: str,
         approval_token: str,
     ) -> dict[str, Any]:
-        if user_confirmation not in _CONFIRMATIONS:
+        if not confirmation_matches(user_confirmation, "apply"):
             raise WorkflowError(
                 "USER_CONFIRMATION_REQUIRED",
                 "the exact feature-delivery proposal requires explicit user confirmation",
@@ -919,7 +919,7 @@ class BugFixWorkflow:
         user_confirmation: str,
         approval_token: str,
     ) -> dict[str, Any]:
-        if user_confirmation not in _CONFIRMATIONS:
+        if not confirmation_matches(user_confirmation, "apply"):
             raise WorkflowError(
                 "USER_CONFIRMATION_REQUIRED",
                 "the exact bug-fix proposal requires explicit user confirmation",

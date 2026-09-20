@@ -15,24 +15,24 @@ function describeRun(line: string, status: GenericToolStatus = "done") {
 
 describe("generic tool activity semantics", () => {
   it.each([
-    ['find_files({"glob":"*.tsx"})', "Found files", "*.tsx"],
-    ['grep({"pattern":"dream_cursor"})', "Searched files", "“dream_cursor”"],
-    ['list_dir({"path":"memory"})', "Listed files", "memory"],
-    ['read_file({"path":"docs/guide.md"})', "Read file", "docs/guide.md"],
-    ['memory_search({"query":"launch date"})', "Searched memory", "“launch date”"],
-    ['generate_image({"prompt":"private launch art"})', "Generated image", ""],
-    ['spawn({"label":"Research competitors","task":"private task"})', "Delegated task", "Research competitors"],
-    ['message({"channel":"telegram","content":"private message"})', "Sent message", "telegram"],
-    ['my({"action":"check","key":"context_window_tokens"})', "Checked agent settings", "context_window_tokens"],
-    ['my({"action":"set","key":"model","value":"private-model"})', "Updated agent settings", "model"],
-    ['cron({"action":"add","name":"Daily digest","message":"private prompt"})', "Scheduled automation", "Daily digest"],
-    ['cron({"action":"remove","name":"Daily digest"})', "Removed automation", "Daily digest"],
-    ['create_goal({"objective":"private objective","ui_summary":"Benchmark memory"})', "Started long task", "Benchmark memory"],
-    ['update_goal({"action":"complete","recap":"private recap"})', "Updated long task", "complete"],
-    ['write_stdin({"session_id":"session-1234567890-secret","chars":"private input"})', "Continued command", "session…ecret"],
-    ['list_exec_sessions({})', "Checked running commands", ""],
-    ['screenshot({"path":"artifacts/home.png"})', "Captured screenshot", ""],
-    ['third_party_sync({"token":"secret","payload":"private payload"})', "Completed Third party sync", ""],
+    ['find_files({"glob":"*.tsx"})', "已找到文件", "*.tsx"],
+    ['grep({"pattern":"dream_cursor"})', "已搜索文件", "“dream_cursor”"],
+    ['list_dir({"path":"memory"})', "已列出文件", "memory"],
+    ['read_file({"path":"docs/guide.md"})', "已读取文件", "docs/guide.md"],
+    ['memory_search({"query":"launch date"})', "已搜索记忆", "“launch date”"],
+    ['generate_image({"prompt":"private launch art"})', "已生成图片", ""],
+    ['spawn({"label":"Research competitors","task":"private task"})', "已委派任务", "Research competitors"],
+    ['message({"channel":"telegram","content":"private message"})', "已发送消息", "telegram"],
+    ['my({"action":"check","key":"context_window_tokens"})', "已检查 Agent 设置", "context_window_tokens"],
+    ['my({"action":"set","key":"model","value":"private-model"})', "已更新 Agent 设置", "model"],
+    ['cron({"action":"add","name":"Daily digest","message":"private prompt"})', "已安排自动任务", "Daily digest"],
+    ['cron({"action":"remove","name":"Daily digest"})', "已移除自动任务", "Daily digest"],
+    ['create_goal({"objective":"private objective","ui_summary":"Benchmark memory"})', "已启动长任务", "Benchmark memory"],
+    ['update_goal({"action":"complete","recap":"private recap"})', "已更新长任务", "complete"],
+    ['write_stdin({"session_id":"session-1234567890-secret","chars":"private input"})', "已继续命令", "session…ecret"],
+    ['list_exec_sessions({})', "已检查运行中的命令", ""],
+    ['screenshot({"path":"artifacts/home.png"})', "已截取屏幕", ""],
+    ['third_party_sync({"token":"secret","payload":"private payload"})', "工具执行完成 Third party sync", ""],
   ])("describes %s without exposing implementation syntax", (line, label, detail) => {
     const presentation = describeRun(line);
     expect(presentation.label).toBe(label);
@@ -41,9 +41,9 @@ describe("generic tool activity semantics", () => {
   });
 
   it.each([
-    ["running", "Generating image"],
-    ["done", "Generated image"],
-    ["error", "Could not generate image"],
+    ["running", "正在生成图片"],
+    ["done", "已生成图片"],
+    ["error", "生成图片失败"],
   ] as const)("uses human status copy for %s tools", (status, label) => {
     expect(describeRun('generate_image({"prompt":"private"})', status).label).toBe(label);
   });
@@ -60,8 +60,22 @@ describe("generic tool activity semantics", () => {
       { trace: second, status: "done" },
     ]);
 
-    expect(presentation).toMatchObject({ label: "Reviewed sources", detail: "", aside: "2 files" });
+    expect(presentation).toMatchObject({ label: "已检查来源", detail: "", aside: "2 个文件" });
     expect(JSON.stringify(presentation)).not.toContain("/Users/test");
+  });
+
+  it("shows the machine-readable execution reason in Chinese", () => {
+    const trace = parseGenericToolTrace('read_file({"path":"secret.txt"})')!;
+
+    expect(describeGenericToolRun([
+      { trace, status: "error", code: "POLICY_DENIED", decision: "BLOCKED_BY_POLICY" },
+    ]).aside).toBe("策略阻断");
+    expect(describeGenericToolRun([
+      { trace, status: "error", code: "TIMEOUT", decision: "PRECONDITION_FAILED" },
+    ]).aside).toBe("等待超时");
+    expect(describeGenericToolRun([
+      { trace, status: "error", code: "OS_PERMISSION_DENIED", decision: "PRECONDITION_FAILED" },
+    ]).aside).toBe("系统权限不足");
   });
 
   it("leaves specialized tools to their dedicated activity surfaces", () => {

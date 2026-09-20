@@ -5,6 +5,18 @@ import { FilePreviewAvailabilityProvider } from "@/components/FilePreviewAvailab
 import MarkdownTextRenderer from "@/components/MarkdownTextRenderer";
 
 describe("MarkdownTextRenderer", () => {
+  it("renders the temporary-tool persistence question in bold", () => {
+    const { container } = render(
+      <MarkdownTextRenderer>
+        {"**这个临时工具已完成本次任务，要保存为可复用插件吗？**"}
+      </MarkdownTextRenderer>,
+    );
+
+    expect(container.querySelector("strong")).toHaveTextContent(
+      "这个临时工具已完成本次任务，要保存为可复用插件吗？",
+    );
+  });
+
   it("renders clickable markdown links in blue", () => {
     render(<MarkdownTextRenderer>[local server](http://127.0.0.1:7891/)</MarkdownTextRenderer>);
 

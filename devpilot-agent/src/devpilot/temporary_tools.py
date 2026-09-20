@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ from .fc_sandbox import build_fc_backend_from_environment
 _ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TEMPORARY_TOOL_VALIDATION_VERSION = "temporary-tool-validation/v1"
 _ALLOWED_MANIFEST_FIELDS = frozenset(
     {
         "tool_id",
@@ -69,10 +71,12 @@ _ALLOWED_MANIFEST_FIELDS = frozenset(
 _TEMPORARY_PLUGIN_MANAGER: PluginManager | None = None
 _TEMPORARY_CONFIRMATION_LOCK = RLock()
 _CONSUMED_TEMPORARY_CONFIRMATIONS: set[str] = set()
+# Full Access already authorizes ordinary reads from the selected workspace.
+# Keep the confirmation gate for actual privacy sources and external effects;
+# ``sensitive_read`` is the conservative static label for workspace I/O and is
+# still required in the manifest, but it is not an extra prompt in Full Access.
 _SENSITIVE_CAPABILITIES = frozenset(
     {
-        "sensitive_read",
-        "sensitive_write",
         "privacy_read",
         "privacy_write",
         "external_send",
@@ -88,6 +92,7 @@ _EXTERNAL_MODULES = frozenset(
         "requests",
         "smtplib",
         "socket",
+        "subprocess",
         "urllib",
         "websocket",
     }
@@ -111,6 +116,7 @@ class TemporaryToolState(StrEnum):
     REJECTED = "rejected"
     ACTIVE = "active"
     RETIRING = "retiring"
+    CLEANUP_PENDING = "cleanup_pending"
     DISPOSED = "disposed"
     PERSISTENCE_REQUESTED = "persistence_requested"
     PERSISTED = "persisted"
@@ -136,10 +142,14 @@ _TRANSITIONS: dict[TemporaryToolState, frozenset[TemporaryToolState]] = {
     ),
     TemporaryToolState.RETIRING: frozenset(
         {
+            TemporaryToolState.CLEANUP_PENDING,
             TemporaryToolState.DISPOSED,
             TemporaryToolState.REJECTED,
             TemporaryToolState.PERSISTENCE_REQUESTED,
         }
+    ),
+    TemporaryToolState.CLEANUP_PENDING: frozenset(
+        {TemporaryToolState.DISPOSED, TemporaryToolState.PERSISTENCE_REQUESTED}
     ),
     TemporaryToolState.PERSISTENCE_REQUESTED: frozenset(
         {TemporaryToolState.PERSISTED, TemporaryToolState.DISPOSED}
@@ -216,12 +226,61 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
                 if root in _EXTERNAL_MODULES:
                     required.add("external_send")
                 if root in _PRIVACY_MODULES:
-                    required.add("sensitive_read")
-                if root in {"os", "pathlib", "shutil", "tempfile"}:
+                    required.add("privacy_read")
+                if root in {"pathlib", "shutil", "tempfile"}:
                     required.add("sensitive_read")
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in {"open", "__import__"}:
-                required.add("sensitive_read")
+                literal_path = (
+                    node.args[0].value
+                    if node.args and isinstance(node.args[0], ast.Constant)
+                    else None
+                )
+                if (
+                    node.func.id == "__import__"
+                    and isinstance(literal_path, str)
+                    and literal_path.split(".", 1)[0] in _EXTERNAL_MODULES
+                ):
+                    required.add("external_send")
+                elif isinstance(literal_path, str) and (
+                    Path(literal_path).is_absolute()
+                    or literal_path.startswith("~")
+                    or ":" in literal_path
+                    or literal_path == ".."
+                    or literal_path.startswith("../")
+                    or "/.." in literal_path
+                ):
+                    required.add("privacy_read")
+                else:
+                    # A runtime-computed path has no statically provable
+                    # workspace boundary, so it must use the privacy gate.
+                    required.add(
+                        "privacy_read" if not isinstance(literal_path, str) else "sensitive_read"
+                    )
+            elif node.func.id in {"system", "popen", "spawn", "execv", "execve"}:
+                required.add("external_send")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"read_text", "read_bytes", "open"}:
+                literals = [
+                    child.value
+                    for child in ast.walk(node.func.value)
+                    if isinstance(child, ast.Constant)
+                ]
+                if any(
+                    isinstance(value, str)
+                    and (
+                        Path(value).is_absolute()
+                        or value.startswith("~")
+                        or ":" in value
+                        or value == ".."
+                        or value.startswith("../")
+                        or "/.." in value
+                    )
+                    for value in literals
+                ):
+                    required.add("privacy_read")
+                elif not literals:
+                    required.add("privacy_read")
         elif isinstance(node, ast.Attribute):
             if node.attr in {
                 "environ",
@@ -240,6 +299,7 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
                 "patch",
                 "send",
                 "connect",
+                "home",
             }:
                 if node.attr in {
                     "urlopen",
@@ -250,10 +310,25 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
                     "patch",
                     "send",
                     "connect",
+                    "run",
+                    "call",
+                    "check_call",
+                    "check_output",
+                    "system",
+                    "popen",
+                    "spawn",
+                    "execv",
+                    "execve",
                 }:
                     required.add("external_send")
                 elif node.attr in {"write_text", "write_bytes", "unlink", "rmtree"}:
                     required.add("sensitive_write")
+                elif node.attr in {"environ", "getenv"}:
+                    # Environment variables are outside the selected project
+                    # workspace and commonly contain tokens or credentials.
+                    required.add("privacy_read")
+                elif node.attr == "home":
+                    required.add("privacy_read")
                 else:
                     required.add("sensitive_read")
     return frozenset(required)
@@ -378,6 +453,34 @@ class TemporaryToolArtifactStore:
     @staticmethod
     def lifecycle_path(artifact: TemporaryToolArtifact) -> Path:
         return artifact.root / "lifecycle.json"
+
+    @staticmethod
+    def validation_receipt_path(artifact: TemporaryToolArtifact) -> Path:
+        return artifact.root / "validation.json"
+
+    def write_validation_receipt(
+        self, artifact: TemporaryToolArtifact, result: TemporaryToolValidationResult
+    ) -> None:
+        """Persist a bounded, source-free FC receipt beside the immutable candidate."""
+        path = self.validation_receipt_path(artifact)
+        payload = result.to_dict()
+        receipt = payload.get("receipt")
+        if isinstance(receipt, dict):
+            # Contract validation output is diagnostic only. Keep it bounded and
+            # avoid accidentally persisting a provider's unbounded response.
+            for key in ("stdout", "stderr"):
+                value = receipt.get(key)
+                if isinstance(value, str) and len(value) > 4096:
+                    value = value[:4096] + "...[truncated]"
+                if isinstance(value, str):
+                    receipt[key] = _redact_gap_text(value)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, path)
 
     def load_lifecycle(self, artifact: TemporaryToolArtifact) -> TemporaryToolLifecycle:
         path = self.lifecycle_path(artifact)
@@ -529,9 +632,9 @@ class TemporaryToolArtifactStore:
 
 _FC_CONTRACT_CHECK_SOURCE = "\n".join(
     (
-        "import ast, importlib.util, json, py_compile, sys",
+        "import ast, asyncio, importlib.util, inspect, json, os, py_compile, sys",
         "from pathlib import Path",
-        'root = Path("/workspace/devpilot")',
+        'root = Path(os.environ.get("DEVPILOT_CONTRACT_ROOT", "/workspace/devpilot"))',
         'manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))',
         'source_path = root / manifest["entry_module"]',
         "py_compile.compile(str(source_path), doraise=True)",
@@ -545,6 +648,52 @@ _FC_CONTRACT_CHECK_SOURCE = "\n".join(
         "valid = valid and any("
         "isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and "
         "node.name == 'execute' for node in classes[0].body)",
+        "def schema_errors(value, schema, path='value'):",
+        "    if not isinstance(schema, dict): return ['schema is not an object']",
+        "    expected = schema.get('type')",
+        "    if expected == 'object' and not isinstance(value, dict): return [path + ' must be object']",  # noqa: E501
+        "    if expected == 'array' and not isinstance(value, list): return [path + ' must be array']",  # noqa: E501
+        "    if expected == 'string' and not isinstance(value, str): return [path + ' must be string']",  # noqa: E501
+        "    if expected == 'integer' and (not isinstance(value, int) or isinstance(value, bool)): return [path + ' must be integer']",  # noqa: E501
+        "    if expected == 'number' and (not isinstance(value, (int, float)) or isinstance(value, bool)): return [path + ' must be number']",  # noqa: E501
+        "    if expected == 'boolean' and not isinstance(value, bool): return [path + ' must be boolean']",  # noqa: E501
+        "    if expected == 'object':",
+        "        errors = [path + '.' + str(key) + ' is required' for key in schema.get('required', []) if key not in value]",  # noqa: E501
+        "        for key, child in schema.get('properties', {}).items():",
+        "            if key in value: errors.extend(schema_errors(value[key], child, path + '.' + key))",  # noqa: E501
+        "        return errors",
+        "    return []",
+        "def sample(schema):",
+        "    if not isinstance(schema, dict): return None",
+        "    if 'default' in schema: return schema['default']",
+        "    expected = schema.get('type')",
+        "    if expected == 'object': return {key: sample(child) for key, child in schema.get('properties', {}).items() if key in schema.get('required', [])}",  # noqa: E501
+        "    if expected == 'array': return []",
+        "    if expected == 'string': return 'fixture'",
+        "    if expected == 'integer': return 1",
+        "    if expected == 'number': return 1.0",
+        "    if expected == 'boolean': return True",
+        "    return None",
+        "def invalid_sample(schema):",
+        "    if not isinstance(schema, dict): return None",
+        "    properties = schema.get('properties', {})",
+        "    required = schema.get('required', [])",
+        "    if required and required[0] in properties:",
+        "        child = properties[required[0]]",
+        "        expected = child.get('type') if isinstance(child, dict) else None",
+        "        wrong = {'string': 1, 'integer': 'wrong', 'number': 'wrong', 'boolean': 'wrong', 'array': {}, 'object': 'wrong'}.get(expected, None)",  # noqa: E501
+        "        return {required[0]: wrong}",
+        "    if properties:",
+        "        return {next(iter(properties)): object()}",
+        "    return None",
+        "async def invoke(value):",
+        "    result = tool.execute(**value)",
+        "    return await result if inspect.isawaitable(result) else result",
+        "async def invoke_checked(value):",
+        "    errors = tool.validate_params(value)",
+        "    if errors:",
+        "        raise ValueError('controlled invalid-parameter fixture: ' + ';'.join(errors))",
+        "    return await invoke(value)",
         "if valid:",
         "    sys.path.insert(0, str(root))",
         "    spec = importlib.util.spec_from_file_location('temporary_candidate', source_path)",
@@ -554,8 +703,24 @@ _FC_CONTRACT_CHECK_SOURCE = "\n".join(
         "    tool = tool_class.create(None)",
         "    schema = tool.to_schema()",
         "    json.dumps(schema, ensure_ascii=False, sort_keys=True)",
-        "    tool.validate_params({})",
-        'print(json.dumps({"ok": valid, "entry_class": manifest["entry_class"]}))',
+        "    parameter_schema = manifest['parameter_schema']",
+        "    output_schema = manifest['output_schema']",
+        "    if schema['function']['parameters'] != parameter_schema: raise ValueError('parameter schema mismatch')",  # noqa: E501
+        "    valid_params = sample(parameter_schema)",
+        "    if tool.validate_params(valid_params): raise ValueError('valid fixture rejected')",
+        "    invalid_params = invalid_sample(parameter_schema)",
+        "    invalid_errors = tool.validate_params(invalid_params)",
+        "    if not invalid_errors: raise ValueError('invalid fixture accepted')",
+        "    output = asyncio.run(invoke_checked(valid_params))",
+        "    json.dumps(output, ensure_ascii=False, sort_keys=True, default=str)",
+        "    output_errors = schema_errors(output, output_schema, 'output')",
+        "    if output_errors: raise ValueError('output schema mismatch: ' + ';'.join(output_errors))",  # noqa: E501
+        "    controlled_error = None",
+        "    try:",
+        "        asyncio.run(invoke_checked(invalid_params))",
+        "    except Exception as exc: controlled_error = type(exc).__name__",
+        "    if controlled_error is None: raise ValueError('controlled error fixture did not fail')",  # noqa: E501
+        'print(json.dumps({"ok": valid, "entry_class": manifest["entry_class"], "fixtures": {"success": True, "invalid_params": True, "controlled_error": controlled_error is not None}}, sort_keys=True))',  # noqa: E501
         "sys.exit(0 if valid else 1)",
         "",
     )
@@ -567,7 +732,7 @@ _FC_TOOL_SHIM_FILES = (
     ExecutionFile("nanobot/agent/tools/__init__.py", b""),
     ExecutionFile(
         "nanobot/agent/tools/base.py",
-        b"""import json
+     b"""import json
 
 class Tool:
     @classmethod
@@ -580,9 +745,40 @@ class Tool:
             "parameters": self.parameters,
         }}
     def validate_params(self, params):
-        if not isinstance(params, dict):
-            raise TypeError("parameters must be an object")
-        return []
+        def check(value, schema, path='parameter'):
+            if not isinstance(schema, dict): return ['invalid schema']
+            expected = schema.get('type')
+            if expected == 'object' and not isinstance(value, dict):
+                return [path + ' must be object']
+            if expected == 'string' and not isinstance(value, str):
+                return [path + ' must be string']
+            if expected == 'integer' and (not isinstance(value, int) or isinstance(value, bool)):
+                return [path + ' must be integer']
+            if expected == 'number' and (
+                not isinstance(value, (int, float)) or isinstance(value, bool)
+            ):
+                return [path + ' must be number']
+            if expected == 'boolean' and not isinstance(value, bool):
+                return [path + ' must be boolean']
+            if expected == 'array' and not isinstance(value, list):
+                return [path + ' must be array']
+            if expected == 'object':
+                errors = [
+                    path + '.' + str(key) + ' is required'
+                    for key in schema.get('required', [])
+                    if key not in value
+                ]
+                for key, child in schema.get('properties', {}).items():
+                    if key in value: errors.extend(check(value[key], child, path + '.' + key))
+                if schema.get('additionalProperties') is False:
+                    errors.extend(
+                        path + '.' + str(key) + ' is unexpected'
+                        for key in value
+                        if key not in schema.get('properties', {})
+                    )
+                return errors
+            return []
+        return check(params, self.parameters)
 
 def tool_parameters(schema):
     def decorate(cls):
@@ -602,16 +798,19 @@ class TemporaryToolValidationResult:
     manifest: TemporaryToolManifest
     receipt: ExecutionResult | None = None
     error_code: str | None = None
+    execution_run_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         receipt = self.receipt
         return {
+            "validation_version": TEMPORARY_TOOL_VALIDATION_VERSION,
             "status": self.status,
             "tool_id": self.manifest.tool_id,
             "version": self.manifest.version,
             "source_hash": self.manifest.source_hash,
             "run_id": self.manifest.run_id,
             "error_code": self.error_code,
+            "execution_run_id": self.execution_run_id,
             "receipt": (
                 {
                     "backend": receipt.backend,
@@ -635,7 +834,13 @@ class TemporaryToolValidator:
     def validate(self, artifact: TemporaryToolArtifact) -> TemporaryToolValidationResult:
         manifest = artifact.manifest
         request = ExecutionRequest(
-            run_id=f"{manifest.run_id}:temporary-tool-validation:{manifest.source_hash[:12]}",
+            # FC run ids are single-use. Validation is invoked once explicitly
+            # and once again inside activation, so every invocation needs its
+            # own opaque execution id even for the same immutable artifact.
+            run_id=(
+                f"{manifest.run_id}:temporary-tool-validation:"
+                f"{manifest.source_hash[:12]}:{uuid.uuid4().hex}"
+            ),
             project_id=manifest.project_id,
             files=(
                 ExecutionFile(manifest.entry_module, artifact.source_path.read_bytes()),
@@ -659,21 +864,36 @@ class TemporaryToolValidator:
         try:
             receipt = self._backend.run(request)
         except ExecutionError as exc:
-            return TemporaryToolValidationResult(
+            result = TemporaryToolValidationResult(
                 status=TemporaryToolState.REJECTED.value,
                 manifest=manifest,
                 error_code=exc.code,
+                execution_run_id=request.run_id,
             )
-        return TemporaryToolValidationResult(
-            status=(
-                TemporaryToolState.VALIDATED.value
-                if receipt.exit_code == 0
-                else TemporaryToolState.REJECTED.value
-            ),
-            manifest=manifest,
-            receipt=receipt,
-            error_code=None if receipt.exit_code == 0 else "TEMPORARY_TOOL_CONTRACT_FAILED",
-        )
+        else:
+            result = TemporaryToolValidationResult(
+                status=(
+                    TemporaryToolState.VALIDATED.value
+                    if receipt.exit_code == 0
+                    else TemporaryToolState.REJECTED.value
+                ),
+                manifest=manifest,
+                receipt=receipt,
+                error_code=None if receipt.exit_code == 0 else "TEMPORARY_TOOL_CONTRACT_FAILED",
+                execution_run_id=request.run_id,
+            )
+        try:
+            TemporaryToolArtifactStore(artifact.root).write_validation_receipt(artifact, result)
+        except OSError:
+            # A validation without a durable receipt must not be promoted.
+            return TemporaryToolValidationResult(
+                status=TemporaryToolState.REJECTED.value,
+                manifest=manifest,
+                receipt=result.receipt,
+                error_code="TEMPORARY_TOOL_RECEIPT_PERSIST_FAILED",
+                execution_run_id=request.run_id,
+            )
+        return result
 
 
 def _trusted_temporary_confirmation_attributes(
@@ -808,6 +1028,85 @@ def _consume_temporary_confirmation(
             return False
         _CONSUMED_TEMPORARY_CONFIRMATIONS.add(confirmation_id)
     return True
+
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "requested_capability": {"type": "string", "minLength": 1, "maxLength": 256},
+            "existing_tools": {
+                "type": "array",
+                "items": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+                "maxItems": 256,
+            },
+            "suggested_tool_id": {"type": ["string", "null"]},
+        },
+        "required": ["reason", "requested_capability"],
+        "additionalProperties": False,
+    }
+)
+class TemporaryToolGapReportTool(Tool):
+    """Record why the current registered tools cannot complete the task."""
+
+    _scopes = {"core"}
+
+    def __init__(self, data_dir: Path | None = None) -> None:
+        self._data_dir = data_dir or Path(
+            os.environ.get("DEVPILOT_DATA_DIR", str(Path.home() / ".nanobot-skill-improvement"))
+        )
+
+    @classmethod
+    def create(cls, ctx: ToolContext) -> TemporaryToolGapReportTool:
+        del ctx
+        return cls()
+
+    @property
+    def name(self) -> str:
+        return "devpilot_report_tool_gap"
+
+    @property
+    def description(self) -> str:
+        return "Record a redacted capability gap before generating a temporary Tool candidate."
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        scope = current_workspace_scope()
+        request = current_request_context()
+        if scope is None or request is None or not temporary_tools_allowed(
+            scope.access_mode,
+            source_channel=scope.source_channel,
+            restrict_to_workspace=scope.restrict_to_workspace,
+        ):
+            return ToolResult.error("TEMPORARY_TOOL_FULL_ACCESS_REQUIRED")
+        session_id = request.session_key or request.chat_id
+        run_id = request.attributes.get("devpilot_run_id") or request.attributes.get(
+            "devpilot_task_id"
+        )
+        if not isinstance(run_id, str) or not run_id:
+            return ToolResult.error("TEMPORARY_TOOL_RUN_MISSING")
+        project_id = request.attributes.get("devpilot_project_id")
+        if not isinstance(project_id, str) or not project_id:
+            project_id = hashlib.sha256(str(scope.project_path).encode("utf-8")).hexdigest()[:16]
+        existing = kwargs.get("existing_tools", [])
+        if not isinstance(existing, list) or any(not isinstance(item, str) for item in existing):
+            return ToolResult.error("TEMPORARY_TOOL_GAP_INVALID")
+        try:
+            gap = ToolCapabilityGap(
+                session_id=session_id,
+                run_id=run_id,
+                project_id=project_id,
+                reason=kwargs["reason"],
+                requested_capability=kwargs["requested_capability"],
+                existing_tools=tuple(existing),
+                suggested_tool_id=kwargs.get("suggested_tool_id"),
+            )
+            path = ToolCapabilityGapStore(self._data_dir).write(gap)
+        except (KeyError, TemporaryToolContractError, OSError, TypeError, ValueError) as exc:
+            return ToolResult.error(f"TEMPORARY_TOOL_GAP_INVALID: {type(exc).__name__}")
+        return json.dumps(
+            {"ok": True, "state": gap.status, "gap": gap.to_dict(), "record": str(path)}
+        )
 
 
 @tool_parameters(
@@ -1044,6 +1343,7 @@ class TemporaryToolActivateTool(Tool):
                 manifest,
                 PluginSource.TEMPORARY,
                 session_id=session_id,
+                project_id=artifact.manifest.project_id,
                 run_id=run_id,
             )
             manager.authorize(session_id)
@@ -1062,6 +1362,7 @@ class TemporaryToolActivateTool(Tool):
                 artifact.manifest.version,
                 session_id=session_id,
                 run_id=run_id,
+                project_id=artifact.manifest.project_id,
             )
             payload = activated.to_dict()
             if activated.ok:
@@ -1123,6 +1424,14 @@ class TemporaryToolEnsureTool(Tool):
         return TemporaryToolCreateTool(self._data_dir).parameters
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        gap = await TemporaryToolGapReportTool(self._data_dir).execute(
+            reason="现有工具集合不足以完成当前任务；已确认需要临时工具并继续隔离验证。",
+            requested_capability=kwargs.get("name", "temporary_tool"),
+            existing_tools=[],
+            suggested_tool_id=kwargs.get("tool_id"),
+        )
+        if isinstance(gap, ToolResult) and gap.is_error:
+            return gap
         created = await TemporaryToolCreateTool(self._data_dir).execute(**kwargs)
         if isinstance(created, ToolResult) and created.is_error:
             return created
@@ -1292,7 +1601,10 @@ class TemporaryToolPersistTool(Tool):
             }:
                 store.transition_lifecycle(artifact, TemporaryToolState.RETIRING)
             lifecycle = store.load_lifecycle(artifact)
-            if lifecycle.state is TemporaryToolState.RETIRING:
+            if lifecycle.state in {
+                TemporaryToolState.RETIRING,
+                TemporaryToolState.CLEANUP_PENDING,
+            }:
                 store.transition_lifecycle(artifact, TemporaryToolState.PERSISTENCE_REQUESTED)
             root = (
                 self._data_dir
@@ -1443,6 +1755,7 @@ class TemporaryToolDiscardTool(Tool):
                 lifecycle = store.load_lifecycle(artifact)
                 if lifecycle.state in {
                     TemporaryToolState.RETIRING,
+                    TemporaryToolState.CLEANUP_PENDING,
                     TemporaryToolState.PERSISTENCE_REQUESTED,
                 }:
                     store.transition_lifecycle(artifact, TemporaryToolState.DISPOSED)
@@ -1545,6 +1858,12 @@ class TemporaryToolCreateTool(Tool):
         if not isinstance(project_id, str) or not project_id:
             project_id = hashlib.sha256(str(scope.project_path).encode("utf-8")).hexdigest()[:16]
         try:
+            if not ToolCapabilityGapStore(self._data_dir).has_for_run(
+                session_id=session_id, run_id=run_id
+            ):
+                return ToolResult.error(
+                    "TEMPORARY_TOOL_GAP_REQUIRED: report the missing capability before creation"
+                )
             source = kwargs.get("source")
             entry_class = kwargs.get("entry_class")
             if not isinstance(source, str) or not isinstance(entry_class, str):
@@ -1607,6 +1926,8 @@ class ToolCapabilityGap:
     requested_capability: str
     existing_tools: tuple[str, ...] = ()
     suggested_tool_id: str | None = None
+    status: str = "gap_detected"
+    created_at: int = field(default_factory=lambda: int(time.time()))
 
     def __post_init__(self) -> None:
         _required_binding(self.session_id, "session_id")
@@ -1618,17 +1939,77 @@ class ToolCapabilityGap:
             raise TemporaryToolContractError("existing_tools contains an invalid tool name")
         if self.suggested_tool_id is not None:
             _required_id(self.suggested_tool_id, "suggested_tool_id")
+        if self.status != TemporaryToolState.GAP_DETECTED.value:
+            raise TemporaryToolContractError("capability gap must start in gap_detected state")
+        if self.created_at < 0:
+            raise TemporaryToolContractError("capability gap created_at must be non-negative")
 
     def to_dict(self) -> dict[str, object]:
         return {
             "session_id": self.session_id,
             "run_id": self.run_id,
             "project_id": self.project_id,
-            "reason": self.reason,
-            "requested_capability": self.requested_capability,
-            "existing_tools": list(self.existing_tools),
+            "reason": _redact_gap_text(self.reason),
+            "requested_capability": _redact_gap_text(self.requested_capability),
+            "existing_tools": [_redact_gap_text(item) for item in self.existing_tools],
             "suggested_tool_id": self.suggested_tool_id,
+            "status": self.status,
+            "created_at": self.created_at,
         }
+
+
+_GAP_SECRET_PATTERNS = (
+    re.compile(
+        r"(?i)(?P<prefix>['\"\\]?(?:bearer|api[_ -]?key|token|secret|password|"
+        r"authorization|cookie)[^A-Za-z0-9]{0,12}[:=]\s*['\"\\]?)"
+        r"(?P<value>[A-Za-z0-9._~+/=-]+)"
+    ),
+    re.compile(r"(?i)-----BEGIN [^-]+-----.*?-----END [^-]+-----"),
+)
+
+
+def _redact_gap_text(value: str) -> str:
+    """Bound gap diagnostics and remove common credential-shaped values."""
+    redacted = value
+    for pattern in _GAP_SECRET_PATTERNS:
+        if "prefix" in pattern.groupindex:
+            redacted = pattern.sub(
+                lambda match: f"{match.group('prefix')}[REDACTED]", redacted
+            )
+        else:
+            redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted[:4096]
+
+
+class ToolCapabilityGapStore:
+    """Persist only the redacted explanation that preceded candidate creation."""
+
+    def __init__(self, data_dir: str | Path) -> None:
+        self.data_dir = Path(data_dir).expanduser().resolve()
+
+    def _root(self, gap: ToolCapabilityGap) -> Path:
+        session_hash = hashlib.sha256(gap.session_id.encode("utf-8")).hexdigest()[:16]
+        return self.data_dir / "temporary-tools" / "gaps" / session_hash / gap.run_id
+
+    def write(self, gap: ToolCapabilityGap) -> Path:
+        root = self._root(gap)
+        root.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            gap.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        path = root / (hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24] + ".json")
+        if path.exists() and path.read_text(encoding="utf-8") != payload:
+            raise TemporaryToolArtifactConflict(
+                "capability gap record already contains other content"
+            )
+        if not path.exists():
+            TemporaryToolArtifactStore._write_new(path, payload)
+        return path
+
+    def has_for_run(self, *, session_id: str, run_id: str) -> bool:
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+        root = self.data_dir / "temporary-tools" / "gaps" / session_hash / run_id
+        return root.is_dir() and any(root.glob("*.json"))
 
 
 @dataclass(frozen=True, slots=True)

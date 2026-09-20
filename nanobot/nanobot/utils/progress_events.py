@@ -100,6 +100,13 @@ def build_tool_event_finish_payloads(context: AgentHookContext) -> list[dict[str
             "files": files,
             "embeds": embeds,
         }
+        # ToolResult remains string-compatible for model providers, while
+        # WebUI and logs can consume the stable execution contract when one
+        # is available.  Do not add empty fields to legacy events.
+        for key in ("code", "decision", "retryable"):
+            value = getattr(result, key, None)
+            if value is not None:
+                payload[key] = value
         if phase == "error":
             if isinstance(result, str) and result.strip():
                 payload["error"] = result.strip()

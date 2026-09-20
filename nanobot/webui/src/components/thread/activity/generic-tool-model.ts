@@ -35,6 +35,8 @@ export interface GenericToolRunItem {
   trace: GenericToolTrace;
   status: GenericToolStatus;
   error?: string;
+  code?: string;
+  decision?: string;
 }
 
 export interface GenericToolPresentation {
@@ -303,6 +305,8 @@ function activityDetail(items: GenericToolRunItem[], family: ToolFamily, name: s
 }
 
 function activityAside(items: GenericToolRunItem[], family: ToolFamily): string {
+  const failure = executionFailureCopy(items);
+  if (failure) return failure;
   const pathCount = uniqueValues(items, ["path", "file_path"]).length;
   if (pathCount > 1) return localizeActivityText(`${pathCount} 个文件`);
   if (items.length <= 1) return "";
@@ -310,6 +314,25 @@ function activityAside(items: GenericToolRunItem[], family: ToolFamily): string 
     return localizeActivityText(`${items.length} 次搜索`);
   }
   return localizeActivityText(`${items.length} 个动作`);
+}
+
+function executionFailureCopy(items: GenericToolRunItem[]): string {
+  const failed = items.find((item) => item.status === "error" && (item.code || item.decision));
+  if (!failed) return "";
+  switch (failed.decision) {
+    case "BLOCKED_BY_POLICY":
+      return localizeActivityText("策略阻断");
+    case "CAPABILITY_UNAVAILABLE":
+      return localizeActivityText("工具不可用");
+    case "PRECONDITION_FAILED":
+      if (failed.code === "TIMEOUT") return localizeActivityText("等待超时");
+      if (failed.code === "OS_PERMISSION_DENIED") return localizeActivityText("系统权限不足");
+      return localizeActivityText("参数或前置条件不满足");
+    default:
+      return failed.code === "COMMAND_FAILED"
+        ? localizeActivityText("命令执行失败")
+        : "";
+  }
 }
 
 function fieldValue(trace: GenericToolTrace | undefined, key: ToolField["key"]): string {

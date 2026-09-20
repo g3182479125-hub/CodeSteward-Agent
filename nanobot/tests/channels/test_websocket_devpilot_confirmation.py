@@ -179,6 +179,27 @@ def test_untrusted_or_unbound_confirmation_fails_closed() -> None:
     assert channel._devpilot_confirmation_attributes("attacker", "chat", "执行", None, {}) == {}
 
 
+def test_trusted_webui_turn_gets_server_owned_run_binding() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_session_id = "instance"
+
+    attrs = channel._devpilot_run_binding_attributes("trusted", "chat", "turn-1")
+
+    assert set(attrs) == {"devpilot_run_id"}
+    assert attrs["devpilot_run_id"].startswith("webui-")
+    assert len(attrs["devpilot_run_id"]) == len("webui-") + 32
+    assert attrs == channel._devpilot_run_binding_attributes("trusted", "chat", "turn-1")
+
+
+def test_run_binding_is_not_accepted_from_untrusted_websocket() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = set()
+    channel._devpilot_session_id = "instance"
+
+    assert channel._devpilot_run_binding_attributes("attacker", "chat", "turn-1") == {}
+
+
 def test_gateway_signs_one_shot_temporary_tool_persistence_confirmation() -> None:
     channel = object.__new__(WebSocketChannel)
     channel._webui_connections = {"trusted"}

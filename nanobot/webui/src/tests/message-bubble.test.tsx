@@ -824,12 +824,16 @@ describe("MessageBubble", () => {
 
     const { container } = render(<MessageBubble message={message} />);
 
-    const preview = screen.getByText("Step 1: parse intent. Step 2: compute.");
+    const preview = screen.getByText("正在分析下一步");
     expect(preview).toBeInTheDocument();
     expect(container.querySelector(".reasoning-sheen-stripe")).not.toBeInTheDocument();
     expect(preview).toHaveClass("streaming-text-sheen");
     expect(preview).toHaveAttribute(
       "data-sheen-text",
+      "正在分析下一步",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "正在分析下一步" }));
+    expect(screen.getByTestId("reasoning-details")).toHaveTextContent(
       "Step 1: parse intent. Step 2: compute.",
     );
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
@@ -848,12 +852,14 @@ describe("MessageBubble", () => {
 
     render(<MessageBubble message={message} />);
 
-    const preview = screen.getByText("hidden until expanded");
+    const preview = screen.getByText("已完成本步分析");
     expect(preview).toBeInTheDocument();
     expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
     expect(preview.closest('[data-testid="activity-step"]')).toHaveClass("mb-2");
     expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /thinking/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "已完成本步分析" }));
+    expect(screen.getByTestId("reasoning-details")).toHaveTextContent("hidden until expanded");
   });
 
   it("compacts reasoning markdown into plain single-line text", () => {
@@ -868,9 +874,12 @@ describe("MessageBubble", () => {
 
     const { container } = render(<MessageBubble message={message} />);
 
-    expect(screen.getByText("Section title Body line.")).toBeInTheDocument();
+    expect(screen.getByText("已完成本步分析")).toBeInTheDocument();
     expect(container.textContent).not.toContain("###");
-    expect(container.querySelector("h3")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "已完成本步分析" }));
+    expect(screen.getByTestId("reasoning-details")).toHaveTextContent(
+      "### Section title Body line.",
+    );
   });
 
   it("renders inline file paths as compact file references", async () => {

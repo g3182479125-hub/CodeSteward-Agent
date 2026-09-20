@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from nanobot.agent.plugins import (
+    PluginErrorCode,
     PluginManifest,
+    PluginOperationResult,
     PluginRecord,
     PluginSource,
 )
@@ -117,10 +119,25 @@ class TemporaryTool(Tool):
             "execution_mode": "in_process",
         }
     )
+    (tmp_path / "validation.json").write_text(
+        json.dumps(
+            {
+                "validation_version": "temporary-tool-validation/v1",
+                "status": "validated",
+                "source_hash": manifest.content_hash,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "lifecycle.json").write_text(
+        json.dumps({"state": "active", "history": ["active"]}),
+        encoding="utf-8",
+    )
     return PluginRecord(
         manifest,
         PluginSource.TEMPORARY,
         session_id=session_id,
+        project_id="project-1",
         run_id="run-1",
     ), tmp_path
 
@@ -202,12 +219,17 @@ async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: 
         "1.0.0",
         session_id="websocket:temporary",
         run_id="run-1",
+        project_id="project-1",
     )
 
     assert loaded.ok is True
-    view = manager.live_tools_for_session(base, "websocket:temporary")
+    view = manager.live_tools_for_session(base, "websocket:temporary", project_id="project-1")
     assert "temporary_lookup" in view.tool_names
     assert await view.execute("temporary_lookup", {"value": "ok"}) == "temporary:ok"
+    other_project_view = manager.live_tools_for_session(
+        base, "websocket:temporary", project_id="project-2"
+    )
+    assert "temporary_lookup" not in other_project_view.tool_names
 
     cleaned = await manager.cleanup_temporary_run(
         session_id="websocket:temporary",
@@ -215,6 +237,65 @@ async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: 
     )
     assert cleaned[0]["remove"] == "ok"
     assert "temporary_lookup" not in view.tool_names
+
+
+def test_temporary_registration_requires_matching_fc_receipt(tmp_path: Path) -> None:
+    record, root = _temporary_record(tmp_path)
+    (root / "validation.json").unlink()
+    result = PluginManager(ToolRegistry()).register_temporary_version(record, root)
+    assert result.ok is False
+    assert result.code is not None
+    assert result.code.value == "plugin_load_failed"
+
+
+@pytest.mark.asyncio
+async def test_temporary_cleanup_pending_retries_without_persistence_prompt(
+    tmp_path: Path,
+) -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    record, root = _temporary_record(tmp_path)
+    assert manager.register_temporary_version(record, root).ok is True
+    manager.authorize(record.session_id or "")
+    assert manager.activate_temporary(
+        record.manifest.plugin_id,
+        record.manifest.version,
+        session_id=record.session_id or "",
+        run_id=record.run_id or "",
+        project_id=record.project_id,
+    ).ok is True
+
+    original_remove = manager.remove
+    attempts = 0
+
+    def fail_once(*args: object, **kwargs: object) -> PluginOperationResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_REMOVE_REJECTED,
+                "test cleanup failure",
+                plugin_id=record.manifest.plugin_id,
+                version=record.manifest.version,
+            )
+        return original_remove(*args, **kwargs)  # type: ignore[arg-type]
+
+    manager.remove = fail_once  # type: ignore[method-assign]
+    first = await manager.cleanup_temporary_run(
+        session_id=record.session_id or "",
+        run_id=record.run_id or "",
+    )
+    assert first[0]["artifact"] == "cleanup_pending"
+    lifecycle = json.loads((root / "lifecycle.json").read_text(encoding="utf-8"))
+    assert lifecycle["state"] == "cleanup_pending"
+    assert lifecycle["history"][-2:] == ["retiring", "cleanup_pending"]
+
+    second = await manager.cleanup_temporary_run(
+        session_id=record.session_id or "",
+        run_id=record.run_id or "",
+    )
+    assert second[0]["artifact"] == "pending_persistence"
+    assert attempts == 2
 
 
 def test_session_routes_do_not_leak_to_another_session() -> None:

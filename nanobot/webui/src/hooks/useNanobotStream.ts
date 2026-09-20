@@ -1474,12 +1474,14 @@ export function useNanobotStream(
       });
       if (!sideChannel) setIsStreaming(true);
       const wireMedia = hasAttachments ? images!.map((i) => i.media) : undefined;
+      const selectedDevpilotConfirmation =
+        options?.devpilotConfirmation
+        ?? readDevpilotConfirmationFromSelection(options?.quotedContext);
       const clientOptions = {
         ...options,
         turnId,
-        ...(options?.devpilotConfirmation || (content.trim() === "执行" || content.trim() === "仅应用" || content.trim() === "验证" || content.trim() === "撤销")
-          ? { devpilotConfirmation: options?.devpilotConfirmation
-              ?? readDevpilotConfirmationFromSelection(options?.quotedContext) }
+        ...(selectedDevpilotConfirmation
+          ? { devpilotConfirmation: selectedDevpilotConfirmation }
           : {}),
         ...((sideChannel || continueActiveTurn) ? { startsNewRun: false } : {}),
       };

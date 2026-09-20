@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop, TurnKind
+from nanobot.agent.loop import TEMPORARY_TOOL_PERSISTENCE_PROMPT, AgentLoop, TurnKind
 from nanobot.agent.tools.context import (
     RequestContext,
     bind_request_context,
@@ -19,6 +19,11 @@ from nanobot.bus.events import InboundMessage, current_inbound_attributes
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 from nanobot.session.turn_continuation import INTERNAL_CONTINUATION_META
+
+
+def test_temporary_tool_persistence_prompt_is_marked_bold() -> None:
+    assert TEMPORARY_TOOL_PERSISTENCE_PROMPT.startswith("**")
+    assert TEMPORARY_TOOL_PERSISTENCE_PROMPT.endswith("**")
 
 
 class _ContextRecordingTool:

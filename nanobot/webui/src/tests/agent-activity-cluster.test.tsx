@@ -1234,6 +1234,35 @@ describe("AgentActivityCluster", () => {
     expect(screen.queryByText("Planning a focused search for official sources")).not.toBeInTheDocument();
   });
 
+  it("expands one reasoning node to its full streamed content", () => {
+    render(
+      <AgentActivityCluster
+        messages={[{
+          id: "r-expand",
+          role: "assistant",
+          content: "",
+          reasoning: "第一步：定位项目。\n第二步：读取测试并确认问题。",
+          reasoningStreaming: true,
+          isStreaming: true,
+          createdAt: 1,
+        }]}
+        isTurnStreaming
+        hasBodyBelow={false}
+      />,
+    );
+
+    expect(screen.queryByTestId("reasoning-details")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /第一步：定位项目/ }));
+
+    expect(screen.getByTestId("reasoning-details")).toHaveTextContent(
+      "第一步：定位项目。 第二步：读取测试并确认问题。",
+    );
+    expect(screen.getByRole("button", { name: /第一步：定位项目/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
   it("labels rejected CLI app calls as failed instead of ran", () => {
     render(
       <AgentActivityCluster

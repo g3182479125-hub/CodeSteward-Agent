@@ -523,6 +523,28 @@ class WebSocketChannel(BaseChannel):
             "rollback": "rollback",
         }.get(result.intent)
 
+    def _devpilot_run_binding_attributes(
+        self,
+        connection: ServerConnection,
+        chat_id: str,
+        turn_id: str | None,
+    ) -> dict[str, str]:
+        """Create a server-owned Run binding for a trusted WebUI turn.
+
+        Model-authored temporary tools require an active ``devpilot_run_id``.
+        WebUI turns are already the DevPilot execution boundary, but the old
+        ingress only attached confirmation attributes and therefore left this
+        binding absent. Derive a stable opaque id from server state and the
+        current turn; never accept a caller-supplied id here.
+        """
+        if connection not in self._webui_connections:
+            return {}
+        turn_key = turn_id if isinstance(turn_id, str) and turn_id else uuid.uuid4().hex
+        digest = hashlib.sha256(
+            f"{self._devpilot_session_id}\n{chat_id}\n{turn_key}".encode("utf-8")
+        ).hexdigest()[:32]
+        return {"devpilot_run_id": f"webui-{digest}"}
+
     def _register_devpilot_proposal(
         self, chat_id: str, proposal: object
     ) -> bool:
@@ -1359,6 +1381,13 @@ class WebSocketChannel(BaseChannel):
                 else {}
             )
             if trusted_webui:
+                attributes.update(
+                    self._devpilot_run_binding_attributes(
+                        connection,
+                        cid,
+                        turn_id if isinstance(turn_id, str) else None,
+                    )
+                )
                 attributes.update(
                     self._devpilot_temporary_confirmation_attributes(
                         connection,

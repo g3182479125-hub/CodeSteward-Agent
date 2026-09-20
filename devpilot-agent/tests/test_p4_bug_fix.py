@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -440,6 +441,49 @@ def test_g02_bug_fix_api_and_nanobot_contract(tmp_path: Path) -> None:
     ]
 
 
+def test_bug_fix_api_materializes_bounded_replacements_without_writing_project(
+    tmp_path: Path,
+) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(tmp_path)
+    before_bytes = (project / "src" / "App.jsx").read_bytes()
+    before_hash = hashlib.sha256(before_bytes).hexdigest()
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
+
+    response = client.post(
+        "/v1/bug-fix/proposals",
+        json={
+            "project_path": str(project),
+            "patches": [
+                {
+                    "relative_path": "src/App.jsx",
+                    "operation": "update",
+                    "expected_sha256": before_hash,
+                    "replacements": [
+                        {
+                            "find": "    setSubmitted(true);",
+                            "replace": "    event.preventDefault();\n    setSubmitted(true);",
+                        }
+                    ],
+                }
+            ],
+            "analysis_evidence_ids": [analysis_id],
+            "failure_evidence_ids": [failure_id],
+            "symptom": "submitting the form navigates away",
+            "expected_behavior": "submitting keeps the page and shows Saved",
+            "allowed_files": ["src/App.jsx"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert (project / "src" / "App.jsx").read_bytes() == before_bytes
+    assert "event.preventDefault()" in response.json()["preview"]["diff"]
+    assert store.get_change_set(response.json()["change_set_id"])["patch_hash"]
+
+
 def test_bug_check_service_computes_hashes_and_storage_rejects_alias_collision(
     tmp_path: Path,
 ) -> None:
@@ -699,6 +743,19 @@ def test_bug_fix_tool_maps_payload_and_redacts_http_errors(
         io.BytesIO(b'{"error":{"code":"BUG_FIX_SCOPE_INVALID","message":"secret"}}'),
     )
     assert nanobot_tools._http_error_message(error) == "HTTP 409: BUG_FIX_SCOPE_INVALID"
+    allowlist_error = HTTPError(
+        "http://127.0.0.1:18800",
+        409,
+        "Conflict",
+        {},
+        io.BytesIO(
+            b'{"error":{"code":"EXECUTION_PROJECT_NOT_ALLOWLISTED","message":"secret"}}'
+        ),
+    )
+    assert (
+        nanobot_tools._http_error_message(allowlist_error)
+        == "HTTP 409: EXECUTION_PROJECT_NOT_ALLOWLISTED"
+    )
 
     def raise_error(_: dict[str, object]) -> dict[str, object]:
         raise HTTPError(
@@ -761,6 +818,174 @@ def test_bug_fix_tool_binds_proposal_to_request_context(
     assert not isinstance(result, nanobot_tools.ToolResult) or not result.is_error
     assert tool.exclusive is True
     assert request_context.attributes["devpilot_proposal"] == proposal
+
+
+def test_bug_fix_tool_uses_direct_execution_for_trusted_full_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = {
+        "change_set_id": "cs-full-access",
+        "plan_hash": "plan-1",
+        "patch_hash": "patch-1",
+        "scope_hash": "scope-1",
+        "project_id": "project-1",
+    }
+    monkeypatch.setattr(nanobot_tools, "_post_preview", lambda _payload: dict(proposal))
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_full_access_apply_verify",
+        lambda change_set_id, profile: {
+            "change_set_id": change_set_id,
+            "status": "verified",
+            "profile": profile,
+        },
+    )
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_bug_fix_proposal",
+        lambda _payload: pytest.fail("Full Access must not require failure evidence"),
+    )
+    request_context = SimpleNamespace(
+        attributes={
+            "workspace_scope": {
+                "source_channel": "websocket",
+                "access_mode": "full",
+                "restrict_to_workspace": False,
+            }
+        }
+    )
+    tool = BugFixProposeTool()
+    tool.set_context(request_context)
+
+    result = json.loads(
+        str(
+            asyncio.run(
+                tool.execute(
+                    project_path="C:/repo",
+                    patches=[{"relative_path": "src/App.jsx", "operation": "update"}],
+                    analysis_evidence_ids=[],
+                    failure_evidence_ids=[],
+                    symptom="symptom",
+                    expected_behavior="expected",
+                    allowed_files=["src/App.jsx"],
+                )
+            )
+        )
+    )
+
+    assert result["requires_user_confirmation"] is False
+    assert result["execution_mode"] == "full_access"
+    assert result["execution"]["status"] == "verified"
+
+
+def test_full_access_fills_missing_update_hash_before_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_preview",
+        lambda payload: captured.update(payload) or {"change_set_id": "cs-hash"},
+    )
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_full_access_apply_verify",
+        lambda *_args: {"status": "verified"},
+    )
+    request_context = SimpleNamespace(
+        attributes={
+            "workspace_scope": {
+                "source_channel": "websocket",
+                "access_mode": "full",
+                "restrict_to_workspace": False,
+            }
+        }
+    )
+    tool = BugFixProposeTool()
+    tool.set_context(request_context)
+
+    asyncio.run(
+        tool.execute(
+            project_path=str(tmp_path),
+            patches=[
+                {
+                    "relative_path": "main.py",
+                    "operation": "update",
+                    "content": "value = 2\n",
+                }
+            ],
+            analysis_evidence_ids=[],
+            failure_evidence_ids=[],
+            symptom="symptom",
+            expected_behavior="expected",
+            allowed_files=["main.py"],
+        )
+    )
+
+    assert captured["patches"] == [
+        {
+            "relative_path": "main.py",
+            "operation": "update",
+            "content": "value = 2\n",
+            "expected_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        }
+    ]
+
+
+def test_full_access_sensitive_patch_waits_for_privacy_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = {
+        "change_set_id": "cs-sensitive",
+        "plan_hash": "plan-1",
+        "patch_hash": "patch-1",
+        "scope_hash": "scope-1",
+        "project_id": "project-1",
+    }
+    monkeypatch.setattr(nanobot_tools, "_post_preview", lambda _payload: dict(proposal))
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_full_access_apply_verify",
+        lambda *_args: pytest.fail("sensitive patch must wait for confirmation"),
+    )
+    request_context = SimpleNamespace(
+        attributes={
+            "workspace_scope": {
+                "source_channel": "websocket",
+                "access_mode": "full",
+                "restrict_to_workspace": False,
+            }
+        }
+    )
+    tool = BugFixProposeTool()
+    tool.set_context(request_context)
+
+    result = json.loads(
+        str(
+            asyncio.run(
+                tool.execute(
+                    project_path="C:/repo",
+                    patches=[
+                        {
+                            "relative_path": "settings.py",
+                            "operation": "update",
+                            "content": "DEEPSEEK_API_KEY=secret-value",
+                        }
+                    ],
+                    analysis_evidence_ids=[],
+                    failure_evidence_ids=[],
+                    symptom="symptom",
+                    expected_behavior="expected",
+                    allowed_files=["settings.py"],
+                )
+            )
+        )
+    )
+
+    assert result["requires_user_confirmation"] is True
+    assert result["privacy_confirmation_required"] is True
 
 
 def test_bug_fix_skill_is_publishable_after_review_approval() -> None:

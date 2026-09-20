@@ -136,6 +136,8 @@ from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 
+TEMPORARY_TOOL_PERSISTENCE_PROMPT = "**这个临时工具已完成本次任务，要保存为可复用插件吗？**"
+
 if TYPE_CHECKING:
     from nanobot.agent.tools.mcp import MCPConnection
     from nanobot.config.schema import (
@@ -589,9 +591,13 @@ class AgentLoop:
             candidate_tool_factory=candidate_tool_factory,
         )
         try:
-            from devpilot.temporary_tools import bind_temporary_tool_manager
+            from devpilot.temporary_tools import (
+                TemporaryToolGapReportTool,
+                bind_temporary_tool_manager,
+            )
 
             bind_temporary_tool_manager(self.plugin_manager)
+            self.tools.register(TemporaryToolGapReportTool())
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             logger.debug("Temporary tool manager adapter unavailable: {}", type(exc).__name__)
         self.loop_handoff_manager: LoopHandoffManager | None = None
@@ -2653,6 +2659,15 @@ class AgentLoop:
                         coordinator.complete(msg, response=response)
                 except Exception as exc:
                     logger.exception("Error processing message for session {}", session_key)
+                    try:
+                        await self._cleanup_temporary_run(session_key, msg.attributes)
+                    except Exception:
+                        logger.debug(
+                            "Could not clean up temporary tools after an unrecoverable error "
+                            "for session {}",
+                            session_key,
+                            exc_info=True,
+                        )
                     await delivery.fail(
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
@@ -3284,10 +3299,15 @@ class AgentLoop:
         self.sessions.save(session)
         if not turn_continuation.internal_continuation_pending(ctx.msg.metadata):
             cleanup = await self._cleanup_temporary_run(ctx.session_key, ctx.attributes)
-            if cleanup and ctx.stop_reason == "completed":
+            if cleanup and ctx.stop_reason == "completed" and any(
+                candidate.get("artifact") == "pending_persistence" for candidate in cleanup
+            ) and not any(
+                candidate.get("artifact") == "cleanup_pending" for candidate in cleanup
+            ):
                 ctx.final_content = (
                     (ctx.final_content or "").rstrip()
-                    + "\n\n**这个临时工具已完成本次任务，要保存为可复用插件吗？**"
+                    + "\n\n"
+                    + TEMPORARY_TOOL_PERSISTENCE_PROMPT
                 )
                 ctx.attributes["temporary_tool_persistence_prompt"] = True
                 # Only a successfully completed Run creates a server-owned

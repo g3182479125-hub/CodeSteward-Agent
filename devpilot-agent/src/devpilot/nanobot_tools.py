@@ -76,6 +76,7 @@ from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
 from .skill_improvement import SkillImprovementError, SkillImprovementStore
 from .storage import ProjectStore
+from .user_intent import capability_confirmation_matches, confirmation_matches
 
 _CONTROL_PLANE_ERROR_CODES = frozenset(
     {
@@ -94,10 +95,20 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "CHANGESET_NOT_FOUND",
         "CHANGESET_NOT_VERIFIABLE",
         "EXECUTION_BACKEND_UNAVAILABLE",
+        "EXECUTION_PROJECT_NOT_ALLOWLISTED",
         "IDEMPOTENCY_CONFLICT",
         "IDEMPOTENCY_IN_PROGRESS",
         "IDEMPOTENCY_REQUIRED",
         "PATH_DENIED",
+        "PATH_INVALID",
+        "PATH_NOT_RELATIVE",
+        "PATH_OUTSIDE_PROJECT",
+        "TARGET_NOT_FILE",
+        "TARGET_EXISTS",
+        "TARGET_MISSING",
+        "HASH_INVALID",
+        "PRECONDITION_REQUIRED",
+        "PRECONDITION_HASH_MISMATCH",
         "PERSISTENCE_REQUIRED",
         "PROJECT_NOT_FOUND",
         "PROJECT_TRUST_CONFIRMATION_REQUIRED",
@@ -111,6 +122,9 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "BUG_FIX_FAILURE_EVIDENCE_INVALID",
         "BUG_FIX_INPUT_INVALID",
         "BUG_FIX_SCOPE_INVALID",
+        "PATCH_REPLACEMENT_INVALID",
+        "PATCH_REPLACEMENT_NOT_UNIQUE",
+        "FILE_READ_FAILED",
         "TEST_REPAIR_BUDGET_EXCEEDED",
         "TEST_REPAIR_FAILURE_EVIDENCE_INVALID",
         "TEST_REPAIR_FAILURE_FINGERPRINT_INVALID",
@@ -127,10 +141,39 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
 _PATCH_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "relative_path": {"type": "string", "minLength": 1},
-        "operation": {"type": "string", "enum": ["create", "update", "delete"]},
-        "content": {"type": ["string", "null"]},
+        "relative_path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Project-relative target file path.",
+        },
+        "operation": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+        },
+        "content": {
+            "type": ["string", "null"],
+            "description": "Complete new text; omit when using replacements.",
+        },
         "expected_sha256": {"type": ["string", "null"]},
+        "replacements": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "description": (
+                "Preferred for small updates. Each item replaces one exact text block "
+                "the requested count; use update only and do not send content."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "find": {"type": "string", "minLength": 1, "maxLength": 20000},
+                    "replace": {"type": "string", "maxLength": 20000},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 20},
+                },
+                "required": ["find", "replace"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": ["relative_path", "operation"],
     "additionalProperties": False,
@@ -151,11 +194,70 @@ def _normalize_patch_hashes(patches: list[Any]) -> list[Any]:
         normalized.append(copied)
     return normalized
 
+
+def _hydrate_full_access_patch_hashes(
+    project_path: str, patches: list[Any]
+) -> list[Any]:
+    """Fill omitted update/delete preconditions from the current local file.
+
+    Full Access is an explicit, trusted local capability.  The control plane
+    still enforces the hash at apply time, but the adapter can obtain the
+    current hash without making the model recite a mechanical value.  Invalid
+    paths are deliberately left to the control plane so it can return its
+    stable path diagnostic.
+    """
+
+    normalized = _normalize_patch_hashes(patches)
+    try:
+        root = Path(project_path).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return normalized
+
+    hydrated: list[Any] = []
+    for patch in normalized:
+        if not isinstance(patch, dict):
+            hydrated.append(patch)
+            continue
+        copied = dict(patch)
+        if copied.get("operation") not in {"update", "delete"} or copied.get(
+            "expected_sha256"
+        ):
+            hydrated.append(copied)
+            continue
+        relative_path = copied.get("relative_path")
+        if not isinstance(relative_path, str):
+            hydrated.append(copied)
+            continue
+        try:
+            target = (root / relative_path).resolve(strict=True)
+            target.relative_to(root)
+            if target.is_file():
+                copied["expected_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        hydrated.append(copied)
+    return hydrated
+
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{12,}\b"),
     re.compile(r"(?i)authorization\s*:\s*bearer\s+\S+"),
     re.compile(r"(?i)deepseek_api_key\s*[=:]\s*\S+"),
 )
+
+
+def _patches_require_privacy_confirmation(patches: list[Any]) -> bool:
+    """Detect credential-shaped patch content before Full Access writes it.
+
+    This is deliberately narrow: ordinary source code and logs continue
+    automatically.  A hit does not reveal the matching value to the model or
+    UI; it only moves this single write to the privacy-confirmation path.
+    """
+
+    try:
+        content = json.dumps(patches, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    return any(pattern.search(content) for pattern in _SECRET_PATTERNS)
 _PATH_DENIAL_CODES = frozenset(
     {
         "PATH_INVALID",
@@ -206,6 +308,36 @@ def _trusted_confirmation_attributes(request_context: Any | None = None) -> dict
         return value if isinstance(value, dict) else None
     except (ImportError, TypeError, ValueError):
         return None
+
+
+def _is_trusted_full_access(request_context: Any | None = None) -> bool:
+    """Return whether this tool call belongs to a trusted WebUI Full Access turn.
+
+    The model never supplies this value.  It is read from nanobot's task-local
+    workspace scope, with the registry request context as the child-task
+    fallback used elsewhere in this adapter.
+    """
+
+    try:
+        from nanobot.security.workspace_access import current_workspace_scope
+
+        scope = current_workspace_scope()
+        if scope is not None:
+            return (
+                scope.source_channel == "websocket"
+                and scope.access_mode == "full"
+                and not scope.restrict_to_workspace
+            )
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    scope = getattr(request_context, "attributes", {}).get("workspace_scope")
+    if not isinstance(scope, Mapping):
+        return False
+    return (
+        scope.get("source_channel") == "websocket"
+        and scope.get("access_mode") == "full"
+        and scope.get("restrict_to_workspace") is False
+    )
 
 
 def _record_current_turn_proposal(
@@ -883,6 +1015,63 @@ def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     return _model_result(result)
 
 
+def _post_full_access_apply_verify(
+    change_set_id: str, verification_profile: str | None
+) -> dict[str, Any]:
+    """Run a server-owned direct action for one trusted Full Access proposal."""
+
+    return _post_control_plane(
+        _change_set_path(change_set_id, "full-access-apply-verify"),
+        {"profile": verification_profile or "python-syntax"},
+        idempotency_key=f"full-access-{change_set_id}",
+    )
+
+
+def _full_access_preview_and_execute(
+    *,
+    project_path: str,
+    patches: list[Any],
+    verification_profile: str | None,
+    request_context: Any | None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Preview, apply and verify a normal project edit without workflow gates."""
+
+    payload: dict[str, Any] = {
+        "project_path": project_path,
+        "patches": _hydrate_full_access_patch_hashes(project_path, patches),
+    }
+    if project_id:
+        payload["project_id"] = project_id
+    proposal = _post_preview(payload)
+    _record_current_turn_proposal(proposal, request_context=request_context)
+    if _patches_require_privacy_confirmation(patches):
+        proposal.update(
+            {
+                "requires_user_confirmation": True,
+                "privacy_confirmation_required": True,
+                "execution_mode": "full_access",
+                "next_step": (
+                    "本次修改疑似包含密钥或隐私凭据，已保留 Diff 但未写入。"
+                    "请明确确认是否允许写入该敏感内容。"
+                ),
+            }
+        )
+        return proposal
+    execution = _post_full_access_apply_verify(
+        str(proposal["change_set_id"]), verification_profile
+    )
+    proposal.update(
+        {
+            "requires_user_confirmation": False,
+            "execution_mode": "full_access",
+            "execution": execution,
+            "next_step": "完全访问已直接应用并验证本次修改；请根据执行回执继续处理。",
+        }
+    )
+    return proposal
+
+
 def _request_approval(change_set_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _post_control_plane(_change_set_path(change_set_id, "approval-requests"), payload)
 
@@ -1093,7 +1282,14 @@ def _change_set_path(change_set_id: str, action: str) -> str:
     value = str(change_set_id)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
         raise ValueError("invalid ChangeSet ID")
-    if action not in {"approve", "apply", "verify", "rollback", "approval-requests"}:
+    if action not in {
+        "approve",
+        "apply",
+        "verify",
+        "rollback",
+        "approval-requests",
+        "full-access-apply-verify",
+    }:
         raise ValueError("unsupported ChangeSet action")
     return f"/v1/change-sets/{value}/{action}"
 
@@ -1399,7 +1595,10 @@ class ConfirmedActionTool(Tool):
                 kwargs.get("action"),
                 attributes.get("action") if isinstance(attributes, dict) else None,
             )
-            return ToolResult.error("P5 action rejected: APPROVAL_BROKER_UNAVAILABLE")
+            return ToolResult.error(
+                "P5 action rejected: APPROVAL_BROKER_UNAVAILABLE; "
+                "本次用户意图已收到，但审批通道暂不可用，动作未执行；不要要求用户重复确认。"
+            )
         try:
             verifier = cast(Callable[[str, str], bool], attributes.get("verifier"))
             if not callable(verifier):
@@ -1931,6 +2130,22 @@ class ProposeChangeSetTool(Tool):
             patches = kwargs["patches"]
             if not isinstance(patches, list):
                 raise TypeError("patches must be a list")
+            if _is_trusted_full_access(request_context):
+                return json.dumps(
+                    _full_access_preview_and_execute(
+                        project_path=project_path,
+                        patches=patches,
+                        project_id=(
+                            str(kwargs["project_id"])
+                            if kwargs.get("project_id") is not None
+                            else None
+                        ),
+                        verification_profile="python-syntax",
+                        request_context=request_context,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
             payload: dict[str, Any] = {
                 "project_path": project_path,
                 "patches": _normalize_patch_hashes(patches),
@@ -2020,6 +2235,24 @@ class FeatureDeliveryProposeTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         request_context = self._request_context
         try:
+            if _is_trusted_full_access(request_context):
+                patches = kwargs["patches"]
+                if not isinstance(patches, list):
+                    raise TypeError("patches must be a list")
+                return json.dumps(
+                    _full_access_preview_and_execute(
+                        project_path=str(kwargs["project_path"]),
+                        patches=patches,
+                        verification_profile=(
+                            str(kwargs["verification_profile"])
+                            if kwargs.get("verification_profile") is not None
+                            else "python-syntax"
+                        ),
+                        request_context=request_context,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
             payload = {
                 "project_path": str(kwargs["project_path"]),
                 "patches": kwargs["patches"],
@@ -2119,6 +2352,24 @@ class BugFixProposeTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         request_context = self._request_context
         try:
+            if _is_trusted_full_access(request_context):
+                patches = kwargs["patches"]
+                if not isinstance(patches, list):
+                    raise TypeError("patches must be a list")
+                return json.dumps(
+                    _full_access_preview_and_execute(
+                        project_path=str(kwargs["project_path"]),
+                        patches=patches,
+                        verification_profile=(
+                            str(kwargs["verification_profile"])
+                            if kwargs.get("verification_profile") is not None
+                            else "python-syntax"
+                        ),
+                        request_context=request_context,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
             payload: dict[str, Any] = {
                 "project_path": str(kwargs["project_path"]),
                 "patches": kwargs["patches"],
@@ -2217,6 +2468,24 @@ class TestRepairProposeTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         request_context = self._request_context
         try:
+            if _is_trusted_full_access(request_context):
+                patches = kwargs["patches"]
+                if not isinstance(patches, list):
+                    raise TypeError("patches must be a list")
+                return json.dumps(
+                    _full_access_preview_and_execute(
+                        project_path=str(kwargs["project_path"]),
+                        patches=patches,
+                        verification_profile=(
+                            str(kwargs["verification_profile"])
+                            if kwargs.get("verification_profile") is not None
+                            else "python-syntax"
+                        ),
+                        request_context=request_context,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
             payload: dict[str, Any] = {
                 "project_path": str(kwargs["project_path"]),
                 "patches": kwargs["patches"],
@@ -2257,15 +2526,9 @@ class TestRepairProposeTool(Tool):
             },
             "user_confirmation": {
                 "type": "string",
-                "enum": [
-                    "执行",
-                    "确认执行",
-                    "验证",
-                    "确认验证",
-                    "撤销",
-                    "确认撤销",
-                    "confirmed",
-                ],
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "Natural-language confirmation for the requested capability.",
             },
         },
         "required": ["change_set_id", "capability", "user_confirmation"],
@@ -2294,11 +2557,17 @@ class RequestApprovalTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            capability = str(kwargs["capability"])
+            confirmation = str(kwargs["user_confirmation"])
+            if not capability_confirmation_matches(confirmation, capability):
+                return ToolResult.error(
+                    "P4 approval request rejected: confirmation does not match capability"
+                )
             result = _request_approval(
                 str(kwargs["change_set_id"]),
                 {
-                    "capability": str(kwargs["capability"]),
-                    "user_confirmation": str(kwargs["user_confirmation"]),
+                    "capability": capability,
+                    "user_confirmation": confirmation,
                 },
             )
             return json.dumps(_model_result(result), ensure_ascii=False, sort_keys=True)
@@ -2332,10 +2601,9 @@ class RequestApprovalTool(Tool):
             },
             "user_confirmation": {
                 "type": "string",
-                "enum": ["执行", "确认执行", "confirmed"],
-                "description": (
-                    "Only supply this after the user explicitly confirmed this exact ChangeSet."
-                ),
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "Natural-language confirmation for this exact ChangeSet.",
             },
         },
         "required": [
@@ -2374,12 +2642,17 @@ class ExecuteChangeSetTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            change_set_id = str(kwargs["change_set_id"])
+            # Validate the identifier before checking conversational intent so
+            # malformed IDs fail locally and never get hidden by a confirmation
+            # error.  This remains a read-only boundary check.
+            _change_set_path(change_set_id, "apply")
             confirmation = str(kwargs["user_confirmation"])
-            if confirmation not in {"执行", "确认执行", "confirmed"}:
+            if not confirmation_matches(confirmation, "apply"):
                 return ToolResult.error(
                     "P2B execution rejected: explicit user confirmation required"
                 )
-            result = _apply_changeset(str(kwargs["change_set_id"]), str(kwargs["approval_token"]))
+            result = _apply_changeset(change_set_id, str(kwargs["approval_token"]))
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
             return ToolResult.error(f"P2B execution failed: {_http_error_message(exc)}")
@@ -2408,8 +2681,9 @@ class ExecuteChangeSetTool(Tool):
             },
             "user_confirmation": {
                 "type": "string",
-                "enum": ["执行", "确认执行", "confirmed"],
-                "description": "Only supply this after the user explicitly confirmed verification.",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "Natural-language confirmation for verification.",
             },
         },
         "required": [
@@ -2448,7 +2722,10 @@ class VerifyChangeSetTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
             confirmation = str(kwargs["user_confirmation"])
-            if confirmation not in {"执行", "确认执行", "confirmed"}:
+            if not (
+                capability_confirmation_matches(confirmation, "r2.verify")
+                or confirmation_matches(confirmation, "apply")
+            ):
                 return ToolResult.error(
                     "P2B verification rejected: explicit user confirmation required"
                 )
@@ -2477,8 +2754,9 @@ class VerifyChangeSetTool(Tool):
             },
             "user_confirmation": {
                 "type": "string",
-                "enum": ["撤销", "确认撤销", "confirmed"],
-                "description": "Only supply this after the user explicitly confirmed rollback.",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "Natural-language confirmation for rollback.",
             },
         },
         "required": ["change_set_id", "approval_token", "user_confirmation"],
@@ -2513,7 +2791,7 @@ class RollbackChangeSetTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
             confirmation = str(kwargs["user_confirmation"])
-            if confirmation not in {"撤销", "确认撤销", "confirmed"}:
+            if not confirmation_matches(confirmation, "rollback"):
                 return ToolResult.error(
                     "P2B rollback rejected: explicit user confirmation required"
                 )

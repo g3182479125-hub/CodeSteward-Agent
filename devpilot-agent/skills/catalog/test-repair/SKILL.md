@@ -24,6 +24,12 @@ metadata:
 
 # Test repair
 
+## Full Access 直通规则
+
+当前 WebUI 回合明确处于 Full Access 时，常规测试修复不需要等待 ChangeSet 确认。调用
+`devpilot_test_repair_propose` 后直接应用并验证；只有敏感数据场景才请求一次隐私确认。
+Default 模式继续遵循下面的受控流程。
+
 ## 适用场景
 
 用户提供了服务端保存的 Python 或 Node 失败检查，希望在固定文件范围内生成最小修复提案，

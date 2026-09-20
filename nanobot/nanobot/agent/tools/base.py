@@ -142,15 +142,52 @@ class ToolResult(str):
     """String-compatible tool output with structured status."""
 
     is_error: bool
+    code: str | None
+    decision: str | None
+    retryable: bool | None
 
-    def __new__(cls, content: str, *, is_error: bool = False) -> ToolResult:
+    def __new__(
+        cls,
+        content: str,
+        *,
+        is_error: bool = False,
+        code: str | Any | None = None,
+        decision: str | Any | None = None,
+        retryable: bool | None = None,
+    ) -> ToolResult:
         obj = str.__new__(cls, content)
         obj.is_error = is_error
+        obj.code = getattr(code, "value", code)
+        obj.decision = getattr(decision, "value", decision)
+        obj.retryable = retryable
         return obj
 
     @classmethod
-    def error(cls, content: str) -> ToolResult:
-        return cls(content, is_error=True)
+    def error(
+        cls,
+        content: str,
+        *,
+        code: str | Any | None = None,
+        decision: str | Any | None = None,
+        retryable: bool | None = None,
+    ) -> ToolResult:
+        return cls(
+            content,
+            is_error=True,
+            code=code,
+            decision=decision,
+            retryable=retryable,
+        )
+
+    def with_content(self, content: str) -> ToolResult:
+        """Preserve structured status when a caller appends a diagnostic hint."""
+        return type(self)(
+            content,
+            is_error=self.is_error,
+            code=self.code,
+            decision=self.decision,
+            retryable=self.retryable,
+        )
 
 
 class Tool(ABC):
@@ -226,8 +263,8 @@ class Tool(ABC):
         ...
 
     @staticmethod
-    def error(content: str) -> ToolResult:
-        return ToolResult.error(content)
+    def error(content: str, **metadata: Any) -> ToolResult:
+        return ToolResult.error(content, **metadata)
 
     def _cast_object(self, obj: Any, schema: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(obj, dict):

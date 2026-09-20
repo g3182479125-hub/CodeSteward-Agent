@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleDashed } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -26,6 +26,8 @@ export function ReasoningRow({
   streaming: boolean;
   className?: string;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = `reasoning-details-${useId().replace(/:/g, "")}`;
   const preview = chineseReasoningPreview(text, streaming);
   return (
     <ActivityStep
@@ -35,6 +37,17 @@ export function ReasoningRow({
       label={preview}
       labelClassName="italic text-muted-foreground/78"
       contentClassName="overflow-hidden"
+      detailsId={detailsId}
+      expanded={expanded}
+      onToggle={() => setExpanded((value) => !value)}
+      details={
+        <div
+          data-testid="reasoning-details"
+          className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/45 bg-muted/20 px-2.5 py-2 text-[12px] leading-5 text-muted-foreground/82"
+        >
+          {text || "暂无详细思考内容"}
+        </div>
+      }
       className={className}
     />
   );

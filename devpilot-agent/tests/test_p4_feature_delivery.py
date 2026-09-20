@@ -722,7 +722,9 @@ def test_feature_delivery_artifact_database_failure_finishes_run_as_failed(
     )
 
 
-def test_feature_delivery_never_applies_without_exact_user_confirmation(tmp_path: Path) -> None:
+def test_feature_delivery_accepts_natural_language_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
     _store, project, manager = _manager(tmp_path, FakeExecutionBackend())
     workflow = FeatureDeliveryWorkflow(manager, artifacts_root=tmp_path / "data")
     evidence_id = _evidence(project, _store)
@@ -732,13 +734,18 @@ def test_feature_delivery_never_applies_without_exact_user_confirmation(tmp_path
         evidence_ids=[evidence_id],
     )
 
-    with pytest.raises(WorkflowError, match="USER_CONFIRMATION_REQUIRED"):
-        workflow.apply(
-            proposal,
-            user_confirmation="现在执行",
-            approval_token="not-consumed",
-        )
+    monkeypatch.setattr(
+        manager,
+        "apply",
+        lambda *_args, **_kwargs: {"change_set_id": proposal.change_set_id, "status": "applied"},
+    )
+    result = workflow.apply(
+        proposal,
+        user_confirmation="现在执行",
+        approval_token="external-approval-token",
+    )
 
+    assert result["status"] == "applied"
     assert (project / "app.py").read_text(encoding="utf-8") == _BASELINE
 
 

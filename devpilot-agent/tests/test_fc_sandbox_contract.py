@@ -625,6 +625,20 @@ def test_fc_config_reads_explicit_project_allowlist(monkeypatch: pytest.MonkeyPa
     assert config.allowed_project_paths == ("E:\\fixtures\\a", "E:\\fixtures\\b")
 
 
+def test_fc_project_allowlist_accepts_projects_below_a_configured_root() -> None:
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            allowed_project_paths=("E:\\codex-local",),
+        )
+    )
+
+    assert backend.project_allowed("E:\\codex-local\\training-projects\\demo")
+    assert not backend.project_allowed("E:\\codex-local-other\\demo")
+
+
 def test_fc_config_enables_pytest_bootstrap_by_default_and_allows_opt_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

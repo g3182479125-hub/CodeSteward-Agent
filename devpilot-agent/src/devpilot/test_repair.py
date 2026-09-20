@@ -24,6 +24,7 @@ from .execution import FakeExecutionBackend
 from .patches import FilePatch, PatchError
 from .paths import PathBoundaryError
 from .storage import ProjectStore
+from .user_intent import confirmation_matches
 from .verification import VerificationProfile
 from .workflows import (
     _NON_DELIVERY_VERIFY_CODES,
@@ -35,7 +36,6 @@ from .workflows import (
 )  # pyright: ignore[reportPrivateUsage]
 
 MAX_REPAIR_ATTEMPTS = 3
-_CONFIRMATIONS = frozenset({"执行", "确认执行", "confirmed"})
 _SUPPORTED_PROFILES = frozenset({VerificationProfile.PYTHON_RUN, VerificationProfile.NODE_SYNTAX})
 
 
@@ -294,7 +294,7 @@ class TestRepairWorkflow:
         user_confirmation: str,
         approval_token: str,
     ) -> dict[str, Any]:
-        if user_confirmation not in _CONFIRMATIONS:
+        if not confirmation_matches(user_confirmation, "apply"):
             raise WorkflowError(
                 "USER_CONFIRMATION_REQUIRED",
                 "the exact test-repair proposal requires explicit user confirmation",

@@ -24,6 +24,16 @@ metadata:
 
 # Bug fix
 
+## Full Access 直通规则
+
+当前 WebUI 回合明确处于 Full Access 时，普通项目修复不需要先取得失败证据、项目 trust、
+Approval Token 或 ChangeSet 二次确认。先读取必要源码并生成最小补丁，再调用
+`devpilot_bug_fix_propose`；该工具会直接生成 Diff、应用修改并运行可用验证。不要在普通
+代码修改前要求用户回复“执行”。
+
+只有补丁、读取结果或准备外发的数据疑似包含密钥、凭据、个人文件、聊天记录或浏览器数据
+时，才停止并请求一次隐私确认。Default 模式继续遵循下面的受控流程。
+
 ## 适用场景
 
 用户提供了可复现的失败检查或错误现象，希望定位一个最小缺陷、查看 Diff、确认回归验证
@@ -60,9 +70,13 @@ Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用�
 1. 读取冻结计划和 P4-02 设计，确认当前节点；
 2. 读取失败 Run，核对失败现象、目标文件和 before hash；
 3. 用 inspect/search/read 取得相关源码事实，不能把模型猜测当作失败证据；
-4. 生成最小修复 proposal，绑定 failure evidence、symptom、expected behavior 和回归 profile；
+4. 生成最小修复 proposal，绑定 failure evidence、symptom、expected behavior 和回归 profile。
+   对小范围修改优先直接调用 `devpilot_bug_fix_propose`，在 patch 中使用
+   `replacements`（每项是精确 `find`、`replace` 和可选 `count`），不要重建或粘贴整个文件；
+   每个 update 仍必须提供失败证据中的 `expected_sha256`。工具会在只读提案阶段生成完整 Diff，
+   如果匹配次数不是预期值就停止；不要先反复讨论行尾或自行调用 Shell；
 5. 创建 ChangeSet/Diff，展示允许文件、风险、前后 hash、验证和回滚方式；
-6. 等待用户对精确 ChangeSet 回复“执行”，再调用 `devpilot_request_approval`；
+6. 展示精确 ChangeSet 并等待用户明确表达意图；支持自然语言确认，只有语义不明确或互相冲突时才追问一次，不要求用户记忆固定口令；
 7. 控制面执行 Apply 和服务端 allowlisted Verification；P6 前只允许 Fake 自动化验证；
 8. 输出成功或失败 Artifact，验证失败不得宣称修复完成。
 
@@ -79,3 +93,5 @@ Fake 合同验证，不代表真实 React/npm 测试或 Sandbox 隔离已经执�
 失败证据缺失或不属于目标项目、前置 hash 变化、路径越界、范围漂移、审批缺失、验证失败、
 Artifact 写入失败或后端不可用时立即停止。不得改用 nanobot Shell、自动扩大范围、伪造通过
 或自动回滚未获用户确认的修改。
+
+如果 `approval_pending` 或 `APPROVAL_BROKER_UNAVAILABLE`，要说明动作已记录但尚未执行并结束本轮，不要要求用户重复确认同一个动作。

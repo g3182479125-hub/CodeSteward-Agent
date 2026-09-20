@@ -8,17 +8,21 @@
 
 - T1 已完成：`ToolCapabilityGap`、`TemporaryToolManifest`、生命周期状态转换、Full Access/WebSocket 入口判断和契约测试；提交 `2b8aaee`。
 - T2 已完成第一批：不可变 artifact store、源码 AST 协议预检、哈希/路径/冲突校验，以及 `devpilot_create_temporary_tool` Entry Point；提交 `35ca016`、`f56c29f`。
-- T3 已完成：FC 合约验证器会在沙箱内编译、导入最小 Tool shim、实例化、序列化 schema 并执行受控参数校验；验证回执绑定 sandbox/run/hash，FC 失败不得激活。
+- T3 已完成：FC 合约验证器会在沙箱内编译、导入最小 Tool shim、实例化、序列化 schema 并执行成功参数、无效参数、受控错误和 output schema fixture；验证回执绑定版本、sandbox/run/hash，FC 失败不得激活。
 - T4 已完成：`PluginSource.TEMPORARY`、`register_temporary_version`、`activate_temporary` 接入现有 `PluginManager`/`DynamicPluginRegistry`；真实工具可在当前 Run 下一轮 schema 中热加载，并通过 managed lease 排空。
 - T5 已完成：`devpilot_ensure_temporary_tool` 串起生成、FC 校验和热加载；Full Access/WebSocket 才可用；隐私能力声明没有可信确认信封时返回一次确认要求。
 - T6 已完成：Run 完成时停止、排空、移除临时 route，快照进入待用户决定区；加粗询问后，明确同意可转 project 持久插件，拒绝可删除；进程重启只清理遗留临时 route/源，不恢复活动临时工具。
-- T7 代码与证据已完成：真实 FC 成功和导入失败证据、受影响回归、过期快照清理、生命周期落盘、精确绑定确认、清理状态推进和激活失败回滚均已完成；当前只执行最终独立子 Agent Standards + Spec review 门禁。
-- 当前验收：临时工具链测试 `19 passed`；H6 `20 passed`；H5 `46 passed`；nanobot 插件/profile/loop/WebSocket 回归 `268 passed`；另有 loop/profile 增量回归 `37 passed`；Ruff 通过。最新修复提交待本轮 review 后记录。
+- T7 代码与证据已完成：真实 FC 成功和导入失败证据、同一 WebUI Run 内的候选生成 → FC 验证 → 热加载 → 真实调用、受影响回归、过期快照清理、生命周期落盘、能力缺口记录、FC 回执落盘、隐私读取分类、清理失败重试状态、精确绑定确认、清理状态推进和激活失败回滚均已完成；当前执行最终独立子 Agent Standards + Spec review 门禁。详见 `devpilot-agent/docs/evidence/live-harness/2026-09-19-temporary-tool-chain.md`。
+- 正式验收：临时工具链测试 `28 passed, 1 skipped`（live FC 证据另有真实 provider 通过）；H6 `20 passed`；H5 `46 passed`；nanobot 相关回归 `263 passed`；WebUI 专项测试 `131 passed`；本轮新增 project 路由隔离、路径隐私分类、gap 凭据脱敏、版本化 FC 回执、真实 checker fixture、外发命令分类和 cleanup_pending 重试测试均已通过；Ruff 和 `git diff --check` 通过。最终双重 Review 已通过，T7 已正式验收。
 
 ### Review 记录
 
 - 首轮独立 review（子 Agent `01a0b919-2d7e-7650-8b39-556f92fd06da`）未通过：隐私确认未绑定具体工具动作、生命周期未显式落盘、T7 尚未完成门禁登记。
 - 已修复：敏感能力确认现在绑定 session、Run、project、tool、version、source hash 和精确 capability action，并要求网关签名且一次性消费；每个 artifact 新增 `lifecycle.json`，状态历史经过转移校验；Run 清理推进 `retiring`，激活失败会回滚 route；补齐 19 条临时工具回归。
+- 增量 review 后已修复：`privacy_read`（环境变量、浏览器/密钥环等）继续触发一次确认，普通 workspace `sensitive_read` 不额外询问；FC contract checker 增加成功参数、无效参数、受控错误和 output schema fixture；验证回执写入候选 `validation.json`；新增 `devpilot_report_tool_gap` 与脱敏 gap 记录；清理失败标记 `cleanup_pending`、保留绑定并允许下一轮重试，且禁止展示持久化询问；Run 完成询问抽为可测试的加粗常量。
+- 最后一轮增量 review 指出的 6 项均已修复：临时 route 的 session+project 过滤、`../` 与运行时路径的 privacy gate、gap 文本凭据脱敏、候选实际 checker 执行及受控错误 fixture、`validation_version` 回执字段，以及 cleanup_pending→retry 的直接回归测试。
+- 最终增量 review 指出的 4 项也已修复：`subprocess`/`os.system` 等外发路径分类、FC stdout/stderr 回执脱敏、WebUI 活动流与 Markdown 加粗专项证据，以及最终 checker 版本的真实 FC sandbox 证据。
+- 最终复审已通过：同一任务内 subagent `01a0b95f-92cb-7201-8891-039a17d60b92` 返回 Standards Review PASS、Spec Review PASS、Blocking issues: none；T7 正式验收。
 
 ## 最终 Review 门禁
 

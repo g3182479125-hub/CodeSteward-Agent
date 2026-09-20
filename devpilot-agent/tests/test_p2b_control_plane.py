@@ -82,6 +82,59 @@ def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -
     assert reverted["status"] == "reverted"
 
 
+def test_full_access_can_apply_and_verify_without_approval_token(tmp_path: Path) -> None:
+    backend = FakeExecutionBackend(stdout="syntax ok")
+    manager, project = make_manager(tmp_path, execution_backend=backend)
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+
+    result = manager.full_access_apply_verify(
+        str(preview["change_set_id"]),
+        idempotency_key="full-access-direct-test",
+    )
+
+    assert result["mode"] == "full_access"
+    assert result["status"] == "verified"
+    assert (project / "main.py").read_text(encoding="utf-8") == "print('ok')\n"
+    assert backend.requests[0].command.startswith("python3 -m py_compile")
+
+
+def test_full_access_http_action_requires_internal_adapter_auth(tmp_path: Path) -> None:
+    manager, project = make_manager(tmp_path, execution_backend=FakeExecutionBackend())
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    token = "full-access-control-plane-token-0123456789"
+    app = create_app(manager=manager, internal_auth_token=token)
+
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, client=("127.0.0.1", 50000)) as client:
+        rejected = client.post(
+            f"/v1/change-sets/{change_set_id}/full-access-apply-verify",
+            json={"profile": "python-syntax"},
+            headers={"Idempotency-Key": "full-access-http-test"},
+        )
+        accepted = client.post(
+            f"/v1/change-sets/{change_set_id}/full-access-apply-verify",
+            json={"profile": "python-syntax"},
+            headers={
+                "Idempotency-Key": "full-access-http-test",
+                "X-DevPilot-Internal-Token": token,
+            },
+        )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "verified"
+
+
 def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> None:
     backend = FakeExecutionBackend(stdout="all self-tests passed")
     manager, project = make_manager(tmp_path, execution_backend=backend)

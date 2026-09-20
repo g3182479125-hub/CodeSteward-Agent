@@ -464,6 +464,8 @@ function ActivityTraceList({
         trace,
         status: explicitState?.status === "running" && !active ? "done" : explicitState?.status ?? fallbackStatus,
         error: explicitState?.error,
+        code: explicitState?.code,
+        decision: explicitState?.decision,
       };
       const previous = genericItems[genericItems.length - 1];
       if (previous && !canGroupGenericToolRuns(previous, item)) flushGenericItems(String(index));
@@ -660,6 +662,8 @@ interface GenericToolState {
   status: GenericToolStatus;
   error?: string;
   result?: unknown;
+  code?: string;
+  decision?: string;
 }
 
 const GENERIC_TOOL_STATUS_RANK: Record<GenericToolStatus, number> = { running: 1, done: 2, error: 3 };
@@ -679,6 +683,8 @@ function genericToolStateByTraceLine(message: UIMessage): Map<string, GenericToo
       status,
       error: status === "error" ? toolProgressError(event.error) : undefined,
       result: event.result,
+      code: event.code,
+      decision: event.decision,
     };
     const previous = map.get(key);
     if (!previous || GENERIC_TOOL_STATUS_RANK[next.status] >= GENERIC_TOOL_STATUS_RANK[previous.status]) {

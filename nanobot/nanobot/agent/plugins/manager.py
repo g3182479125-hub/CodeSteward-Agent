@@ -47,6 +47,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 ScopeKey = tuple[PluginScope, str]
 RegistrationKey = tuple[str, str, str, str]
 RouteKey = tuple[ScopeKey, str, str, int]
+_TEMPORARY_VALIDATION_VERSION = "temporary-tool-validation/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +256,7 @@ class PluginManager:
                 }
                 for key, binding in self._candidate_trials.items()
             ],
+            "orphaned_temporary": [str(root) for root in self._orphaned_temporary],
         }
         self._state_store.save(data)
 
@@ -283,11 +285,22 @@ class PluginManager:
         if not isinstance(data, dict):
             return
         self._restore_plugin_rows(data.get("plugins", []))
+        self._restore_orphaned_temporary_rows(data.get("orphaned_temporary", []))
         self._restore_candidate_trial_rows(data.get("candidate_trials", []))
         self._restore_active_route_rows(data.get("active_routes", []))
         self._restore_retired_route_rows(data.get("retired_routes", []))
         self._restore_waiting_route_rows(data.get("waiting_routes", []))
         self._restore_operation_rows(data.get("operations", []))
+
+    def _restore_orphaned_temporary_rows(self, rows: Any) -> None:
+        if not isinstance(rows, list):
+            return
+        for raw in rows:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            root = Path(raw).resolve()
+            if root not in self._orphaned_temporary:
+                self._orphaned_temporary.append(root)
 
     def _restore_plugin_rows(self, rows: Any) -> None:
         """Restore valid plugin rows while quarantining only malformed rows."""
@@ -590,12 +603,13 @@ class PluginManager:
             manifest.kind is not PluginKind.TOOL
             or manifest.scope is not PluginScope.SESSION
             or record.session_id is None
+            or record.project_id is None
             or record.run_id is None
             or manifest.execution_mode is not PluginExecutionMode.IN_PROCESS
         ):
             return PluginOperationResult.failure(
                 PluginErrorCode.INVALID_MANIFEST,
-                "temporary tools must be session-scoped in-process tools",
+                "temporary tools must be session/project-bound in-process tools",
                 plugin_id=manifest.plugin_id,
                 version=manifest.version,
             )
@@ -614,9 +628,18 @@ class PluginManager:
                 raise OSError("entry is not a file")
             if hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
                 raise ValueError("temporary entry content hash does not match the manifest")
+            validation_path = root / "validation.json"
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(validation, dict)
+                or validation.get("validation_version") != _TEMPORARY_VALIDATION_VERSION
+                or validation.get("status") != "validated"
+                or validation.get("source_hash") != manifest.content_hash
+            ):
+                raise ValueError("temporary entry has no matching successful FC receipt")
             catalog = PluginCatalog.from_registry(
                 session_id=record.session_id,
-                project_id=None,
+                project_id=record.project_id,
                 registry=self._base_registry,
             )
             catalog.register(record)
@@ -651,10 +674,11 @@ class PluginManager:
         *,
         session_id: str,
         run_id: str,
+        project_id: str | None = None,
         policy: DynamicPluginPolicy | None = None,
     ) -> PluginOperationResult:
         """Activate one FC-validated temporary Tool in the live session route."""
-        registration = self._find_visible(plugin_id, version, session_id, None, run_id=run_id)
+        registration = self._find_visible(plugin_id, version, session_id, project_id, run_id=run_id)
         if registration is None or registration.record.source is not PluginSource.TEMPORARY:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_FOUND,
@@ -677,6 +701,7 @@ class PluginManager:
             plugin_id,
             version,
             session_id=session_id,
+            project_id=project_id,
             policy=policy,
             _run_id=run_id,
         )
@@ -776,6 +801,7 @@ class PluginManager:
             stopped = self.stop(
                 manifest.plugin_id,
                 session_id=session_id,
+                project_id=item.record.project_id,
                 operation_details={"temporary_cleanup": "run_end"},
             )
             if stopped.operation_id:
@@ -788,6 +814,7 @@ class PluginManager:
                 manifest.plugin_id,
                 manifest.version,
                 session_id=session_id,
+                project_id=item.record.project_id,
                 _run_id=run_id,
                 operation_details={"temporary_cleanup": "run_end"},
             )
@@ -804,7 +831,18 @@ class PluginManager:
                 # The route and registry entry are gone now. Keep the exact
                 # snapshot until the post-Run persistence question is answered.
                 row["artifact"] = "pending_persistence"
+                if item.artifact_root not in self._orphaned_temporary:
+                    self._orphaned_temporary.append(item.artifact_root)
+            else:
+                # Keep the exact registration and artifact recoverable. A
+                # failed drain/remove must not be presented as persistable;
+                # the next cleanup pass retries the same bound Run.
+                self._mark_temporary_artifact_cleanup_pending(item.artifact_root)
+                row["artifact"] = "cleanup_pending"
+                row["cleanup_status"] = "pending"
             results.append(row)
+        if rows:
+            self._save_state()
         return tuple(results)
 
     @staticmethod
@@ -828,6 +866,27 @@ class PluginManager:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             # Cleanup remains best-effort; a malformed sidecar must not prevent
             # the route from being stopped and removed.
+            return
+
+    @staticmethod
+    def _mark_temporary_artifact_cleanup_pending(artifact_root: Path) -> None:
+        """Persist cleanup failure without making the artifact saveable."""
+        lifecycle_path = artifact_root / "lifecycle.json"
+        try:
+            raw = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+            history = raw.get("history")
+            state = raw.get("state")
+            if not isinstance(history, list) or not history or history[-1] != state:
+                return
+            if state == "retiring":
+                history.append("cleanup_pending")
+                raw["state"] = "cleanup_pending"
+                lifecycle_path.write_text(
+                    json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return
 
     async def cleanup_orphaned_temporary(self) -> tuple[str, ...]:
@@ -2441,7 +2500,14 @@ class PluginManager:
     @staticmethod
     def _is_visible(record: PluginRecord, session_id: str, project_id: str | None) -> bool:
         manifest = record.manifest
-        return (manifest.scope is PluginScope.SESSION and record.session_id == session_id) or (
+        return (
+            manifest.scope is PluginScope.SESSION
+            and record.session_id == session_id
+            and (
+                record.source is not PluginSource.TEMPORARY
+                or (project_id is not None and record.project_id == project_id)
+            )
+        ) or (
             manifest.scope is PluginScope.PROJECT
             and project_id is not None
             and record.project_id == project_id
@@ -2775,6 +2841,12 @@ class PluginManager:
             for plugin_id in tuple(self._restored_routes_for_scope(cast(ScopeKey, scope_key))):
                 self._restore_route_if_needed(cast(ScopeKey, scope_key), plugin_id)
             for plugin_id, route in self._routes.get(cast(ScopeKey, scope_key), {}).items():
+                record = route.registration.record
+                if (
+                    record.source is PluginSource.TEMPORARY
+                    and record.project_id != project_id
+                ):
+                    continue
                 routes[plugin_id] = route
         return tuple(routes[name] for name in sorted(routes))
 

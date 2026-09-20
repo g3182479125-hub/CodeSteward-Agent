@@ -21,6 +21,7 @@ from nanobot.apps.cli import CliAppError, CliAppManager, CliAppsRuntimeConfig
 from nanobot.apps.cli.utils import runtime_lines_for_request
 from nanobot.config_base import Base
 from nanobot.runtime_context import RuntimeContextBlock, wrap_runtime_context_lines
+from nanobot.security.execution_policy import ExecutionDecision, ExecutionErrorCode
 from nanobot.security.workspace_access import current_tool_workspace
 
 
@@ -157,4 +158,21 @@ class CliAppsTool(Tool):
                 restrict_to_workspace=access.restrict_to_workspace,
             )
         except CliAppError as exc:
-            return ToolResult.error(f"Error: {exc.message}")
+            if exc.status == 404:
+                return ToolResult.error(
+                    f"Error: {exc.message}",
+                    code=ExecutionErrorCode.TOOL_UNAVAILABLE,
+                    decision=ExecutionDecision.CAPABILITY_UNAVAILABLE,
+                )
+            if exc.status >= 500:
+                return ToolResult.error(
+                    f"Error: {exc.message}",
+                    code=ExecutionErrorCode.COMMAND_FAILED,
+                    decision=ExecutionDecision.AUTO_EXECUTE,
+                    retryable=True,
+                )
+            return ToolResult.error(
+                f"Error: {exc.message}",
+                code=ExecutionErrorCode.INVALID_ARGUMENT,
+                decision=ExecutionDecision.PRECONDITION_FAILED,
+            )

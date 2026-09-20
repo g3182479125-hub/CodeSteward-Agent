@@ -50,7 +50,7 @@ def add_task(path: Path, title: str) -> Task:
     if not title:
         raise ValueError("task title must not be empty")
     tasks = load_tasks(path)
-    task = Task(id=len(tasks) + 1, title=title)
+    task = Task(id=max((item.id for item in tasks), default=0) + 1, title=title)
     tasks.append(task)
     save_tasks(path, tasks)
     return task
@@ -60,6 +60,8 @@ def complete_task(path: Path, task_id: int) -> Task:
     """Mark a task complete and return it."""
     tasks = load_tasks(path)
     task = next((item for item in tasks if item.id == task_id), None)
+    if task is None:
+        raise KeyError(f"task id {task_id}")
     task.done = True
     save_tasks(path, tasks)
     return task
@@ -68,7 +70,12 @@ def complete_task(path: Path, task_id: int) -> Task:
 def remove_task(path: Path, task_id: int) -> Task:
     """Remove a task by its stable ID and return the removed task."""
     tasks = load_tasks(path)
-    task = tasks.pop(task_id - 1)
+    for index, item in enumerate(tasks):
+        if item.id == task_id:
+            task = tasks.pop(index)
+            break
+    else:
+        raise KeyError(f"task id {task_id}")
     save_tasks(path, tasks)
     return task
 
