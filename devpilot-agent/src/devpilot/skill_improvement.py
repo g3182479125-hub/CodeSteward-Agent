@@ -77,7 +77,9 @@ EVALUATION_VERSIONS = ("baseline", "candidate")
 EVALUATION_REPEATS = 3
 EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
-_EVIDENCE_REF_RE = re.compile(r"^(run|tool|trace|session|test)-[A-Za-z0-9_.:-]{1,127}$")
+_EVIDENCE_REF_RE = re.compile(
+    r"^(run|tool|trace|session|test|feedback|case|trial|snapshot)-[A-Za-z0-9_.:-]{1,127}$"
+)
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,11 @@ def scheduled_batch_id(
         )
     )
     return f"batch-{content_sha256(scope)[:24]}"
+
+
+def task_snapshot_ref(task_id: str) -> str:
+    """Return the stable private record ID for one task snapshot."""
+    return f"snapshot-{content_sha256(task_id)[:32]}"
 
 
 def _now() -> str:
@@ -304,6 +311,7 @@ class ReplayTrial:
     final_output_ref: str
     assertion_result: dict[str, object]
     status: str
+    candidate_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -323,6 +331,7 @@ class ReplayTrial:
             "final_output_ref": self.final_output_ref,
             "assertion_result": dict(self.assertion_result),
             "status": self.status,
+            "candidate_id": self.candidate_id,
         }
 
 
@@ -814,8 +823,7 @@ class SkillImprovementStore:
         workspace_value = str(Path(workspace).expanduser().resolve())
         if self.workspace is not None and workspace_value != str(self.workspace):
             raise SkillImprovementError("feedback workspace does not match the store")
-        if skill_id != TRIAL_SKILL_ID:
-            raise SkillImprovementError("P8 trial only accepts the bug-fix Skill")
+        skill_improvement_target(skill_id)
         if len(skill_hash) != 64 or any(c not in "0123456789abcdef" for c in skill_hash.lower()):
             raise SkillImprovementError("skill_hash must be a SHA-256 digest")
         refs = _refs(evidence_refs)
@@ -913,7 +921,16 @@ class SkillImprovementStore:
             self._delete_record_history("feedback", evidence_id)
             self._append_jsonl(self.feedback_file, deleted.to_dict())
             for candidate in self.list_candidates(workspace=workspace):
-                if evidence_id not in candidate.evidence_ids:
+                linked_case = any(
+                    evidence_id in case.evidence_refs
+                    for case in self.list_improvement_cases(
+                        workspace=workspace_value,
+                        project_id=evidence.project_id,
+                        user_id=evidence.user_id,
+                    )
+                    if case.case_id in candidate.case_ids
+                )
+                if evidence_id not in candidate.evidence_ids and not linked_case:
                     continue
                 invalidated_content = "[deleted candidate content]"
                 self._atomic_write(
@@ -926,6 +943,23 @@ class SkillImprovementStore:
                         "expected_behavior": "[deleted evidence]",
                         "status": "stale",
                         "result_refs": (),
+                    },
+                )
+            for case in self.list_improvement_cases(
+                workspace=workspace_value,
+                project_id=evidence.project_id,
+                user_id=evidence.user_id,
+            ):
+                if evidence_id not in case.evidence_refs:
+                    continue
+                self._atomic_write(
+                    self.cases_dir / f"{case.case_id}.json",
+                    {
+                        **case.to_dict(),
+                        "evidence_refs": [],
+                        "replay_snapshot_ref": None,
+                        "selected_batch_id": None,
+                        "status": "not_replayable",
                     },
                 )
             return deleted
@@ -1042,17 +1076,57 @@ class SkillImprovementStore:
         if self.workspace is not None and workspace_value != str(self.workspace):
             raise SkillImprovementError("improvement case workspace does not match the store")
         effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
-        if effective.content_hash != base_skill_hash:
+        base_hash = base_skill_hash.lower()
+        if effective.content_hash != base_hash:
             raise SkillImprovementError("improvement case baseline does not match effective Skill")
         origin_value = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
+        if not _EVIDENCE_REF_RE.fullmatch(origin_value):
+            raise SkillImprovementError("origin_run_id must be a traceable run ID")
         task_value = _bounded_text(task_id, field="task_id", limit=128)
         project_value = _bounded_text(project_id, field="project_id", limit=128)
         user_value = _bounded_text(user_id, field="user_id", limit=128)
         session_value = _bounded_text(session_id, field="session_id", limit=128)
         refs = _refs(evidence_refs)
+        if not refs:
+            raise SkillImprovementError("at least one evidence reference is required")
+        if not all(_EVIDENCE_REF_RE.fullmatch(ref) for ref in refs):
+            raise SkillImprovementError("evidence references must be traceable IDs")
+        matched_evidence: list[FeedbackEvidence] = []
         for ref in refs:
-            if not _EVIDENCE_REF_RE.match(ref):
-                raise SkillImprovementError("evidence references must be traceable IDs")
+            matches = [
+                item
+                for item in self.list_feedback(
+                    workspace=workspace_value,
+                    user_id=user_value,
+                    project_id=project_value,
+                )
+                if item.evidence_id == ref or ref in item.evidence_refs
+            ]
+            if not matches:
+                raise SkillImprovementError(f"evidence reference is unavailable: {ref}")
+            matched_evidence.extend(matches)
+        unique_evidence = {
+            item.evidence_id: item for item in matched_evidence
+        }
+        if any(item.processing_state != "verified" for item in unique_evidence.values()):
+            raise SkillImprovementError("improvement case evidence must be verified")
+        if any(
+            item.skill_id != skill_id
+            or item.skill_hash != base_hash
+            or item.task_id != task_value
+            or item.session_id != session_value
+            or item.workspace != workspace_value
+            or item.project_id != project_value
+            or item.user_id != user_value
+            for item in unique_evidence.values()
+        ):
+            raise SkillImprovementError("improvement case evidence binding mismatch")
+        if not any(
+            origin_value == item.evidence_id or origin_value in item.evidence_refs
+            for item in unique_evidence.values()
+        ):
+            raise SkillImprovementError("origin run is not present in the verified evidence")
+        refs = tuple(dict.fromkeys((*refs, *sorted(unique_evidence))))
         summary = _bounded_text(trigger_summary, field="trigger_summary")
         expected = _bounded_text(expected_behavior, field="expected_behavior")
         snapshot_ref = (
@@ -1060,27 +1134,52 @@ class SkillImprovementStore:
             if replay_snapshot_ref is not None
             else None
         )
-        assertion = _json_safe(assertion_spec or {})
-
-        with self._lock:
-            existing = next(
-                (
-                    item
-                    for item in self.list_improvement_cases(
-                        workspace=workspace_value,
-                        project_id=project_value,
-                    )
-                    if item.skill_id == skill_id
-                    and item.origin_run_id == origin_value
-                    and item.task_id == task_value
-                    and item.user_id == user_value
-                ),
-                None,
+        if status == "eligible" and snapshot_ref is None:
+            raise SkillImprovementError("eligible improvement cases require a replay snapshot")
+        if snapshot_ref is not None:
+            snapshot = self.get_task_snapshot(
+                snapshot_ref,
+                workspace=workspace_value,
+                project_id=project_value,
+                session_id=session_value,
+                skill_id=skill_id,
             )
-            if existing is not None:
+            if snapshot is None or snapshot.task_id != task_value:
+                raise SkillImprovementError("improvement case replay snapshot binding mismatch")
+            if snapshot.content_hash != base_hash:
+                raise SkillImprovementError("improvement case snapshot does not match baseline")
+        assertion = _json_safe(assertion_spec or {})
+        identity = json.dumps(
+            {
+                "skill_id": skill_id,
+                "profile_binding": profile_binding,
+                "origin_run_id": origin_value,
+                "task_id": task_value,
+                "project_id": project_value,
+                "workspace": workspace_value,
+                "user_id": user_value,
+                "session_id": session_value,
+                "base_skill_hash": base_hash,
+                "trigger_type": trigger_type,
+                "trigger_summary": summary,
+                "expected_behavior": expected,
+                "evidence_refs": list(refs),
+                "replay_snapshot_ref": snapshot_ref,
+                "assertion_spec": assertion,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        case_id = f"case-{content_sha256(identity)[:32]}"
+        with self._lock, self._process_lock():
+            if self._record_exists("improvement_case", case_id):
+                existing = self.get_improvement_case(case_id)
+                if existing is None:
+                    raise SkillImprovementError("improvement case record is unavailable")
                 return existing
             case = ImprovementCase(
-                case_id=f"case-{uuid.uuid4()}",
+                case_id=case_id,
                 skill_id=skill_id,
                 profile_binding=profile_binding,
                 origin_run_id=origin_value,
@@ -1089,7 +1188,7 @@ class SkillImprovementStore:
                 workspace=workspace_value,
                 user_id=user_value,
                 session_id=session_value,
-                base_skill_hash=base_skill_hash.lower(),
+                base_skill_hash=base_hash,
                 trigger_type=trigger_type,
                 trigger_summary=summary,
                 expected_behavior=expected,
@@ -1181,11 +1280,14 @@ class SkillImprovementStore:
         assertion_result: Mapping[str, object] | None,
         status: str,
         trial_id: str | None = None,
+        candidate_id: str | None = None,
     ) -> ReplayTrial:
         """Append one immutable replay result bound to an existing case."""
         case = self.get_improvement_case(case_id)
         if case is None:
             raise SkillImprovementError("replay trial case was not found")
+        if case.status in {"not_replayable", "ignored"}:
+            raise SkillImprovementError("replay trial case is no longer replayable")
         if case.skill_id != skill_id:
             raise SkillImprovementError("replay trial Skill does not match its case")
         if not _is_sha256(skill_hash):
@@ -1194,15 +1296,56 @@ class SkillImprovementStore:
             raise SkillImprovementError("replay trial version must be baseline or candidate")
         if status not in REPLAY_TRIAL_STATUSES:
             raise SkillImprovementError("invalid replay trial status")
-        if not isinstance(token_count, int) or token_count < 0:
+        if token_count < 0:
             raise SkillImprovementError("token_count must be a non-negative integer")
-        if not isinstance(duration_seconds, (int, float)) or duration_seconds < 0:
+        if duration_seconds < 0:
             raise SkillImprovementError("duration_seconds must be non-negative")
+        if case.replay_snapshot_ref is None or snapshot_ref != case.replay_snapshot_ref:
+            raise SkillImprovementError("replay trial snapshot does not match its case")
+        snapshot = self.get_task_snapshot(
+            snapshot_ref,
+            workspace=case.workspace,
+            project_id=case.project_id,
+            session_id=case.session_id,
+            skill_id=skill_id,
+        )
+        if snapshot is None or snapshot.task_id != case.task_id:
+            raise SkillImprovementError("replay trial snapshot binding mismatch")
+        if snapshot.content_hash != case.base_skill_hash:
+            raise SkillImprovementError("replay trial snapshot hash mismatch")
+        if version == "baseline" and skill_hash.lower() != case.base_skill_hash:
+            raise SkillImprovementError("baseline trial hash does not match its case")
+        if version == "candidate":
+            if candidate_id is None or not _record_id_matches(candidate_id, "candidate"):
+                raise SkillImprovementError("candidate replay trials require a candidate ID")
+            candidate = self.get_candidate(
+                candidate_id,
+                workspace=case.workspace,
+                user_id=case.user_id,
+                project_id=case.project_id,
+            )
+            if (
+                candidate is None
+                or case_id not in candidate.case_ids
+                or candidate.skill_id != skill_id
+                or candidate.candidate_hash != skill_hash.lower()
+            ):
+                raise SkillImprovementError("candidate trial is not bound to its case")
+        assertion = _json_safe(assertion_result or {})
+        target = skill_improvement_target(skill_id)
+        if status in {"passed", "failed"} and (
+            assertion.get("grader_kind") != target.grader_kind
+            or not isinstance(assertion.get("passed"), bool)
+            or (status == "passed") != assertion["passed"]
+        ):
+            raise SkillImprovementError("replay trial assertion is not bound to its grader")
         trial_value = (
             _bounded_text(trial_id, field="trial_id", limit=128)
             if trial_id is not None
             else f"trial-{uuid.uuid4()}"
         )
+        if not _record_id_matches(trial_value, "trial"):
+            raise SkillImprovementError("trial_id must be a traceable trial ID")
         trial = ReplayTrial(
             trial_id=trial_value,
             case_id=case_id,
@@ -1218,10 +1361,11 @@ class SkillImprovementStore:
             duration_seconds=float(duration_seconds),
             tool_trace_ref=_bounded_text(tool_trace_ref, field="tool_trace_ref", limit=256),
             final_output_ref=_bounded_text(final_output_ref, field="final_output_ref", limit=256),
-            assertion_result=_json_safe(assertion_result or {}),
+            assertion_result=assertion,
             status=status,
+            candidate_id=candidate_id,
         )
-        with self._lock:
+        with self._lock, self._process_lock():
             if self._record_exists("replay_trial", trial.trial_id):
                 raise SkillImprovementError("replay trial ID already exists")
             self._atomic_write(
@@ -1905,15 +2049,23 @@ class SkillImprovementStore:
         skill_id: str = TRIAL_SKILL_ID,
     ) -> SkillSnapshot:
         """Pin the first effective version for a task; never silently refresh it."""
-        task_key = content_sha256(_bounded_text(task_id, field="task_id", limit=128))
+        task_value = _bounded_text(task_id, field="task_id", limit=128)
+        task_key = task_snapshot_ref(task_value)
+        legacy_task_key = content_sha256(task_value)
         path = self.snapshots_dir / f"{task_key}.json"
         with self._lock:
-            task_value = _bounded_text(task_id, field="task_id", limit=128)
             session_value = _bounded_text(session_id, field="session_id", limit=128)
             project_value = _bounded_text(project_id, field="project_id", limit=128)
             workspace_value = str(Path(workspace).expanduser().resolve())
-            if self._record_exists("snapshot", task_key):
-                raw = self._read_object(path, "task snapshot")
+            existing_path = path
+            existing_id = task_key
+            if not self._record_exists("snapshot", existing_id) and self._record_exists(
+                "snapshot", legacy_task_key
+            ):
+                existing_path = self.snapshots_dir / f"{legacy_task_key}.json"
+                existing_id = legacy_task_key
+            if self._record_exists("snapshot", existing_id):
+                raw = self._read_object(existing_path, "task snapshot")
                 if (
                     raw.get("task_id") != task_value
                     or raw.get("skill_id") != skill_id
@@ -1942,6 +2094,34 @@ class SkillImprovementStore:
                 },
             )
             return snapshot
+
+    def get_task_snapshot(
+        self,
+        snapshot_ref: str,
+        *,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        skill_id: str | None = None,
+    ) -> SkillSnapshot | None:
+        """Read a captured snapshot only when its private binding still matches."""
+        if not _record_id_matches(snapshot_ref, "snapshot"):
+            return None
+        path = self.snapshots_dir / f"{snapshot_ref}.json"
+        if not self._record_exists("snapshot", snapshot_ref):
+            return None
+        snapshot = self._snapshot_from_dict(self._read_object(path, "task snapshot"))
+        if workspace is not None and snapshot.workspace != str(
+            Path(workspace).expanduser().resolve()
+        ):
+            return None
+        if project_id is not None and snapshot.project_id != project_id:
+            return None
+        if session_id is not None and snapshot.session_id != session_id:
+            return None
+        if skill_id is not None and snapshot.skill_id != skill_id:
+            return None
+        return snapshot
 
     def evaluate_candidate(
         self,
@@ -2876,6 +3056,11 @@ def _replay_trial_from_dict(raw: Mapping[str, Any]) -> ReplayTrial:
         final_output_ref=str(raw["final_output_ref"]),
         assertion_result=dict(raw.get("assertion_result") or {}),
         status=status,
+        candidate_id=(
+            str(raw["candidate_id"])
+            if isinstance(raw.get("candidate_id"), str)
+            else None
+        ),
     )
 
 

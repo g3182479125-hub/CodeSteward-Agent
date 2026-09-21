@@ -1,11 +1,15 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from devpilot.skill_improvement import (
     IMPROVEMENT_CASE_STATES,
     REPLAY_TRIAL_STATUSES,
     SKILL_IMPROVEMENT_TARGETS,
+    SkillImprovementError,
     SkillImprovementStore,
+    task_snapshot_ref,
 )
 
 
@@ -71,6 +75,28 @@ def test_effective_snapshot_resolves_each_registered_skill(tmp_path: Path) -> No
 def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
     store, workspace = _store(tmp_path)
     skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
+    evidence = store.record_feedback(
+        task_id="task-analysis-1",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-analysis-1",),
+    )
+    snapshot = store.capture_task_snapshot(
+        task_id="task-analysis-1",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+    )
+    snapshot_ref = task_snapshot_ref("task-analysis-1")
+    assert snapshot.task_id == "task-analysis-1"
 
     case = store.create_improvement_case(
         skill_id="repo-analysis",
@@ -85,8 +111,8 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
         trigger_type="user_confirmed_missing_fact",
         trigger_summary="分析结果漏掉了测试入口。",
         expected_behavior="输出 tests/test_api.py。",
-        evidence_refs=("run-analysis-1",),
-        replay_snapshot_ref="snapshot-analysis-1",
+        evidence_refs=(evidence.evidence_id, "run-analysis-1"),
+        replay_snapshot_ref=snapshot_ref,
         assertion_spec={"kind": "analysis_fact", "expected": "tests/test_api.py"},
     )
 
@@ -102,14 +128,14 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
         version="baseline",
         model_id="deterministic-test",
         parameters={"temperature": 0},
-        snapshot_ref="snapshot-analysis-1",
+        snapshot_ref=snapshot_ref,
         started_at="2026-09-21T00:00:00+00:00",
         finished_at="2026-09-21T00:00:01+00:00",
         token_count=42,
         duration_seconds=1.0,
         tool_trace_ref="trace-analysis-1",
         final_output_ref="output-analysis-1",
-        assertion_result={"passed": True},
+        assertion_result={"passed": True, "grader_kind": "analysis_fact"},
         status="passed",
     )
 
@@ -119,3 +145,121 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
     assert store.get_replay_trial(trial.trial_id) == trial
     assert store.list_replay_trials(case_id=case.case_id) == [trial]
     assert case.status in IMPROVEMENT_CASE_STATES
+
+
+def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: Path) -> None:
+    store, workspace = _store(tmp_path)
+    skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
+    snapshot = store.capture_task_snapshot(
+        task_id="task-analysis-1",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+    )
+    kwargs = {
+        "skill_id": "repo-analysis",
+        "profile_binding": "repo-analysis@1",
+        "origin_run_id": "run-analysis-1",
+        "task_id": "task-analysis-1",
+        "project_id": "project-1",
+        "workspace": workspace,
+        "user_id": "user-1",
+        "session_id": "session-1",
+        "base_skill_hash": skill_hash,
+        "trigger_type": "user_confirmed_missing_fact",
+        "trigger_summary": "缺了测试入口。",
+        "expected_behavior": "输出测试入口。",
+        "evidence_refs": ("run-analysis-1",),
+        "replay_snapshot_ref": task_snapshot_ref("task-analysis-1"),
+        "assertion_spec": {"kind": "analysis_fact"},
+    }
+    with pytest.raises(SkillImprovementError, match="unavailable"):
+        store.create_improvement_case(**kwargs)
+
+    evidence = store.record_feedback(
+        task_id="task-analysis-1",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-analysis-1",),
+    )
+    kwargs["evidence_refs"] = (evidence.evidence_id,)
+    case = store.create_improvement_case(**kwargs)
+    assert case == store.create_improvement_case(**kwargs)
+    assert snapshot.content_hash == case.base_skill_hash
+
+
+def test_delete_feedback_blocks_linked_case_and_replay(tmp_path: Path) -> None:
+    store, workspace = _store(tmp_path)
+    skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
+    evidence = store.record_feedback(
+        task_id="task-analysis-1",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-analysis-1",),
+    )
+    store.capture_task_snapshot(
+        task_id="task-analysis-1",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+    )
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id="run-analysis-1",
+        task_id="task-analysis-1",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        base_skill_hash=skill_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="缺了测试入口。",
+        expected_behavior="输出测试入口。",
+        evidence_refs=(evidence.evidence_id,),
+        replay_snapshot_ref=task_snapshot_ref("task-analysis-1"),
+        assertion_spec={"kind": "analysis_fact"},
+    )
+    store.delete_feedback(
+        evidence.evidence_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+    invalidated = store.get_improvement_case(case.case_id)
+    assert invalidated is not None
+    assert invalidated.status == "not_replayable"
+    with pytest.raises(SkillImprovementError, match="no longer replayable"):
+        store.record_replay_trial(
+            case_id=case.case_id,
+            skill_id="repo-analysis",
+            skill_hash=skill_hash,
+            version="baseline",
+            model_id="deterministic-test",
+            parameters={},
+            snapshot_ref=task_snapshot_ref("task-analysis-1"),
+            started_at="2026-09-21T00:00:00+00:00",
+            finished_at="2026-09-21T00:00:01+00:00",
+            token_count=1,
+            duration_seconds=1.0,
+            tool_trace_ref="trace-analysis-1",
+            final_output_ref="output-analysis-1",
+            assertion_result={"passed": True, "grader_kind": "analysis_fact"},
+            status="passed",
+        )
