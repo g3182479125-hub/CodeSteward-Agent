@@ -152,6 +152,9 @@ SKILL_IMPROVEMENT_TARGETS = {
         grader_kind="bug_fix_verification",
     ),
 }
+# SI-05 owns Case selection and persistence.  Candidate generation remains the
+# bug-fix-only P8 implementation until SI-06 generalizes the candidate tool.
+_SCHEDULED_CANDIDATE_TARGETS = frozenset({TRIAL_SKILL_ID})
 
 
 def skill_improvement_target(skill_id: str) -> SkillImprovementTarget:
@@ -2321,6 +2324,7 @@ class SkillImprovementStore:
                 and case.case_id not in batch.processed_case_ids
             ]
             for skill_id in batch.target_skill_ids
+            if skill_id in _SCHEDULED_CANDIDATE_TARGETS
         }
         if not any(candidates_by_skill.values()):
             return None
@@ -2330,6 +2334,8 @@ class SkillImprovementStore:
             start = (targets.index(batch.last_selected_skill_id) + 1) % len(targets)
         for offset in range(len(targets)):
             skill_id = targets[(start + offset) % len(targets)]
+            if skill_id not in candidates_by_skill:
+                continue
             choices = candidates_by_skill[skill_id]
             if choices:
                 return min(choices, key=lambda item: (item.created_at, item.case_id))
@@ -2796,7 +2802,7 @@ class SkillImprovementStore:
                     )
                     if selected_case is not None:
                         last_selected_skill_id = selected_case.skill_id
-            elif cancelled:
+            elif cancelled or error:
                 self._release_scheduled_cases_locked(batch)
             updated = replace(
                 batch,

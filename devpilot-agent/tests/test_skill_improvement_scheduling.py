@@ -1,4 +1,6 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -166,11 +168,41 @@ def test_new_batch_claims_one_eligible_case_from_three_profile_targets(
     assert claim is not None
     assert claim.status == "claimed"
     assert claim.case is not None
-    assert claim.case.case_id == cases[0].case_id
-    assert claim.case.skill_id == "repo-analysis"
-    assert claim.batch.claimed_case_ids == (cases[0].case_id,)
-    assert len(claim.evidence) == 1
-    assert store.get_improvement_case(cases[0].case_id).status == "claimed"
+    assert claim.case.case_id == cases[2].case_id
+    assert claim.case.skill_id == "bug-fix"
+    assert claim.batch.claimed_case_ids == (cases[2].case_id,)
+    assert len(claim.evidence) == 2
+    assert store.get_improvement_case(cases[2].case_id).status == "claimed"
+
+
+def test_new_batch_does_not_claim_profiles_before_si06_candidate_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    _replayable_snapshots(store, workspace, monkeypatch)
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    _create_case(store, workspace, "repo-analysis", "unsupported-repo")
+    _create_case(store, workspace, "feature-delivery", "unsupported-feature")
+    store.configure_scheduled_batch(
+        batch_id="batch-66666666-6666-6666-6666-666666666666",
+        job_id="cron-si06-gate",
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_key="websocket:chat",
+        target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
+    )
+
+    claim = store.claim_scheduled_batch("cron-si06-gate", lease_owner="owner-1")
+
+    assert claim is not None
+    assert claim.status == "no_new_evidence"
+    assert claim.case is None
+    assert all(
+        case.status == "eligible"
+        for case in store.list_improvement_cases(project_id="project-1")
+    )
 
 
 def test_new_batch_has_no_model_claim_when_only_legacy_feedback_exists(
@@ -252,7 +284,9 @@ def test_cancelled_case_claim_is_released_without_marking_it_processed(
 ) -> None:
     store, workspace = _store(tmp_path)
     _replayable_snapshots(store, workspace, monkeypatch)
-    case = _create_case(store, workspace, "repo-analysis", "cancel")
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    case = _create_case(store, workspace, "bug-fix", "cancel")
     store.configure_scheduled_batch(
         batch_id="batch-44444444-4444-4444-4444-444444444444",
         job_id="cron-cancel",
@@ -280,6 +314,110 @@ def test_cancelled_case_claim_is_released_without_marking_it_processed(
     assert released is not None
     assert released.status == "eligible"
     assert released.selected_batch_id is None
+
+
+def test_failed_case_claim_is_released_for_bounded_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    _replayable_snapshots(store, workspace, monkeypatch)
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    case = _create_case(store, workspace, "bug-fix", "failed")
+    store.configure_scheduled_batch(
+        batch_id="batch-77777777-7777-7777-7777-777777777777",
+        job_id="cron-failed",
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_key="websocket:chat",
+        target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
+    )
+
+    first = store.claim_scheduled_batch("cron-failed", lease_owner="owner-1")
+    assert first is not None and first.case is not None
+    failed = store.finish_scheduled_batch(
+        "batch-77777777-7777-7777-7777-777777777777",
+        lease_owner="owner-1",
+        error="provider failed",
+    )
+    released = store.get_improvement_case(case.case_id)
+
+    assert failed.status == "failed"
+    assert released is not None
+    assert released.status == "eligible"
+    assert released.selected_batch_id is None
+    retry = store.claim_scheduled_batch("cron-failed", lease_owner="owner-2")
+    assert retry is not None and retry.status == "claimed"
+    assert retry.case is not None and retry.case.case_id == case.case_id
+
+
+def test_expired_lease_recovers_case_after_store_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    _replayable_snapshots(store, workspace, monkeypatch)
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    case = _create_case(store, workspace, "bug-fix", "restart")
+    batch = store.configure_scheduled_batch(
+        batch_id="batch-88888888-8888-8888-8888-888888888888",
+        job_id="cron-restart",
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_key="websocket:chat",
+        target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
+    )
+    first = store.claim_scheduled_batch("cron-restart", lease_owner="owner-1")
+    assert first is not None and first.case is not None
+    expired = replace(first.batch, lease_expires_at=0.0)
+    store._atomic_write(store.batches_dir / f"{batch.batch_id}.json", expired.to_dict())
+    restarted = SkillImprovementStore(store.root, workspace=workspace)
+
+    recovered = restarted.claim_scheduled_batch("cron-restart", lease_owner="owner-2")
+
+    assert recovered is not None and recovered.status == "claimed"
+    assert recovered.case is not None and recovered.case.case_id == case.case_id
+    assert recovered.batch.lease_owner == "owner-2"
+
+
+def test_concurrent_claims_bind_one_case_to_one_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    _replayable_snapshots(store, workspace, monkeypatch)
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    case = _create_case(store, workspace, "bug-fix", "concurrent")
+    store.configure_scheduled_batch(
+        batch_id="batch-99999999-9999-9999-9999-999999999999",
+        job_id="cron-concurrent",
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_key="websocket:chat",
+        target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
+    )
+    stores = [SkillImprovementStore(store.root, workspace=workspace) for _ in range(2)]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: args[0].claim_scheduled_batch(
+                    "cron-concurrent", lease_owner=args[1]
+                ),
+                zip(stores, ("owner-a", "owner-b"), strict=True),
+            )
+        )
+
+    statuses = sorted(result.status for result in results if result is not None)
+    assert statuses == ["busy", "claimed"]
+    claimed = next(
+        result for result in results if result is not None and result.status == "claimed"
+    )
+    assert claimed.case is not None and claimed.case.case_id == case.case_id
+    assert store.get_improvement_case(case.case_id).selected_batch_id == claimed.batch.batch_id
 
 
 def test_completed_case_advances_profile_rotation_before_next_claim(
@@ -331,9 +469,9 @@ def test_completed_case_advances_profile_rotation_before_next_claim(
     )
     assert finished.last_selected_skill_id == "bug-fix"
 
-    next_case = _create_case(store, workspace, "repo-analysis", "rotation-next")
+    next_case = _create_case(store, workspace, "bug-fix", "rotation-next")
     second_claim = store.claim_scheduled_batch("cron-rotation", lease_owner="owner-2")
 
     assert second_claim is not None and second_claim.case is not None
     assert second_claim.case.case_id == next_case.case_id
-    assert second_claim.case.skill_id == "repo-analysis"
+    assert second_claim.case.skill_id == "bug-fix"
