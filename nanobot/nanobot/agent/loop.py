@@ -2656,7 +2656,10 @@ class AgentLoop:
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
                         ),
-                        outcome=classify_turn_outcome("tool_error", str(exc)),
+                        outcome=classify_turn_outcome(
+                            classify_exception(exc, sender_id=msg.sender_id),
+                            str(exc),
+                        ),
                     )
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=exc)

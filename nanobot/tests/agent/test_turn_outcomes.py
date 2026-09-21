@@ -61,6 +61,19 @@ def test_driver_finish_is_a_completed_turn() -> None:
 def test_exception_source_is_classified_without_exposing_details() -> None:
     assert classify_exception(RuntimeError("provider timeout")) == "model_error"
     assert classify_exception(RuntimeError("worker failed"), sender_id="subagent") == "subagent_error"
+    assert classify_exception(RuntimeError("DevPilot project inspection failed")) == "devpilot_error"
+    assert classify_exception(RuntimeError("TaskProfileError: profile unavailable")) == "task_profile_error"
+
+
+def test_project_failure_sources_keep_recovery_scope_and_user_copy_separate() -> None:
+    devpilot = classify_turn_outcome("devpilot_error")
+    task_profile = classify_turn_outcome("task_profile_error")
+    subagent = classify_turn_outcome("subagent_error")
+
+    assert devpilot.user_message_key == "devpilot.failed"
+    assert task_profile.user_message_key == "devpilot.failed"
+    assert subagent.user_message_key == "subagent.failed"
+    assert all(item.continuation == "allow" for item in (devpilot, task_profile, subagent))
 
 
 def test_outcome_metadata_does_not_leak_internal_detail() -> None:

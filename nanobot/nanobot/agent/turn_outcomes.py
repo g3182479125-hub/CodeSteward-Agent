@@ -36,6 +36,8 @@ _MESSAGES: dict[str, str] = {
     "safety.path_rejected": "这个目录不在当前授权范围内，所以我没有读取它。你可以换一个已授权的路径。",
     "operation.unknown_result": "上次执行结果还不能确认；我不会重复执行，但可以先查状态。",
     "tool.failed": "这个操作没有完成，但不影响后续对话。你可以缩小范围后重试，或者继续聊别的。",
+    "devpilot.failed": "项目操作没有完成，但不影响后续对话。你可以检查项目路径后重试，或者继续聊别的。",
+    "subagent.failed": "辅助任务没有完成，但不影响主对话。你可以换个策略，或者继续聊别的。",
     "model.failed": "这次请求没有完成，不影响后续对话。你可以重试，或者先继续其他问题。",
     "turn.empty": "这次没有得到完整回答，但不影响后续对话。你可以换个问法再试。",
     "turn.cancelled": "这次操作已停止，不影响后续对话。",
@@ -192,7 +194,25 @@ def classify_turn_outcome(
             internal_code="guard_stopped",
         )
 
-    if reason in {"tool_error", "plugin_error", "subagent_error"}:
+    if reason == "subagent_error":
+        return TurnOutcome(
+            "recoverable_failure",
+            "turn",
+            "subagent.failed",
+            "retry_new",
+            "allow",
+            internal_code=reason,
+        )
+    if reason in {"devpilot_error", "task_profile_error", "plugin_error"}:
+        return TurnOutcome(
+            "recoverable_failure",
+            "turn",
+            "devpilot.failed",
+            "retry_new",
+            "allow",
+            internal_code=reason,
+        )
+    if reason == "tool_error":
         return TurnOutcome(
             "recoverable_failure",
             "turn",
@@ -235,6 +255,15 @@ def classify_exception(exc: BaseException, *, sender_id: str | None = None) -> s
     haystack = f"{type(exc).__name__} {exc}".lower()
     if sender_id == "subagent" or "subagent" in haystack:
         return "subagent_error"
+    if any(
+        marker in haystack
+        for marker in ("devpilot", "taskprofile", "task profile", "plugin")
+    ):
+        return (
+            "task_profile_error"
+            if "taskprofile" in haystack or "task profile" in haystack
+            else "devpilot_error"
+        )
     if any(marker in haystack for marker in ("provider", "model", "llm", "inference")):
         return "model_error"
     return "tool_error"

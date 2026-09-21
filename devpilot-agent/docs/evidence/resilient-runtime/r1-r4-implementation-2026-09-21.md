@@ -38,6 +38,8 @@
 ### R4：统一用户提示
 
 - 普通工具、任务 profile、模型和 provider 失败使用统一中文 catalog。
+- 普通工具、DevPilot/任务配置、子代理、模型和 provider 失败按来源映射到不同的
+  中文 catalog；异常类型和内部文本只参与服务端分类，不进入用户可见 payload。
 - 用户看见的是当前步骤的结果、可重试/换问法/查状态提示和“对话仍可继续”，不看见
   Python 异常、诊断预算术语或旧英文兜底。
 
@@ -47,11 +49,20 @@
 
 ```text
 Ruff affected files: All checks passed
-pytest targeted: 114 passed, 3 deselected
+pytest targeted: 352 passed, 3 deselected
 WebUI targeted Vitest: 146 passed
 WebUI lint: passed
 WebUI production build: passed
 ```
+
+失败来源分类回归：`8 passed`。候选代码在修改前红灯的同一工具失败恢复用例上，
+已不再返回 `Error: RuntimeError: tool exploded`，并且同一 session 的下一条普通消息
+仍能得到正常回答。
+
+DevPilot 临时工具测试从仓库集成环境启动后为 `28 passed, 1 failed, 1 skipped`；
+唯一失败是基线同样存在的持久化加载断言，不属于本轮改动。直接使用 DevPilot 自己
+的虚拟环境还会因为缺少 nanobot 依赖而无法收集，这属于启动方式问题，证据中没有
+把它伪装成通过。
 
 本轮定向 pytest 排除了一个已有环境前置失败：
 `test_h7_default_driver_runs_each_task_profile_main_chain[bug-fix]` 当前机器的
@@ -64,5 +75,6 @@ WebUI production build: passed
 
 ## 尚未宣称完成的部分
 
-R5 的 Standards/Spec 双轴审查、候选固定点记录和最终验收尚未完成；因此本文件不是
-“全部完成”声明。审查通过后再决定是否把计划状态改为 complete。
+R5 的 Standards/Spec 双轴审查和真实 WebUI 录制场景仍需完成；因此本文件不是“全部
+完成”声明。自动回归和修改前红灯证据已经补齐，最终是否标记计划 complete 取决于
+R5 的增量审查和实际 WebUI 验收，不会用单元测试替代录制前验证。
