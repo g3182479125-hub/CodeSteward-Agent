@@ -76,10 +76,10 @@ InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
 TaskContextEvidenceCallback = Callable[[str, Mapping[str, Any], Any], None]
 RemoteDecisionCallback = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 
-_DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
+_DEFAULT_ERROR_MESSAGE = "这次请求没有完成，不影响后续对话。你可以重试，或者先继续其他问题。"
 _ARREARAGE_ERROR_MESSAGE = (
-    "The AI provider rejected the request because the API key is out of quota or the "
-    "account is in arrears. Please top up / check the billing status of your API key and try again."
+    "模型服务暂时拒绝了这次请求，可能是额度或账户状态问题。你可以检查配置后重试，"
+    "也可以先继续其他问题。"
 )
 _PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
 _MAX_EMPTY_RETRIES = 2

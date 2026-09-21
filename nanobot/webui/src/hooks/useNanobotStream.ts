@@ -544,7 +544,8 @@ function eventExtendsModelActivity(ev: InboundEvent): boolean {
     || ev.event === "file_edit"
   ) return true;
   return ev.event === "message"
-    && (ev.kind === "tool_hint" || ev.kind === "progress" || ev.kind === "reasoning");
+    && (ev.kind === "tool_hint" || ev.kind === "progress" || ev.kind === "reasoning")
+    || ev.event === "turn_outcome";
 }
 
 function finalizeStreamedTurn(
@@ -1145,6 +1146,40 @@ export function useNanobotStream(
       if (ev.event === "reasoning_end") {
         if (suppressStreamUntilTurnEndRef.current) return;
         setMessages((prev) => closeReasoningStream(prev));
+        return;
+      }
+
+      if (ev.event === "turn_outcome") {
+        const turn = turnFieldsFromEvent(ev, "activity");
+        const text = ev.text || "当前这一步没有完成，但对话仍可继续。";
+        setMessages((prev) => {
+          const segmentId = ensureActivitySegmentId();
+          const last = prev[prev.length - 1];
+          if (last?.kind === "trace" && last.activitySegmentId === segmentId) {
+            return [
+              ...prev.slice(0, -1),
+              {
+                ...last,
+                content: text,
+                traces: [...(last.traces ?? [last.content]), text],
+                ...turn,
+              },
+            ];
+          }
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "tool",
+              kind: "trace",
+              content: text,
+              traces: [text],
+              activitySegmentId: segmentId,
+              ...turn,
+              createdAt: Date.now(),
+            },
+          ];
+        });
         return;
       }
 

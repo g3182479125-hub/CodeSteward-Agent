@@ -1099,7 +1099,7 @@ class TestToolEventProgress:
         while bus.outbound_size > 0:
             outbound.append(await bus.consume_outbound())
 
-        error_msgs = [m for m in outbound if m.content == "Sorry, I encountered an error."]
+        error_msgs = [m for m in outbound if "后续对话" in m.content and "没有完成" in m.content]
         turn_end_msgs = [m for m in outbound if isinstance(m.event, TurnEndEvent)]
         statuses = [m for m in outbound if isinstance(m.event, GoalStatusEvent)]
 

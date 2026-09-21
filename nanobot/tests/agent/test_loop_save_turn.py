@@ -832,6 +832,86 @@ async def test_h7_recovery_turn_does_not_use_old_managed_driver(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_exhausted_h8_budget_does_not_pause_next_plain_chat_turn(tmp_path: Path) -> None:
+    """A spent prior turn budget must not become a session-wide chat lock."""
+    loop = _make_full_loop(tmp_path)
+    manager = LoopHandoffManager(SqliteLoopHandoffStore(tmp_path / "devpilot.db"))
+    session = loop.sessions.get_or_create("websocket:spent-budget")
+    checkpoint = LoopCheckpoint(
+        session_id=session.key,
+        task_id="task-1",
+        project_id="project-1",
+        step=2,
+        message_position=0,
+        remaining_iterations=0,
+    )
+    manager.ensure(checkpoint)
+    loop.loop_handoff_manager = manager
+    loop.sessions.save(session)
+    loop.provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="new answer"))
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="spent-budget",
+            content="你好，开始一个新的问题",
+        )
+    )
+
+    assert response is not None
+    assert response.content == "new answer"
+    loop.provider.chat_with_retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_returns_safe_turn_outcome_and_next_message_continues(
+    tmp_path: Path,
+) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    calls = 0
+
+    async def fake_run_agent_loop(initial_messages, **_kwargs):
+        nonlocal calls
+        calls += 1
+        content = "Error: RuntimeError: tool exploded" if calls == 1 else "new answer"
+        stop_reason = "tool_error" if calls == 1 else "stop"
+        return (
+            content,
+            [],
+            [*initial_messages, {"role": "assistant", "content": content}],
+            stop_reason,
+            False,
+        )
+
+    loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
+
+    failed = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="recoverable",
+            content="执行一个会失败的操作",
+        )
+    )
+    continued = await loop._process_message(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="recoverable",
+            content="你好",
+        )
+    )
+
+    assert failed is not None
+    assert "Error:" not in failed.content
+    assert "后续对话" in failed.content
+    assert continued is not None
+    assert continued.content == "new answer"
+
+
+@pytest.mark.asyncio
 async def test_h7_terminal_query_clears_old_tool_intent_and_recovery_marker(
     tmp_path: Path,
 ) -> None:

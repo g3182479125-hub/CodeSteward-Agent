@@ -38,6 +38,7 @@ from nanobot.bus.outbound_events import (
     SessionUpdatedEvent,
     TurnEndEvent,
     TurnModelUpdatedEvent,
+    TurnOutcomeEvent,
     outbound_event_from_message,
 )
 from nanobot.bus.queue import MessageBus
@@ -1594,6 +1595,29 @@ class WebSocketChannel(BaseChannel):
             if key not in {"_devpilot_proposal", "_devpilot_temporary_tool_persistence"}
         }
         event = outbound_event_from_message(msg)
+        outcome = msg.metadata.get("turn_outcome")
+        if isinstance(outcome, dict) and outcome.get("category") != "completed":
+            turn_id = msg.metadata.get(WEBUI_TURN_METADATA_KEY)
+            outcome_event = TurnOutcomeEvent(
+                category=str(outcome.get("category", "recoverable_failure")),
+                scope=str(outcome.get("scope", "turn")),
+                message_key=str(outcome.get("message_key", "tool.failed")),
+                text=msg.content,
+                retry_hint=str(outcome.get("retry_hint", "retry_new")),
+                continuation=str(outcome.get("continuation", "allow")),
+                operation_refs=[
+                    ref
+                    for ref in outcome.get("operation_refs", [])
+                    if isinstance(ref, str) and len(ref) <= 128
+                ],
+                turn_id=turn_id if isinstance(turn_id, str) else None,
+                schema_version=(
+                    int(outcome["schema_version"])
+                    if isinstance(outcome.get("schema_version"), int)
+                    else 1
+                ),
+            )
+            await self._send_turn_outcome(msg.chat_id, outcome_event, transcript_metadata)
         progress_event = event if isinstance(event, ProgressEvent) else None
         if isinstance(event, RuntimeModelUpdatedEvent):
             await self.send_runtime_model_updated(
@@ -1611,7 +1635,8 @@ class WebSocketChannel(BaseChannel):
                 | TurnEndEvent
                 | SessionUpdatedEvent
                 | GoalStatusEvent
-                | GoalStateSyncEvent,
+                | GoalStateSyncEvent
+                | TurnOutcomeEvent,
             ):
                 self.logger.debug("no active subscribers for chat_id={}", msg.chat_id)
             else:
@@ -1731,6 +1756,38 @@ class WebSocketChannel(BaseChannel):
             return
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" ")
+
+    async def _send_turn_outcome(
+        self,
+        chat_id: str,
+        event: TurnOutcomeEvent,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Persist and publish the redacted outcome before its answer frame."""
+        payload: dict[str, Any] = {
+            "event": "turn_outcome",
+            "schema_version": event.schema_version,
+            "chat_id": chat_id,
+            "category": event.category,
+            "scope": event.scope,
+            "message_key": event.message_key,
+            "text": event.text,
+            "retry_hint": event.retry_hint,
+            "continuation": event.continuation,
+            "operation_refs": event.operation_refs,
+        }
+        if event.turn_id is not None:
+            payload["turn_id"] = event.turn_id
+        self._persist_turn_transcript_event(
+            chat_id,
+            payload,
+            metadata=metadata,
+            phase="activity",
+        )
+        raw = json.dumps(payload, ensure_ascii=False)
+        conns = list(self._subs.get(chat_id, ()))
+        for connection in conns:
+            await self._safe_send_to(connection, raw, label=" turn_outcome ")
 
     async def send_reasoning_delta(
         self,

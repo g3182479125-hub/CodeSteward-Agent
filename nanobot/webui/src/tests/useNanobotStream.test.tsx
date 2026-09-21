@@ -126,6 +126,37 @@ async function flushStreamFrame() {
 }
 
 describe("useNanobotStream", () => {
+  it("renders a turn outcome as activity without locking the chat stream", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-outcome", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emit("chat-outcome", {
+        event: "turn_outcome",
+        chat_id: "chat-outcome",
+        schema_version: 1,
+        category: "guard_stopped",
+        scope: "turn",
+        message_key: "guard.no_progress",
+        text: "这一步没有新进展，但对话仍可继续。",
+        retry_hint: "change_input",
+        continuation: "allow",
+        operation_refs: [],
+      });
+    });
+
+    expect(result.current.messages).toMatchObject([
+      {
+        role: "tool",
+        kind: "trace",
+        content: "这一步没有新进展，但对话仍可继续。",
+        turnPhase: "activity",
+      },
+    ]);
+  });
+
   it("batches answer deltas into one animation-frame update", async () => {
     const fake = fakeClient();
     const requestFrame = vi.spyOn(window, "requestAnimationFrame");

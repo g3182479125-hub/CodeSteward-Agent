@@ -61,6 +61,21 @@ class TurnEndEvent(OutboundEvent):
 
 
 @dataclass(frozen=True)
+class TurnOutcomeEvent(OutboundEvent):
+    """Safe activity projection for a non-completed turn."""
+
+    category: str
+    scope: str
+    message_key: str
+    text: str
+    retry_hint: str
+    continuation: str
+    operation_refs: list[str]
+    turn_id: str | None = None
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
 class GoalStatusEvent(OutboundEvent):
     status: str
     started_at: float | None = None
@@ -150,6 +165,26 @@ def _legacy_event_from_metadata(msg: OutboundMessage) -> OutboundEvent | None:
         return RuntimeModelUpdatedEvent(
             model=_metadata_str(meta, "model"),
             model_preset=_metadata_str(meta, "model_preset"),
+        )
+    outcome = meta.get("turn_outcome")
+    if isinstance(outcome, dict) and outcome.get("category") != "completed":
+        refs = outcome.get("operation_refs")
+        return TurnOutcomeEvent(
+            category=str(outcome.get("category", "recoverable_failure")),
+            scope=str(outcome.get("scope", "turn")),
+            message_key=str(outcome.get("message_key", "tool.failed")),
+            text=msg.content,
+            retry_hint=str(outcome.get("retry_hint", "retry_new")),
+            continuation=str(outcome.get("continuation", "allow")),
+            operation_refs=[ref for ref in refs if isinstance(ref, str)]
+            if isinstance(refs, list)
+            else [],
+            turn_id=_metadata_str(meta, "turn_id"),
+            schema_version=(
+                int(outcome["schema_version"])
+                if isinstance(outcome.get("schema_version"), int)
+                else 1
+            ),
         )
     if meta.get("_goal_state_sync"):
         goal_state = meta.get("goal_state")

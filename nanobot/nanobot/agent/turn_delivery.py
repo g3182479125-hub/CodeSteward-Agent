@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from nanobot.agent.turn_outcomes import TurnOutcome, message_for_outcome
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import (
     RetryWaitEvent,
@@ -216,7 +217,7 @@ class TurnDelivery:
         return OutboundMessage(
             channel=self.route.channel,
             chat_id=self.route.chat_id,
-            content=content or "Background task completed.",
+            content=content or "后台任务已完成。",
             metadata=metadata,
             event=event,
         )
@@ -260,13 +261,26 @@ class TurnDelivery:
                 metadata=self.lifecycle_message.metadata,
             )
 
-    async def fail(self, *, publish_completion: bool) -> None:
+    async def fail(
+        self,
+        *,
+        publish_completion: bool,
+        outcome: TurnOutcome | None = None,
+    ) -> None:
+        metadata = dict(self.lifecycle_message.metadata or {})
+        if outcome is not None:
+            metadata["turn_outcome"] = outcome.to_metadata()
+            self.lifecycle_message.metadata["turn_outcome"] = outcome.to_metadata()
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel=self.lifecycle_message.channel,
                 chat_id=self.lifecycle_message.chat_id,
-                content="Sorry, I encountered an error.",
-                metadata=dict(self.lifecycle_message.metadata or {}),
+                content=(
+                    message_for_outcome(outcome)
+                    if outcome is not None
+                    else "这次处理没有完成，但不影响后续对话。你可以重试，或者继续聊别的。"
+                ),
+                metadata=metadata,
             )
         )
         if publish_completion:

@@ -12,6 +12,7 @@ from nanobot.bus.outbound_events import (
     StreamedResponseEvent,
     StreamEndEvent,
     TurnEndEvent,
+    TurnOutcomeEvent,
     outbound_event_from_message,
     outbound_message_for_event,
     replace_outbound_event,
@@ -53,6 +54,33 @@ def test_normal_outbound_message_has_no_runtime_event() -> None:
     msg = OutboundMessage(channel="websocket", chat_id="chat-1", content="hello")
 
     assert outbound_event_from_message(msg) is None
+
+
+def test_turn_outcome_metadata_becomes_a_typed_safe_event() -> None:
+    msg = OutboundMessage(
+        channel="websocket",
+        chat_id="chat-1",
+        content="这一步没有完成，但对话仍可继续。",
+        metadata={
+            "turn_id": "turn-1",
+            "turn_outcome": {
+                "schema_version": 1,
+                "category": "guard_stopped",
+                "scope": "turn",
+                "message_key": "guard.no_progress",
+                "retry_hint": "change_input",
+                "continuation": "allow",
+                "operation_refs": ["run:1"],
+            },
+        },
+    )
+
+    event = outbound_event_from_message(msg)
+
+    assert isinstance(event, TurnOutcomeEvent)
+    assert event.category == "guard_stopped"
+    assert event.turn_id == "turn-1"
+    assert event.operation_refs == ["run:1"]
 
 
 def test_legacy_progress_metadata_flags_create_runtime_event() -> None:

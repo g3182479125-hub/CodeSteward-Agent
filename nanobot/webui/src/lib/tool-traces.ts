@@ -91,6 +91,11 @@ export function toolTraceLinesFromEvents(events: unknown): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const event of normalizeToolProgressEvents(events)) {
+    const activity = event.capability_activity;
+    if (activity && typeof activity.summary === "string" && activity.summary.trim()) {
+      lines.push(activity.summary);
+      continue;
+    }
     const callId = (event as { call_id?: unknown }).call_id;
     if (callId && typeof callId === "string") {
       if (seen.has(callId)) continue;

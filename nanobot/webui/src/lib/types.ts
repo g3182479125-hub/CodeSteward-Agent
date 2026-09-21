@@ -297,6 +297,11 @@ export interface ToolProgressEvent {
   code?: string;
   decision?: string;
   retryable?: boolean;
+  capability_activity?: {
+    kind: "temporary_tool" | string;
+    phase: "validating" | "validated" | "active" | "failed" | "retiring" | "disposed" | string;
+    summary: string;
+  };
 }
 
 export interface UIFileDiff {
@@ -1185,6 +1190,18 @@ export type InboundEvent =
       source?: UIMessageSource;
       /** Optional structured payload on progress frames (channel-specific). */
       agent_ui?: AgentUIBlob;
+    } & InboundTurnMetadata)
+  | ({
+      event: "turn_outcome";
+      chat_id: string;
+      schema_version?: number;
+      category: "completed" | "recoverable_failure" | "guard_stopped" | "blocked_for_safety" | "unknown_side_effect" | "cancelled" | string;
+      scope: "turn" | "operation" | "project" | string;
+      message_key: string;
+      text: string;
+      retry_hint: "retry_new" | "check_status" | "change_input" | "none" | string;
+      continuation: "allow" | "allow_readonly" | "query_only" | string;
+      operation_refs?: string[];
     } & InboundTurnMetadata)
   | ({
       event: "file_edit";

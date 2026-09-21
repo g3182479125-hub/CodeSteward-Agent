@@ -84,6 +84,13 @@ from nanobot.agent.turn_delivery import (
 )
 from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
+from nanobot.agent.turn_outcomes import (
+    TURN_OUTCOME_METADATA_KEY,
+    TurnOutcome,
+    classify_turn_outcome,
+    message_for_outcome,
+    should_replace_content,
+)
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.bus.queue import MessageBus
@@ -212,6 +219,7 @@ class TurnContext:
     final_content: str | None = None
     all_messages: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
+    outcome: TurnOutcome | None = None
     had_injections: bool = False
     streamed_content: bool = False
 
@@ -2248,7 +2256,7 @@ class AgentLoop:
                     max_iterations=(h8_iteration_budget),
                     max_tool_result_chars=self.max_tool_result_chars,
                     hook=hook,
-                    error_message="Sorry, I encountered an error calling the AI model.",
+                    error_message="这次请求没有完成，不影响后续对话。你可以重试，或者先继续其他问题。",
                     concurrent_tools=True,
                     workspace=effective_scope.project_path,
                     session_key=session.key if session else None,
@@ -2643,20 +2651,14 @@ class AgentLoop:
                     raise
                 except TaskProfileError as exc:
                     logger.warning("Task profile unavailable for session {}: {}", session_key, exc)
-                    response = OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Task profile unavailable: {exc}",
-                        metadata={**dict(msg.metadata or {}), "render_as": "text"},
-                    )
-                    await delivery.complete(
-                        response,
+                    await delivery.fail(
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
                         ),
+                        outcome=classify_turn_outcome("tool_error", str(exc)),
                     )
                     for _, coordinator in self._automation_turn_coordinators:
-                        coordinator.complete(msg, response=response)
+                        coordinator.complete(msg, error=exc)
                 except Exception as exc:
                     logger.exception("Error processing message for session {}", session_key)
                     try:
@@ -2671,7 +2673,8 @@ class AgentLoop:
                     await delivery.fail(
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
-                        )
+                        ),
+                        outcome=classify_turn_outcome("tool_error", str(exc)),
                     )
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=exc)
@@ -3244,6 +3247,27 @@ class AgentLoop:
         ctx.final_content = final_content
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
+        operation_refs: tuple[str, ...] = ()
+        if ctx.session is not None:
+            for metadata_key in (self._RUNTIME_CHECKPOINT_KEY, self._H7_HANDOFF_PAUSE_KEY):
+                raw_marker = ctx.session.metadata.get(metadata_key)
+                if not isinstance(raw_marker, Mapping):
+                    continue
+                raw_checkpoint = raw_marker.get("h7_loop_checkpoint", raw_marker)
+                if not isinstance(raw_checkpoint, Mapping):
+                    continue
+                raw_refs = raw_checkpoint.get("uncertain_side_effect_refs", ())
+                if isinstance(raw_refs, (list, tuple)):
+                    operation_refs = tuple(
+                        ref for ref in raw_refs if isinstance(ref, str) and ref
+                    )
+                    if operation_refs:
+                        break
+        ctx.outcome = classify_turn_outcome(
+            stop_reason,
+            final_content,
+            operation_refs=operation_refs,
+        )
         ctx.had_injections = had_injections
         if ctx.kind is TurnKind.USER:
             await turn_continuation.maybe_continue_turn(ctx)
@@ -3291,6 +3315,8 @@ class AgentLoop:
                 )
             )
         self._clear_pending_user_turn(session)
+        if ctx.outcome is not None:
+            session.metadata[TURN_OUTCOME_METADATA_KEY] = ctx.outcome.to_metadata()
         preserve_h7_pause = ctx.stop_reason == "driver_paused" and isinstance(
             session.metadata.get(self._RUNTIME_CHECKPOINT_KEY), dict
         )
@@ -3299,6 +3325,41 @@ class AgentLoop:
         self.sessions.save(session)
         if not turn_continuation.internal_continuation_pending(ctx.msg.metadata):
             cleanup = await self._cleanup_temporary_run(ctx.session_key, ctx.attributes)
+            if cleanup and ctx.on_progress is not None:
+                cleanup_events: list[dict[str, Any]] = []
+                for candidate in cleanup:
+                    tool_id = candidate.get("tool_id")
+                    if not isinstance(tool_id, str) or not tool_id:
+                        continue
+                    disposed = candidate.get("artifact") == "pending_persistence"
+                    cleanup_events.append(
+                        {
+                            "version": 1,
+                            "phase": "end" if disposed else "error",
+                            "call_id": f"temporary-cleanup:{tool_id}",
+                            "name": "temporary_tool_cleanup",
+                            "arguments": {},
+                            "result": None,
+                            "error": None if disposed else "cleanup_pending",
+                            "files": [],
+                            "embeds": [],
+                            "capability_activity": {
+                                "kind": "temporary_tool",
+                                "phase": "disposed" if disposed else "cleanup_pending",
+                                "summary": (
+                                    "临时工具已清理"
+                                    if disposed
+                                    else "临时工具清理待重试，聊天仍可继续"
+                                ),
+                            },
+                        }
+                    )
+                if cleanup_events:
+                    await ctx.on_progress(
+                        "",
+                        tool_hint=False,
+                        tool_events=cleanup_events,
+                    )
             if cleanup and ctx.stop_reason == "completed" and any(
                 candidate.get("artifact") == "pending_persistence" for candidate in cleanup
             ) and not any(
@@ -3383,16 +3444,26 @@ class AgentLoop:
             ctx.outbound = None
             return
         if ctx.kind is TurnKind.SYSTEM:
+            content = ctx.final_content
+            if ctx.outcome is not None and should_replace_content(
+                ctx.outcome, ctx.stop_reason, content
+            ):
+                content = message_for_outcome(ctx.outcome)
             ctx.outbound = ctx.delivery.background_response(
-                ctx.final_content,
+                content,
                 stop_reason=ctx.stop_reason,
                 streamed=ctx.streamed_content,
                 latency_ms=ctx.turn_latency_ms,
             )
             return
+        content = cast(str, ctx.final_content)
+        if ctx.outcome is not None and should_replace_content(
+            ctx.outcome, ctx.stop_reason, content
+        ):
+            content = message_for_outcome(ctx.outcome)
         ctx.outbound = self._assemble_outbound(
             ctx.msg,
-            cast(str, ctx.final_content),
+            content,
             ctx.stop_reason,
             ctx.had_injections,
             ctx.streamed_content,
@@ -3400,6 +3471,8 @@ class AgentLoop:
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.outbound is not None:
+            if ctx.outcome is not None and ctx.outcome.category != "completed":
+                ctx.outbound.metadata["turn_outcome"] = ctx.outcome.to_metadata()
             temporary_binding = getattr(ctx, "attributes", {}).get(
                 "devpilot_temporary_persistence_binding"
             )
