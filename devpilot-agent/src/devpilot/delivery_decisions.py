@@ -1,4 +1,4 @@
-"""P4-04 delivery reporting and explicit final-decision workflow."""
+"""P4-04 delivery reporting and explicit stop/rollback workflow."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _SAFE_VERIFICATION_KEYS = (
 
 
 class DeliveryDecisionWorkflow:
-    """Expose one compact, redacted delivery view and explicit user decisions."""
+    """Expose one compact, redacted delivery view and recovery decisions."""
 
     def __init__(self, manager: ControlPlaneManager) -> None:
         self.manager = manager
@@ -51,9 +51,7 @@ class DeliveryDecisionWorkflow:
         artifacts = store.list_artifacts(run_id) if run_id is not None else []
         persisted = store.get_change_set(change_set_id) or {}
         decision_events = [
-            event
-            for event in events
-            if event["event_type"] in {"delivery.accepted", "delivery.stopped"}
+            event for event in events if event["event_type"] == "delivery.stopped"
         ]
         decision = decision_events[-1] if decision_events else None
         status = str(change_set["status"])
@@ -63,16 +61,9 @@ class DeliveryDecisionWorkflow:
         stopped = decision is not None and decision["event_type"] == "delivery.stopped"
         available: list[str] = []
         if decision is None:
-            if status in {
-                ChangeSetStatus.VERIFIED.value,
-                ChangeSetStatus.VERIFICATION_FAILED.value,
-            }:
-                available.append("accept")
             if status in _DECISION_STATES:
                 available.append("stop")
-        if status in _ROLLBACK_STATES and not (
-            decision and decision["event_type"] == "delivery.accepted"
-        ):
+        if status in _ROLLBACK_STATES:
             available.append("rollback")
         run = store.get_run_state(run_id) if run_id is not None else None
         return {
@@ -96,13 +87,7 @@ class DeliveryDecisionWorkflow:
             "failure_reason": persisted.get("failure_reason"),
             "artifacts": [self._artifact_metadata(item) for item in artifacts],
             "decision": {
-                "type": (
-                    "accept"
-                    if decision and decision["event_type"] == "delivery.accepted"
-                    else "stop"
-                    if decision
-                    else None
-                ),
+                "type": "stop" if decision else None,
                 "at": decision["created_at"] if decision else None,
                 "stopped": stopped,
                 "reason": (
@@ -119,13 +104,6 @@ class DeliveryDecisionWorkflow:
                 "requires_approval_token": True,
             },
         }
-
-    def accept(
-        self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
-    ) -> dict[str, Any]:
-        return self.manager.accept(
-            change_set_id, user_confirmation, idempotency_key=idempotency_key
-        )
 
     def stop(
         self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None

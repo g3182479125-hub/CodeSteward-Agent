@@ -12,7 +12,7 @@
 
 ### 目标
 
-- 在用户确认边界识别自然语言意图：应用、应用并验证、验证、回滚、接受、停止、信任项目、启用插件。
+- 在用户确认边界识别自然语言意图：应用、应用并验证、验证、回滚、停止、信任项目、启用插件。
 - 识别常见否定句和歧义表达，避免误执行；只有必要时进行一次简短澄清。
 - 控制面暂时不可用时，明确记录待处理意图，避免重复追问或重复登记。
 - 每个思考节点默认显示中文单行摘要，点击后展开完整内容，支持流式更新。
@@ -32,7 +32,7 @@
 新增共享的意图解析模块，输入用户当前文本和当前待确认上下文，输出：
 
 ```text
-intent: apply | apply_verify | verify | rollback | accept | stop |
+intent: apply | apply_verify | verify | rollback | stop |
         trust_project | plugin_confirm | none | ambiguous
 confidence: explicit | contextual | none
 reason: optional diagnostic code
@@ -48,7 +48,6 @@ reason: optional diagnostic code
 | apply | “可以改”“按这个方案做”“开始修复” |
 | apply_verify | “改完跑测试”“直接修好并验证” |
 | verify | “验证一下”“跑测试确认” |
-| accept | “接受这次交付”“保留这次修改” |
 | stop | “停止”“不继续了”“先到这里” |
 | trust_project | “这个项目可以信任”“允许这个项目” |
 | plugin_confirm | “启用这个插件”“可以试用这个插件” |
@@ -93,12 +92,12 @@ bug-fix、feature-delivery 以及相关用户提示改为：等待用户明确�
 
 ### 后端
 
-- 意图别名表覆盖全部八类动作。
+- 意图别名表覆盖全部七类动作。
 - 否定句、引用代码中的动作词、互相冲突的动作返回拒绝或歧义。
 - “撤回”“恢复原版本”可以生成 rollback 的可信确认上下文。
 - 无待确认 ChangeSet、项目不匹配、签名失效时仍然拒绝。
 - 控制面不可用只登记一次，不产生重复追问状态。
-- 接受、停止、执行、验证、信任项目、插件授权自然语言回归测试。
+- 停止、执行、验证、信任项目、插件授权自然语言回归测试。
 
 ### 前端
 

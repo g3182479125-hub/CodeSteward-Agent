@@ -17,7 +17,6 @@ UserIntent = Literal[
     "apply_verify",
     "verify",
     "rollback",
-    "accept",
     "stop",
     "trust_project",
     "plugin_confirm",
@@ -44,7 +43,6 @@ _ALLOWED_INTENTS = frozenset(
         "apply_verify",
         "verify",
         "rollback",
-        "accept",
         "stop",
         "trust_project",
         "plugin_confirm",
@@ -181,11 +179,6 @@ def classify_user_intent(
             ),
         ):
             candidates.add("apply")
-        if _contains_any(
-            normalized,
-            ("接受", "接受这次交付", "保留这次修改", "确认接受", "accept"),
-        ):
-            candidates.add("accept")
         if _contains_any(normalized, ("停止交付", "停止", "不继续了", "先到这里", "stop")):
             candidates.add("stop")
         if _contains_any(

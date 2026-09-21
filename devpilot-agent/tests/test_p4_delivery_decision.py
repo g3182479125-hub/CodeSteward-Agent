@@ -49,14 +49,14 @@ def _delivered(
     return store, project, manager, proposal
 
 
-def test_report_is_compact_redacted_and_accept_is_idempotent(tmp_path: Path) -> None:
-    store, _project, manager, proposal = _delivered(tmp_path)
+def test_report_is_compact_redacted_and_exposes_recovery_actions(tmp_path: Path) -> None:
+    _store, _project, manager, proposal = _delivered(tmp_path)
     decision = DeliveryDecisionWorkflow(manager)
 
     report = decision.report(proposal.change_set_id)
     assert report["status"] == "verified"
     assert report["workflow"] == "feature-delivery"
-    assert report["available_decisions"] == ["accept", "stop", "rollback"]
+    assert report["available_decisions"] == ["stop", "rollback"]
     assert report["artifacts"][0]["kind"] == "delivery"
     assert report["before_manifest"]
     assert report["after_manifest"]
@@ -66,26 +66,13 @@ def test_report_is_compact_redacted_and_accept_is_idempotent(tmp_path: Path) -> 
     assert "stdout" not in serialized
     assert "stderr" not in serialized
 
-    accepted = decision.accept(
-        proposal.change_set_id, "确认接受", idempotency_key="p4-04-accept"
-    )
-    assert accepted["status"] == "accepted"
-    assert accepted["files_changed"] is False
-    assert decision.accept(
-        proposal.change_set_id, "确认接受", idempotency_key="p4-04-accept"
-    ) == accepted
-    assert manager.get(proposal.change_set_id)["status"] == "accepted"
-    assert store.list_run_events(proposal.run_id)[-1]["event_type"] == "delivery.accepted"
-    assert decision.report(proposal.change_set_id)["available_decisions"] == []
-
-
 def test_failed_delivery_can_stop_without_claiming_success(tmp_path: Path) -> None:
     _store, _project, manager, proposal = _delivered(tmp_path, exit_code=1)
     decision = DeliveryDecisionWorkflow(manager)
 
     report = decision.report(proposal.change_set_id)
     assert report["status"] == "verification_failed"
-    assert report["available_decisions"] == ["accept", "stop", "rollback"]
+    assert report["available_decisions"] == ["stop", "rollback"]
     stopped = decision.stop(proposal.change_set_id, "确认停止", idempotency_key="p4-04-stop")
     assert stopped["status"] == "verification_failed"
     assert stopped["success_claimed"] is False
@@ -94,27 +81,12 @@ def test_failed_delivery_can_stop_without_claiming_success(tmp_path: Path) -> No
     assert after["decision"]["type"] == "stop"
     assert after["available_decisions"] == ["rollback"]
 
-    with pytest.raises(Exception, match="CHANGESET_DECISION_FINAL"):
-        decision.accept(proposal.change_set_id, "接受", idempotency_key="p4-04-accept-after-stop")
-
-
-def test_accepting_failed_verification_preserves_failure_reason(tmp_path: Path) -> None:
-    _store, _project, manager, proposal = _delivered(tmp_path, exit_code=1)
-    decision = DeliveryDecisionWorkflow(manager)
-
-    accepted = decision.accept(
-        proposal.change_set_id, "接受", idempotency_key="p4-04-accept-failed"
-    )
-    assert accepted["status"] == "accepted"
-    assert decision.report(proposal.change_set_id)["failure_reason"] == "NONZERO_EXIT"
-
-
-def test_decision_requires_exact_confirmation_and_never_mints_rollback(tmp_path: Path) -> None:
+def test_stop_requires_exact_confirmation_and_never_mints_rollback(tmp_path: Path) -> None:
     _store, _project, manager, proposal = _delivered(tmp_path)
     decision = DeliveryDecisionWorkflow(manager)
 
     with pytest.raises(Exception, match="USER_CONFIRMATION_REQUIRED"):
-        decision.accept(proposal.change_set_id, "执行", idempotency_key="p4-04-bad")
+        decision.stop(proposal.change_set_id, "接受", idempotency_key="p4-04-bad")
     report = decision.report(proposal.change_set_id)
     assert report["rollback"]["capability"] == "r1.rollback"
     assert report["rollback"]["requires_approval_token"] is True
@@ -139,10 +111,17 @@ def test_delivery_report_api_and_nanobot_adapter_are_read_only(
     assert response.json()["status"] == "verified"
     missing_key = client.post(
         f"/v1/change-sets/{proposal.change_set_id}/decision",
-        json={"decision": "accept", "user_confirmation": "接受"},
+        json={"decision": "stop", "user_confirmation": "停止"},
     )
     assert missing_key.status_code == 409
     assert missing_key.json()["error"]["code"] == "IDEMPOTENCY_REQUIRED"
+    removed_accept = client.post(
+        f"/v1/change-sets/{proposal.change_set_id}/decision",
+        headers={"Idempotency-Key": "p4-04-removed-accept"},
+        json={"decision": "accept", "user_confirmation": "接受"},
+    )
+    assert removed_accept.status_code == 409
+    assert removed_accept.json()["error"]["code"] == "DECISION_INVALID"
     invalid_decision = client.post(
         f"/v1/change-sets/{proposal.change_set_id}/decision",
         headers={"Idempotency-Key": "p4-04-invalid-decision"},

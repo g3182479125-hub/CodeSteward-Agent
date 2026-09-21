@@ -723,59 +723,6 @@ class ControlPlaneManager:
                 event.update(event_payload)
             self._event(entry, f"{workflow.replace('-', '_')}.failed", event)
 
-    def accept(
-        self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
-    ) -> dict[str, Any]:
-        """Record the user's final acceptance without changing project files."""
-        if not confirmation_matches(user_confirmation, "accept"):
-            raise PatchError(
-                "USER_CONFIRMATION_REQUIRED", "explicit acceptance confirmation is required"
-            )
-        with self._mutex:
-            entry = self._require(change_set_id)
-            replay = self._check_idempotency(
-                idempotency_key, "accept", change_set_id, user_confirmation
-            )
-            if replay is not None:
-                return replay
-            if self._delivery_decision(entry) is not None:
-                raise PatchError(
-                    "CHANGESET_DECISION_FINAL", "a delivery decision is already recorded"
-                )
-            if entry.plan.change_set.status not in {
-                ChangeSetStatus.VERIFIED,
-                ChangeSetStatus.VERIFICATION_FAILED,
-            }:
-                raise PatchError(
-                    "CHANGESET_NOT_ACCEPTABLE",
-                    "ChangeSet must finish verification before acceptance",
-                )
-            self._reserve_idempotency(
-                idempotency_key, "accept", change_set_id, user_confirmation
-            )
-            before = entry.plan.change_set.status.value
-            entry.plan.change_set.transition_to(ChangeSetStatus.ACCEPTED)
-            failure_reason = None
-            if self.store is not None and before == ChangeSetStatus.VERIFICATION_FAILED.value:
-                persisted = self.store.get_change_set(change_set_id) or {}
-                failure_reason = persisted.get("failure_reason")
-            self._persist_status(entry, failure_reason=failure_reason)
-            result = {
-                "change_set_id": change_set_id,
-                "decision": "accept",
-                "status": entry.plan.change_set.status.value,
-                "previous_status": before,
-                "files_changed": False,
-            }
-            self._event(
-                entry,
-                "delivery.accepted",
-                {"decision": "accept", "previous_status": before},
-            )
-            entry.memory_decisions["accept"] = result
-            self._complete(idempotency_key, result)
-            return result
-
     def stop(
         self, change_set_id: str, user_confirmation: str, *, idempotency_key: str | None = None
     ) -> dict[str, Any]:
@@ -838,8 +785,6 @@ class ControlPlaneManager:
             return next(iter(entry.memory_decisions))
         if self.store is not None and entry.run_id is not None:
             for event in reversed(self.store.list_run_events(entry.run_id)):
-                if event["event_type"] == "delivery.accepted":
-                    return "accept"
                 if event["event_type"] == "delivery.stopped":
                     return "stop"
         return None
@@ -2068,12 +2013,8 @@ def create_app(
         from .delivery_decisions import DeliveryDecisionWorkflow
 
         workflow = DeliveryDecisionWorkflow(manager)
-        if payload.decision == "accept":
-            return workflow.accept(
-                change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
-            )
         if payload.decision != "stop":
-            raise PatchError("DECISION_INVALID", "decision must be accept or stop")
+            raise PatchError("DECISION_INVALID", "decision must be stop")
         return workflow.stop(
             change_set_id, payload.user_confirmation, idempotency_key=idempotency_key
         )

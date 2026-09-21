@@ -70,10 +70,10 @@ CHANGE_SET_TRANSITIONS: dict[ChangeSetStatus, frozenset[ChangeSetStatus]] = {
         {ChangeSetStatus.VERIFIED, ChangeSetStatus.VERIFICATION_FAILED}
     ),
     ChangeSetStatus.VERIFIED: frozenset(
-        {ChangeSetStatus.ACCEPTED, ChangeSetStatus.REVERTED, ChangeSetStatus.DELIVERY_FAILED}
+        {ChangeSetStatus.REVERTED, ChangeSetStatus.DELIVERY_FAILED}
     ),
     ChangeSetStatus.VERIFICATION_FAILED: frozenset(
-        {ChangeSetStatus.ACCEPTED, ChangeSetStatus.REVERTED}
+        {ChangeSetStatus.REVERTED}
     ),
     ChangeSetStatus.ACCEPTED: frozenset(),
     ChangeSetStatus.REVERTED: frozenset(),

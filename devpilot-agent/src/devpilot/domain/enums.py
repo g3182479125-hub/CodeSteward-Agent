@@ -43,6 +43,8 @@ class ChangeSetStatus(StrEnum):
     VERIFIED = "verified"
     VERIFICATION_FAILED = "verification_failed"
     DELIVERY_FAILED = "delivery_failed"
+    # Legacy persisted value. New deliveries finish at VERIFIED or
+    # VERIFICATION_FAILED; this value remains readable for old databases only.
     ACCEPTED = "accepted"
     REVERTED = "reverted"
     REJECTED = "rejected"

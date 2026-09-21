@@ -89,7 +89,6 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "DECISION_INVALID",
         "CHANGESET_NOT_APPLICABLE",
         "CHANGESET_DECISION_FINAL",
-        "CHANGESET_NOT_ACCEPTABLE",
         "CHANGESET_NOT_ROLLBACKABLE",
         "CHANGESET_NOT_STOPPABLE",
         "CHANGESET_NOT_FOUND",
@@ -1392,7 +1391,7 @@ class GetDeliveryReportTool(Tool):
     def description(self) -> str:
         return (
             "Read-only delivery outcome, verification metadata, artifacts and available "
-            "accept/stop/rollback decisions; never changes files or capabilities."
+            "stop/rollback recovery actions; never changes files or capabilities."
         )
 
     @property

@@ -10,6 +10,7 @@ def test_classifies_natural_language_confirmation_intents() -> None:
     assert classify_user_intent("按这个方案做，改完跑测试").intent == "apply_verify"
     assert classify_user_intent("这个项目可以信任").intent == "trust_project"
     assert classify_user_intent("启用这个插件吧").intent == "plugin_confirm"
+    assert classify_user_intent("接受这次交付").intent == "none"
 
 
 def test_explicit_negation_never_becomes_authorization() -> None:

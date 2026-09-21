@@ -38,7 +38,6 @@ _SAFE_EVENT_TYPES = frozenset(
         "run.failed",
         "changeset.reverted",
         "changeset.apply_failed",
-        "delivery.accepted",
         "delivery.stopped",
     }
 )
