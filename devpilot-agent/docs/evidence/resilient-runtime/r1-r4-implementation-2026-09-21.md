@@ -3,6 +3,7 @@
 日期：2026-09-21
 分支：`codex/h11-complete-handoff`
 实施基线：`d2950a56a8ba63afc90dcdb110fcdb4c45fe0bc1`
+当前代码候选：`74053a2`（R4 来源绑定与子代理恢复修复）
 
 ## 本轮交付
 
@@ -40,6 +41,11 @@
 - 普通工具、任务 profile、模型和 provider 失败使用统一中文 catalog。
 - 普通工具、DevPilot/任务配置、子代理、模型和 provider 失败按来源映射到不同的
   中文 catalog；异常类型和内部文本只参与服务端分类，不进入用户可见 payload。
+- DevPilot 失败只在实际调用 `devpilot_*` 工具的边界被标记为项目来源；活跃 task
+  profile 本身不会把模型、存储或普通工具异常误报成 DevPilot。子代理的 `error`、
+  `tool_error` 和异常路径都使用 `subagent.failed`。
+- 子代理的工具失败会保留最近的安全步骤名和失败步骤名，不携带原始工具输出、异常
+  文本或内部堆栈。
 - 用户看见的是当前步骤的结果、可重试/换问法/查状态提示和“对话仍可继续”，不看见
   Python 异常、诊断预算术语或旧英文兜底。
 
@@ -52,6 +58,8 @@
 ```powershell
 & .\nanobot\.venv\Scripts\python.exe -m pytest -q `
   nanobot/tests/agent/test_turn_outcomes.py `
+  nanobot/tests/agent/test_runner_errors.py `
+  nanobot/tests/agent/test_subagent.py `
   nanobot/tests/utils/test_progress_events.py `
   nanobot/tests/utils/test_webui_transcript.py `
   nanobot/tests/bus/test_outbound_events.py `
@@ -61,13 +69,17 @@
   -k 'not test_h7_default_driver_runs_each_task_profile_main_chain' --tb=short
 ```
 
-结果：`355 passed, 3 deselected`，退出码 `0`。
+结果：`379 passed, 3 deselected`，退出码 `0`。
 
 ```powershell
 & .\nanobot\.venv\Scripts\python.exe -m ruff check `
   nanobot/nanobot/agent/loop.py `
+  nanobot/nanobot/agent/runner.py `
+  nanobot/nanobot/agent/subagent.py `
   nanobot/nanobot/agent/turn_outcomes.py `
   nanobot/tests/agent/test_loop_save_turn.py `
+  nanobot/tests/agent/test_runner_errors.py `
+  nanobot/tests/agent/test_subagent.py `
   nanobot/tests/agent/test_turn_outcomes.py
 ```
 
@@ -95,7 +107,20 @@ Set-Location .\devpilot-agent
 路径，因此将其保留为已知环境/历史失败，不能把 DevPilot 全部测试写成通过。
 ```
 
-失败来源分类回归：`8 passed`。候选代码在修改前红灯的同一工具失败恢复用例上，
+失败来源分类回归命令为：
+
+```powershell
+& .\nanobot\.venv\Scripts\python.exe -m pytest -q `
+  nanobot/tests/agent/test_runner_errors.py `
+  nanobot/tests/agent/test_subagent.py `
+  nanobot/tests/agent/test_loop_save_turn.py `
+  nanobot/tests/agent/test_turn_outcomes.py `
+  -k 'not test_h7_default_driver_runs_each_task_profile_main_chain' --tb=short --show-capture=no
+```
+
+结果：`111 passed, 3 deselected`，退出码 `0`。该回归覆盖真实 `_dispatch` 异常捕获、
+实际 `devpilot_*` 工具边界、活跃 task profile 下的普通异常不误分类，以及子代理
+`error/tool_error/异常` 注入路径。候选代码在修改前红灯的同一工具失败恢复用例上，
 已不再返回 `Error: RuntimeError: tool exploded`，并且同一 session 的下一条普通消息
 仍能得到正常回答。
 
