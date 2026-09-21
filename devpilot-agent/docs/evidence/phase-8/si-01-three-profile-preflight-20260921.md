@@ -1,8 +1,8 @@
 # SI-01：三 Profile Skill 改进只读预检
 
-日期：2026-09-21（Asia/Shanghai）  
-基线：`21fd780` (`origin/codex/h11-complete-handoff`)  
-分支：`codex/h11-complete-handoff`  
+日期：2026-09-21（Asia/Shanghai）
+基线：`21fd780` (`origin/codex/h11-complete-handoff`)
+分支：`codex/h11-complete-handoff`
 状态：**通过，解锁 SI-02**
 
 ## 1. 本节点边界
