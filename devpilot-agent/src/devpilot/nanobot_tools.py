@@ -2121,6 +2121,11 @@ class SkillFeedbackTool(Tool):
                 "maxItems": 20,
                 "items": {"type": "string"},
             },
+            "case_ids": {
+                "type": "array",
+                "maxItems": 1,
+                "items": {"type": "string"},
+            },
             "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
             "expected_behavior": {"type": "string", "minLength": 1, "maxLength": 4000},
             "test_set_version": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -2215,6 +2220,25 @@ class SkillCandidateTool(Tool):
                     raise SkillImprovementError(
                         "scheduled candidate evidence does not match the claimed batch"
                     )
+                trusted_skill_id = request_context.attributes.get("devpilot_skill_id")
+                allowed_case_ids = {
+                    value
+                    for value in request_context.attributes.get(
+                        "devpilot_batch_case_ids", []
+                    )
+                    if isinstance(value, str)
+                }
+                requested_case_ids = {
+                    value for value in kwargs.get("case_ids", []) if isinstance(value, str)
+                }
+                if allowed_case_ids and requested_case_ids != allowed_case_ids:
+                    raise SkillImprovementError(
+                        "scheduled candidate Case does not match the claimed batch"
+                    )
+                if allowed_case_ids and trusted_skill_id != "bug-fix":
+                    raise SkillImprovementError(
+                        "this candidate tool does not yet support the selected Skill target"
+                    )
                 owner = request_context.attributes.get("devpilot_batch_owner")
                 if not isinstance(owner, str) or not owner:
                     raise SkillImprovementError("scheduled candidate lease owner is missing")
@@ -2240,6 +2264,7 @@ class SkillCandidateTool(Tool):
                 baseline_content=str(kwargs["baseline_content"]),
                 candidate_content=str(kwargs["candidate_content"]),
                 evidence_ids=kwargs["evidence_ids"],
+                case_ids=kwargs.get("case_ids", ()),
                 reason=str(kwargs["reason"]),
                 expected_behavior=str(kwargs["expected_behavior"]),
                 test_set_version=str(kwargs["test_set_version"]),

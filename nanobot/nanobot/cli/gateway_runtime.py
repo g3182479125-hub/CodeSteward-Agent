@@ -389,13 +389,18 @@ async def _run_scheduled_skill_batch(
     trusted_attributes = {
         "devpilot_task_id": f"scheduled-{claim.batch.batch_id}",
         "devpilot_project_id": claim.batch.project_id,
-        "devpilot_skill_id": claim.batch.skill_id,
+        "devpilot_skill_id": (
+            claim.case.skill_id if claim.case is not None else claim.batch.skill_id
+        ),
         "devpilot_workspace": claim.batch.workspace,
         "devpilot_batch_id": claim.batch.batch_id,
         "devpilot_batch_owner": owner,
         "devpilot_batch_evidence_ids": [
             item.evidence_id for item in claim.evidence
         ],
+        "devpilot_batch_case_ids": (
+            [claim.case.case_id] if claim.case is not None else []
+        ),
     }
     restricted_tools = agent.tools.restricted_to({"devpilot_skill_candidate"})
     if not restricted_tools.has("devpilot_skill_candidate"):

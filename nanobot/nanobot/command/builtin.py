@@ -1184,7 +1184,11 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             ),
         )
     try:
-        from devpilot.skill_improvement import SkillImprovementStore, scheduled_batch_id
+        from devpilot.skill_improvement import (
+            SKILL_IMPROVEMENT_TARGETS,
+            SkillImprovementStore,
+            scheduled_batch_id,
+        )
 
         workspace = ctx.workspace or ctx.loop.context.memory.workspace
         store = SkillImprovementStore.from_environment(workspace)
@@ -1352,6 +1356,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                                 max_model_calls=options["calls"],
                                 max_tokens=options["tokens"],
                                 max_duration_seconds=options["timeout"],
+                                target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
                             )
                             cron.enable_job(job.id, enabled=True)
                             schedule_description = (

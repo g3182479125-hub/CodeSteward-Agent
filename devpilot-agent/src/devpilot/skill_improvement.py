@@ -198,6 +198,19 @@ def scheduled_batch_id(
     return f"batch-{content_sha256(scope)[:24]}"
 
 
+def _scheduled_target_ids(value: object | None) -> tuple[str, ...]:
+    """Validate a persisted/native-Cron target list against the server registry."""
+    if value is None:
+        # Omitted by old callers: preserve the original single bug-fix batch.
+        return (TRIAL_SKILL_ID,)
+    if not isinstance(value, (list, tuple)) or not value:
+        raise SkillImprovementError("scheduled batch targets are required")
+    targets = tuple(dict.fromkeys(str(item) for item in value))
+    if any(item not in SKILL_IMPROVEMENT_TARGETS for item in targets):
+        raise SkillImprovementError("scheduled batch contains an unsupported Skill target")
+    return targets
+
+
 def task_snapshot_ref(task_id: str) -> str:
     """Return the stable private record ID for one task snapshot."""
     return f"snapshot-{content_sha256(task_id)[:32]}"
@@ -565,6 +578,7 @@ class ScheduledSkillBatch:
     batch_id: str
     job_id: str
     skill_id: str
+    target_skill_ids: tuple[str, ...]
     workspace: str
     project_id: str
     user_id: str
@@ -578,6 +592,9 @@ class ScheduledSkillBatch:
     cursor_at: str | None
     processed_evidence_ids: tuple[str, ...]
     claimed_evidence_ids: tuple[str, ...]
+    processed_case_ids: tuple[str, ...]
+    claimed_case_ids: tuple[str, ...]
+    last_selected_skill_id: str | None
     status: str
     lease_owner: str | None
     lease_expires_at: float | None
@@ -598,6 +615,7 @@ class ScheduledSkillBatch:
             "batch_id": self.batch_id,
             "job_id": self.job_id,
             "skill_id": self.skill_id,
+            "target_skill_ids": list(self.target_skill_ids),
             "workspace": self.workspace,
             "project_id": self.project_id,
             "user_id": self.user_id,
@@ -611,6 +629,9 @@ class ScheduledSkillBatch:
             "cursor_at": self.cursor_at,
             "processed_evidence_ids": list(self.processed_evidence_ids),
             "claimed_evidence_ids": list(self.claimed_evidence_ids),
+            "processed_case_ids": list(self.processed_case_ids),
+            "claimed_case_ids": list(self.claimed_case_ids),
+            "last_selected_skill_id": self.last_selected_skill_id,
             "status": self.status,
             "lease_owner": self.lease_owner,
             "lease_expires_at": self.lease_expires_at,
@@ -635,6 +656,7 @@ class ScheduledBatchClaim:
     status: str
     batch: ScheduledSkillBatch
     evidence: tuple[FeedbackEvidence, ...] = ()
+    case: ImprovementCase | None = None
     lease_owner: str | None = None
     deadline_at: float | None = None
 
@@ -662,9 +684,15 @@ def build_scheduled_batch_prompt(
             "Run one controlled DevFlow Agent Skill-improvement batch.",
             "This is analysis and candidate generation only: never edit the project, "
             "run commands, evaluate, enable, activate, apply, or restore a Skill.",
-            f"Target Skill: {claim.batch.skill_id}",
+            "Target Skill: "
+            + (claim.case.skill_id if claim.case is not None else claim.batch.skill_id),
             f"Project ID: {claim.batch.project_id}",
             f"Batch ID: {claim.batch.batch_id}",
+            *(
+                [f"Case ID: {claim.case.case_id}"]
+                if claim.case is not None
+                else []
+            ),
             "Use only the verified evidence below; do not invent additional evidence.",
             *evidence_lines,
             "",
@@ -674,7 +702,8 @@ def build_scheduled_batch_prompt(
             "```",
             "",
             "Call devpilot_skill_candidate exactly once with all claimed evidence IDs "
-            "and test_set_version='p8-02-v1'. If the tool rejects the candidate for a "
+            "and test_set_version='p8-02-v1'. If a Case ID is shown, pass it as "
+            "case_ids=[that ID]. If the tool rejects the candidate for a "
             "format or contract error, correct it once and retry; then stop.",
             "The candidate must remain pending_evaluation. Report the candidate ID and "
             "do not perform any other tool action.",
@@ -1804,6 +1833,19 @@ class SkillImprovementStore:
         )
         return snapshot is not None and snapshot.replayable is True
 
+    def _case_is_replayable_unlocked(self, case: ImprovementCase) -> bool:
+        """Same gate for callers that already own the cross-process lock."""
+        if case.status in {"not_replayable", "ignored"} or case.replay_snapshot_ref is None:
+            return False
+        snapshot = self._get_task_snapshot_unlocked(
+            case.replay_snapshot_ref,
+            workspace=case.workspace,
+            project_id=case.project_id,
+            session_id=case.session_id,
+            skill_id=case.skill_id,
+        )
+        return snapshot is not None and snapshot.replayable is True
+
     def _evidence_has_non_replayable_case(
         self,
         evidence_id: str,
@@ -2049,6 +2091,7 @@ class SkillImprovementStore:
         max_tokens: int = 12_000,
         max_duration_seconds: int = 600,
         notification_mode: str = "new_candidate_and_failure",
+        target_skill_ids: object | None = None,
     ) -> ScheduledSkillBatch:
         """Create or update one explicit, bounded native-Cron batch policy."""
         if max_model_calls < 1 or max_model_calls > _MAX_SCHEDULED_MODEL_CALLS:
@@ -2065,6 +2108,7 @@ class SkillImprovementStore:
         project_value = _bounded_text(project_id, field="project_id", limit=128)
         user_value = _bounded_text(user_id, field="user_id", limit=128)
         session_value = _bounded_text(session_key, field="session_key", limit=256)
+        requested_targets = _scheduled_target_ids(target_skill_ids)
         if not workspace_value:
             raise SkillImprovementError("scheduled batch workspace is required")
         path = self.batches_dir / f"{batch_value}.json"
@@ -2080,6 +2124,8 @@ class SkillImprovementStore:
                     or existing.skill_id != TRIAL_SKILL_ID
                 ):
                     raise SkillImprovementError("scheduled batch scope is immutable")
+                if not enabled:
+                    self._release_scheduled_cases_locked(existing)
                 now = _now()
                 batch = replace(
                     existing,
@@ -2088,11 +2134,18 @@ class SkillImprovementStore:
                     max_tokens=max_tokens,
                     max_duration_seconds=max_duration_seconds,
                     notification_mode=notification_mode,
+                    target_skill_ids=(
+                        requested_targets
+                        if target_skill_ids is not None
+                        else existing.target_skill_ids
+                    ),
                     status=("idle" if enabled and existing.status == "disabled" else (
                         "disabled" if not enabled else existing.status
                     )),
                     lease_owner=None if not enabled else existing.lease_owner,
                     lease_expires_at=None if not enabled else existing.lease_expires_at,
+                    claimed_case_ids=() if not enabled else existing.claimed_case_ids,
+                    claimed_evidence_ids=() if not enabled else existing.claimed_evidence_ids,
                     updated_at=now,
                 )
             else:
@@ -2101,6 +2154,7 @@ class SkillImprovementStore:
                     batch_id=batch_value,
                     job_id=job_value,
                     skill_id=TRIAL_SKILL_ID,
+                    target_skill_ids=requested_targets,
                     workspace=workspace_value,
                     project_id=project_value,
                     user_id=user_value,
@@ -2114,6 +2168,9 @@ class SkillImprovementStore:
                     cursor_at=None,
                     processed_evidence_ids=(),
                     claimed_evidence_ids=(),
+                    processed_case_ids=(),
+                    claimed_case_ids=(),
+                    last_selected_skill_id=None,
                     status="idle" if enabled else "disabled",
                     lease_owner=None,
                     lease_expires_at=None,
@@ -2182,18 +2239,103 @@ class SkillImprovementStore:
             batch = self.get_scheduled_batch(batch_id)
             if batch is None:
                 raise SkillImprovementError("scheduled batch not found")
+            if not enabled:
+                self._release_scheduled_cases_locked(batch)
             updated = replace(
                 batch,
                 enabled=enabled,
                 status="idle" if enabled else "disabled",
                 lease_owner=None if not enabled else batch.lease_owner,
                 lease_expires_at=None if not enabled else batch.lease_expires_at,
+                claimed_case_ids=() if not enabled else batch.claimed_case_ids,
+                claimed_evidence_ids=() if not enabled else batch.claimed_evidence_ids,
                 updated_at=_now(),
             )
             self._atomic_write(self.batches_dir / f"{batch.batch_id}.json", updated.to_dict())
             return updated
 
-    def claim_scheduled_batch(
+    def _case_feedback(self, case: ImprovementCase) -> tuple[FeedbackEvidence, ...]:
+        """Resolve only the verified feedback records explicitly attached to a Case."""
+        evidence: list[FeedbackEvidence] = []
+        for ref in case.evidence_refs:
+            item = self.get_feedback(
+                ref,
+                workspace=case.workspace,
+                user_id=case.user_id,
+                project_id=case.project_id,
+            )
+            if (
+                item is not None
+                and item.skill_id == case.skill_id
+                and item.processing_state == "verified"
+            ):
+                evidence.append(item)
+        unique = {item.evidence_id: item for item in evidence}
+        return tuple(sorted(unique.values(), key=lambda item: (item.occurred_at, item.evidence_id)))
+
+    def _update_case_status_locked(
+        self,
+        case: ImprovementCase,
+        *,
+        status: str,
+        selected_batch_id: str | None,
+    ) -> ImprovementCase:
+        if status not in IMPROVEMENT_CASE_STATES:
+            raise SkillImprovementError("invalid improvement case status")
+        updated = replace(case, status=status, selected_batch_id=selected_batch_id)
+        self._atomic_write(self.cases_dir / f"{case.case_id}.json", updated.to_dict())
+        return updated
+
+    def _release_scheduled_cases_locked(self, batch: ScheduledSkillBatch) -> None:
+        for case_id in batch.claimed_case_ids:
+            case = self.get_improvement_case(
+                case_id,
+                workspace=batch.workspace,
+                project_id=batch.project_id,
+                user_id=batch.user_id,
+            )
+            if case is not None and case.selected_batch_id == batch.batch_id:
+                self._update_case_status_locked(
+                    case,
+                    status="eligible",
+                    selected_batch_id=None,
+                )
+
+    def _select_scheduled_case_locked(
+        self,
+        batch: ScheduledSkillBatch,
+    ) -> ImprovementCase | None:
+        candidates_by_skill = {
+            skill_id: [
+                case
+                for case in self.list_improvement_cases(
+                    workspace=batch.workspace,
+                    project_id=batch.project_id,
+                    user_id=batch.user_id,
+                    skill_id=skill_id,
+                    status=None,
+                )
+                if case.status == "eligible"
+                and self._case_is_replayable_unlocked(case)
+                and case.selected_batch_id is None
+                and case.case_id not in batch.processed_case_ids
+            ]
+            for skill_id in batch.target_skill_ids
+        }
+        if not any(candidates_by_skill.values()):
+            return None
+        targets = batch.target_skill_ids
+        start = 0
+        if batch.last_selected_skill_id in targets:
+            start = (targets.index(batch.last_selected_skill_id) + 1) % len(targets)
+        for offset in range(len(targets)):
+            skill_id = targets[(start + offset) % len(targets)]
+            choices = candidates_by_skill[skill_id]
+            if choices:
+                return min(choices, key=lambda item: (item.created_at, item.case_id))
+        return None
+
+    def _claim_legacy_scheduled_batch(
         self,
         job_id: str,
         *,
@@ -2352,6 +2494,198 @@ class SkillImprovementStore:
                 deadline_at=deadline,
             )
 
+    def claim_scheduled_batch(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+    ) -> ScheduledBatchClaim | None:
+        """Claim one Case, or use the legacy evidence path for old batches."""
+        owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
+        batch = self.get_scheduled_batch_for_job(job_id)
+        if batch is None or batch.target_skill_ids == (TRIAL_SKILL_ID,):
+            # Existing P8-03 batches have no Case cursor and remain fully
+            # compatible with the original verified-feedback workflow.
+            return self._claim_legacy_scheduled_batch(job_id, lease_owner=owner)
+        with self._lock, self._process_lock():
+            batch = self.get_scheduled_batch_for_job(job_id)
+            if batch is None:
+                return None
+            if not batch.enabled:
+                return ScheduledBatchClaim("disabled", batch)
+            now = time.time()
+            if batch.lease_owner and batch.lease_expires_at and batch.lease_expires_at > now:
+                return ScheduledBatchClaim("busy", batch)
+            if batch.status == "budget_exhausted":
+                return ScheduledBatchClaim("budget_exhausted", batch)
+
+            case: ImprovementCase | None = None
+            if batch.claimed_case_ids:
+                case = self.get_improvement_case(
+                    batch.claimed_case_ids[0],
+                    workspace=batch.workspace,
+                    project_id=batch.project_id,
+                    user_id=batch.user_id,
+                )
+                if case is None or case.selected_batch_id != batch.batch_id:
+                    raise SkillImprovementError("scheduled batch Case binding is invalid")
+                if not self._case_is_replayable_unlocked(case):
+                    self._update_case_status_locked(
+                        case,
+                        status="not_replayable",
+                        selected_batch_id=None,
+                    )
+                    updated = replace(
+                        batch,
+                        status="no_new_evidence",
+                        claimed_case_ids=(),
+                        claimed_evidence_ids=(),
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        last_error="scheduled Case replay proof is no longer valid",
+                        updated_at=_now(),
+                    )
+                    self._atomic_write(
+                        self.batches_dir / f"{batch.batch_id}.json", updated.to_dict()
+                    )
+                    return ScheduledBatchClaim("no_new_evidence", updated)
+                evidence = self._case_feedback(case)
+                candidate = (
+                    self.get_candidate(
+                        batch.candidate_id,
+                        workspace=batch.workspace,
+                        user_id=batch.user_id,
+                        project_id=batch.project_id,
+                    )
+                    if batch.candidate_id
+                    else None
+                )
+                if candidate is None:
+                    orphan_candidates = [
+                        item
+                        for item in self.list_candidates(
+                            batch_id=batch.batch_id,
+                            workspace=batch.workspace,
+                            user_id=batch.user_id,
+                            project_id=batch.project_id,
+                        )
+                        if item.status == "pending_evaluation"
+                        and case.case_id in item.case_ids
+                    ]
+                    if orphan_candidates:
+                        candidate = sorted(
+                            orphan_candidates,
+                            key=lambda item: (item.created_at, item.candidate_id),
+                        )[-1]
+                if candidate is not None:
+                    recovered = replace(
+                        batch,
+                        status="candidate_created",
+                        candidate_id=candidate.candidate_id,
+                        claimed_case_ids=(),
+                        claimed_evidence_ids=(),
+                        processed_case_ids=tuple(
+                            dict.fromkeys((*batch.processed_case_ids, case.case_id))
+                        )[-_MAX_PROCESSED_EVIDENCE_IDS:],
+                        last_selected_skill_id=case.skill_id,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        consecutive_failures=0,
+                        last_error=None,
+                        last_candidate_ids=(candidate.candidate_id,),
+                        updated_at=_now(),
+                    )
+                    self._atomic_write(
+                        self.batches_dir / f"{batch.batch_id}.json", recovered.to_dict()
+                    )
+                    return ScheduledBatchClaim(
+                        "candidate_created", recovered, evidence, case
+                    )
+                if batch.status in {"running", "failed"} and (
+                    batch.candidate_attempts >= batch.max_model_calls
+                    or batch.token_count >= batch.max_tokens
+                    or batch.consecutive_failures >= batch.max_model_calls
+                ):
+                    exhausted = replace(
+                        batch,
+                        status="budget_exhausted",
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        last_run_at=_now(),
+                        last_error="scheduled batch retry budget exhausted",
+                        updated_at=_now(),
+                    )
+                    self._atomic_write(
+                        self.batches_dir / f"{batch.batch_id}.json", exhausted.to_dict()
+                    )
+                    return ScheduledBatchClaim("budget_exhausted", exhausted, evidence, case)
+                deadline = now + min(batch.max_duration_seconds, _MAX_SCHEDULED_DURATION_SECONDS)
+                updated = replace(
+                    batch,
+                    status="running",
+                    lease_owner=owner,
+                    lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
+                    run_count=batch.run_count + 1,
+                    last_run_at=_now(),
+                    updated_at=_now(),
+                )
+                self._atomic_write(
+                    self.batches_dir / f"{batch.batch_id}.json", updated.to_dict()
+                )
+                return ScheduledBatchClaim(
+                    "claimed", updated, evidence, case,
+                    lease_owner=owner, deadline_at=deadline,
+                )
+
+            case = self._select_scheduled_case_locked(batch)
+            if case is None:
+                updated = replace(
+                    batch,
+                    status="no_new_evidence",
+                    last_run_at=_now(),
+                    updated_at=_now(),
+                )
+                self._atomic_write(
+                    self.batches_dir / f"{batch.batch_id}.json", updated.to_dict()
+                )
+                return ScheduledBatchClaim("no_new_evidence", updated)
+            self._update_case_status_locked(
+                case,
+                status="claimed",
+                selected_batch_id=batch.batch_id,
+            )
+            evidence = self._case_feedback(case)
+            if not evidence:
+                self._update_case_status_locked(
+                    case,
+                    status="not_replayable",
+                    selected_batch_id=batch.batch_id,
+                )
+                raise SkillImprovementError("scheduled Case has no verified feedback evidence")
+            deadline = now + min(batch.max_duration_seconds, _MAX_SCHEDULED_DURATION_SECONDS)
+            updated = replace(
+                batch,
+                status="running",
+                lease_owner=owner,
+                lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
+                run_count=batch.run_count + 1,
+                candidate_attempts=0,
+                token_count=0,
+                candidate_id=None,
+                claimed_case_ids=(case.case_id,),
+                claimed_evidence_ids=tuple(item.evidence_id for item in evidence),
+                last_run_at=_now(),
+                consecutive_failures=0,
+                updated_at=_now(),
+            )
+            self._atomic_write(
+                self.batches_dir / f"{batch.batch_id}.json", updated.to_dict()
+            )
+            return ScheduledBatchClaim(
+                "claimed", updated, evidence, case,
+                lease_owner=owner, deadline_at=deadline,
+            )
+
     def reserve_scheduled_candidate_attempt(
         self,
         batch_id: str,
@@ -2446,11 +2780,32 @@ class SkillImprovementStore:
                     limit=1_000,
                 )
                 last_candidates = ()
+            processed_cases = list(batch.processed_case_ids)
+            last_selected_skill_id = batch.last_selected_skill_id
+            if batch.candidate_id is not None and not error and not cancelled:
+                processed_cases.extend(batch.claimed_case_ids)
+                processed_cases = list(
+                    dict.fromkeys(processed_cases)
+                )[-_MAX_PROCESSED_EVIDENCE_IDS:]
+                if batch.claimed_case_ids:
+                    selected_case = self.get_improvement_case(
+                        batch.claimed_case_ids[0],
+                        workspace=batch.workspace,
+                        project_id=batch.project_id,
+                        user_id=batch.user_id,
+                    )
+                    if selected_case is not None:
+                        last_selected_skill_id = selected_case.skill_id
+            elif cancelled:
+                self._release_scheduled_cases_locked(batch)
             updated = replace(
                 batch,
                 cursor_at=cursor_at,
                 processed_evidence_ids=tuple(processed),
                 claimed_evidence_ids=(),
+                processed_case_ids=tuple(processed_cases),
+                claimed_case_ids=(),
+                last_selected_skill_id=last_selected_skill_id,
                 status=status,
                 lease_owner=None,
                 lease_expires_at=None,
@@ -2546,7 +2901,10 @@ class SkillImprovementStore:
         current_batch = batch_id or f"batch-{uuid.uuid4()}"
         with self._lock, self._process_lock():
             locked_cases = [self.get_improvement_case(item) for item in case_values]
-            if any(item is None or not self._case_is_replayable(item) for item in locked_cases):
+            if any(
+                item is None or not self._case_is_replayable_unlocked(item)
+                for item in locked_cases
+            ):
                 raise SkillImprovementError("candidate case changed during creation")
             if len(self.list_candidates(batch_id=current_batch)) >= _MAX_CANDIDATES_PER_BATCH:
                 raise SkillImprovementError("candidate batch limit is three")
@@ -3395,6 +3753,7 @@ class SkillImprovementStore:
             batch_id=str(raw["batch_id"]),
             job_id=str(raw["job_id"]),
             skill_id=str(raw["skill_id"]),
+            target_skill_ids=_scheduled_target_ids(raw.get("target_skill_ids")),
             workspace=str(raw["workspace"]),
             project_id=str(raw["project_id"]),
             user_id=str(raw["user_id"]),
@@ -3408,6 +3767,13 @@ class SkillImprovementStore:
             cursor_at=raw.get("cursor_at") if isinstance(raw.get("cursor_at"), str) else None,
             processed_evidence_ids=_refs(raw.get("processed_evidence_ids")),
             claimed_evidence_ids=_refs(raw.get("claimed_evidence_ids")),
+            processed_case_ids=_refs(raw.get("processed_case_ids")),
+            claimed_case_ids=_refs(raw.get("claimed_case_ids")),
+            last_selected_skill_id=(
+                raw.get("last_selected_skill_id")
+                if isinstance(raw.get("last_selected_skill_id"), str)
+                else None
+            ),
             status=status,
             lease_owner=raw.get("lease_owner") if isinstance(raw.get("lease_owner"), str) else None,
             lease_expires_at=(
