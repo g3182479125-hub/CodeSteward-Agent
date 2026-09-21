@@ -58,6 +58,9 @@ class SkillImprovementCaseRecorder:
             project_id=project_id,
             workspace=workspace_value,
             expected_behavior=expected_behavior,
+            task_id=task_id,
+            session_id=session_id,
+            user_id=user_id,
             evidence_refs=refs,
         ):
             raise SkillImprovementError(
@@ -143,6 +146,10 @@ class SkillImprovementCaseRecorder:
                     project_id=project_id,
                     expected_behavior=expected_behavior,
                     origin_run_id=origin,
+                    task_id=task_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    workspace=str(Path(workspace).expanduser().resolve()),
                 )
                 for ref in failure_refs
             ):

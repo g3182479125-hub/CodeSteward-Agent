@@ -366,6 +366,7 @@ class FCSandboxBackend:
                 "output_truncated": state.result.output_truncated,
                 "side_effect_count": state.result.side_effect_count,
                 "permission_violation": state.result.permission_violation,
+                "failure_kind": state.result.failure_kind,
             }
         return payload
 
@@ -474,6 +475,7 @@ class FCSandboxBackend:
                         if isinstance(result_payload.get("permission_violation"), bool)
                         else None
                     ),
+                    failure_kind=str(result_payload.get("failure_kind", "unknown")),
                 )
             except (KeyError, TypeError, ValueError):
                 result = None
@@ -817,6 +819,7 @@ class FCSandboxBackend:
                     if not request.network_allowed
                     else None
                 ),
+                failure_kind="semantic",
             )
             with self._lock:
                 state.result = receipt

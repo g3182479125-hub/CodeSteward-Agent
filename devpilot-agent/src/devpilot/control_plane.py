@@ -158,6 +158,9 @@ class ProjectTestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_path: str = Field(min_length=1)
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
+    user_id: str | None = Field(default=None, min_length=1, max_length=256)
     test_kind: str = Field(pattern=r"^(?:python-pytest|node-test)$")
     target_files: list[str] = Field(min_length=1, max_length=32)
     symptom: str = Field(min_length=1, max_length=4000)
@@ -366,6 +369,9 @@ class ControlPlaneManager:
         target_files: list[str],
         symptom: str,
         expected_behavior: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         if self.store is None:
@@ -457,6 +463,9 @@ class ControlPlaneManager:
                 target_files=target_files,
                 symptom=symptom,
                 expected_behavior=expected_behavior,
+                task_id=task_id,
+                session_id=session_id,
+                user_id=user_id,
             )
         except ProjectTestTrustError as exc:
             self._abort(idempotency_key)
@@ -1028,6 +1037,7 @@ class ControlPlaneManager:
                 "network_policy": result.network_policy,
                 "exit_code": result.exit_code,
                 "duration_ms": result.duration_ms,
+                "failure_kind": result.failure_kind,
                 "stdout": redact_execution_output(result.stdout[-8000:]),
                 "stderr": redact_execution_output(result.stderr[-8000:]),
             }
@@ -1056,7 +1066,11 @@ class ControlPlaneManager:
                         "exit_code": result.exit_code,
                     },
                 )
-            if result.exit_code != 0 and skill_improvement_context is not None:
+            if (
+                result.exit_code != 0
+                and result.failure_kind == "semantic"
+                and skill_improvement_context is not None
+            ):
                 self._record_skill_improvement_failure(
                     entry,
                     skill_improvement_context,
@@ -1088,7 +1102,7 @@ class ControlPlaneManager:
         """Create a Case only from the final server verification fact."""
         if self.store is None or entry.run_id is None:
             return
-        if context.get("verification_kind") != "semantic":
+        if context.get("verification_kind") not in {None, "semantic"}:
             return
         try:
             skill_id = str(context["skill_id"])
@@ -2033,6 +2047,9 @@ def create_app(
                 target_files=payload.target_files,
                 symptom=payload.symptom,
                 expected_behavior=payload.expected_behavior,
+                task_id=payload.task_id,
+                session_id=payload.session_id,
+                user_id=payload.user_id,
                 idempotency_key=idempotency_key,
             ),
         )

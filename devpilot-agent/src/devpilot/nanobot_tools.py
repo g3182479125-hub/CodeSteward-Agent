@@ -597,6 +597,22 @@ class ProjectTestRunTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
+            from nanobot.agent.tools.context import current_request_context
+
+            request_context = current_request_context()
+            attributes = getattr(request_context, "attributes", {})
+            task_id = (
+                attributes.get("devpilot_task_id")
+                if isinstance(attributes, Mapping)
+                else None
+            )
+            session_id = (
+                (getattr(request_context, "session_key", None)
+                or getattr(request_context, "chat_id", None))
+                if request_context is not None
+                else None
+            )
+            user_id = getattr(request_context, "sender_id", None)
             result = await asyncio.to_thread(
                 _post_project_test,
                 {
@@ -605,6 +621,18 @@ class ProjectTestRunTool(Tool):
                     "target_files": kwargs["target_files"],
                     "symptom": str(kwargs["symptom"]),
                     "expected_behavior": str(kwargs["expected_behavior"]),
+                    **(
+                        {
+                            "task_id": task_id,
+                            "session_id": session_id,
+                            "user_id": user_id,
+                        }
+                        if all(
+                            isinstance(value, str) and value
+                            for value in (task_id, session_id, user_id)
+                        )
+                        else {}
+                    ),
                 },
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -678,10 +706,41 @@ class InspectProjectTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         try:
             project_path = _project_path(str(kwargs["project_path"]), self.workspace)
+            from nanobot.agent.tools.context import current_request_context
+
+            request_context = current_request_context()
+            attributes = getattr(request_context, "attributes", {})
+            task_id = (
+                attributes.get("devpilot_task_id")
+                if isinstance(attributes, Mapping)
+                else None
+            )
+            session_id = (
+                (getattr(request_context, "session_key", None)
+                or getattr(request_context, "chat_id", None))
+                if request_context is not None
+                else None
+            )
+            user_id = getattr(request_context, "sender_id", None)
             # Repository discovery and its SQLite writes are synchronous.  Keep
             # them off nanobot's single event loop so a slow filesystem or
             # database lock cannot freeze WebUI health and unrelated chats.
-            outcome = await asyncio.to_thread(_service(self.workspace).inspect, project_path)
+            service = _service(self.workspace)
+            context_kwargs = {
+                key: value
+                for key, value in {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                }.items()
+                if isinstance(value, str) and value
+            }
+            if context_kwargs:
+                outcome = await asyncio.to_thread(
+                    service.inspect, project_path, **context_kwargs
+                )
+            else:
+                outcome = await asyncio.to_thread(service.inspect, project_path)
             try:
                 from nanobot.agent.tools.context import current_request_context
 
@@ -1151,11 +1210,17 @@ def _full_access_preview_and_execute(
             or f"{verification_profile or 'python-syntax'} verification passes",
             failure_evidence_refs=failure_evidence_refs,
         )
-    execution = _post_full_access_apply_verify(
-        str(proposal["change_set_id"]),
-        verification_profile,
-        improvement_context,
-    )
+    if improvement_context is None:
+        execution = _post_full_access_apply_verify(
+            str(proposal["change_set_id"]),
+            verification_profile,
+        )
+    else:
+        execution = _post_full_access_apply_verify(
+            str(proposal["change_set_id"]),
+            verification_profile,
+            improvement_context,
+        )
     proposal.update(
         {
             "requires_user_confirmation": False,

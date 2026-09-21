@@ -85,7 +85,7 @@ EVALUATION_REPEATS = 3
 EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
-    r"^(run|tool|trace|session|test|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
+    r"^(run|tool|trace|session|test|failure|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
     r"|^local:[A-Za-z0-9_.:-]{1,127}$"
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -906,6 +906,10 @@ class SkillImprovementStore:
         project_id: str,
         expected_behavior: str | None = None,
         origin_run_id: str | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        workspace: str | None = None,
     ) -> bool:
         if not _TRUSTED_FAILURE_REF_RE.fullmatch(failure_ref):
             return False
@@ -914,8 +918,9 @@ class SkillImprovementStore:
             with sqlite3.connect(self.database_path, timeout=30) as connection:
                 row = connection.execute(
                     """
-                    select r.project_id, r.kind, r.status, e.event_type, e.payload_json
+                    select r.project_id, r.kind, r.status, p.real_path, e.event_type, e.payload_json
                     from runs r join run_events e on e.run_id = r.id
+                    join projects p on p.id = r.project_id
                     where r.id = ? and r.project_id = ?
                     """,
                     (run_id, project_id),
@@ -923,16 +928,37 @@ class SkillImprovementStore:
                 trusted = any(
                     kind in {"bug-check", "test-check"}
                     and status == "failed"
+                    and (
+                        workspace is None
+                        or str(Path(real_path).expanduser().resolve()) == workspace
+                    )
                     and event_type in {"bug_check.failed", "test_check.failed"}
                     and (
                         expected_behavior is None
                         or json.loads(str(payload)).get("expected_behavior")
                         == expected_behavior
                     )
-                    for _project, kind, status, event_type, payload in row
+                    for _project, kind, status, real_path, event_type, payload in row
                 )
-                if not trusted or origin_run_id is None:
-                    return trusted
+                if not trusted:
+                    return False
+                if any(value is not None for value in (task_id, session_id, user_id)):
+                    bound = connection.execute(
+                        "select payload_json from run_events "
+                        "where run_id = ? and event_type = 'run.context.bound'",
+                        (run_id,),
+                    ).fetchall()
+                    if not any(
+                        isinstance(decoded := json.loads(str(payload)), dict)
+                        and decoded.get("task_id") == task_id
+                        and decoded.get("session_id") == session_id
+                        and decoded.get("user_id") == user_id
+                        and (workspace is None or decoded.get("workspace") == workspace)
+                        for (payload,) in bound
+                    ):
+                        return False
+                if origin_run_id is None:
+                    return True
                 proposed_events = connection.execute(
                     "select event_type, payload_json from run_events where run_id = ?",
                     (origin_run_id,),
@@ -957,6 +983,9 @@ class SkillImprovementStore:
         project_id: str,
         workspace: str,
         expected_behavior: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
         evidence_refs: tuple[str, ...] = (),
     ) -> bool:
         """Validate a repo-analysis fact against the server-owned Run events."""
@@ -981,6 +1010,21 @@ class SkillImprovementStore:
                     "select event_type, payload_json from run_events where run_id = ?",
                     (origin_run_id,),
                 ).fetchall()
+                if any(value is not None for value in (task_id, session_id, user_id)):
+                    bound = [
+                        json.loads(str(payload))
+                        for event_type, payload in events
+                        if event_type == "run.context.bound"
+                    ]
+                    if not any(
+                        isinstance(payload, dict)
+                        and payload.get("task_id") == task_id
+                        and payload.get("session_id") == session_id
+                        and payload.get("user_id") == user_id
+                        and payload.get("workspace") == workspace
+                        for payload in bound
+                    ):
+                        return False
                 allowed = {
                     "tool.completed",
                     "evidence.inspect.completed",
@@ -1447,6 +1491,10 @@ class SkillImprovementStore:
                     failure_ref=ref,
                     project_id=project_value,
                     origin_run_id=origin_value,
+                    task_id=task_value,
+                    session_id=session_value,
+                    user_id=user_value,
+                    workspace=workspace_value,
                 )
                 for ref in item.evidence_refs
             )
@@ -1554,6 +1602,10 @@ class SkillImprovementStore:
                         failure_ref=ref,
                         project_id=project_value,
                         origin_run_id=origin_value,
+                        task_id=task_value,
+                        session_id=session_value,
+                        user_id=user_value,
+                        workspace=workspace_value,
                     )
                     for ref in item.evidence_refs
                 )

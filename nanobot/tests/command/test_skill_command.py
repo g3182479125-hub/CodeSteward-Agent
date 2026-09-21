@@ -415,6 +415,17 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
                 '{"result":"tests/test_api.py", "evidence_refs":["tool-inspect-1"]}',
             ),
         )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            (
+                "run-1",
+                "run.context.bound",
+                '{"task_id":"task-1","session_id":"cli:direct",'
+                '"user_id":"user","workspace":"'
+                + str(project_workspace.resolve()).replace("\\", "\\\\")
+                + '"}',
+            ),
+        )
     from devpilot.skill_improvement import SkillImprovementStore
 
     SkillImprovementStore.from_environment(project_workspace).capture_task_snapshot(

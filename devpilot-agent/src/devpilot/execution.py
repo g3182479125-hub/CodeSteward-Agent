@@ -75,6 +75,9 @@ class ExecutionResult:
     # enough information for a safety-sensitive promotion decision.
     side_effect_count: int | None = None
     permission_violation: bool | None = None
+    # Set by the execution backend. Adapter/model metadata is not accepted as
+    # proof that a non-zero exit is a semantic failure.
+    failure_kind: str = "unknown"
 
 
 class ExecutionBackend(Protocol):
@@ -263,6 +266,7 @@ class FakeExecutionBackend:
             output_truncated=output_truncated,
             side_effect_count=0,
             permission_violation=False,
+            failure_kind="semantic",
         )
 
 

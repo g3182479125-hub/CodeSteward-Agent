@@ -33,7 +33,14 @@ class ProjectAnalysisService:
         self.allowed_roots = allowed_roots
         self.store = store
 
-    def inspect(self, project_path: str | Path) -> AnalysisOutcome:
+    def inspect(
+        self,
+        project_path: str | Path,
+        *,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> AnalysisOutcome:
         inspection = inspect_project(project_path, self.allowed_roots)
         root_id, fingerprint = self.allowed_roots.binding_for(inspection.project_path)
         project_id = self.store.ensure_project(
@@ -42,6 +49,17 @@ class ProjectAnalysisService:
             repo_fingerprint=fingerprint,
         )
         run_id = self.store.start_run(project_id)
+        if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
+            self.store.append_event(
+                run_id,
+                "run.context.bound",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "workspace": str(inspection.project_path),
+                },
+            )
         self.store.append_event(
             run_id,
             "tool.completed",
@@ -116,6 +134,9 @@ class BugCheckService:
         expected_behavior: str,
         target_files: list[str] | tuple[str, ...],
         code: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ) -> BugCheckOutcome:
         """Read and hash targets before creating the durable bug-check Run.
 
@@ -144,6 +165,17 @@ class BugCheckService:
             str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
         )
         run_id = self.store.start_run(project_id, kind="bug-check")
+        if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
+            self.store.append_event(
+                run_id,
+                "run.context.bound",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "workspace": str(project),
+                },
+            )
         self.store.record_bug_check_failure_fact(
             BugCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
                 run_id=run_id,
@@ -171,6 +203,9 @@ class TestCheckService(BugCheckService):
         expected_behavior: str,
         target_files: list[str] | tuple[str, ...],
         code: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ) -> BugCheckOutcome:
         project = self.allowed_roots.require_project(project_path)
         if not target_files:
@@ -194,6 +229,17 @@ class TestCheckService(BugCheckService):
             str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
         )
         run_id = self.store.start_run(project_id, kind="test-check")
+        if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
+            self.store.append_event(
+                run_id,
+                "run.context.bound",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "workspace": str(project),
+                },
+            )
         self.store.record_test_check_failure_fact(
             TestCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
                 run_id=run_id,

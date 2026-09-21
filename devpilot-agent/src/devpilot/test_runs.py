@@ -96,6 +96,9 @@ class ProjectTestRunner:
         target_files: list[str] | tuple[str, ...],
         symptom: str,
         expected_behavior: str,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ) -> ProjectTestRunResult:
         command, command_profile = self.command_for(test_kind)
         project = self.allowed_roots.require_project(project_path)
@@ -117,6 +120,17 @@ class ProjectTestRunner:
         except ValueError as exc:
             raise ProjectTestTrustError("trusted project is required for project tests") from exc
         run_id = self.store.start_run(project_id, kind="test-check")
+        if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
+            self.store.append_event(
+                run_id,
+                "run.context.bound",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "workspace": str(project),
+                },
+            )
         request = ExecutionRequest(
             run_id=run_id,
             project_id=project_id,
