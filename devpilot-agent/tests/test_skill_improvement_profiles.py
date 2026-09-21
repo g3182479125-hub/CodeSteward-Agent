@@ -78,6 +78,7 @@ def test_improvement_case_and_replay_trial_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, workspace = _store(tmp_path)
+    monkeypatch.setattr(store, "_project_is_trusted", lambda project_id, root: True)
     monkeypatch.setattr(
         "devpilot.skill_improvement.capture_git_snapshot",
         lambda project, *, allowed_file_scope, verification_profile: GitReplaySnapshot(
@@ -112,7 +113,6 @@ def test_improvement_case_and_replay_trial_round_trip(
         skill_id="repo-analysis",
         allowed_file_scope=["src/main.py"],
         verification_profile="python-syntax",
-        project_trusted=True,
     )
     snapshot_ref = task_snapshot_ref("task-analysis-1")
     assert snapshot.task_id == "task-analysis-1"

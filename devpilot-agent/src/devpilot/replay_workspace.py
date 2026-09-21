@@ -100,7 +100,7 @@ def capture_git_snapshot(
             replayable=False,
             reason=str(exc),
         )
-    identity = hashlib.sha256(f"{root}\0{git_dir}".encode()).hexdigest()
+    identity = _repository_identity(root, git_dir)
     if not commit or len(commit) < 7:
         return GitReplaySnapshot(
             repository_root=str(root),
@@ -149,6 +149,15 @@ def create_private_worktree(
         private_root=private_root,
         trusted_private_root=trusted_private_root,
     )
+    try:
+        current_identity = _repository_identity(
+            Path(_git(Path(snapshot.repository_root), "rev-parse", "--show-toplevel")),
+            _git(Path(snapshot.repository_root), "rev-parse", "--git-dir"),
+        )
+    except ReplayabilityError as exc:
+        raise ReplayabilityError("source repository identity validation failed") from exc
+    if current_identity != snapshot.repository_identity:
+        raise ReplayabilityError("source repository identity changed")
     path = root / f"replay-{uuid.uuid4().hex}"
     try:
         result = subprocess.run(
@@ -246,8 +255,14 @@ def _validate_private_root(
     configured = trusted_private_root or os.environ.get("DEVPILOT_REPLAY_PRIVATE_ROOT")
     if configured is None:
         raise ReplayabilityError("trusted private replay root is not configured")
-    root = Path(private_root).expanduser().resolve()
-    trusted = Path(configured).expanduser().resolve()
+    unresolved_root = Path(private_root).expanduser()
+    unresolved_trusted = Path(configured).expanduser()
+    root_chain = (*unresolved_root.parents, unresolved_root)
+    trusted_chain = (*unresolved_trusted.parents, unresolved_trusted)
+    if any(os.path.islink(str(item)) for item in (*root_chain, *trusted_chain)):
+        raise ReplayabilityError("private replay root cannot be a symlink")
+    root = unresolved_root.resolve()
+    trusted = unresolved_trusted.resolve()
     if root != trusted:
         raise ReplayabilityError("private replay root is not trusted")
     repository = Path(snapshot.repository_root).expanduser().resolve()
@@ -264,6 +279,10 @@ def _validate_private_root(
     if not root.is_dir():
         raise ReplayabilityError("private replay root is not a directory")
     return root
+
+
+def _repository_identity(root: Path, git_dir: str) -> str:
+    return hashlib.sha256(f"{root.resolve()}\0{git_dir}".encode()).hexdigest()
 
 
 def _remove_created_worktree(snapshot: GitReplaySnapshot, path: Path) -> None:

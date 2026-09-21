@@ -76,6 +76,8 @@ def test_clean_snapshot_creates_and_cleans_private_worktree(
         if kwargs.get("cwd"):
             if args[-1:] == ["--show-toplevel"]:
                 return SimpleNamespace(returncode=0, stdout=str(Path(kwargs["cwd"])), stderr="")
+            if args[-1:] == ["--git-dir"]:
+                return SimpleNamespace(returncode=0, stdout=".git", stderr="")
             return SimpleNamespace(returncode=0, stdout="b" * 40, stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -100,8 +102,8 @@ def test_clean_snapshot_creates_and_cleans_private_worktree(
     assert snapshot.replayable is True
     assert worktree.start_commit_sha == "b" * 40
     assert cleaned.cleanup_error is None
-    assert calls[4][3:6] == ["worktree", "add", "--detach"]
-    assert calls[7][3:6] == ["worktree", "remove", "--force"]
+    assert any(call[3:6] == ["worktree", "add", "--detach"] for call in calls)
+    assert any(call[3:6] == ["worktree", "remove", "--force"] for call in calls)
 
 
 def test_unsafe_scope_and_non_replayable_worktree_are_rejected(tmp_path: Path) -> None:

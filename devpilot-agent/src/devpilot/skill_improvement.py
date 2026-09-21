@@ -436,6 +436,8 @@ class SkillSnapshot:
     replayability_reason: str | None = None
     replay_metadata_pending: bool = False
     source_evidence_refs: tuple[str, ...] = ()
+    start_replayable: bool | None = None
+    start_replayability_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1775,10 +1777,26 @@ class SkillImprovementStore:
                 continue
             if skill_id is not None and case.skill_id != skill_id:
                 continue
+            if status == "eligible" and not self._case_is_replayable(case):
+                continue
             if status is not None and case.status != status:
                 continue
             cases.append(case)
         return sorted(cases, key=lambda item: (item.created_at, item.case_id))
+
+    def _case_is_replayable(self, case: ImprovementCase) -> bool:
+        """Require a current, explicit replay proof for every execution gate."""
+
+        if case.status in {"not_replayable", "ignored"} or case.replay_snapshot_ref is None:
+            return False
+        snapshot = self.get_task_snapshot(
+            case.replay_snapshot_ref,
+            workspace=case.workspace,
+            project_id=case.project_id,
+            session_id=case.session_id,
+            skill_id=case.skill_id,
+        )
+        return snapshot is not None and snapshot.replayable is True
 
     def _evidence_has_non_replayable_case(
         self,
@@ -1790,7 +1808,7 @@ class SkillImprovementStore:
         skill_id: str,
     ) -> bool:
         return any(
-            case.status == "not_replayable" and evidence_id in case.evidence_refs
+            not self._case_is_replayable(case) and evidence_id in case.evidence_refs
             for case in self.list_improvement_cases(
                 workspace=workspace,
                 project_id=project_id,
@@ -1851,6 +1869,8 @@ class SkillImprovementStore:
             raise SkillImprovementError("replay trial snapshot binding mismatch")
         if snapshot.content_hash != case.base_skill_hash:
             raise SkillImprovementError("replay trial snapshot hash mismatch")
+        if snapshot.replayable is not True:
+            raise SkillImprovementError("replay trial snapshot is not replayable")
         if version == "baseline" and skill_hash.lower() != case.base_skill_hash:
             raise SkillImprovementError("baseline trial hash does not match its case")
         if version == "candidate":
@@ -2490,7 +2510,7 @@ class SkillImprovementStore:
         cases = [self.get_improvement_case(item) for item in case_values]
         if any(item is None for item in cases):
             raise SkillImprovementError("candidate case was not found")
-        if any(item is not None and item.status == "not_replayable" for item in cases):
+        if any(item is not None and not self._case_is_replayable(item) for item in cases):
             raise SkillImprovementError("candidate case is not replayable")
         requester = _bounded_text(user_id, field="user_id", limit=128)
         if any(
@@ -2675,7 +2695,6 @@ class SkillImprovementStore:
         allowed_file_scope: tuple[str, ...] | list[str] = (),
         verification_profile: str | None = None,
         source_evidence_refs: tuple[str, ...] | list[str] = (),
-        project_trusted: bool | None = None,
     ) -> SkillSnapshot:
         """Pin the first effective version for a task; never silently refresh it."""
         if verification_profile is not None or allowed_file_scope:
@@ -2691,12 +2710,7 @@ class SkillImprovementStore:
                 )
             except ReplayabilityError as exc:
                 raise SkillImprovementError("replay snapshot metadata is invalid") from exc
-            trusted = (
-                project_trusted
-                if project_trusted is not None
-                else self._project_is_trusted(project_id, workspace)
-            )
-            if not trusted:
+            if not self._project_is_trusted(project_id, workspace):
                 replay_metadata = replace(
                     replay_metadata,
                     replayable=False,
@@ -2737,7 +2751,6 @@ class SkillImprovementStore:
                 ):
                     if (
                         existing.repository_identity
-                        and replay_metadata.repository_identity
                         and existing.repository_identity != replay_metadata.repository_identity
                     ):
                         raise SkillImprovementError(
@@ -2745,25 +2758,22 @@ class SkillImprovementStore:
                         )
                     merged = replace(
                         existing,
-                        repository_root=existing.repository_root
-                        or replay_metadata.repository_root,
-                        repository_identity=existing.repository_identity
-                        or replay_metadata.repository_identity,
-                        start_commit_sha=existing.start_commit_sha
-                        or replay_metadata.start_commit_sha,
-                        working_tree_clean=(
-                            existing.working_tree_clean
-                            if existing.working_tree_clean is not None
-                            else replay_metadata.working_tree_clean
-                        ),
+                        repository_root=existing.repository_root,
+                        repository_identity=existing.repository_identity,
+                        start_commit_sha=existing.start_commit_sha,
+                        working_tree_clean=existing.working_tree_clean,
                         allowed_file_scope=replay_metadata.allowed_file_scope,
                         verification_profile=replay_metadata.verification_profile,
-                        replayable=(
-                            replay_metadata.replayable
+                        replayable=existing.start_replayable is True,
+                        replayability_reason=(
+                            existing.start_replayability_reason
+                            if existing.start_replayable is not True
+                            else None
                         ),
-                        replayability_reason=replay_metadata.reason,
                         replay_metadata_pending=False,
-                        source_evidence_refs=_refs(source_evidence_refs),
+                        source_evidence_refs=_refs(
+                            (*existing.source_evidence_refs, *source_evidence_refs)
+                        ),
                     )
                     if merged != existing:
                         self._atomic_write(
@@ -2808,11 +2818,13 @@ class SkillImprovementStore:
                     replayable=False if metadata_pending else replay_metadata.replayable,
                     replayability_reason=(
                         "verification scope is pending"
-                        if metadata_pending
+                        if metadata_pending and replay_metadata.replayable
                         else replay_metadata.reason
                     ),
                     replay_metadata_pending=metadata_pending,
                     source_evidence_refs=_refs(source_evidence_refs),
+                    start_replayable=replay_metadata.replayable,
+                    start_replayability_reason=replay_metadata.reason,
                 )
             self._atomic_write(
                 path,
@@ -3432,6 +3444,8 @@ class SkillImprovementStore:
             "replayability_reason": snapshot.replayability_reason,
             "replay_metadata_pending": snapshot.replay_metadata_pending,
             "source_evidence_refs": list(snapshot.source_evidence_refs),
+            "start_replayable": snapshot.start_replayable,
+            "start_replayability_reason": snapshot.start_replayability_reason,
         }
 
     @staticmethod
@@ -3496,6 +3510,16 @@ class SkillImprovementStore:
             ),
             source_evidence_refs=(
                 _refs(raw.get("source_evidence_refs"))
+            ),
+            start_replayable=(
+                raw.get("start_replayable")
+                if isinstance(raw.get("start_replayable"), bool)
+                else None
+            ),
+            start_replayability_reason=(
+                raw.get("start_replayability_reason")
+                if isinstance(raw.get("start_replayability_reason"), str)
+                else None
             ),
         )
 
