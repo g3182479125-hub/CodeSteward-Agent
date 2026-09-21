@@ -163,6 +163,61 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
     assert case.status in IMPROVEMENT_CASE_STATES
 
 
+def test_non_replayable_snapshot_is_recorded_without_model_eligibility(tmp_path: Path) -> None:
+    store, workspace = _store(tmp_path)
+    skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
+    snapshot = store.capture_task_snapshot(
+        task_id="task-non-replayable",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+    )
+    assert snapshot.replayable is False
+    assert snapshot.working_tree_clean is False
+    assert snapshot.replayability_reason in {
+        "working tree is not clean",
+        "git repository metadata is unavailable",
+    }
+    assert snapshot.allowed_file_scope == ("src/main.py",)
+
+    evidence = store.record_feedback(
+        task_id="task-non-replayable",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-non-replayable",),
+    )
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id="run-non-replayable",
+        task_id="task-non-replayable",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        base_skill_hash=skill_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="分析结果漏掉了测试入口。",
+        expected_behavior="输出测试入口。",
+        evidence_refs=(evidence.evidence_id, "run-non-replayable"),
+        replay_snapshot_ref=task_snapshot_ref("task-non-replayable"),
+        assertion_spec={"kind": "analysis_fact"},
+    )
+
+    assert case.status == "not_replayable"
+    assert case.replay_snapshot_ref == task_snapshot_ref("task-non-replayable")
+
+
 def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: Path) -> None:
     store, workspace = _store(tmp_path)
     skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash

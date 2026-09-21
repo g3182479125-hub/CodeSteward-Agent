@@ -348,6 +348,8 @@ def _skill_improvement_context(
     summary: str,
     expected_behavior: str,
     failure_evidence_refs: object = (),
+    allowed_file_scope: object = (),
+    verification_profile: str | None = None,
 ) -> dict[str, Any] | None:
     """Build a server-verifiable improvement context for one Full Access turn."""
     if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") != "1":
@@ -369,14 +371,25 @@ def _skill_improvement_context(
         for value in (task_id, project_id, profile_binding, sender_id, session_id)
     ):
         return None
+    task_id_value = cast(str, task_id)
+    project_id_value = cast(str, project_id)
+    profile_binding_value = cast(str, profile_binding)
+    sender_id_value = cast(str, sender_id)
+    session_id_value = cast(str, session_id)
     try:
         store = SkillImprovementStore.from_environment(workspace)
         snapshot = store.capture_task_snapshot(
-            task_id=task_id,
+            task_id=task_id_value,
             workspace=workspace,
-            session_id=session_id,
-            project_id=project_id,
+            session_id=session_id_value,
+            project_id=project_id_value,
             skill_id=skill_id,
+            allowed_file_scope=(
+                tuple(item for item in allowed_file_scope if isinstance(item, str))
+                if isinstance(allowed_file_scope, (list, tuple))
+                else ()
+            ),
+            verification_profile=verification_profile or "pending",
         )
     except (OSError, ValueError, SkillImprovementError):
         return None
@@ -392,15 +405,19 @@ def _skill_improvement_context(
     ]
     return {
         "skill_id": skill_id,
-        "profile_binding": profile_binding,
-        "task_id": task_id,
-        "user_id": sender_id,
-        "session_id": session_id,
+        "profile_binding": profile_binding_value,
+        "task_id": task_id_value,
+        "user_id": sender_id_value,
+        "session_id": session_id_value,
         "skill_hash": snapshot.content_hash,
-        "replay_snapshot_ref": task_snapshot_ref(task_id),
+        "replay_snapshot_ref": task_snapshot_ref(task_id_value),
         "summary": summary,
         "expected_behavior": expected_behavior,
         "verification_kind": "semantic",
+        "allowed_file_scope": list(snapshot.allowed_file_scope),
+        "verification_profile": snapshot.verification_profile,
+        "replayable": snapshot.replayable,
+        "replayability_reason": snapshot.replayability_reason,
         "failure_evidence_refs": trusted_failure_refs,
     }
 
@@ -1201,6 +1218,11 @@ def _full_access_preview_and_execute(
         return proposal
     improvement_context = None
     if skill_id is not None:
+        allowed_file_scope = tuple(
+            str(item.get("relative_path"))
+            for item in patches
+            if isinstance(item, Mapping) and isinstance(item.get("relative_path"), str)
+        )
         improvement_context = _skill_improvement_context(
             request_context,
             project_path=project_path,
@@ -1209,6 +1231,8 @@ def _full_access_preview_and_execute(
             expected_behavior=improvement_expected_behavior
             or f"{verification_profile or 'python-syntax'} verification passes",
             failure_evidence_refs=failure_evidence_refs,
+            allowed_file_scope=allowed_file_scope,
+            verification_profile=verification_profile or "python-syntax",
         )
     if improvement_context is None:
         execution = _post_full_access_apply_verify(
@@ -1881,6 +1905,7 @@ class ConfirmedActionTool(Tool):
                         else None
                     )
                     if skill_id in {"feature-delivery", "bug-fix"}:
+                        allowed_files = contract.get("allowed_files", ())
                         improvement_context = _skill_improvement_context(
                             request_context,
                             project_path=str(
@@ -1898,6 +1923,8 @@ class ConfirmedActionTool(Tool):
                             failure_evidence_refs=contract.get(
                                 "failure_evidence_ids", ()
                             ),
+                            allowed_file_scope=allowed_files,
+                            verification_profile=profile,
                         )
                         if improvement_context is not None:
                             payload["skill_improvement_context"] = improvement_context

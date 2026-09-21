@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .redaction import redact_sensitive_payload
+from .replay_workspace import ReplayabilityError, capture_git_snapshot
 
 TRIAL_SKILL_ID = "bug-fix"
 TRIAL_SKILL_RELATIVE_PATH = "skills/bug-fix/SKILL.md"
@@ -425,6 +426,14 @@ class SkillSnapshot:
     session_id: str | None = None
     project_id: str | None = None
     workspace: str | None = None
+    repository_root: str | None = None
+    repository_identity: str | None = None
+    start_commit_sha: str | None = None
+    working_tree_clean: bool | None = None
+    allowed_file_scope: tuple[str, ...] = ()
+    verification_profile: str | None = None
+    replayable: bool | None = None
+    replayability_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1541,6 +1550,8 @@ class SkillImprovementStore:
                 raise SkillImprovementError("improvement case replay snapshot binding mismatch")
             if snapshot.content_hash != base_hash:
                 raise SkillImprovementError("improvement case snapshot does not match baseline")
+            if snapshot.replayable is False:
+                status = "not_replayable"
         assertion = _json_safe(assertion_spec or {})
         identity = json.dumps(
             {
@@ -2604,8 +2615,25 @@ class SkillImprovementStore:
         session_id: str,
         project_id: str,
         skill_id: str = TRIAL_SKILL_ID,
+        allowed_file_scope: tuple[str, ...] | list[str] = (),
+        verification_profile: str | None = None,
     ) -> SkillSnapshot:
         """Pin the first effective version for a task; never silently refresh it."""
+        if verification_profile is not None or allowed_file_scope:
+            if verification_profile is None:
+                raise SkillImprovementError(
+                    "verification_profile is required with an allowed file scope"
+                )
+            try:
+                replay_metadata = capture_git_snapshot(
+                    workspace,
+                    allowed_file_scope=allowed_file_scope,
+                    verification_profile=verification_profile,
+                )
+            except ReplayabilityError as exc:
+                raise SkillImprovementError("replay snapshot metadata is invalid") from exc
+        else:
+            replay_metadata = None
         task_value = _bounded_text(task_id, field="task_id", limit=128)
         task_key = task_snapshot_ref(task_value)
         legacy_task_key = content_sha256(task_value)
@@ -2631,7 +2659,55 @@ class SkillImprovementStore:
                     or raw.get("workspace") != workspace_value
                 ):
                     raise SkillImprovementError("task snapshot binding mismatch")
-                return self._snapshot_from_dict(raw)
+                existing = self._snapshot_from_dict(raw)
+                if replay_metadata is not None:
+                    if (
+                        existing.repository_identity
+                        and replay_metadata.repository_identity
+                        and existing.repository_identity != replay_metadata.repository_identity
+                    ):
+                        raise SkillImprovementError(
+                            "task snapshot repository identity changed"
+                        )
+                    merged = replace(
+                        existing,
+                        repository_root=existing.repository_root
+                        or replay_metadata.repository_root,
+                        repository_identity=existing.repository_identity
+                        or replay_metadata.repository_identity,
+                        start_commit_sha=existing.start_commit_sha
+                        or replay_metadata.start_commit_sha,
+                        working_tree_clean=(
+                            existing.working_tree_clean
+                            if existing.working_tree_clean is not None
+                            else replay_metadata.working_tree_clean
+                        ),
+                        allowed_file_scope=replay_metadata.allowed_file_scope,
+                        verification_profile=replay_metadata.verification_profile,
+                        replayable=(
+                            existing.replayable
+                            if existing.replayable is not None
+                            else replay_metadata.replayable
+                        ),
+                        replayability_reason=(
+                            existing.replayability_reason
+                            if existing.replayable is not None
+                            else replay_metadata.reason
+                        ),
+                    )
+                    if merged != existing:
+                        self._atomic_write(
+                            existing_path,
+                            {
+                                "task_id": task_value,
+                                "session_id": session_value,
+                                "project_id": project_value,
+                                "workspace": workspace_value,
+                                **self._snapshot_to_dict(merged),
+                            },
+                        )
+                    return merged
+                return existing
             effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
             snapshot = SkillSnapshot(
                 **self._snapshot_to_dict(effective),
@@ -2640,6 +2716,18 @@ class SkillImprovementStore:
                 project_id=project_value,
                 workspace=workspace_value,
             )
+            if replay_metadata is not None:
+                snapshot = replace(
+                    snapshot,
+                    repository_root=replay_metadata.repository_root,
+                    repository_identity=replay_metadata.repository_identity,
+                    start_commit_sha=replay_metadata.start_commit_sha,
+                    working_tree_clean=replay_metadata.working_tree_clean,
+                    allowed_file_scope=replay_metadata.allowed_file_scope,
+                    verification_profile=replay_metadata.verification_profile,
+                    replayable=replay_metadata.replayable,
+                    replayability_reason=replay_metadata.reason,
+                )
             self._atomic_write(
                 path,
                 {
@@ -3248,6 +3336,14 @@ class SkillImprovementStore:
             "content": snapshot.content,
             "content_hash": snapshot.content_hash,
             "captured_at": snapshot.captured_at,
+            "repository_root": snapshot.repository_root,
+            "repository_identity": snapshot.repository_identity,
+            "start_commit_sha": snapshot.start_commit_sha,
+            "working_tree_clean": snapshot.working_tree_clean,
+            "allowed_file_scope": list(snapshot.allowed_file_scope),
+            "verification_profile": snapshot.verification_profile,
+            "replayable": snapshot.replayable,
+            "replayability_reason": snapshot.replayability_reason,
         }
 
     @staticmethod
@@ -3265,6 +3361,48 @@ class SkillImprovementStore:
             session_id=raw.get("session_id") if isinstance(raw.get("session_id"), str) else None,
             project_id=raw.get("project_id") if isinstance(raw.get("project_id"), str) else None,
             workspace=raw.get("workspace") if isinstance(raw.get("workspace"), str) else None,
+            repository_root=(
+                raw.get("repository_root")
+                if isinstance(raw.get("repository_root"), str)
+                else None
+            ),
+            repository_identity=(
+                raw.get("repository_identity")
+                if isinstance(raw.get("repository_identity"), str)
+                else None
+            ),
+            start_commit_sha=(
+                raw.get("start_commit_sha")
+                if isinstance(raw.get("start_commit_sha"), str)
+                else None
+            ),
+            working_tree_clean=(
+                raw.get("working_tree_clean")
+                if isinstance(raw.get("working_tree_clean"), bool)
+                else None
+            ),
+            allowed_file_scope=tuple(
+                item
+                for item in raw.get("allowed_file_scope", [])
+                if isinstance(item, str)
+            )
+            if isinstance(raw.get("allowed_file_scope", []), list)
+            else (),
+            verification_profile=(
+                raw.get("verification_profile")
+                if isinstance(raw.get("verification_profile"), str)
+                else None
+            ),
+            replayable=(
+                raw.get("replayable")
+                if isinstance(raw.get("replayable"), bool)
+                else None
+            ),
+            replayability_reason=(
+                raw.get("replayability_reason")
+                if isinstance(raw.get("replayability_reason"), str)
+                else None
+            ),
         )
 
     def _read_object(self, path: Path, label: str) -> dict[str, Any]:

@@ -1012,6 +1012,10 @@ class AgentLoop:
                 session_id=session.key,
                 project_id=task_context.project_ref,
                 skill_id=skill_id,
+                # The concrete verifier and allowed files are only known once
+                # a proposal is bound.  Capture the Git identity at task start
+                # now; the verification call enriches this immutable record.
+                verification_profile="pending",
             )
             return {snapshot.skill_id: snapshot.content}
         except ImportError:
