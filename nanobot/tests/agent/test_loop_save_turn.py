@@ -11,6 +11,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.loop_driver import LoopCheckpoint, tool_call_fingerprint
 from nanobot.agent.loop_handoff import LoopHandoffManager, SqliteLoopHandoffStore
+from nanobot.agent.task_profiles import TaskProfileError
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
@@ -909,6 +910,47 @@ async def test_tool_failure_returns_safe_turn_outcome_and_next_message_continues
     assert "后续对话" in failed.content
     assert continued is not None
     assert continued.content == "new answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender_id", "error", "message_key"),
+    [
+        ("user", RuntimeError("DevPilot project inspection failed"), "devpilot.failed"),
+        ("user", TaskProfileError("task profile unavailable"), "devpilot.failed"),
+        ("subagent", RuntimeError("worker failed"), "subagent.failed"),
+    ],
+)
+async def test_dispatch_maps_exception_sources_to_recoverable_outcomes(
+    tmp_path: Path,
+    sender_id: str,
+    error: Exception,
+    message_key: str,
+) -> None:
+    loop = _make_full_loop(tmp_path)
+
+    async def fail_process_message(*_args, **_kwargs):
+        raise error
+
+    loop._process_message = fail_process_message  # type: ignore[method-assign]
+    await loop._dispatch(
+        InboundMessage(
+            channel="websocket",
+            sender_id=sender_id,
+            chat_id=f"exception-{sender_id}",
+            content="帮我检查一下",
+        )
+    )
+
+    outbound = []
+    while loop.bus.outbound_size:
+        outbound.append(await loop.bus.consume_outbound())
+    outcome_messages = [message for message in outbound if "turn_outcome" in message.metadata]
+    assert len(outcome_messages) == 1
+    outcome_message = outcome_messages[0]
+    assert outcome_message.metadata["turn_outcome"]["message_key"] == message_key
+    assert "后续对话" in outcome_message.content or "主对话" in outcome_message.content
+    assert all("RuntimeError" not in message.content for message in outbound)
 
 
 @pytest.mark.asyncio

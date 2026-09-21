@@ -45,14 +45,54 @@
 
 ## 自动验证
 
-在 `nanobot` 目录使用项目虚拟环境：
+以下命令均在仓库根目录
+`D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate` 执行；每条命令的退出码
+均记录在结果中。
 
-```text
-Ruff affected files: All checks passed
-pytest targeted: 352 passed, 3 deselected
-WebUI targeted Vitest: 146 passed
-WebUI lint: passed
-WebUI production build: passed
+```powershell
+& .\nanobot\.venv\Scripts\python.exe -m pytest -q `
+  nanobot/tests/agent/test_turn_outcomes.py `
+  nanobot/tests/utils/test_progress_events.py `
+  nanobot/tests/utils/test_webui_transcript.py `
+  nanobot/tests/bus/test_outbound_events.py `
+  nanobot/tests/agent/test_loop_progress.py `
+  nanobot/tests/agent/test_loop_save_turn.py `
+  nanobot/nanobot/channels/websocket/tests/test_websocket_channel.py `
+  -k 'not test_h7_default_driver_runs_each_task_profile_main_chain' --tb=short
+```
+
+结果：`355 passed, 3 deselected`，退出码 `0`。
+
+```powershell
+& .\nanobot\.venv\Scripts\python.exe -m ruff check `
+  nanobot/nanobot/agent/loop.py `
+  nanobot/nanobot/agent/turn_outcomes.py `
+  nanobot/tests/agent/test_loop_save_turn.py `
+  nanobot/tests/agent/test_turn_outcomes.py
+```
+
+结果：`All checks passed`，退出码 `0`；`git diff --check` 退出码 `0`。
+
+```powershell
+Set-Location .\nanobot\webui
+npm test -- --run src/tests/useNanobotStream.test.tsx src/tests/tool-traces.test.ts
+npm run lint
+npm run build
+```
+
+结果：目标 Vitest `75 passed`，lint 通过，production build 通过，整段命令退出码
+`0`。
+
+```powershell
+Set-Location D:\Users\tianmin.li\.codex\worktrees\6401\remote-integrate
+$env:PYTHONPATH = (Join-Path (Get-Location) 'nanobot')
+Set-Location .\devpilot-agent
+& ..\nanobot\.venv\Scripts\python.exe -m pytest -q tests/test_temporary_tools.py --tb=short
+```
+
+结果：`28 passed, 1 failed, 1 skipped`，退出码 `1`。同一测试在实施基线中得到相同
+失败，失败断言是持久化加载结果 `persisted_payload["ok"] is True`；本轮没有修改该
+路径，因此将其保留为已知环境/历史失败，不能把 DevPilot 全部测试写成通过。
 ```
 
 失败来源分类回归：`8 passed`。候选代码在修改前红灯的同一工具失败恢复用例上，
