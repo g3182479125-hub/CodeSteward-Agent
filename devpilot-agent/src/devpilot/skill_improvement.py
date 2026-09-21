@@ -788,6 +788,8 @@ class SkillImprovementStore:
         origin_run_id: str,
         project_id: str,
         skill_id: str,
+        task_id: str | None = None,
+        workspace: str | None = None,
     ) -> bool:
         """Check the server-owned Run/Event/ChangeSet facts behind a receipt."""
         if verification_ref != f"verification-{origin_run_id}":
@@ -795,10 +797,31 @@ class SkillImprovementStore:
         try:
             with sqlite3.connect(self.database_path, timeout=30) as connection:
                 run = connection.execute(
-                    "select project_id, status from runs where id = ?",
+                    """
+                    select r.project_id, r.status, cs.task_id, cs.project_path,
+                           p.real_path, cs.status
+                    from runs r
+                    left join change_sets cs on cs.run_id = r.id
+                    left join projects p on p.id = r.project_id
+                    where r.id = ?
+                    """,
                     (origin_run_id,),
                 ).fetchone()
-                if run is None or run[0] != project_id or run[1] != "failed":
+                if (
+                    run is None
+                    or run[0] != project_id
+                    or run[1] != "failed"
+                    or run[5] != "verification_failed"
+                    or (task_id is not None and run[2] != task_id)
+                    or (
+                        workspace is not None
+                        and (
+                            run[3] is None
+                            and run[4] is None
+                            or str(Path(run[3] or run[4]).expanduser().resolve()) != workspace
+                        )
+                    )
+                ):
                     return False
                 events = connection.execute(
                     "select event_type from run_events where run_id = ?",
@@ -815,11 +838,7 @@ class SkillImprovementStore:
                 }.get(skill_id)
                 if proposed is not None and proposed not in event_types:
                     return False
-                changeset = connection.execute(
-                    "select status from change_sets where run_id = ?",
-                    (origin_run_id,),
-                ).fetchone()
-                return changeset is not None and changeset[0] == "verification_failed"
+                return True
         except sqlite3.Error:
             return False
 
@@ -901,6 +920,8 @@ class SkillImprovementStore:
                     origin_run_id=item.removeprefix("verification-"),
                     project_id=project_id,
                     skill_id=skill_id,
+                    task_id=_bounded_text(task_id, field="task_id", limit=128),
+                    workspace=workspace_value,
                 )
                 for item in refs
                 if _TRUSTED_VERIFICATION_REF_RE.fullmatch(item)
@@ -1208,6 +1229,8 @@ class SkillImprovementStore:
                     origin_run_id=origin_value,
                     project_id=project_value,
                     skill_id=skill_id,
+                    task_id=task_value,
+                    workspace=workspace_value,
                 )
                 for ref in item.evidence_refs
             )
@@ -1295,6 +1318,10 @@ class SkillImprovementStore:
                 or locked_evidence[evidence_id].task_id != task_value
                 or locked_evidence[evidence_id].session_id != session_value
                 or locked_evidence[evidence_id].source_type not in allowed_sources
+                or not (
+                    origin_value == locked_evidence[evidence_id].evidence_id
+                    or origin_value in locked_evidence[evidence_id].evidence_refs
+                )
                 for evidence_id in unique_evidence
             ):
                 raise SkillImprovementError("improvement case evidence changed during creation")
@@ -1304,6 +1331,8 @@ class SkillImprovementStore:
                     origin_run_id=origin_value,
                     project_id=project_value,
                     skill_id=skill_id,
+                    task_id=task_value,
+                    workspace=workspace_value,
                 )
                 for item in locked_evidence.values()
                 for ref in item.evidence_refs
@@ -1313,7 +1342,7 @@ class SkillImprovementStore:
                     "trusted verification changed during case creation"
                 )
             if snapshot_ref is not None:
-                locked_snapshot = self.get_task_snapshot(
+                locked_snapshot = self._get_task_snapshot_unlocked(
                     snapshot_ref,
                     workspace=workspace_value,
                     project_id=project_value,
@@ -1332,6 +1361,18 @@ class SkillImprovementStore:
                 existing = self.get_improvement_case(case_id)
                 if existing is None:
                     raise SkillImprovementError("improvement case record is unavailable")
+                if (
+                    existing.base_skill_hash != base_hash
+                    or existing.trigger_type != trigger_type
+                    or existing.trigger_summary != summary
+                    or existing.expected_behavior != expected
+                    or existing.evidence_refs != refs
+                    or existing.replay_snapshot_ref != snapshot_ref
+                    or existing.assertion_spec != assertion
+                ):
+                    raise SkillImprovementError(
+                        "improvement case conflicts with existing origin_run_id"
+                    )
                 return existing
             case = ImprovementCase(
                 case_id=case_id,
@@ -1529,7 +1570,7 @@ class SkillImprovementStore:
                 or locked_case.replay_snapshot_ref != snapshot_ref
             ):
                 raise SkillImprovementError("replay trial case changed during recording")
-            locked_snapshot = self.get_task_snapshot(
+            locked_snapshot = self._get_task_snapshot_unlocked(
                 snapshot_ref,
                 workspace=locked_case.workspace,
                 project_id=locked_case.project_id,
@@ -2338,6 +2379,25 @@ class SkillImprovementStore:
         skill_id: str | None = None,
     ) -> SkillSnapshot | None:
         """Read a captured snapshot only when its private binding still matches."""
+        with self._lock, self._process_lock():
+            return self._get_task_snapshot_unlocked(
+                snapshot_ref,
+                workspace=workspace,
+                project_id=project_id,
+                session_id=session_id,
+                skill_id=skill_id,
+            )
+
+    def _get_task_snapshot_unlocked(
+        self,
+        snapshot_ref: str,
+        *,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        skill_id: str | None = None,
+    ) -> SkillSnapshot | None:
+        """Read a snapshot while the caller owns the process lock."""
         if not (_record_id_matches(snapshot_ref, "snapshot") or _is_sha256(snapshot_ref)):
             return None
         path = self.snapshots_dir / f"{snapshot_ref}.json"
