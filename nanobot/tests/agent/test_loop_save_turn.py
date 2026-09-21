@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -951,6 +952,34 @@ async def test_dispatch_maps_exception_sources_to_recoverable_outcomes(
     assert outcome_message.metadata["turn_outcome"]["message_key"] == message_key
     assert "后续对话" in outcome_message.content or "主对话" in outcome_message.content
     assert all("RuntimeError" not in message.content for message in outbound)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_binds_generic_failure_to_active_devpilot_profile(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    session = loop.sessions.get_or_create("websocket:profiled")
+    session.policy = replace(session.policy, task_profile="bug-fix")
+    loop.sessions.save(session)
+
+    async def fail_process_message(*_args, **_kwargs):
+        raise RuntimeError("database schema is not initialized")
+
+    loop._process_message = fail_process_message  # type: ignore[method-assign]
+    await loop._dispatch(
+        InboundMessage(
+            channel="websocket",
+            sender_id="user",
+            chat_id="profiled",
+            content="检查项目",
+        )
+    )
+
+    outbound = []
+    while loop.bus.outbound_size:
+        outbound.append(await loop.bus.consume_outbound())
+    outcome_messages = [message for message in outbound if "turn_outcome" in message.metadata]
+    assert len(outcome_messages) == 1
+    assert outcome_messages[0].metadata["turn_outcome"]["message_key"] == "devpilot.failed"
 
 
 @pytest.mark.asyncio

@@ -2657,7 +2657,7 @@ class AgentLoop:
                             msg.metadata
                         ),
                         outcome=classify_turn_outcome(
-                            classify_exception(exc, sender_id=msg.sender_id),
+                            self._classify_dispatch_exception(exc, msg, session_key),
                             str(exc),
                         ),
                     )
@@ -2679,7 +2679,7 @@ class AgentLoop:
                             msg.metadata
                         ),
                         outcome=classify_turn_outcome(
-                            classify_exception(exc, sender_id=msg.sender_id),
+                            self._classify_dispatch_exception(exc, msg, session_key),
                             str(exc),
                         ),
                     )
@@ -2718,6 +2718,21 @@ class AgentLoop:
             if pending is None:
                 await delivery.idle()
                 await self._publish_next_deferred_automation_turn(session_key)
+
+    def _classify_dispatch_exception(
+        self,
+        exc: BaseException,
+        msg: InboundMessage,
+        session_key: str,
+    ) -> str:
+        """Bind generic dispatch failures to the trusted turn source."""
+        reason = classify_exception(exc, sender_id=msg.sender_id)
+        if reason != "tool_error":
+            return reason
+        session = self.sessions.get_cached(session_key)
+        if session is not None and session.policy.task_profile:
+            return "devpilot_error"
+        return reason
 
     async def close_mcp(self) -> None:
         """Stop active work, then close exec, subagent, and MCP resources.

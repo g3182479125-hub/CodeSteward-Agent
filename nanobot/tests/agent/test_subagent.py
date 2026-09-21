@@ -181,3 +181,66 @@ async def test_subagent_forwards_fail_on_tool_error_to_runner(tmp_path):
 
     spec = sm.runner.run.call_args.args[0]
     assert spec.fail_on_tool_error is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_reason", ["error", "tool_error"])
+async def test_subagent_failure_announcement_uses_safe_recovery_text(tmp_path, stop_reason):
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test"
+    sm = SubagentManager(
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=16_000,
+    )
+    sm.runner.run = AsyncMock(
+        return_value=AgentRunResult(
+            final_content=None,
+            messages=[],
+            stop_reason=stop_reason,
+            error="secret internal failure",
+        )
+    )
+    sm._announce_result = AsyncMock()
+    status = SubagentStatus(task_id="t1", label="label", task_description="task", started_at=0.0)
+
+    result = await sm._run_subagent(
+        "t1",
+        "task",
+        "label",
+        {"channel": "cli", "chat_id": "direct"},
+        status,
+        _runtime(provider),
+    )
+
+    args = sm._announce_result.await_args.args
+    assert result == args[3]
+    assert result == "辅助任务没有完成，但不影响主对话。你可以换个策略，或者继续聊别的。"
+    assert "secret internal failure" not in result
+    assert args[5] == "error"
+
+
+@pytest.mark.asyncio
+async def test_subagent_exception_announcement_uses_safe_recovery_text(tmp_path):
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test"
+    sm = SubagentManager(
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=16_000,
+    )
+    sm.runner.run = AsyncMock(side_effect=RuntimeError("secret internal failure"))
+    sm._announce_result = AsyncMock()
+    status = SubagentStatus(task_id="t1", label="label", task_description="task", started_at=0.0)
+
+    result = await sm._run_subagent(
+        "t1",
+        "task",
+        "label",
+        {"channel": "cli", "chat_id": "direct"},
+        status,
+        _runtime(provider),
+    )
+
+    assert result == "辅助任务没有完成，但不影响主对话。你可以换个策略，或者继续聊别的。"
+    assert "secret internal failure" not in result

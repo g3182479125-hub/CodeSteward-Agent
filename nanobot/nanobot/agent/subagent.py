@@ -24,6 +24,7 @@ from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStates
 from nanobot.agent.tools.loader import ToolLoader
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.turn_outcomes import classify_turn_outcome, message_for_outcome
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentDefaults, ToolsConfig
@@ -422,10 +423,10 @@ class SubagentManager:
 
             if result.stop_reason == "tool_error":
                 status.tool_events = list(result.tool_events)
-                final_result = self._format_partial_progress(result)
+                final_result = message_for_outcome(classify_turn_outcome("subagent_error"))
                 final_status = "error"
             elif result.stop_reason == "error":
-                final_result = result.error or "Error: subagent execution failed."
+                final_result = message_for_outcome(classify_turn_outcome("subagent_error"))
                 final_status = "error"
             else:
                 final_result = result.final_content or "Task completed but no final response was generated."
@@ -447,7 +448,7 @@ class SubagentManager:
             status.phase = "error"
             status.error = str(e)
             logger.exception("Subagent [{}] failed", task_id)
-            final_result = f"Error: {e}"
+            final_result = message_for_outcome(classify_turn_outcome("subagent_error"))
             if announce:
                 await self._announce_result(
                     task_id,

@@ -59,10 +59,16 @@ def test_driver_finish_is_a_completed_turn() -> None:
 
 
 def test_exception_source_is_classified_without_exposing_details() -> None:
+    class DevPilotRuntimeError(RuntimeError):
+        pass
+
+    DevPilotRuntimeError.__module__ = "devpilot.nanobot_tools"
+
     assert classify_exception(RuntimeError("provider timeout")) == "model_error"
     assert classify_exception(RuntimeError("worker failed"), sender_id="subagent") == "subagent_error"
     assert classify_exception(RuntimeError("DevPilot project inspection failed")) == "devpilot_error"
     assert classify_exception(RuntimeError("TaskProfileError: profile unavailable")) == "task_profile_error"
+    assert classify_exception(DevPilotRuntimeError("database schema is not initialized")) == "devpilot_error"
 
 
 def test_project_failure_sources_keep_recovery_scope_and_user_copy_separate() -> None:

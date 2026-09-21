@@ -252,7 +252,8 @@ def classify_turn_outcome(
 
 def classify_exception(exc: BaseException, *, sender_id: str | None = None) -> str:
     """Choose a coarse failure source without exposing exception details."""
-    haystack = f"{type(exc).__name__} {exc}".lower()
+    module = type(exc).__module__.lower()
+    haystack = f"{module} {type(exc).__name__} {exc}".lower()
     if sender_id == "subagent" or "subagent" in haystack:
         return "subagent_error"
     if any(
