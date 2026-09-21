@@ -84,7 +84,7 @@ EVALUATION_REPEATS = 3
 EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
-    r"^(run|tool|trace|session|test|feedback|case|trial|snapshot)-[A-Za-z0-9_.:-]{1,127}$"
+    r"^(run|tool|trace|session|test|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
 )
 _TRUSTED_VERIFICATION_REF_RE = re.compile(
     r"^verification-[A-Za-z0-9_.:-]{1,127}$"
@@ -781,6 +781,48 @@ class SkillImprovementStore:
                 (record_type, record_id),
             ).fetchone() is not None
 
+    def _has_trusted_verification_fact(
+        self,
+        *,
+        verification_ref: str,
+        origin_run_id: str,
+        project_id: str,
+        skill_id: str,
+    ) -> bool:
+        """Check the server-owned Run/Event/ChangeSet facts behind a receipt."""
+        if verification_ref != f"verification-{origin_run_id}":
+            return False
+        try:
+            with sqlite3.connect(self.database_path, timeout=30) as connection:
+                run = connection.execute(
+                    "select project_id, status from runs where id = ?",
+                    (origin_run_id,),
+                ).fetchone()
+                if run is None or run[0] != project_id or run[1] != "failed":
+                    return False
+                events = connection.execute(
+                    "select event_type from run_events where run_id = ?",
+                    (origin_run_id,),
+                ).fetchall()
+                event_types = {str(row[0]) for row in events}
+                if "changeset.applied" not in event_types:
+                    return False
+                if "changeset.verification_failed" not in event_types:
+                    return False
+                proposed = {
+                    "feature-delivery": "feature_delivery.proposed",
+                    "bug-fix": "bug_fix.proposed",
+                }.get(skill_id)
+                if proposed is not None and proposed not in event_types:
+                    return False
+                changeset = connection.execute(
+                    "select status from change_sets where run_id = ?",
+                    (origin_run_id,),
+                ).fetchone()
+                return changeset is not None and changeset[0] == "verification_failed"
+        except sqlite3.Error:
+            return False
+
     @staticmethod
     def _namespace(path: Path) -> tuple[str, str | None]:
         if path.name == "feedback.jsonl":
@@ -852,6 +894,20 @@ class SkillImprovementStore:
             raise SkillImprovementError(
                 "trusted verification requires a server verification reference"
             )
+        if source_type == "trusted_verification":
+            if not any(
+                self._has_trusted_verification_fact(
+                    verification_ref=item,
+                    origin_run_id=item.removeprefix("verification-"),
+                    project_id=project_id,
+                    skill_id=skill_id,
+                )
+                for item in refs
+                if _TRUSTED_VERIFICATION_REF_RE.fullmatch(item)
+            ):
+                raise SkillImprovementError(
+                    "trusted verification reference is not a server-owned fact"
+                )
         state = (
             "verified"
             if source_type in {"user_feedback", "tool_result", "trusted_verification"}
@@ -1145,7 +1201,16 @@ class SkillImprovementStore:
                 "improvement case evidence source is not trusted for this trigger"
             )
         if trigger_type == "trusted_verification_failed" and not any(
-            any(_TRUSTED_VERIFICATION_REF_RE.fullmatch(ref) for ref in item.evidence_refs)
+            any(
+                _TRUSTED_VERIFICATION_REF_RE.fullmatch(ref)
+                and self._has_trusted_verification_fact(
+                    verification_ref=ref,
+                    origin_run_id=origin_value,
+                    project_id=project_value,
+                    skill_id=skill_id,
+                )
+                for ref in item.evidence_refs
+            )
             for item in unique_evidence.values()
         ):
             raise SkillImprovementError(
@@ -1162,6 +1227,10 @@ class SkillImprovementStore:
             for item in unique_evidence.values()
         ):
             raise SkillImprovementError("improvement case evidence binding mismatch")
+        if skill_id == "bug-fix" and not any(
+            item.source_type == "user_feedback" for item in unique_evidence.values()
+        ):
+            raise SkillImprovementError("bug-fix case requires original failure evidence")
         if not any(
             origin_value == item.evidence_id or origin_value in item.evidence_refs
             for item in unique_evidence.values()
@@ -1229,6 +1298,20 @@ class SkillImprovementStore:
                 for evidence_id in unique_evidence
             ):
                 raise SkillImprovementError("improvement case evidence changed during creation")
+            if trigger_type == "trusted_verification_failed" and not any(
+                self._has_trusted_verification_fact(
+                    verification_ref=ref,
+                    origin_run_id=origin_value,
+                    project_id=project_value,
+                    skill_id=skill_id,
+                )
+                for item in locked_evidence.values()
+                for ref in item.evidence_refs
+                if _TRUSTED_VERIFICATION_REF_RE.fullmatch(ref)
+            ):
+                raise SkillImprovementError(
+                    "trusted verification changed during case creation"
+                )
             if snapshot_ref is not None:
                 locked_snapshot = self.get_task_snapshot(
                     snapshot_ref,
@@ -1490,6 +1573,8 @@ class SkillImprovementStore:
         user_id: str | None = None,
         session_id: str | None = None,
     ) -> ReplayTrial | None:
+        if workspace is None or project_id is None or user_id is None or session_id is None:
+            raise SkillImprovementError("replay trial scope is required")
         if not _record_id_matches(trial_id, "trial"):
             return None
         if not self._record_exists("replay_trial", trial_id):
@@ -1520,6 +1605,8 @@ class SkillImprovementStore:
         user_id: str | None = None,
         session_id: str | None = None,
     ) -> list[ReplayTrial]:
+        if workspace is None or project_id is None or user_id is None or session_id is None:
+            raise SkillImprovementError("replay trial scope is required")
         trials = [
             _replay_trial_from_dict(raw)
             for raw in self._record_rows("replay_trial")

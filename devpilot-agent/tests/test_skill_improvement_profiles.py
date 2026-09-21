@@ -143,8 +143,23 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
     assert trial.trial_id.startswith("trial-")
     assert trial.case_id == case.case_id
     assert trial.status in REPLAY_TRIAL_STATUSES
-    assert store.get_replay_trial(trial.trial_id) == trial
-    assert store.list_replay_trials(case_id=case.case_id) == [trial]
+    assert (
+        store.get_replay_trial(
+            trial.trial_id,
+            workspace=workspace,
+            project_id="project-1",
+            user_id="user-1",
+            session_id="session-1",
+        )
+        == trial
+    )
+    assert store.list_replay_trials(
+        case_id=case.case_id,
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_id="session-1",
+    ) == [trial]
     assert case.status in IMPROVEMENT_CASE_STATES
 
 
@@ -215,6 +230,29 @@ def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: 
     case = store.create_improvement_case(**kwargs)
     assert case == store.create_improvement_case(**kwargs)
     assert snapshot.content_hash == case.base_skill_hash
+
+
+def test_fake_trusted_verification_and_unscoped_trial_reads_are_rejected(
+    tmp_path: Path,
+) -> None:
+    store, workspace = _store(tmp_path)
+    skill_hash = store.read_effective_snapshot(workspace, skill_id="feature-delivery").content_hash
+    with pytest.raises(SkillImprovementError, match="server-owned fact"):
+        store.record_feedback(
+            task_id="task-delivery-1",
+            project_id="project-1",
+            workspace=workspace,
+            user_id="user-1",
+            session_id="session-1",
+            source_type="trusted_verification",
+            skill_id="feature-delivery",
+            skill_hash=skill_hash,
+            correction="验证失败。",
+            actual_result="伪造的服务端验证引用。",
+            evidence_refs=("run-delivery-1", "verification-run-delivery-1"),
+        )
+    with pytest.raises(SkillImprovementError, match="scope is required"):
+        store.list_replay_trials()
 
 
 def test_legacy_snapshot_id_is_readable_and_snapshot_invalidation_propagates(
