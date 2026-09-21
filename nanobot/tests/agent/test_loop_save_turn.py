@@ -12,6 +12,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.loop_driver import LoopCheckpoint, tool_call_fingerprint
 from nanobot.agent.loop_handoff import LoopHandoffManager, SqliteLoopHandoffStore
+from nanobot.agent.runner import DevPilotToolError
 from nanobot.agent.task_profiles import TaskProfileError
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.context import RequestContext, request_context
@@ -917,7 +918,7 @@ async def test_tool_failure_returns_safe_turn_outcome_and_next_message_continues
 @pytest.mark.parametrize(
     ("sender_id", "error", "message_key"),
     [
-        ("user", RuntimeError("DevPilot project inspection failed"), "devpilot.failed"),
+        ("user", DevPilotToolError("project inspection failed"), "devpilot.failed"),
         ("user", TaskProfileError("task profile unavailable"), "devpilot.failed"),
         ("subagent", RuntimeError("worker failed"), "subagent.failed"),
     ],

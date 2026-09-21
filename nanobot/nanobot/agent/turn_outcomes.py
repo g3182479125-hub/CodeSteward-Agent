@@ -253,7 +253,11 @@ def classify_turn_outcome(
 def classify_exception(exc: BaseException, *, sender_id: str | None = None) -> str:
     """Choose a coarse failure source without exposing exception details."""
     module = type(exc).__module__.lower()
-    haystack = f"{module} {type(exc).__name__} {exc}".lower()
+    # Exception messages are untrusted runtime data.  They may mention a
+    # project name, provider, or plugin even when the failure came from an
+    # unrelated layer, so source classification must use only the typed
+    # exception identity and the trusted sender boundary.
+    haystack = f"{module} {type(exc).__name__}".lower()
     if sender_id == "subagent" or "subagent" in haystack:
         return "subagent_error"
     if any(

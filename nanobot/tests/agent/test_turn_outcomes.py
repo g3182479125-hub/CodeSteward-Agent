@@ -62,12 +62,15 @@ def test_exception_source_is_classified_without_exposing_details() -> None:
     class DevPilotRuntimeError(RuntimeError):
         pass
 
+    class ProviderRuntimeError(RuntimeError):
+        pass
+
     DevPilotRuntimeError.__module__ = "devpilot.nanobot_tools"
 
-    assert classify_exception(RuntimeError("provider timeout")) == "model_error"
+    assert classify_exception(ProviderRuntimeError("unrelated detail")) == "model_error"
     assert classify_exception(RuntimeError("worker failed"), sender_id="subagent") == "subagent_error"
-    assert classify_exception(RuntimeError("DevPilot project inspection failed")) == "devpilot_error"
-    assert classify_exception(RuntimeError("TaskProfileError: profile unavailable")) == "task_profile_error"
+    assert classify_exception(RuntimeError("DevPilot project inspection failed")) == "tool_error"
+    assert classify_exception(RuntimeError("TaskProfileError: profile unavailable")) == "tool_error"
     assert classify_exception(DevPilotRuntimeError("database schema is not initialized")) == "devpilot_error"
 
 
