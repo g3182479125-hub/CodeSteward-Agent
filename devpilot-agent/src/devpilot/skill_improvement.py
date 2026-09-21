@@ -434,6 +434,8 @@ class SkillSnapshot:
     verification_profile: str | None = None
     replayable: bool | None = None
     replayability_reason: str | None = None
+    replay_metadata_pending: bool = False
+    source_evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -807,6 +809,33 @@ class SkillImprovementStore:
                 "where record_type = ? and record_id = ? limit 1",
                 (record_type, record_id),
             ).fetchone() is not None
+
+    def _project_is_trusted(self, project_id: str, workspace: str | Path) -> bool:
+        """Require the same durable project registration used by delivery."""
+
+        try:
+            from .paths import repository_fingerprint
+
+            with sqlite3.connect(self.database_path, timeout=30) as connection:
+                row = connection.execute(
+                    "select real_path, trust_state, repo_fingerprint, allowed_root_id "
+                    "from projects where id = ?",
+                    (project_id,),
+                ).fetchone()
+        except (ImportError, OSError, sqlite3.Error):
+            return False
+        if row is None:
+            return False
+        real_path, trust_state, fingerprint, root_id = row
+        return (
+            str(Path(real_path).expanduser().resolve())
+            == str(Path(workspace).expanduser().resolve())
+            and trust_state == "trusted"
+            and isinstance(fingerprint, str)
+            and fingerprint == repository_fingerprint(workspace)
+            and isinstance(root_id, str)
+            and bool(root_id)
+        )
 
     def _has_trusted_verification_fact(
         self,
@@ -1550,7 +1579,7 @@ class SkillImprovementStore:
                 raise SkillImprovementError("improvement case replay snapshot binding mismatch")
             if snapshot.content_hash != base_hash:
                 raise SkillImprovementError("improvement case snapshot does not match baseline")
-            if snapshot.replayable is False:
+            if snapshot.replayable is not True:
                 status = "not_replayable"
         assertion = _json_safe(assertion_spec or {})
         identity = json.dumps(
@@ -1750,6 +1779,25 @@ class SkillImprovementStore:
                 continue
             cases.append(case)
         return sorted(cases, key=lambda item: (item.created_at, item.case_id))
+
+    def _evidence_has_non_replayable_case(
+        self,
+        evidence_id: str,
+        *,
+        workspace: str,
+        project_id: str,
+        user_id: str,
+        skill_id: str,
+    ) -> bool:
+        return any(
+            case.status == "not_replayable" and evidence_id in case.evidence_refs
+            for case in self.list_improvement_cases(
+                workspace=workspace,
+                project_id=project_id,
+                user_id=user_id,
+                skill_id=skill_id,
+            )
+        )
 
     def record_replay_trial(
         self,
@@ -2217,6 +2265,13 @@ class SkillImprovementStore:
                 if item.skill_hash == baseline.content_hash
                 and item.evidence_id not in processed
                 and (batch.cursor_at is None or item.occurred_at >= batch.cursor_at)
+                and not self._evidence_has_non_replayable_case(
+                    item.evidence_id,
+                    workspace=batch.workspace,
+                    project_id=batch.project_id,
+                    user_id=batch.user_id,
+                    skill_id=batch.skill_id,
+                )
             ][:_MAX_SCHEDULED_BATCH_EVIDENCE]
             if batch.status in {"running", "failed"} and (
                 batch.candidate_attempts >= batch.max_model_calls
@@ -2435,6 +2490,8 @@ class SkillImprovementStore:
         cases = [self.get_improvement_case(item) for item in case_values]
         if any(item is None for item in cases):
             raise SkillImprovementError("candidate case was not found")
+        if any(item is not None and item.status == "not_replayable" for item in cases):
+            raise SkillImprovementError("candidate case is not replayable")
         requester = _bounded_text(user_id, field="user_id", limit=128)
         if any(
             item is not None
@@ -2617,6 +2674,8 @@ class SkillImprovementStore:
         skill_id: str = TRIAL_SKILL_ID,
         allowed_file_scope: tuple[str, ...] | list[str] = (),
         verification_profile: str | None = None,
+        source_evidence_refs: tuple[str, ...] | list[str] = (),
+        project_trusted: bool | None = None,
     ) -> SkillSnapshot:
         """Pin the first effective version for a task; never silently refresh it."""
         if verification_profile is not None or allowed_file_scope:
@@ -2632,6 +2691,17 @@ class SkillImprovementStore:
                 )
             except ReplayabilityError as exc:
                 raise SkillImprovementError("replay snapshot metadata is invalid") from exc
+            trusted = (
+                project_trusted
+                if project_trusted is not None
+                else self._project_is_trusted(project_id, workspace)
+            )
+            if not trusted:
+                replay_metadata = replace(
+                    replay_metadata,
+                    replayable=False,
+                    reason="project is not registered and trusted",
+                )
         else:
             replay_metadata = None
         task_value = _bounded_text(task_id, field="task_id", limit=128)
@@ -2660,7 +2730,11 @@ class SkillImprovementStore:
                 ):
                     raise SkillImprovementError("task snapshot binding mismatch")
                 existing = self._snapshot_from_dict(raw)
-                if replay_metadata is not None:
+                if (
+                    replay_metadata is not None
+                    and existing.replay_metadata_pending
+                    and (verification_profile != "pending" or allowed_file_scope)
+                ):
                     if (
                         existing.repository_identity
                         and replay_metadata.repository_identity
@@ -2685,15 +2759,11 @@ class SkillImprovementStore:
                         allowed_file_scope=replay_metadata.allowed_file_scope,
                         verification_profile=replay_metadata.verification_profile,
                         replayable=(
-                            existing.replayable
-                            if existing.replayable is not None
-                            else replay_metadata.replayable
+                            replay_metadata.replayable
                         ),
-                        replayability_reason=(
-                            existing.replayability_reason
-                            if existing.replayable is not None
-                            else replay_metadata.reason
-                        ),
+                        replayability_reason=replay_metadata.reason,
+                        replay_metadata_pending=False,
+                        source_evidence_refs=_refs(source_evidence_refs),
                     )
                     if merged != existing:
                         self._atomic_write(
@@ -2707,6 +2777,15 @@ class SkillImprovementStore:
                             },
                         )
                     return merged
+                if replay_metadata is not None and (
+                    existing.allowed_file_scope
+                    and existing.allowed_file_scope != replay_metadata.allowed_file_scope
+                    or existing.verification_profile
+                    and existing.verification_profile != replay_metadata.verification_profile
+                ):
+                    raise SkillImprovementError(
+                        "task snapshot replay metadata is immutable"
+                    )
                 return existing
             effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
             snapshot = SkillSnapshot(
@@ -2717,6 +2796,7 @@ class SkillImprovementStore:
                 workspace=workspace_value,
             )
             if replay_metadata is not None:
+                metadata_pending = verification_profile == "pending" and not allowed_file_scope
                 snapshot = replace(
                     snapshot,
                     repository_root=replay_metadata.repository_root,
@@ -2725,8 +2805,14 @@ class SkillImprovementStore:
                     working_tree_clean=replay_metadata.working_tree_clean,
                     allowed_file_scope=replay_metadata.allowed_file_scope,
                     verification_profile=replay_metadata.verification_profile,
-                    replayable=replay_metadata.replayable,
-                    replayability_reason=replay_metadata.reason,
+                    replayable=False if metadata_pending else replay_metadata.replayable,
+                    replayability_reason=(
+                        "verification scope is pending"
+                        if metadata_pending
+                        else replay_metadata.reason
+                    ),
+                    replay_metadata_pending=metadata_pending,
+                    source_evidence_refs=_refs(source_evidence_refs),
                 )
             self._atomic_write(
                 path,
@@ -3344,6 +3430,8 @@ class SkillImprovementStore:
             "verification_profile": snapshot.verification_profile,
             "replayable": snapshot.replayable,
             "replayability_reason": snapshot.replayability_reason,
+            "replay_metadata_pending": snapshot.replay_metadata_pending,
+            "source_evidence_refs": list(snapshot.source_evidence_refs),
         }
 
     @staticmethod
@@ -3402,6 +3490,12 @@ class SkillImprovementStore:
                 raw.get("replayability_reason")
                 if isinstance(raw.get("replayability_reason"), str)
                 else None
+            ),
+            replay_metadata_pending=(
+                raw.get("replay_metadata_pending") is True
+            ),
+            source_evidence_refs=(
+                _refs(raw.get("source_evidence_refs"))
             ),
         )
 

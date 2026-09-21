@@ -376,6 +376,14 @@ def _skill_improvement_context(
     profile_binding_value = cast(str, profile_binding)
     sender_id_value = cast(str, sender_id)
     session_id_value = cast(str, session_id)
+    raw_failure_refs = (
+        failure_evidence_refs
+        if isinstance(failure_evidence_refs, (list, tuple))
+        else ()
+    )
+    source_refs = tuple(
+        item for item in raw_failure_refs if isinstance(item, str) and item.strip()
+    )
     try:
         store = SkillImprovementStore.from_environment(workspace)
         snapshot = store.capture_task_snapshot(
@@ -390,14 +398,10 @@ def _skill_improvement_context(
                 else ()
             ),
             verification_profile=verification_profile or "pending",
+            source_evidence_refs=source_refs,
         )
     except (OSError, ValueError, SkillImprovementError):
         return None
-    raw_failure_refs = (
-        failure_evidence_refs
-        if isinstance(failure_evidence_refs, (list, tuple))
-        else ()
-    )
     trusted_failure_refs = [
         item if item.startswith("failure-") else f"failure-{item}"
         for item in raw_failure_refs
@@ -418,6 +422,7 @@ def _skill_improvement_context(
         "verification_profile": snapshot.verification_profile,
         "replayable": snapshot.replayable,
         "replayability_reason": snapshot.replayability_reason,
+        "source_evidence_refs": list(snapshot.source_evidence_refs),
         "failure_evidence_refs": trusted_failure_refs,
     }
 

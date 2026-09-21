@@ -9,6 +9,8 @@ exceptional reason to guess the old workspace state.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -36,6 +38,7 @@ class ReplayWorktree:
     path: Path
     start_commit_sha: str
     cleanup_error: str | None = None
+    cleanup_record_path: Path | None = None
 
 
 def _git(project: Path, *args: str) -> str:
@@ -135,13 +138,17 @@ def create_private_worktree(
     snapshot: GitReplaySnapshot,
     *,
     private_root: str | Path,
+    trusted_private_root: str | Path | None = None,
 ) -> ReplayWorktree:
     """Create a detached worktree under a server-owned private root."""
 
     if not snapshot.replayable or not snapshot.start_commit_sha:
         raise ReplayabilityError(snapshot.reason or "snapshot is not replayable")
-    root = Path(private_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root = _validate_private_root(
+        snapshot,
+        private_root=private_root,
+        trusted_private_root=trusted_private_root,
+    )
     path = root / f"replay-{uuid.uuid4().hex}"
     try:
         result = subprocess.run(
@@ -164,16 +171,37 @@ def create_private_worktree(
         raise ReplayabilityError("private worktree creation failed") from exc
     if result.returncode != 0:
         raise ReplayabilityError("private worktree creation failed")
+    try:
+        actual_root = Path(_git(path, "rev-parse", "--show-toplevel")).resolve()
+        actual_commit = _git(path, "rev-parse", "HEAD")
+    except ReplayabilityError as exc:
+        _remove_created_worktree(snapshot, path)
+        raise ReplayabilityError("private worktree validation failed") from exc
+    if actual_root != path.resolve() or actual_commit != snapshot.start_commit_sha:
+        _remove_created_worktree(snapshot, path)
+        raise ReplayabilityError("private worktree validation failed")
     return ReplayWorktree(path=path, start_commit_sha=snapshot.start_commit_sha)
 
 
 def cleanup_private_worktree(
     snapshot: GitReplaySnapshot,
     worktree: ReplayWorktree,
+    *,
+    trusted_private_root: str | Path | None = None,
 ) -> ReplayWorktree:
     """Remove one replay worktree and retain cleanup failure as visible state."""
 
+    root: Path | None = None
+    path = worktree.path
     try:
+        root = _validate_private_root(
+            snapshot,
+            private_root=worktree.path.parent,
+            trusted_private_root=trusted_private_root,
+        )
+        path = worktree.path.resolve()
+        if path.parent != root or not path.name.startswith("replay-"):
+            raise ReplayabilityError("private worktree path is outside the trusted root")
         result = subprocess.run(
             [
                 "git",
@@ -182,19 +210,99 @@ def cleanup_private_worktree(
                 "worktree",
                 "remove",
                 "--force",
-                str(worktree.path),
+                str(path),
             ],
             check=False,
             capture_output=True,
             text=True,
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return ReplayWorktree(worktree.path, worktree.start_commit_sha, str(exc))
+    except (OSError, ReplayabilityError, subprocess.TimeoutExpired) as exc:
+        error = str(exc)
+        record_path = _persist_cleanup_failure(root, path, error)
+        return ReplayWorktree(worktree.path, worktree.start_commit_sha, error, record_path)
     if result.returncode != 0:
         return ReplayWorktree(
             worktree.path,
             worktree.start_commit_sha,
             result.stderr.strip() or "private worktree cleanup failed",
+            _persist_cleanup_failure(
+                root,
+                path,
+                result.stderr.strip() or "private worktree cleanup failed",
+            ),
         )
     return ReplayWorktree(worktree.path, worktree.start_commit_sha)
+
+
+def _validate_private_root(
+    snapshot: GitReplaySnapshot,
+    *,
+    private_root: str | Path,
+    trusted_private_root: str | Path | None,
+) -> Path:
+    """Resolve a configured private root and reject repository-contained paths."""
+
+    configured = trusted_private_root or os.environ.get("DEVPILOT_REPLAY_PRIVATE_ROOT")
+    if configured is None:
+        raise ReplayabilityError("trusted private replay root is not configured")
+    root = Path(private_root).expanduser().resolve()
+    trusted = Path(configured).expanduser().resolve()
+    if root != trusted:
+        raise ReplayabilityError("private replay root is not trusted")
+    repository = Path(snapshot.repository_root).expanduser().resolve()
+    if root == repository or repository in root.parents:
+        raise ReplayabilityError("private replay root is inside the repository")
+    try:
+        if root.exists() and root.is_symlink():
+            raise ReplayabilityError("private replay root cannot be a symlink")
+        root.mkdir(parents=True, exist_ok=True)
+    except (OSError, ReplayabilityError) as exc:
+        if isinstance(exc, ReplayabilityError):
+            raise
+        raise ReplayabilityError("private replay root is unavailable") from exc
+    if not root.is_dir():
+        raise ReplayabilityError("private replay root is not a directory")
+    return root
+
+
+def _remove_created_worktree(snapshot: GitReplaySnapshot, path: Path) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            snapshot.repository_root,
+            "worktree",
+            "remove",
+            "--force",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _persist_cleanup_failure(
+    root: Path | None,
+    path: Path,
+    error: str,
+) -> Path | None:
+    if root is None:
+        return None
+    try:
+        pending = root / "cleanup-pending"
+        pending.mkdir(parents=True, exist_ok=True)
+        record = pending / f"{uuid.uuid4().hex}.json"
+        record.write_text(
+            json.dumps(
+                {"path": str(path), "error": error},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return record
+    except OSError:
+        return None

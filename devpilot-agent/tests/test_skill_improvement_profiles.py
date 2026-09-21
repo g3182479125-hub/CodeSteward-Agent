@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from devpilot.replay_workspace import GitReplaySnapshot
 from devpilot.skill_improvement import (
     IMPROVEMENT_CASE_STATES,
     REPLAY_TRIAL_STATUSES,
@@ -73,8 +74,22 @@ def test_effective_snapshot_resolves_each_registered_skill(tmp_path: Path) -> No
     assert snapshot.content_hash
 
 
-def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
+def test_improvement_case_and_replay_trial_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store, workspace = _store(tmp_path)
+    monkeypatch.setattr(
+        "devpilot.skill_improvement.capture_git_snapshot",
+        lambda project, *, allowed_file_scope, verification_profile: GitReplaySnapshot(
+            repository_root=str(Path(project).resolve()),
+            repository_identity="test-repository",
+            start_commit_sha="a" * 40,
+            working_tree_clean=True,
+            allowed_file_scope=tuple(allowed_file_scope),
+            verification_profile=verification_profile,
+            replayable=True,
+        ),
+    )
     skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
     evidence = store.record_feedback(
         task_id="task-analysis-1",
@@ -95,6 +110,9 @@ def test_improvement_case_and_replay_trial_round_trip(tmp_path: Path) -> None:
         session_id="session-1",
         project_id="project-1",
         skill_id="repo-analysis",
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+        project_trusted=True,
     )
     snapshot_ref = task_snapshot_ref("task-analysis-1")
     assert snapshot.task_id == "task-analysis-1"
@@ -180,6 +198,7 @@ def test_non_replayable_snapshot_is_recorded_without_model_eligibility(tmp_path:
     assert snapshot.replayability_reason in {
         "working tree is not clean",
         "git repository metadata is unavailable",
+        "project is not registered and trusted",
     }
     assert snapshot.allowed_file_scope == ("src/main.py",)
 
