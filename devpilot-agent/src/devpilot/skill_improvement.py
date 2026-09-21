@@ -816,7 +816,7 @@ class SkillImprovementStore:
         """Require the same durable project registration used by delivery."""
 
         try:
-            from .paths import repository_fingerprint
+            from .paths import AllowedRoots, allowed_root_id, repository_fingerprint
 
             with sqlite3.connect(self.database_path, timeout=30) as connection:
                 row = connection.execute(
@@ -824,19 +824,25 @@ class SkillImprovementStore:
                     "from projects where id = ?",
                     (project_id,),
                 ).fetchone()
-        except (ImportError, OSError, sqlite3.Error):
+        except (ImportError, OSError, RuntimeError, ValueError, sqlite3.Error):
             return False
         if row is None:
             return False
         real_path, trust_state, fingerprint, root_id = row
+        project = Path(workspace).expanduser().resolve()
+        configured = os.environ.get("DEVPILOT_ALLOWED_ROOTS", "")
+        roots = AllowedRoots.from_paths(
+            tuple(item for item in configured.split(os.pathsep) if item.strip())
+            or (project,)
+        )
+        expected_root_id = allowed_root_id(roots.root_for(project))
         return (
-            str(Path(real_path).expanduser().resolve())
-            == str(Path(workspace).expanduser().resolve())
+            str(Path(real_path).expanduser().resolve()) == str(project)
             and trust_state == "trusted"
             and isinstance(fingerprint, str)
-            and fingerprint == repository_fingerprint(workspace)
+            and fingerprint == repository_fingerprint(project)
             and isinstance(root_id, str)
-            and bool(root_id)
+            and root_id == expected_root_id
         )
 
     def _has_trusted_verification_fact(
@@ -1943,6 +1949,7 @@ class SkillImprovementStore:
                 locked_snapshot is None
                 or locked_snapshot.task_id != locked_case.task_id
                 or locked_snapshot.content_hash != locked_case.base_skill_hash
+                or locked_snapshot.replayable is not True
             ):
                 raise SkillImprovementError("replay trial snapshot changed during recording")
             if version == "baseline" and skill_hash.lower() != locked_case.base_skill_hash:
@@ -2537,7 +2544,10 @@ class SkillImprovementStore:
         if len(candidate_content) > max_chars:
             raise SkillImprovementError("candidate content exceeds the bounded Skill size")
         current_batch = batch_id or f"batch-{uuid.uuid4()}"
-        with self._lock:
+        with self._lock, self._process_lock():
+            locked_cases = [self.get_improvement_case(item) for item in case_values]
+            if any(item is None or not self._case_is_replayable(item) for item in locked_cases):
+                raise SkillImprovementError("candidate case changed during creation")
             if len(self.list_candidates(batch_id=current_batch)) >= _MAX_CANDIDATES_PER_BATCH:
                 raise SkillImprovementError("candidate batch limit is three")
             candidate = SkillCandidate(

@@ -60,6 +60,34 @@ def test_dirty_git_project_is_not_replayable(
     assert snapshot.reason == "working tree is not clean"
 
 
+def test_missing_start_commit_is_not_replayable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+
+    def run(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=str(tmp_path) if calls == 1 else ".git",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=128, stdout="", stderr="no HEAD")
+
+    monkeypatch.setattr(replay_workspace.subprocess, "run", run)
+    snapshot = capture_git_snapshot(
+        tmp_path,
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+    )
+
+    assert snapshot.replayable is False
+    assert snapshot.start_commit_sha is None
+    assert snapshot.reason == "git repository metadata is unavailable"
+
+
 def test_clean_snapshot_creates_and_cleans_private_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,6 +176,32 @@ def test_private_root_must_be_trusted_and_outside_repository(tmp_path: Path) -> 
             snapshot,
             private_root=tmp_path / "private",
             trusted_private_root=tmp_path / "private",
+        )
+
+
+def test_private_root_junction_like_path_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_root = tmp_path.parent / "private-junction"
+    snapshot = replay_workspace.GitReplaySnapshot(
+        repository_root=str(tmp_path),
+        repository_identity="repo",
+        start_commit_sha="c" * 40,
+        working_tree_clean=True,
+        allowed_file_scope=("src/main.py",),
+        verification_profile="python-syntax",
+        replayable=True,
+    )
+    monkeypatch.setattr(
+        replay_workspace,
+        "_is_link_like",
+        lambda path: path == private_root,
+    )
+    with pytest.raises(ReplayabilityError, match="symlink"):
+        create_private_worktree(
+            snapshot,
+            private_root=private_root,
+            trusted_private_root=private_root,
         )
 
 

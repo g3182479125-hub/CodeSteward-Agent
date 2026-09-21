@@ -259,7 +259,7 @@ def _validate_private_root(
     unresolved_trusted = Path(configured).expanduser()
     root_chain = (*unresolved_root.parents, unresolved_root)
     trusted_chain = (*unresolved_trusted.parents, unresolved_trusted)
-    if any(os.path.islink(str(item)) for item in (*root_chain, *trusted_chain)):
+    if any(_is_link_like(item) for item in (*root_chain, *trusted_chain)):
         raise ReplayabilityError("private replay root cannot be a symlink")
     root = unresolved_root.resolve()
     trusted = unresolved_trusted.resolve()
@@ -279,6 +279,15 @@ def _validate_private_root(
     if not root.is_dir():
         raise ReplayabilityError("private replay root is not a directory")
     return root
+
+
+def _is_link_like(path: Path) -> bool:
+    """Detect symlinks and Windows directory junctions before resolving them."""
+
+    if os.path.islink(str(path)):
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(callable(is_junction) and is_junction())
 
 
 def _repository_identity(root: Path, git_dir: str) -> str:

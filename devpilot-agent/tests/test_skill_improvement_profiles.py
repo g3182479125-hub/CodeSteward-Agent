@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from devpilot.paths import allowed_root_id, repository_fingerprint
 from devpilot.replay_workspace import GitReplaySnapshot
 from devpilot.skill_improvement import (
     IMPROVEMENT_CASE_STATES,
@@ -235,6 +236,92 @@ def test_non_replayable_snapshot_is_recorded_without_model_eligibility(tmp_path:
 
     assert case.status == "not_replayable"
     assert case.replay_snapshot_ref == task_snapshot_ref("task-non-replayable")
+
+
+def test_placeholder_migration_cannot_upgrade_start_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    monkeypatch.setattr(store, "_project_is_trusted", lambda project_id, root: True)
+    snapshots = iter(
+        [
+            GitReplaySnapshot(
+                repository_root=str(workspace),
+                repository_identity="repo",
+                start_commit_sha="a" * 40,
+                working_tree_clean=False,
+                allowed_file_scope=(),
+                verification_profile="pending",
+                replayable=False,
+                reason="working tree is not clean",
+            ),
+            GitReplaySnapshot(
+                repository_root=str(workspace),
+                repository_identity="repo",
+                start_commit_sha="b" * 40,
+                working_tree_clean=True,
+                allowed_file_scope=("src/main.py",),
+                verification_profile="python-syntax",
+                replayable=True,
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "devpilot.skill_improvement.capture_git_snapshot",
+        lambda *args, **kwargs: next(snapshots),
+    )
+
+    pending = store.capture_task_snapshot(
+        task_id="task-placeholder",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+        verification_profile="pending",
+        source_evidence_refs=["run-start"],
+    )
+    migrated = store.capture_task_snapshot(
+        task_id="task-placeholder",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+        source_evidence_refs=["run-verification"],
+    )
+
+    assert pending.start_commit_sha == "a" * 40
+    assert migrated.start_commit_sha == "a" * 40
+    assert migrated.replayable is False
+    assert migrated.replayability_reason == "working tree is not clean"
+    assert migrated.source_evidence_refs == ("run-start", "run-verification")
+
+
+def test_project_trust_checks_real_registration_and_allowed_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    monkeypatch.delenv("DEVPILOT_ALLOWED_ROOTS", raising=False)
+    fingerprint = repository_fingerprint(workspace)
+    root_id = allowed_root_id(workspace)
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "create table projects (id text primary key, real_path text, trust_state text, "
+            "repo_fingerprint text, allowed_root_id text)"
+        )
+        connection.execute(
+            "insert into projects values (?, ?, ?, ?, ?)",
+            ("project-1", str(workspace), "trusted", fingerprint, root_id),
+        )
+
+    assert store._project_is_trusted("project-1", workspace) is True
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "update projects set allowed_root_id = ? where id = ?",
+            ("wrong-root", "project-1"),
+        )
+    assert store._project_is_trusted("project-1", workspace) is False
 
 
 def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: Path) -> None:
