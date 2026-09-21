@@ -3,7 +3,7 @@
 日期：2026-09-21
 分支：`codex/h11-complete-handoff`
 实施基线：`d2950a56a8ba63afc90dcdb110fcdb4c45fe0bc1`
-当前代码候选：`74053a2`（R4 来源绑定与子代理恢复修复）
+当前代码候选：`0f2abde`（R4 来源绑定与子代理恢复修复）
 
 ## 本轮交付
 
@@ -42,8 +42,8 @@
 - 普通工具、DevPilot/任务配置、子代理、模型和 provider 失败按来源映射到不同的
   中文 catalog；异常类型和内部文本只参与服务端分类，不进入用户可见 payload。
 - DevPilot 失败只在实际调用 `devpilot_*` 工具的边界被标记为项目来源；活跃 task
-  profile 本身不会把模型、存储或普通工具异常误报成 DevPilot。子代理的 `error`、
-  `tool_error` 和异常路径都使用 `subagent.failed`。
+  profile 本身不会把模型、存储或普通工具异常误报成 DevPilot。异常消息不参与来源
+  判断；子代理的 `error`、`tool_error` 和异常路径都使用 `subagent.failed`。
 - 子代理的工具失败会保留最近的安全步骤名和失败步骤名，不携带原始工具输出、异常
   文本或内部堆栈。
 - 用户看见的是当前步骤的结果、可重试/换问法/查状态提示和“对话仍可继续”，不看见
