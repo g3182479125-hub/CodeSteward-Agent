@@ -27,6 +27,7 @@ from devpilot.nanobot_tools import (
 )
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
+from devpilot.services import BugCheckService
 from devpilot.skill_improvement import SkillImprovementStore, task_snapshot_ref
 from devpilot.storage import ProjectStore
 from devpilot.verification import VerificationProfile
@@ -177,6 +178,110 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
     )
     assert len(cases) == 1
     assert cases[0].origin_run_id == run_id
+
+
+def test_full_access_failed_bug_verification_records_case_with_failure_fact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = FakeExecutionBackend(exit_code=1, stdout="bug still fails")
+    manager, project = make_manager(tmp_path, execution_backend=backend)
+    target = project / "main.py"
+    target.write_text("def price():\n    return -100\n", encoding="utf-8")
+    task_id = "task-bug-failure"
+    session_id = "session-bug-failure"
+    user_id = "user-bug-failure"
+    failure = BugCheckService(
+        allowed_roots=manager.patch_service.allowed_roots,
+        store=manager.store,  # type: ignore[arg-type]
+    ).record_failure(
+        project,
+        symptom="price is negative",
+        expected_behavior="price returns a positive value",
+        target_files=["main.py"],
+        code="BUG_EXPECTATION_FAILED",
+        task_id=task_id,
+        session_id=session_id,
+        user_id=user_id,
+    )
+    manager.store.finish_run(failure.run_id, "failed", {"code": "BUG_EXPECTATION_FAILED"})
+    failure_ref = f"failure-{failure.run_id}"
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    with sqlite3.connect(tmp_path / "data" / "devpilot.db") as connection:
+        connection.execute(
+            "create table alembic_version (version_num varchar(32) not null)"
+        )
+        connection.execute(
+            "insert into alembic_version values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    skill_path = project / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: bug-fix\n---\n", encoding="utf-8")
+    improvement_store = SkillImprovementStore(tmp_path / "data", workspace=project)
+    change = FilePatch(
+        "main.py",
+        FileOperation.UPDATE,
+        "def price():\n    return 100\n",
+        expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[change],
+        task_id=task_id,
+    )
+    change_set_id = str(preview["change_set_id"])
+    change_set = manager.store.get_change_set(change_set_id)
+    assert change_set is not None
+    project_id = str(change_set["project_id"])
+    origin_run_id = str(change_set["run_id"])
+    snapshot = improvement_store.capture_task_snapshot(
+        task_id=task_id,
+        workspace=project,
+        session_id=session_id,
+        project_id=project_id,
+        skill_id="bug-fix",
+    )
+    manager.store.append_event(
+        origin_run_id,
+        "bug_fix.proposed",
+        {"change_set_id": change_set_id, "failure_evidence_ids": [failure_ref]},
+    )
+
+    result = manager.full_access_apply_verify(
+        change_set_id,
+        idempotency_key="full-access-bug-failure",
+        skill_improvement_context={
+            "skill_id": "bug-fix",
+            "profile_binding": "bug-fix@1",
+            "task_id": task_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "skill_hash": snapshot.content_hash,
+            "summary": "bug verification failed",
+            "expected_behavior": "price returns a positive value",
+            "verification_kind": "semantic",
+            "failure_evidence_refs": [failure_ref],
+            "replay_snapshot_ref": task_snapshot_ref(task_id),
+        },
+    )
+
+    assert result["status"] == "verification_failed"
+    cases = improvement_store.list_improvement_cases(
+        workspace=project,
+        user_id=user_id,
+        project_id=project_id,
+    )
+    assert len(cases) == 1
+    assert cases[0].skill_id == "bug-fix"
+    assert cases[0].origin_run_id == origin_run_id
 
 
 def test_unknown_backend_failure_does_not_enter_skill_improvement(

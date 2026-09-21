@@ -298,6 +298,29 @@ def test_failure_evidence_is_bound_to_the_origin_task_and_workspace(tmp_path: Pa
                 + '"}',
             ),
         )
+        connection.execute(
+            "insert into runs values (?, ?, ?, ?)",
+            ("failure-run-2", "project-1", "bug-check", "failed"),
+        )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            (
+                "failure-run-2",
+                "bug_check.failed",
+                '{"expected_behavior":"price returns a positive value"}',
+            ),
+        )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            (
+                "failure-run-2",
+                "run.context.bound",
+                '{"task_id":"task-other","session_id":"session-other",'
+                '"user_id":"user-other","workspace":"'
+                + workspace_value.replace("\\", "\\\\")
+                + '"}',
+            ),
+        )
 
     failure_ref = "failure-failure-run-1"
     assert store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
@@ -323,9 +346,36 @@ def test_failure_evidence_is_bound_to_the_origin_task_and_workspace(tmp_path: Pa
         project_id="project-1",
         expected_behavior="price returns a positive value",
         task_id="task-1",
+        session_id="session-other",
+        user_id="user-1",
+        workspace=workspace_value,
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref=failure_ref,
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
+        session_id="session-1",
+        user_id="user-other",
+        workspace=workspace_value,
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref=failure_ref,
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
         session_id="session-1",
         user_id="user-1",
         workspace=str((tmp_path / "other-workspace").resolve()),
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref="failure-failure-run-2",
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
+        session_id="session-1",
+        user_id="user-1",
+        workspace=workspace_value,
     )
     assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
         failure_ref="failure-failure-run-2",
