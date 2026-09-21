@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -176,6 +177,49 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
     )
     assert len(cases) == 1
     assert cases[0].origin_run_id == run_id
+
+
+def test_unknown_backend_failure_does_not_enter_skill_improvement(
+    tmp_path: Path,
+) -> None:
+    class UnknownFailureBackend(FakeExecutionBackend):
+        verification_available = True
+
+        def supports_profile(self, _profile):
+            return True
+
+        def run(self, request):
+            return dataclasses.replace(
+                super().run(request),
+                failure_kind="unknown",
+            )
+
+    manager, project = make_manager(
+        tmp_path,
+        execution_backend=UnknownFailureBackend(exit_code=1),
+    )
+    recorded: list[object] = []
+    manager._record_skill_improvement_failure = (  # type: ignore[method-assign]
+        lambda entry, context: recorded.append((entry, context))
+    )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "broken()\n")],
+        task_id="task-unknown-failure",
+    )
+
+    result = manager.full_access_apply_verify(
+        str(preview["change_set_id"]),
+        idempotency_key="full-access-unknown-failure",
+        skill_improvement_context={
+            "skill_id": "feature-delivery",
+            "verification_kind": "semantic",
+        },
+    )
+
+    assert result["status"] == "verification_failed"
+    assert recorded == []
 
 
 def test_full_access_http_action_requires_internal_adapter_auth(tmp_path: Path) -> None:

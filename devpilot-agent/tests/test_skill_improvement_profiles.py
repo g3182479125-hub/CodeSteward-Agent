@@ -258,6 +258,86 @@ def test_fake_trusted_verification_and_unscoped_trial_reads_are_rejected(
         store.list_replay_trials()
 
 
+def test_failure_evidence_is_bound_to_the_origin_task_and_workspace(tmp_path: Path) -> None:
+    store, workspace = _store(tmp_path)
+    database = store.database_path
+    workspace_value = str(workspace.resolve())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "create table projects (id text primary key, real_path text not null)"
+        )
+        connection.execute(
+            "create table runs (id text primary key, project_id text not null, "
+            "kind text not null, status text not null)"
+        )
+        connection.execute(
+            "create table run_events (id integer primary key autoincrement, run_id text not null, "
+            "event_type text not null, payload_json text not null)"
+        )
+        connection.execute("insert into projects values (?, ?)", ("project-1", workspace_value))
+        connection.execute(
+            "insert into runs values (?, ?, ?, ?)",
+            ("failure-run-1", "project-1", "bug-check", "failed"),
+        )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            (
+                "failure-run-1",
+                "bug_check.failed",
+                '{"expected_behavior":"price returns a positive value"}',
+            ),
+        )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            (
+                "failure-run-1",
+                "run.context.bound",
+                '{"task_id":"task-1","session_id":"session-1",'
+                '"user_id":"user-1","workspace":"'
+                + workspace_value.replace("\\", "\\\\")
+                + '"}',
+            ),
+        )
+
+    failure_ref = "failure-failure-run-1"
+    assert store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref=failure_ref,
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
+        session_id="session-1",
+        user_id="user-1",
+        workspace=workspace_value,
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref=failure_ref,
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-2",
+        session_id="session-1",
+        user_id="user-1",
+        workspace=workspace_value,
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref=failure_ref,
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
+        session_id="session-1",
+        user_id="user-1",
+        workspace=str((tmp_path / "other-workspace").resolve()),
+    )
+    assert not store._has_trusted_failure_fact(  # pyright: ignore[reportPrivateUsage]
+        failure_ref="failure-failure-run-2",
+        project_id="project-1",
+        expected_behavior="price returns a positive value",
+        task_id="task-1",
+        session_id="session-1",
+        user_id="user-1",
+        workspace=workspace_value,
+    )
+
+
 def test_legacy_snapshot_id_is_readable_and_snapshot_invalidation_propagates(
     tmp_path: Path,
 ) -> None:
