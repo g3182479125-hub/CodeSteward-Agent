@@ -1433,8 +1433,11 @@ class SkillImprovementStore:
             for item in unique_evidence.values()
         ):
             raise SkillImprovementError("bug-fix case requires original failure evidence")
+        origin_ref = f"run-{origin_value}"
         if not any(
-            origin_value == item.evidence_id or origin_value in item.evidence_refs
+            origin_value == item.evidence_id
+            or origin_value in item.evidence_refs
+            or origin_ref in item.evidence_refs
             for item in unique_evidence.values()
         ):
             raise SkillImprovementError("origin run is not present in the verified evidence")
@@ -1500,6 +1503,7 @@ class SkillImprovementStore:
                 or not (
                     origin_value == locked_evidence[evidence_id].evidence_id
                     or origin_value in locked_evidence[evidence_id].evidence_refs
+                    or f"run-{origin_value}" in locked_evidence[evidence_id].evidence_refs
                 )
                 for evidence_id in unique_evidence
             ):

@@ -85,7 +85,7 @@ class SkillImprovementCaseRecorder:
             skill_hash=skill_hash,
             correction=summary,
             actual_result=expected_behavior,
-            evidence_refs=tuple(dict.fromkeys((origin, *refs))),
+            evidence_refs=tuple(dict.fromkeys((f"run-{origin}", *refs))),
         )
         return self._store.create_improvement_case(
             skill_id="repo-analysis",
@@ -100,7 +100,7 @@ class SkillImprovementCaseRecorder:
             trigger_type="user_confirmed_missing_fact",
             trigger_summary=summary,
             expected_behavior=expected_behavior,
-            evidence_refs=(evidence.evidence_id, origin, *refs),
+            evidence_refs=(evidence.evidence_id, f"run-{origin}", *refs),
             replay_snapshot_ref=snapshot_ref,
             assertion_spec=assertion_spec or {"kind": target.grader_kind},
         )
@@ -157,7 +157,7 @@ class SkillImprovementCaseRecorder:
             skill_hash=skill_hash,
             correction=summary,
             actual_result=expected_behavior,
-            evidence_refs=(origin, verification_ref),
+            evidence_refs=(f"run-{origin}", verification_ref),
         )
         evidence_ids: list[str] = [verification.evidence_id]
         if skill_id == "bug-fix":
@@ -172,7 +172,7 @@ class SkillImprovementCaseRecorder:
                 skill_hash=skill_hash,
                 correction=summary,
                 actual_result=expected_behavior,
-                evidence_refs=tuple(dict.fromkeys((origin, *failure_refs))),
+                evidence_refs=tuple(dict.fromkeys((f"run-{origin}", *failure_refs))),
             )
             evidence_ids.append(failure.evidence_id)
         if replay_snapshot_ref is None:
@@ -199,7 +199,7 @@ class SkillImprovementCaseRecorder:
             trigger_type="trusted_verification_failed",
             trigger_summary=summary,
             expected_behavior=expected_behavior,
-            evidence_refs=tuple(evidence_ids),
+            evidence_refs=(f"run-{origin}", *evidence_ids),
             replay_snapshot_ref=snapshot_ref,
             assertion_spec=assertion_spec or {"kind": target.grader_kind},
         )

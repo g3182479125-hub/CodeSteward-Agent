@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from devpilot.nanobot_tools import (
 )
 from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
+from devpilot.skill_improvement import SkillImprovementStore, task_snapshot_ref
 from devpilot.storage import ProjectStore
 from devpilot.verification import VerificationProfile
 
@@ -100,6 +102,79 @@ def test_full_access_can_apply_and_verify_without_approval_token(tmp_path: Path)
     assert result["status"] == "verified"
     assert (project / "main.py").read_text(encoding="utf-8") == "print('ok')\n"
     assert backend.requests[0].command.startswith("python3 -m py_compile")
+
+
+def test_full_access_failed_verification_records_feature_case_from_server_fact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = FakeExecutionBackend(exit_code=1, stdout="syntax failed")
+    manager, project = make_manager(tmp_path, execution_backend=backend)
+    skill_path = project / "skills" / "feature-delivery" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: feature-delivery\n---\n", encoding="utf-8")
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
+    with sqlite3.connect(tmp_path / "data" / "devpilot.db") as connection:
+        connection.execute(
+            "create table alembic_version (version_num varchar(32) not null)"
+        )
+        connection.execute(
+            "insert into alembic_version values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            "create table skill_improvement_records ("
+            "id integer primary key autoincrement, record_key text not null unique, "
+            "record_type text not null, record_id text not null, payload_json text not null, "
+            "record_mac text not null, workspace text, project_id text, created_at text not null)"
+        )
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('broken')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    change_set = manager.store.get_change_set(change_set_id)
+    assert change_set is not None
+    task_id = str(change_set["task_id"])
+    project_id = str(change_set["project_id"])
+    run_id = str(change_set["run_id"])
+    improvement_store = SkillImprovementStore(tmp_path / "data", workspace=project)
+    snapshot = improvement_store.capture_task_snapshot(
+        task_id=task_id,
+        workspace=project,
+        session_id="session-feature",
+        project_id=project_id,
+        skill_id="feature-delivery",
+    )
+    manager.store.append_event(
+        run_id,
+        "feature_delivery.proposed",
+        {"change_set_id": change_set_id, "workflow": "feature-delivery"},
+    )
+
+    result = manager.full_access_apply_verify(
+        change_set_id,
+        idempotency_key="full-access-feature-failure",
+        skill_improvement_context={
+            "skill_id": "feature-delivery",
+            "profile_binding": "feature-delivery@2",
+            "task_id": task_id,
+            "user_id": "user-feature",
+            "session_id": "session-feature",
+            "skill_hash": snapshot.content_hash,
+            "summary": "feature verification failed",
+            "expected_behavior": "python-syntax verification passes",
+            "replay_snapshot_ref": task_snapshot_ref(task_id),
+        },
+    )
+
+    assert result["status"] == "verification_failed"
+    cases = improvement_store.list_improvement_cases(
+        workspace=project, user_id="user-feature", project_id=project_id
+    )
+    assert len(cases) == 1
+    assert cases[0].origin_run_id == run_id
 
 
 def test_full_access_http_action_requires_internal_adapter_auth(tmp_path: Path) -> None:
