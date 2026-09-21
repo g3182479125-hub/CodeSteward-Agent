@@ -409,13 +409,26 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
         )
         connection.execute(
             "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
-            ("run-1", "evidence.search.completed", '{"result":"tests/test_api.py"}'),
+            (
+                "run-1",
+                "evidence.search.completed",
+                '{"result":"tests/test_api.py", "evidence_refs":["tool-inspect-1"]}',
+            ),
         )
+    from devpilot.skill_improvement import SkillImprovementStore
+
+    SkillImprovementStore.from_environment(project_workspace).capture_task_snapshot(
+        task_id="task-1",
+        workspace=project_workspace,
+        session_id="cli:direct",
+        project_id=project_id,
+        skill_id="repo-analysis",
+    )
     task = {
         "task_id": "task-1",
         "profile_binding": "repo-analysis@1",
         "run_id": "run-1",
-        "evidence_refs": ("tool-inspect-1",),
+        "evidence_refs": ("run-1", "tool-inspect-1"),
     }
 
     rejected = await cmd_skill_improvement(
@@ -438,8 +451,6 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
         )
     )
     assert "已记录 repo-analysis 改进案例" in accepted.content
-
-    from devpilot.skill_improvement import SkillImprovementStore
 
     store = SkillImprovementStore.from_environment(project_workspace)
     cases = store.list_improvement_cases(workspace=project_workspace)

@@ -883,7 +883,16 @@ class SkillImprovementStore:
                     "feature-delivery": "feature_delivery.proposed",
                     "bug-fix": "bug_fix.proposed",
                 }.get(skill_id)
-                if proposed is not None and proposed not in event_types:
+                skill_bound_verification = any(
+                    row[0] == "changeset.verification_failed"
+                    and json.loads(str(row[1])).get("skill_id") == skill_id
+                    for row in events
+                )
+                if (
+                    proposed is not None
+                    and proposed not in event_types
+                    and not skill_bound_verification
+                ):
                     return False
                 return True
         except sqlite3.Error:
@@ -930,6 +939,7 @@ class SkillImprovementStore:
         project_id: str,
         workspace: str,
         expected_behavior: str,
+        evidence_refs: tuple[str, ...] = (),
     ) -> bool:
         """Validate a repo-analysis fact against the server-owned Run events."""
         try:
@@ -959,6 +969,20 @@ class SkillImprovementStore:
                     "evidence.search.completed",
                     "evidence.read.completed",
                 }
+                decoded_events = [
+                    (event_type, json.loads(str(payload)))
+                    for event_type, payload in events
+                ]
+                if any(
+                    ref != origin_run_id
+                    and not any(
+                        isinstance(payload, dict)
+                        and ref in payload.get("evidence_refs", [])
+                        for _event_type, payload in decoded_events
+                    )
+                    for ref in evidence_refs
+                ):
+                    return False
                 return any(
                     event_type in allowed and expected_behavior in str(payload)
                     for event_type, payload in events

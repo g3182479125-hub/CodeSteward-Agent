@@ -991,7 +991,7 @@ class AgentLoop:
         """Load a pinned DevPilot Skill snapshot without replacing permissions."""
         if (
             profile is None
-            or profile.name != "bug-fix"
+            or profile.name not in {"repo-analysis", "feature-delivery", "bug-fix"}
             or task_context is None
             or not task_context.task_id
         ):
@@ -1003,11 +1003,15 @@ class AgentLoop:
         try:
             from devpilot.skill_improvement import SkillImprovementStore
 
-            snapshot = SkillImprovementStore.from_environment(project_path).capture_task_snapshot(
+            skill_id = profile.skill_names[0]
+            snapshot = SkillImprovementStore.from_environment(
+                project_path
+            ).capture_task_snapshot(
                 task_id=task_context.task_id,
                 workspace=project_path,
                 session_id=session.key,
                 project_id=task_context.project_ref,
+                skill_id=skill_id,
             )
             return {snapshot.skill_id: snapshot.content}
         except ImportError:
@@ -1017,7 +1021,7 @@ class AgentLoop:
         except (OSError, ValueError) as exc:
             # Never fall back to a newer live file for an active task: that
             # would silently change the task's pinned Skill version.
-            raise TaskProfileError("bug-fix Skill snapshot is unavailable") from exc
+            raise TaskProfileError(f"{profile.name} Skill snapshot is unavailable") from exc
 
     def task_profile_for_session(self, session: Session) -> TaskProfile | None:
         """Resolve the server-owned profile persisted for a session."""

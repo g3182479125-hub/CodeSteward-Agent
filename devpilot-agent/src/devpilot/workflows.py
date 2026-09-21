@@ -459,6 +459,7 @@ class FeatureDeliveryWorkflow:
         *,
         approval_token: str,
         apply_result: dict[str, Any] | None = None,
+        skill_improvement_context: Mapping[str, Any] | None = None,
     ) -> FeatureDeliveryResult:
         backend = self.manager.execution_backend
         if type(backend) is not FakeExecutionBackend:
@@ -487,6 +488,7 @@ class FeatureDeliveryWorkflow:
                 profile=proposal.verification_profile,
                 idempotency_key=f"feature-delivery-verify-{proposal.change_set_id}",
                 finalize_run=False,
+                skill_improvement_context=skill_improvement_context,
             )
         except PatchError as exc:
             self.manager.finalize_run(
@@ -938,6 +940,7 @@ class BugFixWorkflow:
         *,
         approval_token: str,
         apply_result: dict[str, Any] | None = None,
+        skill_improvement_context: Mapping[str, Any] | None = None,
     ) -> BugFixResult:
         if not approval_token:
             raise WorkflowError(
@@ -988,6 +991,7 @@ class BugFixWorkflow:
                 profile=proposal.verification_profile,
                 idempotency_key=f"bug-fix-verify-{proposal.change_set_id}",
                 finalize_run=False,
+                skill_improvement_context=skill_improvement_context,
             )
         except PatchError as exc:
             if exc.code in _NON_DELIVERY_VERIFY_CODES:

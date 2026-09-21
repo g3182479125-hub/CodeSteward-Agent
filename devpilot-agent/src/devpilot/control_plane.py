@@ -1025,7 +1025,15 @@ class ControlPlaneManager:
                 "changeset.verification_completed"
                 if result.exit_code == 0
                 else "changeset.verification_failed",
-                payload,
+                {
+                    **payload,
+                    **(
+                        {"skill_id": str(skill_improvement_context["skill_id"])}
+                        if skill_improvement_context is not None
+                        and isinstance(skill_improvement_context.get("skill_id"), str)
+                        else {}
+                    ),
+                },
             )
             if finalize_run:
                 self._finish_run(
@@ -1092,6 +1100,7 @@ class ControlPlaneManager:
                 summary=str(context["summary"]),
                 expected_behavior=str(context["expected_behavior"]),
                 failure_evidence_refs=context.get("failure_evidence_refs", ()),
+                replay_snapshot_ref=str(context["replay_snapshot_ref"]),
             )
         except (KeyError, TypeError, ValueError, OSError, SkillImprovementError) as exc:
             self._event(

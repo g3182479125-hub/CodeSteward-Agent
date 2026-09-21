@@ -1409,6 +1409,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     if not summary or not expected:
                         raise ValueError("反馈描述和 expected 都不能为空")
                     skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+                    from devpilot.skill_improvement import task_snapshot_ref
                     from devpilot.skill_improvement_cases import SkillImprovementCaseRecorder
 
                     case = SkillImprovementCaseRecorder(store).record_user_confirmed_analysis_issue(
@@ -1423,6 +1424,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         summary=summary,
                         expected_behavior=expected,
                         evidence_refs=task_context.get("evidence_refs", ()),
+                        replay_snapshot_ref=task_snapshot_ref(str(task_context["task_id"])),
                     )
                     content = f"已记录 repo-analysis 改进案例：`{case.case_id}`。"
                 except (ValueError, OSError) as exc:

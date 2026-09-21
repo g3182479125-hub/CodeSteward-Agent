@@ -74,7 +74,7 @@ from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
 from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
-from .skill_improvement import SkillImprovementError, SkillImprovementStore
+from .skill_improvement import SkillImprovementError, SkillImprovementStore, task_snapshot_ref
 from .storage import ProjectStore
 from .user_intent import capability_confirmation_matches, confirmation_matches
 
@@ -397,6 +397,7 @@ def _skill_improvement_context(
         "user_id": sender_id,
         "session_id": session_id,
         "skill_hash": snapshot.content_hash,
+        "replay_snapshot_ref": task_snapshot_ref(task_id),
         "summary": summary,
         "expected_behavior": expected_behavior,
         "failure_evidence_refs": trusted_failure_refs,
@@ -1667,6 +1668,7 @@ class ConfirmedActionTool(Tool):
         return True
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
+        request_context = self._request_context
         attributes = _trusted_confirmation_attributes(self._request_context)
         _transport_logger.warning(
             "DevPilot confirmation entry: has_attributes=%s action=%s attr_keys=%s",
@@ -1788,9 +1790,43 @@ class ConfirmedActionTool(Tool):
             def execute(
                 action_name: str, change_set_id: str, token: str, key: str, profile: str | None
             ) -> dict[str, Any]:
-                payload = (
+                payload: dict[str, Any] | None = (
                     {"profile": profile or "python-syntax"} if action_name == "verify" else None
                 )
+                if action_name == "verify" and payload is not None:
+                    bound = _get_control_plane(
+                        _safe_resource_path(str(change_set_id), "change-sets")
+                    )
+                    contract = bound.get("bug_fix_contract")
+                    if not isinstance(contract, Mapping):
+                        contract = {}
+                    request_attributes = getattr(request_context, "attributes", {})
+                    skill_id = (
+                        request_attributes.get("devpilot_skill_id")
+                        if isinstance(request_attributes, Mapping)
+                        else None
+                    )
+                    if skill_id in {"feature-delivery", "bug-fix"}:
+                        improvement_context = _skill_improvement_context(
+                            request_context,
+                            project_path=str(
+                                getattr(request_context, "workspace", None) or Path.cwd()
+                            ),
+                            skill_id=str(skill_id),
+                            summary=str(
+                                contract.get("symptom")
+                                or "Confirmed verification failed"
+                            ),
+                            expected_behavior=str(
+                                contract.get("expected_behavior")
+                                or f"{profile or 'python-syntax'} verification passes"
+                            ),
+                            failure_evidence_refs=contract.get(
+                                "failure_evidence_ids", ()
+                            ),
+                        )
+                        if improvement_context is not None:
+                            payload["skill_improvement_context"] = improvement_context
                 raw = _post_control_plane(
                     _change_set_path(change_set_id, action_name),
                     payload,

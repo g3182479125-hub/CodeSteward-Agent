@@ -14,7 +14,6 @@ from .skill_improvement import (
     _refs,
     _traceable_ref,
     skill_improvement_target,
-    task_snapshot_ref,
 )
 
 
@@ -59,11 +58,22 @@ class SkillImprovementCaseRecorder:
             project_id=project_id,
             workspace=workspace_value,
             expected_behavior=expected_behavior,
+            evidence_refs=refs,
         ):
             raise SkillImprovementError(
                 "expected behavior is not proven by the current repo-analysis Run"
             )
-        snapshot_ref = replay_snapshot_ref or task_snapshot_ref(task_id)
+        if replay_snapshot_ref is None:
+            raise SkillImprovementError("analysis feedback requires a task-start snapshot")
+        snapshot_ref = replay_snapshot_ref
+        if self._store.get_task_snapshot(
+            snapshot_ref,
+            workspace=workspace,
+            project_id=project_id,
+            session_id=session_id,
+            skill_id="repo-analysis",
+        ) is None:
+            raise SkillImprovementError("task-start snapshot is unavailable")
         evidence = self._store.record_feedback(
             task_id=task_id,
             project_id=project_id,
@@ -77,20 +87,6 @@ class SkillImprovementCaseRecorder:
             actual_result=expected_behavior,
             evidence_refs=tuple(dict.fromkeys((origin, *refs))),
         )
-        if self._store.get_task_snapshot(
-            snapshot_ref,
-            workspace=workspace,
-            project_id=project_id,
-            session_id=session_id,
-            skill_id="repo-analysis",
-        ) is None:
-            self._store.capture_task_snapshot(
-                task_id=task_id,
-                workspace=workspace,
-                session_id=session_id,
-                project_id=project_id,
-                skill_id="repo-analysis",
-            )
         return self._store.create_improvement_case(
             skill_id="repo-analysis",
             profile_binding=profile_binding,
@@ -179,7 +175,9 @@ class SkillImprovementCaseRecorder:
                 evidence_refs=tuple(dict.fromkeys((origin, *failure_refs))),
             )
             evidence_ids.append(failure.evidence_id)
-        snapshot_ref = replay_snapshot_ref or task_snapshot_ref(task_id)
+        if replay_snapshot_ref is None:
+            raise SkillImprovementError("verification failure requires a task-start snapshot")
+        snapshot_ref = replay_snapshot_ref
         if self._store.get_task_snapshot(
             snapshot_ref,
             workspace=workspace,
@@ -187,13 +185,7 @@ class SkillImprovementCaseRecorder:
             session_id=session_id,
             skill_id=skill_id,
         ) is None:
-            self._store.capture_task_snapshot(
-                task_id=task_id,
-                workspace=workspace,
-                session_id=session_id,
-                project_id=project_id,
-                skill_id=skill_id,
-            )
+            raise SkillImprovementError("task-start snapshot is unavailable")
         return self._store.create_improvement_case(
             skill_id=skill_id,
             profile_binding=profile_binding,
