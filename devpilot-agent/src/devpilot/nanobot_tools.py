@@ -400,6 +400,7 @@ def _skill_improvement_context(
         "replay_snapshot_ref": task_snapshot_ref(task_id),
         "summary": summary,
         "expected_behavior": expected_behavior,
+        "verification_kind": "semantic",
         "failure_evidence_refs": trusted_failure_refs,
     }
 
@@ -1116,6 +1117,14 @@ def _full_access_preview_and_execute(
     }
     if project_id:
         payload["project_id"] = project_id
+    request_attributes = getattr(request_context, "attributes", {})
+    task_id = (
+        request_attributes.get("devpilot_task_id")
+        if isinstance(request_attributes, Mapping)
+        else None
+    )
+    if isinstance(task_id, str) and task_id:
+        payload["task_id"] = task_id
     proposal = _post_preview(payload)
     _record_current_turn_proposal(proposal, request_context=request_context)
     if _patches_require_privacy_confirmation(patches):
@@ -2381,6 +2390,14 @@ class FeatureDeliveryProposeTool(Tool):
                 "patches": kwargs["patches"],
                 "evidence_ids": kwargs["evidence_ids"],
             }
+            request_attributes = getattr(request_context, "attributes", {})
+            task_id = (
+                request_attributes.get("devpilot_task_id")
+                if isinstance(request_attributes, Mapping)
+                else None
+            )
+            if isinstance(task_id, str) and task_id:
+                payload["task_id"] = task_id
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_feature_proposal(payload)
@@ -2507,6 +2524,14 @@ class BugFixProposeTool(Tool):
                 "non_goals": kwargs.get("non_goals", []),
                 "allowed_files": kwargs["allowed_files"],
             }
+            request_attributes = getattr(request_context, "attributes", {})
+            task_id = (
+                request_attributes.get("devpilot_task_id")
+                if isinstance(request_attributes, Mapping)
+                else None
+            )
+            if isinstance(task_id, str) and task_id:
+                payload["task_id"] = task_id
             if kwargs.get("verification_profile") is not None:
                 payload["verification_profile"] = str(kwargs["verification_profile"])
             result = _post_bug_fix_proposal(payload)

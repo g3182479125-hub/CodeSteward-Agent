@@ -86,6 +86,7 @@ EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
     r"^(run|tool|trace|session|test|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
+    r"|^local:[A-Za-z0-9_.:-]{1,127}$"
 )
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _TRUSTED_VERIFICATION_REF_RE = re.compile(
@@ -904,6 +905,7 @@ class SkillImprovementStore:
         failure_ref: str,
         project_id: str,
         expected_behavior: str | None = None,
+        origin_run_id: str | None = None,
     ) -> bool:
         if not _TRUSTED_FAILURE_REF_RE.fullmatch(failure_ref):
             return False
@@ -918,7 +920,7 @@ class SkillImprovementStore:
                     """,
                     (run_id, project_id),
                 ).fetchall()
-                return any(
+                trusted = any(
                     kind in {"bug-check", "test-check"}
                     and status == "failed"
                     and event_type in {"bug_check.failed", "test_check.failed"}
@@ -928,6 +930,22 @@ class SkillImprovementStore:
                         == expected_behavior
                     )
                     for _project, kind, status, event_type, payload in row
+                )
+                if not trusted or origin_run_id is None:
+                    return trusted
+                proposed_events = connection.execute(
+                    "select event_type, payload_json from run_events where run_id = ?",
+                    (origin_run_id,),
+                ).fetchall()
+                return any(
+                    event_type == "bug_fix.proposed"
+                    and isinstance(decoded := json.loads(str(payload_json)), dict)
+                    and (
+                        failure_ref in decoded.get("failure_evidence_ids", [])
+                        or failure_ref.removeprefix("failure-")
+                        in decoded.get("failure_evidence_ids", [])
+                    )
+                    for event_type, payload_json in proposed_events
                 )
         except sqlite3.Error:
             return False
@@ -975,6 +993,7 @@ class SkillImprovementStore:
                 ]
                 if any(
                     ref != origin_run_id
+                    and not ref.startswith("local:")
                     and not any(
                         isinstance(payload, dict)
                         and ref in payload.get("evidence_refs", [])
@@ -1427,6 +1446,7 @@ class SkillImprovementStore:
                 self._has_trusted_failure_fact(
                     failure_ref=ref,
                     project_id=project_value,
+                    origin_run_id=origin_value,
                 )
                 for ref in item.evidence_refs
             )
@@ -1533,6 +1553,7 @@ class SkillImprovementStore:
                     self._has_trusted_failure_fact(
                         failure_ref=ref,
                         project_id=project_value,
+                        origin_run_id=origin_value,
                     )
                     for ref in item.evidence_refs
                 )

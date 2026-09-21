@@ -248,6 +248,7 @@ class FeatureDeliveryWorkflow:
         self,
         *,
         project_path: str | Path,
+        task_id: str | None = None,
         patches: Iterable[FilePatch],
         evidence_ids: Iterable[str],
         verification_profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
@@ -342,6 +343,7 @@ class FeatureDeliveryWorkflow:
         preview = self.manager.preview(
             project_path=project,
             project_id=None,
+            task_id=task_id,
             patches=list(patches),
         )
         run_id = self.manager.get_run_id(str(preview["change_set_id"]))
@@ -749,6 +751,7 @@ class BugFixWorkflow:
         self,
         *,
         project_path: str | Path,
+        task_id: str | None = None,
         patches: Iterable[FilePatch],
         analysis_evidence_ids: Iterable[str],
         failure_evidence_ids: Iterable[str],
@@ -825,6 +828,7 @@ class BugFixWorkflow:
         preview = self.manager.preview(
             project_path=project,
             project_id=None,
+            task_id=task_id,
             patches=list(patch_values),
         )
         run_id = self.manager.get_run_id(str(preview["change_set_id"]))

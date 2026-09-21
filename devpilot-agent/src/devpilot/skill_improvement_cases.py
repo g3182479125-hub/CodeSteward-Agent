@@ -142,6 +142,7 @@ class SkillImprovementCaseRecorder:
                     failure_ref=ref,
                     project_id=project_id,
                     expected_behavior=expected_behavior,
+                    origin_run_id=origin,
                 )
                 for ref in failure_refs
             ):

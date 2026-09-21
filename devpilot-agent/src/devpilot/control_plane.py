@@ -124,6 +124,7 @@ class PreviewRequest(BaseModel):
 
     project_path: str = Field(min_length=1)
     project_id: str | None = Field(default=None, min_length=1)
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
     patches: list[PatchPayload] = Field(min_length=1, max_length=12)
 
 
@@ -173,6 +174,7 @@ class FeatureDeliveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_path: str = Field(min_length=1)
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
     patches: list[PatchPayload] = Field(min_length=1, max_length=12)
     evidence_ids: list[str] = Field(min_length=1, max_length=32)
     verification_profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
@@ -182,6 +184,7 @@ class BugFixRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project_path: str = Field(min_length=1)
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
     patches: list[PatchPayload] = Field(min_length=1, max_length=12)
     analysis_evidence_ids: list[str] = Field(min_length=1, max_length=32)
     failure_evidence_ids: list[str] = Field(min_length=1, max_length=32)
@@ -480,7 +483,12 @@ class ControlPlaneManager:
         return response
 
     def preview(
-        self, *, project_path: str | Path, project_id: str | None, patches: list[FilePatch]
+        self,
+        *,
+        project_path: str | Path,
+        project_id: str | None,
+        patches: list[FilePatch],
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         try:
             project = self.patch_service.allowed_roots.require_project(project_path)
@@ -494,10 +502,13 @@ class ControlPlaneManager:
                 str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
             )
             run_id = self.store.start_run(resolved_project_id, kind="code-delivery")
+        task_value = task_id or f"task-{uuid.uuid4()}"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", task_value):
+            raise PatchError("TASK_ID_INVALID", "task_id is invalid")
         plan = self.patch_service.plan(
             project,
             project_id=resolved_project_id,
-            task_id=f"task-{uuid.uuid4()}",
+            task_id=task_value,
             plan_id=f"plan-{uuid.uuid4()}",
             run_id=run_id,
             patches=patches,
@@ -1076,6 +1087,8 @@ class ControlPlaneManager:
     ) -> None:
         """Create a Case only from the final server verification fact."""
         if self.store is None or entry.run_id is None:
+            return
+        if context.get("verification_kind") != "semantic":
             return
         try:
             skill_id = str(context["skill_id"])
@@ -2030,6 +2043,7 @@ def create_app(
         return _contract_payload(request, manager.preview(
             project_path=payload.project_path,
             project_id=payload.project_id,
+            task_id=payload.task_id,
             patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
         ))
 
@@ -2043,6 +2057,7 @@ def create_app(
         try:
             proposal = FeatureDeliveryWorkflow(manager).propose(
                 project_path=payload.project_path,
+                task_id=payload.task_id,
                 patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
                 evidence_ids=payload.evidence_ids,
                 verification_profile=payload.verification_profile,
@@ -2059,6 +2074,7 @@ def create_app(
         try:
             proposal = BugFixWorkflow(manager).propose(
                 project_path=payload.project_path,
+                task_id=payload.task_id,
                 patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
                 analysis_evidence_ids=payload.analysis_evidence_ids,
                 failure_evidence_ids=payload.failure_evidence_ids,

@@ -165,6 +165,7 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
             "skill_hash": snapshot.content_hash,
             "summary": "feature verification failed",
             "expected_behavior": "python-syntax verification passes",
+            "verification_kind": "semantic",
             "replay_snapshot_ref": task_snapshot_ref(task_id),
         },
     )
