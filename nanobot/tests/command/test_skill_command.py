@@ -384,15 +384,20 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     loop = _loop_with_skills(tmp_path)
     project_workspace = tmp_path / "project"
-    skill_path = project_workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path = project_workspace / "skills" / "repo-analysis" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("---\nname: bug-fix\n---\n\n# Bug fix\n", encoding="utf-8")
-    task = {"task_id": "task-1", "profile_binding": "bug-fix@1"}
+    skill_path.write_text("---\nname: repo-analysis\n---\n\n# Repo analysis\n", encoding="utf-8")
+    task = {
+        "task_id": "task-1",
+        "profile_binding": "repo-analysis@1",
+        "run_id": "run-1",
+        "evidence_refs": ("tool-inspect-1",),
+    }
 
     rejected = await cmd_skill_improvement(
         _ctx(
             loop,
-            "/skill-improvement feedback forged",
+            "/skill-improvement feedback forged --expected tests/test_api.py",
             session_metadata={"task_context": task},
             workspace=project_workspace,
         )
@@ -402,50 +407,21 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
     accepted = await cmd_skill_improvement(
         _ctx(
             loop,
-            "/skill-improvement feedback the patch missed the failure evidence",
+        "/skill-improvement feedback the analysis missed the test entry --expected tests/test_api.py",
             is_user_turn=True,
             session_metadata={"task_context": task},
             workspace=project_workspace,
         )
     )
-    assert "已记录为已验证证据" in accepted.content
+    assert "已记录 repo-analysis 改进案例" in accepted.content
 
     from devpilot.skill_improvement import SkillImprovementStore
 
-    from nanobot.command.builtin import _devpilot_project_id
-
-    evidence_id = accepted.content.split("`")[1]
-    baseline = skill_path.read_text(encoding="utf-8")
     store = SkillImprovementStore.from_environment(project_workspace)
-    candidate = store.create_candidate(
-        user_id="user",
-        project_id=_devpilot_project_id(project_workspace),
-        skill_path="skills/bug-fix/SKILL.md",
-        baseline_content=baseline,
-        candidate_content=baseline + "\n- Re-check the failing assertion.\n",
-        evidence_ids=[evidence_id],
-        reason="The failure evidence was not rechecked.",
-        expected_behavior="Re-read the failure before proposing a fix.",
-        test_set_version="p8-02-v1",
-        workspace=project_workspace,
-    )
-    evaluation = store.evaluate_candidate(
-        candidate.candidate_id,
-        workspace=project_workspace,
-        user_id="user",
-        project_id=_devpilot_project_id(project_workspace),
-    )
-    viewed = await cmd_skill_improvement(
-        _ctx(
-            loop,
-            f"/skill-improvement {candidate.candidate_id}",
-            is_user_turn=True,
-            workspace=project_workspace,
-        )
-    )
-    assert "候选 Diff 摘要" in viewed.content
-    assert "Re-check the failing assertion" in viewed.content
-    assert f"资格状态：`{_skill_status_label(evaluation.status)}`" in viewed.content
+    cases = store.list_improvement_cases(workspace=project_workspace)
+    assert len(cases) == 1
+    assert cases[0].skill_id == "repo-analysis"
+    assert cases[0].expected_behavior == "tests/test_api.py"
 
 
 @pytest.mark.asyncio

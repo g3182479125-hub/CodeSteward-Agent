@@ -12,6 +12,7 @@ import re
 import secrets
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
 from pathlib import Path
@@ -45,6 +46,8 @@ from .redaction import (
     redact_execution_output,
     redact_sensitive_text,
 )
+from .skill_improvement import SkillImprovementError, SkillImprovementStore
+from .skill_improvement_cases import SkillImprovementCaseRecorder
 from .storage import ProjectStore
 from .test_runs import ProjectTestRunner, ProjectTestTrustError
 from .user_intent import capability_confirmation_matches, confirmation_matches
@@ -868,6 +871,7 @@ class ControlPlaneManager:
         idempotency_key: str | None = None,
         finalize_run: bool = True,
         full_access: bool = False,
+        skill_improvement_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one allowlisted verification profile in the configured backend."""
         with self._mutex:
@@ -1016,6 +1020,11 @@ class ControlPlaneManager:
                 "stderr": redact_execution_output(result.stderr[-8000:]),
             }
             self._event(entry, "changeset.verification_completed", payload)
+            if result.exit_code != 0 and skill_improvement_context is not None:
+                self._record_skill_improvement_failure(
+                    entry,
+                    skill_improvement_context,
+                )
             if finalize_run:
                 self._finish_run(
                     entry,
@@ -1044,6 +1053,45 @@ class ControlPlaneManager:
             }
             self._complete(idempotency_key, response)
             return response
+
+    def _record_skill_improvement_failure(
+        self,
+        entry: _PendingChangeSet,
+        context: Mapping[str, Any],
+    ) -> None:
+        """Create a Case only from the final server verification fact."""
+        if self.store is None or entry.run_id is None:
+            return
+        try:
+            skill_id = str(context["skill_id"])
+            workspace = str(entry.plan.project_path)
+            database = self.store.engine.url.database
+            if not isinstance(database, str) or database == ":memory:":
+                return
+            improvement_store = SkillImprovementStore(Path(database).parent, workspace=workspace)
+            SkillImprovementCaseRecorder(improvement_store).record_trusted_verification_failure(
+                skill_id=skill_id,
+                profile_binding=str(context["profile_binding"]),
+                origin_run_id=entry.run_id,
+                change_set_id=entry.plan.change_set.id,
+                task_id=str(context["task_id"]),
+                project_id=str(entry.plan.project_id),
+                workspace=workspace,
+                user_id=str(context["user_id"]),
+                session_id=str(context["session_id"]),
+                skill_hash=improvement_store.read_effective_snapshot(
+                    workspace, skill_id=skill_id
+                ).content_hash,
+                summary=str(context["summary"]),
+                expected_behavior=str(context["expected_behavior"]),
+                failure_evidence_refs=context.get("failure_evidence_refs", ()),
+            )
+        except (KeyError, TypeError, ValueError, OSError, SkillImprovementError) as exc:
+            self._event(
+                entry,
+                "skill_improvement.case_rejected",
+                {"code": type(exc).__name__},
+            )
 
     def apply(
         self,
@@ -1114,6 +1162,7 @@ class ControlPlaneManager:
         *,
         profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
         idempotency_key: str | None = None,
+        skill_improvement_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Apply and verify a ChangeSet for a trusted WebUI Full Access turn.
 
@@ -1136,6 +1185,7 @@ class ControlPlaneManager:
             profile=profile,
             idempotency_key=f"{idempotency_key}:verify",
             full_access=True,
+            skill_improvement_context=skill_improvement_context,
         )
         return {
             "change_set_id": change_set_id,
@@ -1501,7 +1551,11 @@ class ControlPlaneManager:
 
     def _event(self, entry: _PendingChangeSet, event_type: str, payload: dict[str, Any]) -> None:
         if self.store is not None and entry.run_id is not None:
-            self.store.append_event(entry.run_id, event_type, payload)
+            self.store.append_event(
+                entry.run_id,
+                event_type,
+                {"change_set_id": entry.plan.change_set.id, **payload},
+            )
 
     def _finish_run(self, entry: _PendingChangeSet, result: str, payload: dict[str, Any]) -> None:
         if self.store is not None and entry.run_id is not None:

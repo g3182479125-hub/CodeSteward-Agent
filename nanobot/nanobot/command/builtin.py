@@ -1387,30 +1387,44 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         else:
             feedback_text = ctx.args.strip()[len("feedback"):].strip()
             task_context = (ctx.session.metadata or {}).get("task_context")
-            if not feedback_text:
-                content = "用法：/skill-improvement feedback <问题描述>"
+            expected_marker = "--expected"
+            if expected_marker not in feedback_text:
+                content = (
+                    "用法：/skill-improvement feedback <问题描述> "
+                    "--expected <确定性事实>"
+                )
             elif (
                 not isinstance(task_context, dict)
                 or not isinstance(task_context.get("task_id"), str)
-                or not str(task_context.get("profile_binding", "")).startswith("bug-fix@")
+                or not str(task_context.get("profile_binding", "")).startswith("repo-analysis@")
+                or not isinstance(task_context.get("run_id"), str)
+                or not task_context.get("run_id")
             ):
-                content = "提交反馈前必须存在正在执行的 bug-fix 任务。"
+                content = "提交反馈前必须存在正在执行的 repo-analysis Run。"
             else:
                 try:
-                    skill = store.read_effective_snapshot(workspace)
-                    evidence = store.record_feedback(
-                        task_id=task_context["task_id"],
+                    summary, expected = feedback_text.split(expected_marker, 1)
+                    summary = summary.strip()
+                    expected = expected.strip()
+                    if not summary or not expected:
+                        raise ValueError("反馈描述和 expected 都不能为空")
+                    skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+                    from devpilot.skill_improvement_cases import SkillImprovementCaseRecorder
+
+                    case = SkillImprovementCaseRecorder(store).record_user_confirmed_analysis_issue(
+                        profile_binding=str(task_context["profile_binding"]),
+                        origin_run_id=str(task_context["run_id"]),
+                        task_id=str(task_context["task_id"]),
                         project_id=project_id,
                         workspace=workspace,
                         user_id=user_id,
                         session_id=ctx.key,
-                        source_type="user_feedback",
-                        skill_id="bug-fix",
                         skill_hash=skill.content_hash,
-                        correction=feedback_text,
-                        actual_result=feedback_text,
+                        summary=summary,
+                        expected_behavior=expected,
+                        evidence_refs=task_context.get("evidence_refs", ()),
                     )
-                    content = f"反馈已记录为已验证证据：`{evidence.evidence_id}`。"
+                    content = f"已记录 repo-analysis 改进案例：`{case.case_id}`。"
                 except (ValueError, OSError) as exc:
                     content = f"反馈被拒绝：{_skill_exception_label(exc)}。"
         return OutboundMessage(

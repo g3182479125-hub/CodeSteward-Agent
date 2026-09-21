@@ -249,7 +249,10 @@ def test_fake_trusted_verification_and_unscoped_trial_reads_are_rejected(
             skill_hash=skill_hash,
             correction="验证失败。",
             actual_result="伪造的服务端验证引用。",
-            evidence_refs=("run-delivery-1", "verification-run-delivery-1"),
+            evidence_refs=(
+                "run-delivery-1",
+                "verification-run-delivery-1:change-1",
+            ),
         )
     with pytest.raises(SkillImprovementError, match="scope is required"):
         store.list_replay_trials()

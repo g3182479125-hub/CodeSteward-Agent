@@ -41,6 +41,7 @@ FEEDBACK_SOURCE_TYPES = frozenset(
         "user_feedback",
         "tool_result",
         "trusted_verification",
+        "trusted_failure_evidence",
         "model_inference",
         "external_content",
     }
@@ -87,8 +88,16 @@ _EVIDENCE_REF_RE = re.compile(
     r"^(run|tool|trace|session|test|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
 )
 _TRUSTED_VERIFICATION_REF_RE = re.compile(
-    r"^verification-[A-Za-z0-9_.:-]{1,127}$"
+    r"^verification-[A-Za-z0-9_.-]{1,127}:[A-Za-z0-9_.-]{1,127}$"
 )
+_TRUSTED_FAILURE_REF_RE = re.compile(r"^failure-[A-Za-z0-9_.-]{1,127}$")
+
+
+def _trusted_verification_parts(ref: str) -> tuple[str, str] | None:
+    if not _TRUSTED_VERIFICATION_REF_RE.fullmatch(ref):
+        return None
+    run_ref, change_set_id = ref.removeprefix("verification-").split(":", 1)
+    return run_ref, change_set_id
 
 
 @dataclass(frozen=True)
@@ -786,32 +795,34 @@ class SkillImprovementStore:
         *,
         verification_ref: str,
         origin_run_id: str,
+        change_set_id: str,
         project_id: str,
         skill_id: str,
         task_id: str | None = None,
         workspace: str | None = None,
     ) -> bool:
         """Check the server-owned Run/Event/ChangeSet facts behind a receipt."""
-        if verification_ref != f"verification-{origin_run_id}":
+        if verification_ref != f"verification-{origin_run_id}:{change_set_id}":
             return False
         try:
             with sqlite3.connect(self.database_path, timeout=30) as connection:
                 run = connection.execute(
                     """
                     select r.project_id, r.status, cs.task_id, cs.project_path,
-                           p.real_path, cs.status
+                           p.real_path, cs.status, cs.project_id
                     from runs r
-                    left join change_sets cs on cs.run_id = r.id
+                    left join change_sets cs on cs.id = ? and cs.run_id = r.id
                     left join projects p on p.id = r.project_id
                     where r.id = ?
                     """,
-                    (origin_run_id,),
+                    (change_set_id, origin_run_id),
                 ).fetchone()
                 if (
                     run is None
                     or run[0] != project_id
                     or run[1] != "failed"
                     or run[5] != "verification_failed"
+                    or run[6] != project_id
                     or (task_id is not None and run[2] != task_id)
                     or (
                         workspace is not None
@@ -824,13 +835,31 @@ class SkillImprovementStore:
                 ):
                     return False
                 events = connection.execute(
-                    "select event_type from run_events where run_id = ?",
+                    "select event_type, payload_json from run_events where run_id = ?",
                     (origin_run_id,),
                 ).fetchall()
                 event_types = {str(row[0]) for row in events}
                 if "changeset.applied" not in event_types:
                     return False
                 if "changeset.verification_failed" not in event_types:
+                    return False
+                for event_type in ("changeset.applied", "changeset.verification_failed"):
+                    matching = [row for row in events if row[0] == event_type]
+                    if not any(
+                        json.loads(str(row[1])).get("change_set_id") == change_set_id
+                        for row in matching
+                    ):
+                        return False
+                approval = connection.execute(
+                    """
+                    select 1 from approvals
+                    where change_set_id = ? and capability = 'r1.apply'
+                      and status = 'consumed' and consumed_at is not null
+                    limit 1
+                    """,
+                    (change_set_id,),
+                ).fetchone()
+                if approval is None:
                     return False
                 proposed = {
                     "feature-delivery": "feature_delivery.proposed",
@@ -839,6 +868,32 @@ class SkillImprovementStore:
                 if proposed is not None and proposed not in event_types:
                     return False
                 return True
+        except sqlite3.Error:
+            return False
+
+    def _has_trusted_failure_fact(
+        self,
+        *,
+        failure_ref: str,
+        project_id: str,
+    ) -> bool:
+        if not _TRUSTED_FAILURE_REF_RE.fullmatch(failure_ref):
+            return False
+        run_id = failure_ref.removeprefix("failure-")
+        try:
+            with sqlite3.connect(self.database_path, timeout=30) as connection:
+                row = connection.execute(
+                    """
+                    select r.project_id, e.event_type
+                    from runs r join run_events e on e.run_id = r.id
+                    where r.id = ? and r.project_id = ?
+                    """,
+                    (run_id, project_id),
+                ).fetchall()
+                return any(
+                    event_type in {"bug_check.failed", "test_check.failed"}
+                    for _project, event_type in row
+                )
         except sqlite3.Error:
             return False
 
@@ -905,6 +960,7 @@ class SkillImprovementStore:
             "model_inference",
             "external_content",
             "trusted_verification",
+            "trusted_failure_evidence",
         } and not all(_EVIDENCE_REF_RE.fullmatch(item) for item in refs):
             raise SkillImprovementError("verification references must be traceable IDs")
         if source_type == "trusted_verification" and not any(
@@ -917,21 +973,32 @@ class SkillImprovementStore:
             if not any(
                 self._has_trusted_verification_fact(
                     verification_ref=item,
-                    origin_run_id=item.removeprefix("verification-"),
+                    origin_run_id=_trusted_verification_parts(item)[0],
+                    change_set_id=_trusted_verification_parts(item)[1],
                     project_id=project_id,
                     skill_id=skill_id,
                     task_id=_bounded_text(task_id, field="task_id", limit=128),
                     workspace=workspace_value,
                 )
                 for item in refs
-                if _TRUSTED_VERIFICATION_REF_RE.fullmatch(item)
+                if _trusted_verification_parts(item) is not None
             ):
                 raise SkillImprovementError(
-                    "trusted verification reference is not a server-owned fact"
-                )
+                "trusted verification reference is not a server-owned fact"
+            )
+        if source_type == "trusted_failure_evidence" and not any(
+            self._has_trusted_failure_fact(failure_ref=item, project_id=project_id)
+            for item in refs
+        ):
+            raise SkillImprovementError("failure reference is not a server-owned fact")
         state = (
             "verified"
-            if source_type in {"user_feedback", "tool_result", "trusted_verification"}
+            if source_type in {
+                "user_feedback",
+                "tool_result",
+                "trusted_verification",
+                "trusted_failure_evidence",
+            }
             else "pending_verification"
         )
         evidence = FeedbackEvidence(
@@ -969,6 +1036,7 @@ class SkillImprovementStore:
             "model_inference",
             "external_content",
             "trusted_verification",
+            "trusted_failure_evidence",
         } and not all(_EVIDENCE_REF_RE.fullmatch(item) for item in refs):
             raise SkillImprovementError("verification references must be traceable IDs")
         if evidence.source_type == "trusted_verification" and not any(
@@ -977,6 +1045,10 @@ class SkillImprovementStore:
             raise SkillImprovementError(
                 "trusted verification requires a server verification reference"
             )
+        if evidence.source_type == "trusted_failure_evidence" and not any(
+            _TRUSTED_FAILURE_REF_RE.fullmatch(item) for item in refs
+        ):
+            raise SkillImprovementError("failure evidence requires a server failure reference")
         updated = FeedbackEvidence(
             **{
                 **evidence.to_dict(),
@@ -1215,7 +1287,11 @@ class SkillImprovementStore:
         allowed_sources = (
             {"user_feedback"}
             if trigger_type == "user_confirmed_missing_fact"
-            else {"trusted_verification"}
+            else (
+                {"trusted_verification"}
+                if skill_id == "feature-delivery"
+                else {"trusted_verification", "trusted_failure_evidence"}
+            )
         )
         if any(item.source_type not in allowed_sources for item in unique_evidence.values()):
             raise SkillImprovementError(
@@ -1223,10 +1299,12 @@ class SkillImprovementStore:
             )
         if trigger_type == "trusted_verification_failed" and not any(
             any(
-                _TRUSTED_VERIFICATION_REF_RE.fullmatch(ref)
+                _trusted_verification_parts(ref) is not None
+                and _trusted_verification_parts(ref)[0] == origin_value
                 and self._has_trusted_verification_fact(
                     verification_ref=ref,
-                    origin_run_id=origin_value,
+                    origin_run_id=_trusted_verification_parts(ref)[0],
+                    change_set_id=_trusted_verification_parts(ref)[1],
                     project_id=project_value,
                     skill_id=skill_id,
                     task_id=task_value,
@@ -1251,7 +1329,15 @@ class SkillImprovementStore:
         ):
             raise SkillImprovementError("improvement case evidence binding mismatch")
         if skill_id == "bug-fix" and not any(
-            item.source_type == "user_feedback" for item in unique_evidence.values()
+            item.source_type == "trusted_failure_evidence"
+            and any(
+                self._has_trusted_failure_fact(
+                    failure_ref=ref,
+                    project_id=project_value,
+                )
+                for ref in item.evidence_refs
+            )
+            for item in unique_evidence.values()
         ):
             raise SkillImprovementError("bug-fix case requires original failure evidence")
         if not any(
@@ -1326,9 +1412,12 @@ class SkillImprovementStore:
             ):
                 raise SkillImprovementError("improvement case evidence changed during creation")
             if trigger_type == "trusted_verification_failed" and not any(
-                self._has_trusted_verification_fact(
+                _trusted_verification_parts(ref) is not None
+                and _trusted_verification_parts(ref)[0] == origin_value
+                and self._has_trusted_verification_fact(
                     verification_ref=ref,
-                    origin_run_id=origin_value,
+                    origin_run_id=_trusted_verification_parts(ref)[0],
+                    change_set_id=_trusted_verification_parts(ref)[1],
                     project_id=project_value,
                     skill_id=skill_id,
                     task_id=task_value,
@@ -1340,6 +1429,20 @@ class SkillImprovementStore:
             ):
                 raise SkillImprovementError(
                     "trusted verification changed during case creation"
+                )
+            if skill_id == "bug-fix" and not any(
+                item.source_type == "trusted_failure_evidence"
+                and any(
+                    self._has_trusted_failure_fact(
+                        failure_ref=ref,
+                        project_id=project_value,
+                    )
+                    for ref in item.evidence_refs
+                )
+                for item in locked_evidence.values()
+            ):
+                raise SkillImprovementError(
+                    "original failure evidence changed during case creation"
                 )
             if snapshot_ref is not None:
                 locked_snapshot = self._get_task_snapshot_unlocked(
