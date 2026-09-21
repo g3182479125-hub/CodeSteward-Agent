@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import uuid
 import warnings
@@ -423,7 +424,7 @@ class SubagentManager:
 
             if result.stop_reason == "tool_error":
                 status.tool_events = list(result.tool_events)
-                final_result = message_for_outcome(classify_turn_outcome("subagent_error"))
+                final_result = self._format_partial_progress(result)
                 final_status = "error"
             elif result.stop_reason == "error":
                 final_result = message_for_outcome(classify_turn_outcome("subagent_error"))
@@ -508,24 +509,24 @@ class SubagentManager:
 
     @staticmethod
     def _format_partial_progress(result: AgentRunResult) -> str:
-        completed = [e for e in result.tool_events if e["status"] == "ok"]
-        failure = next((e for e in reversed(result.tool_events) if e["status"] == "error"), None)
-        lines: list[str] = []
+        """Preserve safe progress facts without leaking tool output or errors."""
+        safe_outcome = message_for_outcome(classify_turn_outcome("subagent_error"))
+        completed: list[str] = []
+        failure: str | None = None
+        for event in result.tool_events:
+            name = str(event.get("name", ""))
+            safe_name = name if re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", name) else "工具"
+            if event.get("status") == "ok":
+                completed.append(safe_name)
+            elif event.get("status") == "error":
+                failure = safe_name
+
+        lines = [safe_outcome]
         if completed:
-            lines.append("Completed steps:")
-            for event in completed[-3:]:
-                lines.append(f"- {event['name']}: {event['detail']}")
+            lines.append("已完成步骤：" + "、".join(completed[-3:]))
         if failure:
-            if lines:
-                lines.append("")
-            lines.append("Failure:")
-            lines.append(f"- {failure['name']}: {failure['detail']}")
-        if result.error and not failure:
-            if lines:
-                lines.append("")
-            lines.append("Failure:")
-            lines.append(f"- {result.error}")
-        return "\n".join(lines) or (result.error or "Error: subagent execution failed.")
+            lines.append("失败步骤：" + failure + "，具体细节需要重新检查。")
+        return "\n".join(lines)
 
     def _build_subagent_prompt(self, workspace: Path | None = None) -> str:
         """Build a focused system prompt for the subagent."""

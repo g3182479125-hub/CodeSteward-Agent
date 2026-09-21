@@ -47,6 +47,56 @@ async def test_runner_returns_structured_tool_error():
 
 
 @pytest.mark.asyncio
+async def test_runner_binds_devpilot_failure_at_concrete_tool_boundary():
+    from nanobot.agent.runner import AgentRunner, DevPilotToolError
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
+        content="working",
+        tool_calls=[ToolCallRequest(
+            id="call_1",
+            name="devpilot_inspect_project",
+            arguments={"project_path": "project"},
+        )],
+    ))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[],
+        tools=tools,
+        model="test-model",
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        fail_on_tool_error=True,
+    ))
+
+    assert result.stop_reason == "tool_error"
+    assert result.error == "Error: DevPilotToolError: database unavailable"
+    _, _, fatal_error = await AgentRunner()._run_tool(
+        make_run_spec(
+            provider,
+            initial_messages=[],
+            tools=tools,
+            model="test-model",
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+            fail_on_tool_error=True,
+        ),
+        ToolCallRequest(
+            id="call_2",
+            name="devpilot_inspect_project",
+            arguments={"project_path": "project"},
+        ),
+        external_lookup_counts={},
+        workspace_violation_counts={},
+    )
+    assert isinstance(fatal_error, DevPilotToolError)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("control_error", [KeyboardInterrupt, SystemExit])
 async def test_runner_propagates_tool_control_flow_exceptions(control_error: type[BaseException]):
     from nanobot.agent.runner import AgentRunner

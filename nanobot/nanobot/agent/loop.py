@@ -2725,14 +2725,13 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str,
     ) -> str:
-        """Bind generic dispatch failures to the trusted turn source."""
-        reason = classify_exception(exc, sender_id=msg.sender_id)
-        if reason != "tool_error":
-            return reason
-        session = self.sessions.get_cached(session_key)
-        if session is not None and session.policy.task_profile:
-            return "devpilot_error"
-        return reason
+        """Classify a dispatch failure without guessing from session mode.
+
+        The runner marks failures at the concrete DevPilot tool boundary.  A
+        task profile alone is not evidence: provider, storage, and ordinary
+        tool failures can all happen while that profile is active.
+        """
+        return classify_exception(exc, sender_id=msg.sender_id)
 
     async def close_mcp(self) -> None:
         """Stop active work, then close exec, subagent, and MCP resources.

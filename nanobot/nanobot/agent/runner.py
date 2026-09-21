@@ -88,6 +88,16 @@ _MAX_INJECTIONS_PER_TURN = 3
 _MAX_INJECTION_CYCLES = 5
 
 
+class DevPilotToolError(RuntimeError):
+    """Mark a failure from the trusted DevPilot tool boundary.
+
+    The turn layer must not infer a failure source from the active task
+    profile: a provider, storage, or ordinary tool can fail while that profile
+    is active.  The runner is the first layer that knows which tool was
+    actually being dispatched, so it attaches the source here.
+    """
+
+
 def _restore_outer_whitespace(content: str, original: str | None) -> str:
     """Restore boundary whitespace stripped while cleaning one recovered segment."""
     if not original:
@@ -1638,9 +1648,12 @@ class AgentRunner:
                 "detail": pause or "repeated external lookup blocked",
             }
             if pause:
-                return pause, event, RuntimeError(pause)
+                return pause, event, self._source_bound_exception(tool_call.name, pause)
             if spec.fail_on_tool_error:
-                return lookup_error + hint, event, RuntimeError(lookup_error)
+                return lookup_error + hint, event, self._source_bound_exception(
+                    tool_call.name,
+                    lookup_error,
+                )
             return lookup_error + hint, event, None
         prepare_call = cast(
             Callable[[str, Any], object] | None,
@@ -1665,7 +1678,7 @@ class AgentRunner:
                 "detail": (pause or prep_error.split(": ", 1)[-1])[:120],
             }
             if pause:
-                return pause, event, RuntimeError(pause)
+                return pause, event, self._source_bound_exception(tool_call.name, pause)
             handled = self._classify_violation(
                 raw_text=prep_error,
                 soft_payload=prep_error + hint,
@@ -1676,7 +1689,9 @@ class AgentRunner:
             if handled is not None:
                 return handled
             return prep_error + hint, event, (
-                RuntimeError(prep_error) if spec.fail_on_tool_error else None
+                self._source_bound_exception(tool_call.name, prep_error)
+                if spec.fail_on_tool_error
+                else None
             )
         await hook.before_execute_tool(context, tool_call, tool, params)
         # Hooks can await approval/stream work. Re-check ownership after that
@@ -1710,7 +1725,7 @@ class AgentRunner:
             )
             if pause:
                 event["detail"] = pause[:120]
-                return pause, event, RuntimeError(pause)
+                return pause, event, self._source_bound_exception(tool_call.name, pause)
             handled = self._classify_violation(
                 raw_text=str(exc),
                 # Preserve legacy exception payloads without the retry hint.
@@ -1722,7 +1737,7 @@ class AgentRunner:
             if handled is not None:
                 return handled
             if spec.fail_on_tool_error:
-                return payload, event, exc
+                return payload, event, self._source_bound_exception(tool_call.name, exc)
             return payload, event, None
 
         if is_tool_error_result(result):
@@ -1739,7 +1754,7 @@ class AgentRunner:
             )
             if pause:
                 event["detail"] = pause[:120]
-                return pause, event, RuntimeError(pause)
+                return pause, event, self._source_bound_exception(tool_call.name, pause)
             handled = self._classify_violation(
                 raw_text=result,
                 soft_payload=result + hint,
@@ -1750,7 +1765,7 @@ class AgentRunner:
             if handled is not None:
                 return handled
             if spec.fail_on_tool_error:
-                return result + hint, event, RuntimeError(result)
+                return result + hint, event, self._source_bound_exception(tool_call.name, result)
             return result + hint, event, None
 
         await hook.after_execute_tool(context, tool_call, tool, params, result)
@@ -1779,6 +1794,22 @@ class AgentRunner:
         elif len(detail) > 120:
             detail = detail[:120] + "..."
         return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
+
+    @staticmethod
+    def _source_bound_exception(tool_name: str, error: BaseException | str) -> BaseException:
+        """Attach a source marker only when the tool boundary proves it.
+
+        A task profile is configuration, not evidence that every failure came
+        from DevPilot.  Only the concrete DevPilot tool name may upgrade the
+        failure source; ordinary tools keep their original exception type.
+        """
+        if tool_name.startswith("devpilot_"):
+            if isinstance(error, DevPilotToolError):
+                return error
+            return DevPilotToolError(str(error))
+        if isinstance(error, BaseException):
+            return error
+        return RuntimeError(error)
 
     # SSRF is a hard security block at the tool boundary, but the agent turn
     # should recover conversationally instead of aborting the runtime.

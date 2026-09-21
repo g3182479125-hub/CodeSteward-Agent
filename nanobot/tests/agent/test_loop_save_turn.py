@@ -955,7 +955,7 @@ async def test_dispatch_maps_exception_sources_to_recoverable_outcomes(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_binds_generic_failure_to_active_devpilot_profile(tmp_path: Path) -> None:
+async def test_dispatch_does_not_guess_devpilot_from_active_profile(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
     session = loop.sessions.get_or_create("websocket:profiled")
     session.policy = replace(session.policy, task_profile="bug-fix")
@@ -979,7 +979,7 @@ async def test_dispatch_binds_generic_failure_to_active_devpilot_profile(tmp_pat
         outbound.append(await loop.bus.consume_outbound())
     outcome_messages = [message for message in outbound if "turn_outcome" in message.metadata]
     assert len(outcome_messages) == 1
-    assert outcome_messages[0].metadata["turn_outcome"]["message_key"] == "devpilot.failed"
+    assert outcome_messages[0].metadata["turn_outcome"]["message_key"] == "tool.failed"
 
 
 @pytest.mark.asyncio

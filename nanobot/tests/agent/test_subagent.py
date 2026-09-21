@@ -221,6 +221,46 @@ async def test_subagent_failure_announcement_uses_safe_recovery_text(tmp_path, s
 
 
 @pytest.mark.asyncio
+async def test_subagent_tool_failure_preserves_safe_completed_steps(tmp_path):
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test"
+    sm = SubagentManager(
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=16_000,
+    )
+    sm.runner.run = AsyncMock(
+        return_value=AgentRunResult(
+            final_content=None,
+            messages=[],
+            stop_reason="tool_error",
+            error="secret internal failure",
+            tool_events=[
+                {"name": "read_file", "status": "ok", "detail": "safe file content"},
+                {"name": "devpilot_apply", "status": "error", "detail": "secret stack"},
+            ],
+        )
+    )
+    sm._announce_result = AsyncMock()
+    status = SubagentStatus(task_id="t1", label="label", task_description="task", started_at=0.0)
+
+    result = await sm._run_subagent(
+        "t1",
+        "task",
+        "label",
+        {"channel": "cli", "chat_id": "direct"},
+        status,
+        _runtime(provider),
+    )
+
+    assert "辅助任务没有完成" in result
+    assert "已完成步骤：read_file" in result
+    assert "失败步骤：devpilot_apply" in result
+    assert "secret" not in result
+    assert "safe file content" not in result
+
+
+@pytest.mark.asyncio
 async def test_subagent_exception_announcement_uses_safe_recovery_text(tmp_path):
     provider = MagicMock(spec=LLMProvider)
     provider.get_default_model.return_value = "test"
