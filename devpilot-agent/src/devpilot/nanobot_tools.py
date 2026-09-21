@@ -2194,6 +2194,7 @@ class SkillCandidateTool(Tool):
                 raise SkillImprovementError("candidate is outside a trusted DevPilot task")
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
+            target = skill_improvement_target("bug-fix")
             requested_batch_id = kwargs.get("batch_id")
             scheduled_batch_id = request_context.attributes.get("devpilot_batch_id")
             scheduled_workspace = request_context.attributes.get("devpilot_workspace")
@@ -2262,11 +2263,7 @@ class SkillCandidateTool(Tool):
             candidate = store.create_candidate(
                 user_id=request_context.sender_id,
                 project_id=str(kwargs["project_id"]),
-                skill_path=(
-                    target.skill_path
-                    if isinstance(scheduled_batch_id, str) and scheduled_batch_id
-                    else "skills/bug-fix/SKILL.md"
-                ),
+                skill_path=target.skill_path,
                 baseline_content=str(kwargs["baseline_content"]),
                 candidate_content=str(kwargs["candidate_content"]),
                 evidence_ids=kwargs["evidence_ids"],
