@@ -852,13 +852,29 @@ class SkillImprovementStore:
                     return False
                 if "changeset.verification_failed" not in event_types:
                     return False
-                for event_type in ("changeset.applied", "changeset.verification_failed"):
-                    matching = [row for row in events if row[0] == event_type]
-                    if not any(
-                        json.loads(str(row[1])).get("change_set_id") == change_set_id
-                        for row in matching
-                    ):
-                        return False
+                applied_events = [
+                    json.loads(str(row[1]))
+                    for row in events
+                    if row[0] == "changeset.applied"
+                ]
+                verification_events = [
+                    json.loads(str(row[1]))
+                    for row in events
+                    if row[0] == "changeset.verification_failed"
+                ]
+                if not any(
+                    isinstance(payload, dict)
+                    and payload.get("change_set_id") == change_set_id
+                    for payload in applied_events
+                ):
+                    return False
+                if not any(
+                    isinstance(payload, dict)
+                    and payload.get("change_set_id") == change_set_id
+                    and payload.get("failure_kind") == "semantic"
+                    for payload in verification_events
+                ):
+                    return False
                 approval = connection.execute(
                     """
                     select 1 from approvals
@@ -868,14 +884,9 @@ class SkillImprovementStore:
                     """,
                     (change_set_id,),
                 ).fetchone()
-                applied_payloads = [
-                    json.loads(str(row[1]))
-                    for row in events
-                    if row[0] == "changeset.applied"
-                ]
                 approved_apply = approval is not None or any(
                     payload.get("execution_mode") == "full_access"
-                    for payload in applied_payloads
+                    for payload in applied_events
                     if isinstance(payload, dict)
                 )
                 if not approved_apply:
@@ -885,9 +896,8 @@ class SkillImprovementStore:
                     "bug-fix": "bug_fix.proposed",
                 }.get(skill_id)
                 skill_bound_verification = any(
-                    row[0] == "changeset.verification_failed"
-                    and json.loads(str(row[1])).get("skill_id") == skill_id
-                    for row in events
+                    isinstance(payload, dict) and payload.get("skill_id") == skill_id
+                    for payload in verification_events
                 )
                 if (
                     proposed is not None

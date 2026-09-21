@@ -178,6 +178,28 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
     )
     assert len(cases) == 1
     assert cases[0].origin_run_id == run_id
+    with sqlite3.connect(tmp_path / "data" / "devpilot.db") as connection:
+        event = connection.execute(
+            "select id, payload_json from run_events "
+            "where run_id = ? and event_type = 'changeset.verification_failed'",
+            (run_id,),
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(str(event[1]))
+        payload["failure_kind"] = "unknown"
+        connection.execute(
+            "update run_events set payload_json = ? where id = ?",
+            (json.dumps(payload), event[0]),
+        )
+    assert not improvement_store._has_trusted_verification_fact(  # pyright: ignore[reportPrivateUsage]
+        verification_ref=f"verification-{run_id}:{change_set_id}",
+        origin_run_id=run_id,
+        change_set_id=change_set_id,
+        project_id=project_id,
+        skill_id="feature-delivery",
+        task_id=task_id,
+        workspace=str(project.resolve()),
+    )
 
 
 def test_full_access_failed_bug_verification_records_case_with_failure_fact(

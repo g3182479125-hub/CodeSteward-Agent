@@ -1,5 +1,10 @@
 """Server-owned entry points for creating three-profile improvement cases."""
 
+# The recorder intentionally calls private store validators so the public
+# mutation surface cannot bypass their server-fact checks.  Keep this module's
+# Pyright policy explicit rather than weakening the store implementation.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from collections.abc import Mapping
