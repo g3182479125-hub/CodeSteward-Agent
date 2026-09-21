@@ -1,4 +1,7 @@
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -134,6 +137,82 @@ def test_clean_snapshot_creates_and_cleans_private_worktree(
     assert any(call[3:6] == ["worktree", "remove", "--force"] for call in calls)
 
 
+def test_real_git_worktrees_are_detached_and_leave_source_unchanged(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is unavailable")
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source = repository / "main.py"
+    source.write_text("return 1\n", encoding="utf-8")
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    git("init")
+    git("config", "user.email", "si04@example.invalid")
+    git("config", "user.name", "SI-04")
+    git("add", "main.py")
+    git("commit", "-m", "fixture")
+    before = source.read_bytes()
+    snapshot = capture_git_snapshot(
+        repository,
+        allowed_file_scope=["main.py"],
+        verification_profile="python-syntax",
+    )
+    private_root = tmp_path / "private"
+    first = create_private_worktree(
+        snapshot,
+        private_root=private_root,
+        trusted_private_root=private_root,
+    )
+    second = create_private_worktree(
+        snapshot,
+        private_root=private_root,
+        trusted_private_root=private_root,
+    )
+
+    assert first.path != second.path
+    assert first.path.joinpath("main.py").read_bytes() == before
+    assert second.path.joinpath("main.py").read_bytes() == before
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=first.path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == snapshot.start_commit_sha
+    assert subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=first.path,
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode != 0
+
+    first.path.joinpath("generated.txt").write_text("private\n", encoding="utf-8")
+    assert not repository.joinpath("generated.txt").exists()
+    assert source.read_bytes() == before
+    assert cleanup_private_worktree(
+        snapshot, first, trusted_private_root=private_root
+    ).cleanup_error is None
+    assert cleanup_private_worktree(
+        snapshot, second, trusted_private_root=private_root
+    ).cleanup_error is None
+    assert not first.path.exists()
+    assert not second.path.exists()
+
+
 def test_unsafe_scope_and_non_replayable_worktree_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ReplayabilityError, match="unsafe path"):
         capture_git_snapshot(
@@ -203,6 +282,68 @@ def test_private_root_junction_like_path_is_rejected(
             private_root=private_root,
             trusted_private_root=private_root,
         )
+
+
+def test_real_symlink_private_root_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is unavailable")
+    snapshot = replay_workspace.GitReplaySnapshot(
+        repository_root=str(tmp_path / "repository"),
+        repository_identity="repo",
+        start_commit_sha="c" * 40,
+        working_tree_clean=True,
+        allowed_file_scope=("src/main.py",),
+        verification_profile="python-syntax",
+        replayable=True,
+    )
+    try:
+        with pytest.raises(ReplayabilityError, match="symlink"):
+            create_private_worktree(
+                snapshot,
+                private_root=link,
+                trusted_private_root=link,
+            )
+    finally:
+        link.unlink(missing_ok=True)
+
+
+def test_real_junction_private_root_is_rejected_on_windows(tmp_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("directory junctions are Windows-only")
+    target = tmp_path / "target"
+    target.mkdir()
+    junction = tmp_path / "junction"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("directory junction creation is unavailable")
+    snapshot = replay_workspace.GitReplaySnapshot(
+        repository_root=str(tmp_path / "repository"),
+        repository_identity="repo",
+        start_commit_sha="c" * 40,
+        working_tree_clean=True,
+        allowed_file_scope=("src/main.py",),
+        verification_profile="python-syntax",
+        replayable=True,
+    )
+    try:
+        with pytest.raises(ReplayabilityError, match="symlink"):
+            create_private_worktree(
+                snapshot,
+                private_root=junction,
+                trusted_private_root=junction,
+            )
+    finally:
+        junction.rmdir()
 
 
 def test_cleanup_failure_is_persisted_under_the_trusted_root(

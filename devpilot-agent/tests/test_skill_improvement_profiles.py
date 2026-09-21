@@ -324,6 +324,85 @@ def test_project_trust_checks_real_registration_and_allowed_root(
     assert store._project_is_trusted("project-1", workspace) is False
 
 
+@pytest.mark.parametrize(
+    ("label", "start_commit_sha", "working_tree_clean", "reason"),
+    [
+        ("dirty", "a" * 40, False, "working tree is not clean"),
+        ("non-git", None, False, "git repository metadata is unavailable"),
+        ("missing-commit", None, True, "repository has no resolvable start commit"),
+    ],
+)
+def test_each_git_failure_kind_becomes_a_non_replayable_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    start_commit_sha: str | None,
+    working_tree_clean: bool,
+    reason: str,
+) -> None:
+    store, workspace = _store(tmp_path)
+    monkeypatch.setattr(store, "_project_is_trusted", lambda project_id, root: True)
+    monkeypatch.setattr(
+        "devpilot.skill_improvement.capture_git_snapshot",
+        lambda *args, **kwargs: GitReplaySnapshot(
+            repository_root=str(workspace),
+            repository_identity="repo",
+            start_commit_sha=start_commit_sha,
+            working_tree_clean=working_tree_clean,
+            allowed_file_scope=("src/main.py",),
+            verification_profile="python-syntax",
+            replayable=False,
+            reason=reason,
+        ),
+    )
+    task_id = f"task-{label}"
+    origin = f"run-{label}"
+    skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
+    evidence = store.record_feedback(
+        task_id=task_id,
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id=f"session-{label}",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=(origin,),
+    )
+    snapshot = store.capture_task_snapshot(
+        task_id=task_id,
+        workspace=workspace,
+        session_id=f"session-{label}",
+        project_id="project-1",
+        skill_id="repo-analysis",
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+    )
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id=origin,
+        task_id=task_id,
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id=f"session-{label}",
+        base_skill_hash=skill_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="分析结果漏掉了测试入口。",
+        expected_behavior="输出测试入口。",
+        evidence_refs=(evidence.evidence_id, origin),
+        replay_snapshot_ref=task_snapshot_ref(task_id),
+        assertion_spec={"kind": "analysis_fact"},
+    )
+
+    assert snapshot.replayability_reason == reason
+    assert case.status == "not_replayable"
+    assert store.list_improvement_cases(status="eligible") == []
+
+
 def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: Path) -> None:
     store, workspace = _store(tmp_path)
     skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash
