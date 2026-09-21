@@ -1293,7 +1293,16 @@ class AgentLoop:
             session.key,
             evidence_refs=tuple(dict.fromkeys(evidence_refs))[:20],
             file_hashes=tuple(file_hashes),
-            run_id=run_id if isinstance(run_id, str) and run_id else None,
+            # Only the server-owned repository inspection tool may establish
+            # the origin Run used by repo-analysis feedback.  A generic tool
+            # result must remain evidence, never become task identity.
+            run_id=(
+                run_id
+                if tool_name == "devpilot_inspect_project"
+                and isinstance(run_id, str)
+                and run_id
+                else None
+            ),
             change_set_id=(
                 change_set_id if isinstance(change_set_id, str) and change_set_id else None
             ),
