@@ -1,20 +1,21 @@
 # R5 Spec 增量复核记录
 
 - 固定点：`ad14ae9`
-- 候选：`dd4db9a`
-- 目标差异：`git diff ad14ae9...dd4db9a`
+- 候选：`5feed76`
+- 目标差异：`git diff ad14ae9...5feed76`
 - reviewer：`01a0c205-909c-7a20-85f9-e6e5207f910c`
+- 替代 reviewer：`01a0c205-9307-7112-874d-9b30b76c3f37`
 - 依据：`AGENTS.md`、`CURRENT_PLAN.md` 第 0/6/7 节、ADR-0004、DSH resilient-runtime R5
 
 ## 调度事实
 
-主代理已复用原 Spec reviewer，并与 Standards reviewer 并行发送增量复核请求。请求明确要求检查：
+主代理先复用原 Spec reviewer，并与 Standards reviewer 并行发送增量复核请求；两者均完成但无报告正文。随后按 reviewer 不可用时的替代规则，向替代 Spec reviewer 发送同一固定点 `ad14ae9` 和候选 `5feed76` 的只读复核请求。请求明确要求检查：
 
 - `7da024a` 是否让 guard 只停止当前 turn、且不放宽未知副作用重放保护；
 - R5 WebUI 证据是否把 PASS、PARTIAL 和 PENDING 区分准确；
 - 是否存在范围膨胀、错误实现或把未执行的双写场景写成通过。
 
-等待任务返回了 `turnCompleted`，但 Codex 线程的 `latestAssistantMessageId` 为空，读取该 turn 的 `items` 也为空；后续一次只返回结论的请求仍然没有报告正文。因此没有可引用的 Spec 增量结论。
+原 reviewer 的等待任务返回了 `turnCompleted`，但 `latestAssistantMessageId` 为空，turn `items` 也为空；替代 reviewer 同样返回 `turnCompleted`、`latestAssistantMessageId=null`、空 `items`。因此没有可引用的 Spec 增量结论。
 
 ## 结论
 
@@ -24,7 +25,6 @@
 
 ## 当前可确认事实
 
-- R5 文档明确把 R5.7 写成 PENDING、R5.8 写成 PARTIAL，没有把未执行双写演练写成成功；
+- R5 文档已把隔离副作用演练和重启恢复记录为 PASS，同时明确它们只适用于 disposable 副本，未扩展为真实训练项目写入证明；
 - 真实 WebUI 已复测“重复失败停止后自然语言继续聊天”；
-- 因当前增量 Spec 报告正文缺失，R5 发布门槛仍保持 pending。
-
+- 因当前增量 Spec 报告正文缺失，R5 发布门槛仍保持 pending；不能把替代 reviewer 的 completed 状态当作 PASS。
