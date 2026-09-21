@@ -17,14 +17,22 @@
 
 原 reviewer 的等待任务返回了 `turnCompleted`，但 `latestAssistantMessageId` 为空，turn `items` 也为空；替代 reviewer 同样返回 `turnCompleted`、`latestAssistantMessageId=null`、空 `items`。因此没有可引用的 Spec 增量结论。
 
-## 结论
+## 历史初轮结论
 
 **BLOCKED，不是 PASS。**
 
-此前对 `ad14ae9` 的 Spec 报告是 PASS，但它没有覆盖 `7da024a` 的中文 guard 代码和本次新增 R5 证据文档；旧结论不能替代当前候选的增量复核。
+初轮 reviewer 没有返回报告正文；替代 reviewer 后来确认的候选覆盖问题，已在 `611ae0f` 修复。
+
+## 当前增量复核结论
+
+**PASS。**
+
+当前 reviewer：`Pauli`（subagent `01a0c2be-18aa-74d2-84db-e31b675ec9ab`）。
+
+复用同一 Spec subagent 对 `ede4b1c...611ae0f` 增量复核：R5 evidence、计划和两份 review 记录的候选范围与状态一致；R5.7/R5.8 明确仅在 disposable 副本通过，未冒充真实训练项目通过；未重新扩展已完成代码审查。
 
 ## 当前可确认事实
 
 - R5 文档已把隔离副作用演练和重启恢复记录为 PASS，同时明确它们只适用于 disposable 副本，未扩展为真实训练项目写入证明；
 - 真实 WebUI 已复测“重复失败停止后自然语言继续聊天”；
-- 因当前增量 Spec 报告正文缺失，R5 发布门槛仍保持 pending；不能把替代 reviewer 的 completed 状态当作 PASS。
+- 初轮空报告事实仍保留作审计记录；当前增量已 PASS，候选覆盖问题已关闭。

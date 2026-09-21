@@ -2,7 +2,7 @@
 
 > 版本：0.1
 > 日期：2026-09-21
-> 状态：**IMPLEMENTED CANDIDATE — R5 REVIEW PENDING**。R1–R4 已形成候选实现；R5 双轴审查和最终验收仍未完成。
+> 状态：**IMPLEMENTED CANDIDATE — R5 REVIEWED**。R1–R4 已形成候选实现；R5.1–R5.8 证据完成，Standards/Spec 增量复核均 PASS。正式录制仍需按本机 runbook 配置模型并确认训练项目故障基线。
 > 实施基线：执行者必须记录开始时 `origin/codex/h11-complete-handoff` 的实际 SHA，不能把旧证据挪为本次通过证据。
 
 ## 1. 执行摘要
@@ -318,4 +318,4 @@ class TurnOutcome:
 | 日期 | 节点 | 状态 | 事实 |
 |---|---|---|---|
 | 2026-09-21 | R0–R5 | ready | 用户批准范围；未修改应用代码，未运行本计划测试，未做本计划代码审查。 |
-| 2026-09-21 | R1–R5 | implemented candidate | 代码候选为 `ede4b1c`；结构化临时工具结果和中文重复失败保护已修复；真实 WebUI 的 R5.1–R5.8 已在隔离副本完成，其中 R5.7/R5.8 明确没有写入真实训练项目；R5 双轴复核和发布门槛仍 pending，详见 `docs/evidence/resilient-runtime/r5-webui-2026-09-21.md`。 |
+| 2026-09-21 | R1–R5 | reviewed candidate | 代码候选为 `ede4b1c`；结构化临时工具结果和中文重复失败保护已修复；真实 WebUI 的 R5.1–R5.8 已在隔离副本完成，其中 R5.7/R5.8 明确没有写入真实训练项目；Standards/Spec 对 `ede4b1c...611ae0f` 的增量复核均 PASS，详见 `docs/evidence/resilient-runtime/r5-webui-2026-09-21.md`。 |

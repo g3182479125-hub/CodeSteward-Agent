@@ -18,14 +18,22 @@
 
 原 reviewer 的等待任务返回了 `turnCompleted`，但 `latestAssistantMessageId` 为空，turn `items` 也为空；替代 reviewer 同样返回 `turnCompleted`、`latestAssistantMessageId=null`、空 `items`。没有可引用的 Standards 报告正文。
 
-## 结论
+## 历史初轮结论
 
 **BLOCKED，不是 PASS。**
 
-不能据平台的 completed 状态推断 Standards PASS。此前 Standards 报告提出的“缺少 R5 证据文档”问题已由 `dd4db9a` 补齐；本次 R5.7/R5.8 隔离实证和计划更新虽然已记录在 `5feed76`，但仍没有得到可核验的增量结论。
+初轮 reviewer 没有返回报告正文；替代 reviewer 后来发现的候选 SHA 和检查记录问题，已在 `611ae0f` 修复。
+
+## 当前增量复核结论
+
+**PASS。**
+
+当前 reviewer：`Heisenberg`（subagent `01a0c2be-1798-7de1-865b-3a29b6c520f0`）。
+
+复用同一 Standards subagent 对 `ede4b1c...611ae0f` 增量复核：R5 evidence/review/plan 已统一候选 `ede4b1c`，并明确后续提交仅为审查记录；工作树 `git diff --check` 实测退出码为 0；未发现凭据、用户未跟踪文件、Fowler smell 或其它标准问题。
 
 ## 当前可确认事实
 
 - 自动回归、R5 WebUI 场景和 `r5-webui-2026-09-21.md` 已由主代理核对；
 - R5.7/R5.8 已在 disposable 副本完成未知副作用与重启恢复证据，真实训练项目未写入；
-- 由于缺少 reviewer 正文，发布门槛仍保持 pending，不得宣称整体或 R5 完成。
+- 初轮空报告事实仍保留作审计记录；当前增量已 PASS，不再阻塞 R5 双轴审查。
