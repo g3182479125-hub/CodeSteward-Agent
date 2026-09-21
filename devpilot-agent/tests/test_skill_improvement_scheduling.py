@@ -336,6 +336,11 @@ def test_failed_case_claim_is_released_for_bounded_retry(
 
     first = store.claim_scheduled_batch("cron-failed", lease_owner="owner-1")
     assert first is not None and first.case is not None
+    store.reserve_scheduled_candidate_attempt(
+        "batch-77777777-7777-7777-7777-777777777777",
+        lease_owner="owner-1",
+        estimated_tokens=100,
+    )
     failed = store.finish_scheduled_batch(
         "batch-77777777-7777-7777-7777-777777777777",
         lease_owner="owner-1",
@@ -350,6 +355,18 @@ def test_failed_case_claim_is_released_for_bounded_retry(
     retry = store.claim_scheduled_batch("cron-failed", lease_owner="owner-2")
     assert retry is not None and retry.status == "claimed"
     assert retry.case is not None and retry.case.case_id == case.case_id
+    store.reserve_scheduled_candidate_attempt(
+        "batch-77777777-7777-7777-7777-777777777777",
+        lease_owner="owner-2",
+        estimated_tokens=100,
+    )
+    store.finish_scheduled_batch(
+        "batch-77777777-7777-7777-7777-777777777777",
+        lease_owner="owner-2",
+        error="provider failed again",
+    )
+    exhausted = store.claim_scheduled_batch("cron-failed", lease_owner="owner-3")
+    assert exhausted is not None and exhausted.status == "budget_exhausted"
 
 
 def test_expired_lease_recovers_case_after_store_restart(

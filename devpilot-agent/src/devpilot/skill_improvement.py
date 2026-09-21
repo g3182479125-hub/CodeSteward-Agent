@@ -2643,6 +2643,25 @@ class SkillImprovementStore:
                     lease_owner=owner, deadline_at=deadline,
                 )
 
+            if batch.status in {"running", "failed"} and (
+                batch.candidate_attempts >= batch.max_model_calls
+                or batch.token_count >= batch.max_tokens
+                or batch.consecutive_failures >= batch.max_model_calls
+            ):
+                exhausted = replace(
+                    batch,
+                    status="budget_exhausted",
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_run_at=_now(),
+                    last_error="scheduled batch retry budget exhausted",
+                    updated_at=_now(),
+                )
+                self._atomic_write(
+                    self.batches_dir / f"{batch.batch_id}.json", exhausted.to_dict()
+                )
+                return ScheduledBatchClaim("budget_exhausted", exhausted)
+
             case = self._select_scheduled_case_locked(batch)
             if case is None:
                 updated = replace(
@@ -2675,13 +2694,23 @@ class SkillImprovementStore:
                 lease_owner=owner,
                 lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
                 run_count=batch.run_count + 1,
-                candidate_attempts=0,
-                token_count=0,
+                candidate_attempts=(
+                    batch.candidate_attempts
+                    if batch.status in {"running", "failed"}
+                    else 0
+                ),
+                token_count=(
+                    batch.token_count if batch.status in {"running", "failed"} else 0
+                ),
                 candidate_id=None,
                 claimed_case_ids=(case.case_id,),
                 claimed_evidence_ids=tuple(item.evidence_id for item in evidence),
                 last_run_at=_now(),
-                consecutive_failures=0,
+                consecutive_failures=(
+                    batch.consecutive_failures
+                    if batch.status in {"running", "failed"}
+                    else 0
+                ),
                 updated_at=_now(),
             )
             self._atomic_write(
