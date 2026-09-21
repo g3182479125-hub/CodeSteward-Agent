@@ -1,4 +1,24 @@
-from nanobot.agent.context_governance import ContextGovernor
+from nanobot.agent.context_governance import ContextGovernanceConfig, ContextGovernor
+
+
+def test_normalize_tool_result_serializes_mapping_for_provider() -> None:
+    config = ContextGovernanceConfig(
+        provider=object(),
+        model="test-model",
+        tools=object(),
+        workspace=None,
+        session_key=None,
+        max_tool_result_chars=1000,
+    )
+
+    result = ContextGovernor.normalize_tool_result(
+        config,
+        "call-1",
+        "temporary_tool",
+        {"length": 4},
+    )
+
+    assert result == '{"length": 4}'
 
 
 def _assistant_tool_call(call_id: str) -> dict:

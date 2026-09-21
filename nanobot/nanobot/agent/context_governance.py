@@ -7,6 +7,7 @@ mutate an existing session history list in place.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -115,6 +116,18 @@ class ContextGovernor:
         result: Any,
     ) -> Any:
         result = ensure_nonempty_tool_result(tool_name, result)
+        # Tool messages sent back to providers must use a provider-safe content
+        # shape.  Built-in tools normally return ``str``/``ToolResult``, but a
+        # dynamically loaded temporary tool can legitimately return a JSON
+        # object.  Passing that mapping through unchanged produces malformed
+        # provider payloads (for example, ``messages[*].content`` missing its
+        # required content-block ``type``).  Keep structured list blocks intact
+        # and serialize other JSON values as text for the model-facing message.
+        if not isinstance(result, (str, list)):
+            try:
+                result = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                result = str(result)
         if tool_name in TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS:
             return result
         try:
