@@ -1,18 +1,18 @@
 # R5 Standards 增量复核记录
 
 - 固定点：`ad14ae9`
-- 候选：`5feed76`
-- 目标差异：`git diff ad14ae9...5feed76`
+- 候选：`ede4b1c`
+- 目标差异：`git diff ad14ae9...ede4b1c`
 - reviewer：`01a0ae3a-17a9-7be2-8039-92c31ab76536`
 - 替代 reviewer：`01a0ae1f-5707-7463-9141-20acae3a627b`
 - 依据：`AGENTS.md`、`CURRENT_PLAN.md` 第 0/6/7 节、ADR-0004、DSH resilient-runtime R5
 
 ## 调度事实
 
-主代理先复用原 Standards reviewer，并与 Spec reviewer 并行发送增量复核请求；两者均完成但无报告正文。随后按 reviewer 不可用时的替代规则，向替代 Standards reviewer 发送同一固定点 `ad14ae9` 和候选 `5feed76` 的只读复核请求。请求明确要求检查：
+主代理先复用原 Standards reviewer，并与 Spec reviewer 并行发送增量复核请求；两者均完成但无报告正文。随后按 reviewer 不可用时的替代规则，向替代 Standards reviewer 发送同一固定点 `ad14ae9` 和候选 `ede4b1c` 的只读复核请求。请求明确要求检查：
 
 - `7da024a` 的中文重复失败保护分类；
-- `5feed76` 新增的 R5 事实证据、计划状态和已知边界；
+- `ede4b1c` 新增的 R5 事实证据、计划状态和已知边界；
 - 用户文件/凭据泄露、未知副作用重放安全和 Fowler smell；
 - 只返回当前增量仍存在的问题，不递归派发 reviewer。
 

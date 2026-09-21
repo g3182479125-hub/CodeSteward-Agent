@@ -1,15 +1,15 @@
 # R5 Spec 增量复核记录
 
 - 固定点：`ad14ae9`
-- 候选：`5feed76`
-- 目标差异：`git diff ad14ae9...5feed76`
+- 候选：`ede4b1c`
+- 目标差异：`git diff ad14ae9...ede4b1c`
 - reviewer：`01a0c205-909c-7a20-85f9-e6e5207f910c`
 - 替代 reviewer：`01a0c205-9307-7112-874d-9b30b76c3f37`
 - 依据：`AGENTS.md`、`CURRENT_PLAN.md` 第 0/6/7 节、ADR-0004、DSH resilient-runtime R5
 
 ## 调度事实
 
-主代理先复用原 Spec reviewer，并与 Standards reviewer 并行发送增量复核请求；两者均完成但无报告正文。随后按 reviewer 不可用时的替代规则，向替代 Spec reviewer 发送同一固定点 `ad14ae9` 和候选 `5feed76` 的只读复核请求。请求明确要求检查：
+主代理先复用原 Spec reviewer，并与 Standards reviewer 并行发送增量复核请求；两者均完成但无报告正文。随后按 reviewer 不可用时的替代规则，向替代 Spec reviewer 发送同一固定点 `ad14ae9` 和候选 `ede4b1c` 的只读复核请求。请求明确要求检查：
 
 - `7da024a` 是否让 guard 只停止当前 turn、且不放宽未知副作用重放保护；
 - R5 WebUI 证据是否把 PASS、PARTIAL 和 PENDING 区分准确；
