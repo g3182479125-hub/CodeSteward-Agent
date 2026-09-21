@@ -19,6 +19,18 @@ def test_guard_budget_stops_only_the_current_turn() -> None:
     assert "diagnostic" not in message_for_outcome(outcome)
 
 
+def test_chinese_repeated_failure_guard_is_not_downgraded_to_generic_tool_error() -> None:
+    outcome = classify_turn_outcome(
+        "tool_error",
+        "这轮检查先暂停了：同一个问题连续出现，继续重试也没有得到新信息。",
+    )
+
+    assert outcome.category == "guard_stopped"
+    assert outcome.user_message_key == "guard.no_progress"
+    assert outcome.continuation == "allow"
+    assert outcome.retry_hint == "change_input"
+
+
 def test_path_boundary_is_safe_but_does_not_lock_the_session() -> None:
     outcome = classify_turn_outcome(
         "tool_error",

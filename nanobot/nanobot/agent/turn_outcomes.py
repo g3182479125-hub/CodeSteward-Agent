@@ -183,6 +183,10 @@ def classify_turn_outcome(
             "bounded diagnostic",
             "no progress",
             "iteration budget",
+            "这轮检查先暂停了",
+            "同一个问题连续出现",
+            "我已经尝试了几种处理方向",
+            "结果没有变化",
         )
     ):
         return TurnOutcome(
