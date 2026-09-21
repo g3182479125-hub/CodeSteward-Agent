@@ -119,7 +119,7 @@ def classify_turn_outcome(
     text = (detail or "").strip().lower()
     refs = tuple(ref for ref in operation_refs if isinstance(ref, str) and ref)
 
-    if reason in {"completed", "stop", ""}:
+    if reason in {"completed", "stop", "driver_finished", ""}:
         return TurnOutcome("completed", "turn", "turn.completed", "none", "allow")
     if reason in {"cancelled", "canceled", "cancel"}:
         return TurnOutcome("cancelled", "turn", "turn.cancelled", "none", "allow")
@@ -153,6 +153,17 @@ def classify_turn_outcome(
             "result cannot be confirmed",
         )
     ):
+        return TurnOutcome(
+            "unknown_side_effect",
+            "operation",
+            "operation.unknown_result",
+            "check_status",
+            "allow_readonly",
+            refs,
+            internal_code="unknown_side_effect",
+        )
+
+    if refs and reason in {"driver_paused", "guard_stopped"}:
         return TurnOutcome(
             "unknown_side_effect",
             "operation",
@@ -217,3 +228,13 @@ def classify_turn_outcome(
         "allow",
         internal_code=reason or "unknown",
     )
+
+
+def classify_exception(exc: BaseException, *, sender_id: str | None = None) -> str:
+    """Choose a coarse failure source without exposing exception details."""
+    haystack = f"{type(exc).__name__} {exc}".lower()
+    if sender_id == "subagent" or "subagent" in haystack:
+        return "subagent_error"
+    if any(marker in haystack for marker in ("provider", "model", "llm", "inference")):
+        return "model_error"
+    return "tool_error"

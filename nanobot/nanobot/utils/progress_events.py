@@ -56,37 +56,55 @@ def _tool_event_arguments(tool_call: Any) -> dict[str, Any]:
 
 def _temporary_tool_activity(name: str, phase: str) -> dict[str, str] | None:
     """Map temporary-tool control calls to a safe lifecycle activity summary."""
-    if name in {"devpilot_validate_temporary_tool", "devpilot_ensure_temporary_tool"}:
-        lifecycle = "validating" if phase == "start" else "validated" if phase == "end" else "failed"
-    elif name == "devpilot_activate_temporary_tool":
-        lifecycle = "validating" if phase == "start" else "active" if phase == "end" else "failed"
-    else:
+    lifecycle_by_name = {
+        "devpilot_report_tool_gap": ("detecting", "gap_detected", "failed"),
+        "devpilot_create_temporary_tool": ("generating", "generated", "failed"),
+        "devpilot_validate_temporary_tool": ("validating", "validated", "rejected"),
+        "devpilot_ensure_temporary_tool": ("validating", "active", "rejected"),
+        "devpilot_activate_temporary_tool": ("activating", "active", "rejected"),
+        "devpilot_persist_temporary_tool": ("persisting", "persisted", "failed"),
+        "devpilot_discard_temporary_tools": ("retiring", "disposed", "cleanup_pending"),
+    }
+    lifecycle_phases = lifecycle_by_name.get(name)
+    if lifecycle_phases is None:
         return None
+    lifecycle = lifecycle_phases[0] if phase == "start" else lifecycle_phases[1] if phase == "end" else lifecycle_phases[2]
     return {
         "kind": "temporary_tool",
         "phase": lifecycle,
         "summary": {
+            "detecting": "正在确认工具缺口",
+            "gap_detected": "已确认需要临时工具",
+            "generating": "正在生成临时工具",
+            "generated": "临时工具已生成",
             "validating": "正在校验临时工具",
             "validated": "临时工具校验通过",
+            "rejected": "临时工具未通过校验，聊天仍可继续",
+            "activating": "正在启用临时工具",
             "active": "临时工具已启用",
+            "persisting": "正在保存临时工具",
+            "persisted": "临时工具已保存",
+            "retiring": "正在停用临时工具",
+            "cleanup_pending": "临时工具清理待重试，聊天仍可继续",
+            "disposed": "临时工具已清理",
             "failed": "临时工具处理失败，聊天仍可继续",
         }[lifecycle],
     }
 
 
 def build_tool_event_start_payload(tool_call: Any) -> dict[str, Any]:
+    activity = _temporary_tool_activity(str(getattr(tool_call, "name", "")), "start")
     payload: dict[str, Any] = {
         "version": 1,
         "phase": "start",
         "call_id": str(getattr(tool_call, "id", "") or ""),
         "name": getattr(tool_call, "name", ""),
-        "arguments": _tool_event_arguments(tool_call),
+        "arguments": {} if activity is not None else _tool_event_arguments(tool_call),
         "result": None,
         "error": None,
         "files": [],
         "embeds": [],
     }
-    activity = _temporary_tool_activity(str(getattr(tool_call, "name", "")), "start")
     if activity is not None:
         payload["capability_activity"] = activity
     return payload
@@ -112,17 +130,18 @@ def build_tool_event_finish_payloads(context: AgentHookContext) -> list[dict[str
         event = context.tool_events[idx]
         status = event.get("status")
         phase = "end" if status == "ok" else "error"
+        activity = _temporary_tool_activity(str(getattr(tool_call, "name", "")), phase)
         files, embeds = tool_event_result_extras(result)
         payload = {
             "version": 1,
             "phase": phase,
             "call_id": str(getattr(tool_call, "id", "") or ""),
             "name": getattr(tool_call, "name", ""),
-            "arguments": _tool_event_arguments(tool_call),
-            "result": result if phase == "end" else None,
+            "arguments": {} if activity is not None else _tool_event_arguments(tool_call),
+            "result": None if activity is not None else result if phase == "end" else None,
             "error": None,
-            "files": files,
-            "embeds": embeds,
+            "files": [] if activity is not None else files,
+            "embeds": [] if activity is not None else embeds,
         }
         # ToolResult remains string-compatible for model providers, while
         # WebUI and logs can consume the stable execution contract when one
@@ -132,11 +151,12 @@ def build_tool_event_finish_payloads(context: AgentHookContext) -> list[dict[str
             if value is not None:
                 payload[key] = value
         if phase == "error":
-            if isinstance(result, str) and result.strip():
+            if activity is not None:
+                payload["error"] = "temporary tool operation failed"
+            elif isinstance(result, str) and result.strip():
                 payload["error"] = result.strip()
             else:
                 payload["error"] = str(event.get("detail") or "Tool execution failed")
-        activity = _temporary_tool_activity(str(getattr(tool_call, "name", "")), phase)
         if activity is not None:
             payload["capability_activity"] = activity
         payloads.append(payload)

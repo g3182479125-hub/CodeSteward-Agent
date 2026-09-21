@@ -270,7 +270,6 @@ class TurnDelivery:
         metadata = dict(self.lifecycle_message.metadata or {})
         if outcome is not None:
             metadata["turn_outcome"] = outcome.to_metadata()
-            self.lifecycle_message.metadata["turn_outcome"] = outcome.to_metadata()
         await self.bus.publish_outbound(
             OutboundMessage(
                 channel=self.lifecycle_message.channel,

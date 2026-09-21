@@ -65,6 +65,7 @@ _TURN_DISPLAY_EVENTS: frozenset[str] = frozenset({
     "delta",
     "stream_end",
     "message",
+    "turn_outcome",
     "file_edit",
     "turn_end",
 })
@@ -1383,6 +1384,12 @@ def tool_trace_lines_from_events(events: Any) -> list[str]:
         tool_event = cast(dict[str, Any], event)
         if tool_event.get("phase") not in {"start", "end", "error"}:
             continue
+        activity = tool_event.get("capability_activity")
+        if isinstance(activity, dict):
+            summary = activity.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                lines.append(summary)
+                continue
         call_id = tool_event.get("call_id")
         if isinstance(call_id, str) and call_id:
             if call_id in seen:
@@ -2203,6 +2210,47 @@ def replay_transcript_to_ui_messages(
             if suppress_until_turn_end:
                 continue
             close_reasoning(messages)
+            continue
+
+        if ev == "turn_outcome":
+            text = rec.get("text")
+            if not isinstance(text, str) or not text:
+                text = "当前这一步没有完成，但对话仍可继续。"
+            close_file_edit_phase_before_activity()
+            segment = _ensure_activity_segment()
+            demote_interrupted_assistant(segment)
+            last = messages[-1] if messages else None
+            if (
+                last
+                and last.get("kind") == "trace"
+                and not last.get("isStreaming")
+                and last.get("activitySegmentId") in (None, segment)
+            ):
+                previous = [
+                    line
+                    for line in cast(list[Any], last.get("traces") or [last.get("content")])
+                    if isinstance(line, str)
+                ]
+                messages[-1] = {
+                    **last,
+                    "content": text,
+                    "traces": previous + [text],
+                    "activitySegmentId": last.get("activitySegmentId") or segment,
+                    **_turn_fields(rec, "activity"),
+                }
+            else:
+                messages.append(
+                    {
+                        "id": _new_id("tr", idx),
+                        "role": "tool",
+                        "kind": "trace",
+                        "content": text,
+                        "traces": [text],
+                        "activitySegmentId": segment,
+                        **_turn_fields(rec, "activity"),
+                        "createdAt": _created_at_ms(rec, idx),
+                    },
+                )
             continue
 
         if ev == "message":

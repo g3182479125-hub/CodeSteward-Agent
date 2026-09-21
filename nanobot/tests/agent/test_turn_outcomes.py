@@ -1,4 +1,5 @@
 from nanobot.agent.turn_outcomes import (
+    classify_exception,
     classify_turn_outcome,
     message_for_outcome,
 )
@@ -43,6 +44,23 @@ def test_unknown_side_effect_is_limited_to_querying_that_operation() -> None:
     assert outcome.retry_hint == "check_status"
     assert outcome.to_metadata()["operation_refs"] == ["run:123"]
     assert "internal_code" not in outcome.to_metadata()
+
+
+def test_unknown_side_effect_reference_wins_over_generic_driver_pause() -> None:
+    outcome = classify_turn_outcome("driver_paused", operation_refs=("run:456",))
+
+    assert outcome.category == "unknown_side_effect"
+    assert outcome.continuation == "allow_readonly"
+    assert outcome.retry_hint == "check_status"
+
+
+def test_driver_finish_is_a_completed_turn() -> None:
+    assert classify_turn_outcome("driver_finished").category == "completed"
+
+
+def test_exception_source_is_classified_without_exposing_details() -> None:
+    assert classify_exception(RuntimeError("provider timeout")) == "model_error"
+    assert classify_exception(RuntimeError("worker failed"), sender_id="subagent") == "subagent_error"
 
 
 def test_outcome_metadata_does_not_leak_internal_detail() -> None:

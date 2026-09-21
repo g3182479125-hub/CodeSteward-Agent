@@ -87,6 +87,7 @@ from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
 from nanobot.agent.turn_outcomes import (
     TURN_OUTCOME_METADATA_KEY,
     TurnOutcome,
+    classify_exception,
     classify_turn_outcome,
     message_for_outcome,
     should_replace_content,
@@ -2674,7 +2675,10 @@ class AgentLoop:
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
                         ),
-                        outcome=classify_turn_outcome("tool_error", str(exc)),
+                        outcome=classify_turn_outcome(
+                            classify_exception(exc, sender_id=msg.sender_id),
+                            str(exc),
+                        ),
                     )
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=exc)

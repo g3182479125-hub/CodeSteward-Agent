@@ -26,6 +26,7 @@ from nanobot.bus.outbound_events import (
     SessionUpdatedEvent,
     TurnEndEvent,
     TurnModelUpdatedEvent,
+    TurnOutcomeEvent,
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket.runtime import (
@@ -1646,6 +1647,63 @@ async def test_send_progress_includes_structured_tool_events() -> None:
             "embeds": [],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_turn_outcome_publishes_typed_event_before_failure_message() -> None:
+    bus = MagicMock()
+    channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
+    mock_ws = AsyncMock()
+    channel._attach(mock_ws, "chat-1")
+
+    await channel.send(OutboundMessage(
+        channel="websocket",
+        chat_id="chat-1",
+        content="这次处理没有完成，但不影响后续对话。",
+        metadata={
+            "turn_outcome": {
+                "schema_version": 1,
+                "category": "recoverable_failure",
+                "scope": "turn",
+                "message_key": "tool.failed",
+                "retry_hint": "retry_new",
+                "continuation": "allow",
+                "operation_refs": [],
+            },
+        },
+    ))
+
+    payloads = [json.loads(call.args[0]) for call in mock_ws.send.await_args_list]
+    assert [payload["event"] for payload in payloads] == ["turn_outcome", "message"]
+    assert payloads[0]["category"] == "recoverable_failure"
+    assert payloads[1]["text"] == "这次处理没有完成，但不影响后续对话。"
+
+
+@pytest.mark.asyncio
+async def test_explicit_turn_outcome_event_is_not_downgraded_to_message() -> None:
+    bus = MagicMock()
+    channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
+    mock_ws = AsyncMock()
+    channel._attach(mock_ws, "chat-1")
+
+    await channel.send(OutboundMessage(
+        channel="websocket",
+        chat_id="chat-1",
+        content="outcome",
+        event=TurnOutcomeEvent(
+            category="guard_stopped",
+            scope="turn",
+            message_key="guard.no_progress",
+            text="这一步一直没有新进展。",
+            retry_hint="change_input",
+            continuation="allow",
+            operation_refs=[],
+        ),
+    ))
+
+    payload = json.loads(mock_ws.send.await_args.args[0])
+    assert payload["event"] == "turn_outcome"
+    assert payload["text"] == "这一步一直没有新进展。"
 
 
 @pytest.mark.asyncio

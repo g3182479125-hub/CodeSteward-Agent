@@ -393,6 +393,27 @@ def test_replay_delta_and_turn_end(tmp_path, monkeypatch) -> None:
     assert msgs[1]["latencyMs"] == 42
 
 
+def test_replay_turn_outcome_keeps_recoverable_activity() -> None:
+    msgs = replay_transcript_to_ui_messages([
+        {"event": "user", "chat_id": "outcome", "text": "检查项目"},
+        {
+            "event": "turn_outcome",
+            "chat_id": "outcome",
+            "turn_id": "turn-1",
+            "text": "这一步没有完成，但对话仍可继续。",
+            "category": "recoverable_failure",
+            "retry_hint": "retry_new",
+        },
+        {"event": "turn_end", "chat_id": "outcome", "turn_id": "turn-1"},
+    ])
+
+    assert len(msgs) == 2
+    assert msgs[1]["role"] == "tool"
+    assert msgs[1]["kind"] == "trace"
+    assert msgs[1]["content"] == "这一步没有完成，但对话仍可继续。"
+    assert msgs[1]["turnPhase"] == "activity"
+
+
 def test_replay_uses_persisted_created_at_ms() -> None:
     msgs = replay_transcript_to_ui_messages(
         [

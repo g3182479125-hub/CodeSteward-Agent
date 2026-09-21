@@ -1596,7 +1596,11 @@ class WebSocketChannel(BaseChannel):
         }
         event = outbound_event_from_message(msg)
         outcome = msg.metadata.get("turn_outcome")
-        if isinstance(outcome, dict) and outcome.get("category") != "completed":
+        if isinstance(event, TurnOutcomeEvent):
+            await self._send_turn_outcome(msg.chat_id, event, transcript_metadata)
+            if msg.event is not None:
+                return
+        elif isinstance(outcome, dict) and outcome.get("category") != "completed":
             turn_id = msg.metadata.get(WEBUI_TURN_METADATA_KEY)
             outcome_event = TurnOutcomeEvent(
                 category=str(outcome.get("category", "recoverable_failure")),
@@ -1778,12 +1782,15 @@ class WebSocketChannel(BaseChannel):
         }
         if event.turn_id is not None:
             payload["turn_id"] = event.turn_id
-        self._persist_turn_transcript_event(
+        persisted = self._persist_turn_transcript_event(
             chat_id,
             payload,
             metadata=metadata,
             phase="activity",
         )
+        if not persisted:
+            self.logger.warning("turn outcome transcript persistence failed for chat_id={}", chat_id)
+            return
         raw = json.dumps(payload, ensure_ascii=False)
         conns = list(self._subs.get(chat_id, ()))
         for connection in conns:
