@@ -74,7 +74,12 @@ from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
 from .paths import AllowedRoots, PathBoundaryError
 from .services import ProjectAnalysisService
-from .skill_improvement import SkillImprovementError, SkillImprovementStore, task_snapshot_ref
+from .skill_improvement import (
+    SkillImprovementError,
+    SkillImprovementStore,
+    skill_improvement_target,
+    task_snapshot_ref,
+)
 from .storage import ProjectStore
 from .user_intent import capability_confirmation_matches, confirmation_matches
 
@@ -2139,7 +2144,7 @@ class SkillFeedbackTool(Tool):
     }
 )
 class SkillCandidateTool(Tool):
-    """Create an inactive bug-fix Skill candidate in private storage."""
+    """Create an inactive registered-target Skill candidate in private storage."""
 
     _scopes = {"core", "memory"}
 
@@ -2161,7 +2166,7 @@ class SkillCandidateTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Create a pending candidate for the bug-fix Skill from verified evidence. "
+            "Create a pending candidate for the selected registered Skill from verified evidence. "
             "The candidate is private, is not loaded by nanobot, and cannot activate itself."
         )
 
@@ -2186,7 +2191,7 @@ class SkillCandidateTool(Tool):
             if not isinstance(trusted_project_id, str) or not isinstance(
                 trusted_task_id, str
             ):
-                raise SkillImprovementError("candidate is outside a trusted bug-fix task")
+                raise SkillImprovementError("candidate is outside a trusted DevPilot task")
             if str(kwargs["project_id"]) != trusted_project_id:
                 raise SkillImprovementError("project_id does not match the trusted project")
             requested_batch_id = kwargs.get("batch_id")
@@ -2221,6 +2226,7 @@ class SkillCandidateTool(Tool):
                         "scheduled candidate evidence does not match the claimed batch"
                     )
                 trusted_skill_id = request_context.attributes.get("devpilot_skill_id")
+                target = skill_improvement_target(str(trusted_skill_id))
                 allowed_case_ids = {
                     value
                     for value in request_context.attributes.get(
@@ -2234,10 +2240,6 @@ class SkillCandidateTool(Tool):
                 if allowed_case_ids and requested_case_ids != allowed_case_ids:
                     raise SkillImprovementError(
                         "scheduled candidate Case does not match the claimed batch"
-                    )
-                if allowed_case_ids and trusted_skill_id != "bug-fix":
-                    raise SkillImprovementError(
-                        "this candidate tool does not yet support the selected Skill target"
                     )
                 owner = request_context.attributes.get("devpilot_batch_owner")
                 if not isinstance(owner, str) or not owner:
@@ -2260,7 +2262,11 @@ class SkillCandidateTool(Tool):
             candidate = store.create_candidate(
                 user_id=request_context.sender_id,
                 project_id=str(kwargs["project_id"]),
-                skill_path="skills/bug-fix/SKILL.md",
+                skill_path=(
+                    target.skill_path
+                    if isinstance(scheduled_batch_id, str) and scheduled_batch_id
+                    else "skills/bug-fix/SKILL.md"
+                ),
                 baseline_content=str(kwargs["baseline_content"]),
                 candidate_content=str(kwargs["candidate_content"]),
                 evidence_ids=kwargs["evidence_ids"],

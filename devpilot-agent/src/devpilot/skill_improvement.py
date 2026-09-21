@@ -152,9 +152,7 @@ SKILL_IMPROVEMENT_TARGETS = {
         grader_kind="bug_fix_verification",
     ),
 }
-# SI-05 owns Case selection and persistence.  Candidate generation remains the
-# bug-fix-only P8 implementation until SI-06 generalizes the candidate tool.
-_SCHEDULED_CANDIDATE_TARGETS = frozenset({TRIAL_SKILL_ID})
+_SCHEDULED_CANDIDATE_TARGETS = frozenset(SKILL_IMPROVEMENT_TARGETS)
 
 
 def skill_improvement_target(skill_id: str) -> SkillImprovementTarget:
@@ -2873,8 +2871,18 @@ class SkillImprovementStore:
         budget: Mapping[str, Any] | None = None,
         workspace: str | Path,
     ) -> SkillCandidate:
-        if skill_path.replace("\\", "/") != TRIAL_SKILL_RELATIVE_PATH:
-            raise SkillImprovementError("candidate path must be the bug-fix Skill")
+        normalized_skill_path = skill_path.replace("\\", "/")
+        target_skill_id = next(
+            (
+                target.skill_id
+                for target in SKILL_IMPROVEMENT_TARGETS.values()
+                if target.skill_path == normalized_skill_path
+            ),
+            None,
+        )
+        if target_skill_id is None:
+            raise SkillImprovementError("candidate path is not a registered Skill target")
+        target = skill_improvement_target(target_skill_id)
         ids = _refs(evidence_ids)
         case_values = _refs(case_ids)
         if not ids:
@@ -2883,7 +2891,7 @@ class SkillImprovementStore:
         if any(item is None or item.processing_state != "verified" for item in evidence):
             raise SkillImprovementError("all candidate evidence must be verified")
         workspace_value = str(Path(workspace).expanduser().resolve())
-        effective = self.read_effective_snapshot(workspace)
+        effective = self.read_effective_snapshot(workspace, skill_id=target_skill_id)
         if content_sha256(baseline_content) != effective.content_hash:
             raise SkillImprovementError("candidate baseline does not match effective Skill")
         if any(
@@ -2913,7 +2921,7 @@ class SkillImprovementStore:
         if any(
             item is not None
             and (
-                item.skill_id != TRIAL_SKILL_ID
+                item.skill_id != target_skill_id
                 or item.workspace != workspace_value
                 or item.project_id != project_id
                 or item.user_id != requester
@@ -2945,10 +2953,10 @@ class SkillImprovementStore:
                 raise SkillImprovementError("candidate batch limit is three")
             candidate = SkillCandidate(
                 candidate_id=f"candidate-{uuid.uuid4()}",
-                skill_id=TRIAL_SKILL_ID,
+                skill_id=target_skill_id,
                 project_id=_bounded_text(project_id, field="project_id", limit=128),
                 workspace=workspace_value,
-                skill_path=TRIAL_SKILL_RELATIVE_PATH,
+                skill_path=target.skill_path,
                 base_version_hash=content_sha256(baseline_content),
                 candidate_content=candidate_content,
                 candidate_hash=content_sha256(candidate_content),

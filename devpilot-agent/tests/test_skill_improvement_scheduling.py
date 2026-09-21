@@ -168,25 +168,24 @@ def test_new_batch_claims_one_eligible_case_from_three_profile_targets(
     assert claim is not None
     assert claim.status == "claimed"
     assert claim.case is not None
-    assert claim.case.case_id == cases[2].case_id
-    assert claim.case.skill_id == "bug-fix"
-    assert claim.batch.claimed_case_ids == (cases[2].case_id,)
-    assert len(claim.evidence) == 2
-    assert store.get_improvement_case(cases[2].case_id).status == "claimed"
+    assert claim.case.case_id == cases[0].case_id
+    assert claim.case.skill_id == "repo-analysis"
+    assert claim.batch.claimed_case_ids == (cases[0].case_id,)
+    assert len(claim.evidence) == 1
+    assert store.get_improvement_case(cases[0].case_id).status == "claimed"
 
 
-def test_new_batch_does_not_claim_profiles_before_si06_candidate_support(
+def test_new_batch_can_bind_non_bug_fix_case_to_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, workspace = _store(tmp_path)
     _replayable_snapshots(store, workspace, monkeypatch)
     monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
     monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
-    _create_case(store, workspace, "repo-analysis", "unsupported-repo")
-    _create_case(store, workspace, "feature-delivery", "unsupported-feature")
+    case = _create_case(store, workspace, "repo-analysis", "candidate-repo")
     store.configure_scheduled_batch(
         batch_id="batch-66666666-6666-6666-6666-666666666666",
-        job_id="cron-si06-gate",
+        job_id="cron-non-bug-candidate",
         workspace=workspace,
         project_id="project-1",
         user_id="user-1",
@@ -194,15 +193,27 @@ def test_new_batch_does_not_claim_profiles_before_si06_candidate_support(
         target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
     )
 
-    claim = store.claim_scheduled_batch("cron-si06-gate", lease_owner="owner-1")
+    claim = store.claim_scheduled_batch("cron-non-bug-candidate", lease_owner="owner-1")
 
-    assert claim is not None
-    assert claim.status == "no_new_evidence"
-    assert claim.case is None
-    assert all(
-        case.status == "eligible"
-        for case in store.list_improvement_cases(project_id="project-1")
+    assert claim is not None and claim.case is not None
+    assert claim.case.case_id == case.case_id
+    baseline = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+    candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-1",
+        skill_path="skills/repo-analysis/SKILL.md",
+        baseline_content=baseline.content,
+        candidate_content=baseline.content + "\n- Verify the requested fact.\n",
+        evidence_ids=tuple(item.evidence_id for item in claim.evidence),
+        case_ids=(case.case_id,),
+        reason="verify the requested fact",
+        expected_behavior="the requested fact is verified",
+        test_set_version="p8-02-v1",
+        batch_id="batch-66666666-6666-6666-6666-666666666666",
+        workspace=workspace,
     )
+    assert candidate.skill_id == "repo-analysis"
+    assert candidate.skill_path == "skills/repo-analysis/SKILL.md"
 
 
 def test_new_batch_has_no_model_claim_when_only_legacy_feedback_exists(
@@ -486,9 +497,9 @@ def test_completed_case_advances_profile_rotation_before_next_claim(
     )
     assert finished.last_selected_skill_id == "bug-fix"
 
-    next_case = _create_case(store, workspace, "bug-fix", "rotation-next")
+    next_case = _create_case(store, workspace, "feature-delivery", "rotation-next")
     second_claim = store.claim_scheduled_batch("cron-rotation", lease_owner="owner-2")
 
     assert second_claim is not None and second_claim.case is not None
     assert second_claim.case.case_id == next_case.case_id
-    assert second_claim.case.skill_id == "bug-fix"
+    assert second_claim.case.skill_id == "feature-delivery"
