@@ -30,6 +30,12 @@ from .redaction import redact_sensitive_payload
 
 TRIAL_SKILL_ID = "bug-fix"
 TRIAL_SKILL_RELATIVE_PATH = "skills/bug-fix/SKILL.md"
+IMPROVEMENT_CASE_STATES = frozenset(
+    {"eligible", "claimed", "not_replayable", "evaluated", "ignored"}
+)
+REPLAY_TRIAL_STATUSES = frozenset(
+    {"passed", "failed", "timeout", "cancelled", "infrastructure_error"}
+)
 FEEDBACK_SOURCE_TYPES = frozenset(
     {"user_feedback", "tool_result", "model_inference", "external_content"}
 )
@@ -72,6 +78,57 @@ EVALUATION_REPEATS = 3
 EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(r"^(run|tool|trace|session|test)-[A-Za-z0-9_.:-]{1,127}$")
+
+
+@dataclass(frozen=True)
+class SkillImprovementTarget:
+    """Developer-owned mapping from a task profile to its improveable Skill."""
+
+    skill_id: str
+    profile_name: str
+    profile_version: str
+    allowed_trigger_types: frozenset[str]
+    grader_kind: str
+
+    @property
+    def profile_binding(self) -> str:
+        return f"{self.profile_name}@{self.profile_version}"
+
+    @property
+    def skill_path(self) -> str:
+        return f"skills/{self.skill_id}/SKILL.md"
+
+
+SKILL_IMPROVEMENT_TARGETS = {
+    "repo-analysis": SkillImprovementTarget(
+        skill_id="repo-analysis",
+        profile_name="repo-analysis",
+        profile_version="1",
+        allowed_trigger_types=frozenset({"user_confirmed_missing_fact"}),
+        grader_kind="analysis_fact",
+    ),
+    "feature-delivery": SkillImprovementTarget(
+        skill_id="feature-delivery",
+        profile_name="feature-delivery",
+        profile_version="2",
+        allowed_trigger_types=frozenset({"trusted_verification_failed"}),
+        grader_kind="delivery_verification",
+    ),
+    "bug-fix": SkillImprovementTarget(
+        skill_id="bug-fix",
+        profile_name="bug-fix",
+        profile_version="1",
+        allowed_trigger_types=frozenset({"trusted_verification_failed"}),
+        grader_kind="bug_fix_verification",
+    ),
+}
+
+
+def skill_improvement_target(skill_id: str) -> SkillImprovementTarget:
+    try:
+        return SKILL_IMPROVEMENT_TARGETS[skill_id]
+    except KeyError as exc:
+        raise SkillImprovementError(f"unsupported Skill improvement target: {skill_id}") from exc
 
 
 def integrity_key_path_for_data_dir(data_dir: str | Path) -> Path:
@@ -180,6 +237,96 @@ class FeedbackEvidence:
 
 
 @dataclass(frozen=True)
+class ImprovementCase:
+    """Trusted, immutable unit selected by future Skill-improvement batches."""
+
+    case_id: str
+    skill_id: str
+    profile_binding: str
+    origin_run_id: str
+    task_id: str
+    project_id: str
+    workspace: str
+    user_id: str
+    session_id: str
+    base_skill_hash: str
+    trigger_type: str
+    trigger_summary: str
+    expected_behavior: str
+    evidence_refs: tuple[str, ...]
+    replay_snapshot_ref: str | None
+    assertion_spec: dict[str, object]
+    status: str
+    selected_batch_id: str | None
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "skill_id": self.skill_id,
+            "profile_binding": self.profile_binding,
+            "origin_run_id": self.origin_run_id,
+            "task_id": self.task_id,
+            "project_id": self.project_id,
+            "workspace": self.workspace,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "base_skill_hash": self.base_skill_hash,
+            "trigger_type": self.trigger_type,
+            "trigger_summary": self.trigger_summary,
+            "expected_behavior": self.expected_behavior,
+            "evidence_refs": list(self.evidence_refs),
+            "replay_snapshot_ref": self.replay_snapshot_ref,
+            "assertion_spec": dict(self.assertion_spec),
+            "status": self.status,
+            "selected_batch_id": self.selected_batch_id,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True)
+class ReplayTrial:
+    """Append-only trusted evaluation result for one ImprovementCase."""
+
+    trial_id: str
+    case_id: str
+    skill_id: str
+    skill_hash: str
+    version: str
+    model_id: str
+    parameters: dict[str, object]
+    snapshot_ref: str
+    started_at: str
+    finished_at: str
+    token_count: int
+    duration_seconds: float
+    tool_trace_ref: str
+    final_output_ref: str
+    assertion_result: dict[str, object]
+    status: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "trial_id": self.trial_id,
+            "case_id": self.case_id,
+            "skill_id": self.skill_id,
+            "skill_hash": self.skill_hash,
+            "version": self.version,
+            "model_id": self.model_id,
+            "parameters": dict(self.parameters),
+            "snapshot_ref": self.snapshot_ref,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "token_count": self.token_count,
+            "duration_seconds": self.duration_seconds,
+            "tool_trace_ref": self.tool_trace_ref,
+            "final_output_ref": self.final_output_ref,
+            "assertion_result": dict(self.assertion_result),
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
 class SkillCandidate:
     candidate_id: str
     skill_id: str
@@ -201,6 +348,7 @@ class SkillCandidate:
     user_id: str = ""
     session_ids: tuple[str, ...] = ()
     task_ids: tuple[str, ...] = ()
+    case_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,6 +372,7 @@ class SkillCandidate:
             "user_id": self.user_id,
             "session_ids": list(self.session_ids),
             "task_ids": list(self.task_ids),
+            "case_ids": list(self.case_ids),
         }
 
 
@@ -261,6 +410,9 @@ class EvaluationReport:
     eligible: bool
     status: str
     created_at: str
+    case_id: str | None = None
+    baseline_trial_id: str | None = None
+    candidate_trial_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -279,6 +431,9 @@ class EvaluationReport:
             "eligible": self.eligible,
             "status": self.status,
             "created_at": self.created_at,
+            "case_id": self.case_id,
+            "baseline_trial_id": self.baseline_trial_id,
+            "candidate_trial_id": self.candidate_trial_id,
         }
 
 
@@ -524,6 +679,8 @@ class SkillImprovementStore:
         self.evaluations_dir = self.root / "evaluations"
         self.confirmations_dir = self.root / "confirmations"
         self.snapshots_dir = self.root / "task-snapshots"
+        self.cases_dir = self.root / "improvement-cases"
+        self.replay_trials_dir = self.root / "replay-trials"
         self.activations_file = self.root / "activations.jsonl"
         self.process_lock_file = self.root / "skill-improvement.lock"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -619,6 +776,8 @@ class SkillImprovementStore:
             "evaluations": "evaluation",
             "confirmations": "confirmation",
             "task-snapshots": "snapshot",
+            "improvement-cases": "improvement_case",
+            "replay-trials": "replay_trial",
         }.get(namespace, "generic"), path.stem
 
     @classmethod
@@ -847,6 +1006,247 @@ class SkillImprovementStore:
                 continue
             records.append(evidence)
         return sorted(records, key=lambda item: (item.occurred_at, item.evidence_id))
+
+    def create_improvement_case(
+        self,
+        *,
+        skill_id: str,
+        profile_binding: str,
+        origin_run_id: str,
+        task_id: str,
+        project_id: str,
+        workspace: str | Path,
+        user_id: str,
+        session_id: str,
+        base_skill_hash: str,
+        trigger_type: str,
+        trigger_summary: str,
+        expected_behavior: str,
+        evidence_refs: object = (),
+        replay_snapshot_ref: str | None = None,
+        assertion_spec: Mapping[str, object] | None = None,
+        status: str = "eligible",
+        selected_batch_id: str | None = None,
+    ) -> ImprovementCase:
+        """Persist one server-validated case without invoking a model."""
+        target = skill_improvement_target(skill_id)
+        if profile_binding != target.profile_binding:
+            raise SkillImprovementError("improvement case profile binding does not match target")
+        if trigger_type not in target.allowed_trigger_types:
+            raise SkillImprovementError("trigger type is not allowed for this Skill target")
+        if status not in IMPROVEMENT_CASE_STATES:
+            raise SkillImprovementError("invalid improvement case status")
+        if not _is_sha256(base_skill_hash):
+            raise SkillImprovementError("base_skill_hash must be a SHA-256 digest")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        if self.workspace is not None and workspace_value != str(self.workspace):
+            raise SkillImprovementError("improvement case workspace does not match the store")
+        effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
+        if effective.content_hash != base_skill_hash:
+            raise SkillImprovementError("improvement case baseline does not match effective Skill")
+        origin_value = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
+        task_value = _bounded_text(task_id, field="task_id", limit=128)
+        project_value = _bounded_text(project_id, field="project_id", limit=128)
+        user_value = _bounded_text(user_id, field="user_id", limit=128)
+        session_value = _bounded_text(session_id, field="session_id", limit=128)
+        refs = _refs(evidence_refs)
+        for ref in refs:
+            if not _EVIDENCE_REF_RE.match(ref):
+                raise SkillImprovementError("evidence references must be traceable IDs")
+        summary = _bounded_text(trigger_summary, field="trigger_summary")
+        expected = _bounded_text(expected_behavior, field="expected_behavior")
+        snapshot_ref = (
+            _bounded_text(replay_snapshot_ref, field="replay_snapshot_ref", limit=256)
+            if replay_snapshot_ref is not None
+            else None
+        )
+        assertion = _json_safe(assertion_spec or {})
+
+        with self._lock:
+            existing = next(
+                (
+                    item
+                    for item in self.list_improvement_cases(
+                        workspace=workspace_value,
+                        project_id=project_value,
+                    )
+                    if item.skill_id == skill_id
+                    and item.origin_run_id == origin_value
+                    and item.task_id == task_value
+                    and item.user_id == user_value
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
+            case = ImprovementCase(
+                case_id=f"case-{uuid.uuid4()}",
+                skill_id=skill_id,
+                profile_binding=profile_binding,
+                origin_run_id=origin_value,
+                task_id=task_value,
+                project_id=project_value,
+                workspace=workspace_value,
+                user_id=user_value,
+                session_id=session_value,
+                base_skill_hash=base_skill_hash.lower(),
+                trigger_type=trigger_type,
+                trigger_summary=summary,
+                expected_behavior=expected,
+                evidence_refs=refs,
+                replay_snapshot_ref=snapshot_ref,
+                assertion_spec=assertion,
+                status=status,
+                selected_batch_id=(
+                    _bounded_text(selected_batch_id, field="selected_batch_id", limit=128)
+                    if selected_batch_id is not None
+                    else None
+                ),
+                created_at=_now(),
+            )
+            self._atomic_write(self.cases_dir / f"{case.case_id}.json", case.to_dict())
+            return case
+
+    def get_improvement_case(
+        self,
+        case_id: str,
+        *,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        user_id: str | None = None,
+    ) -> ImprovementCase | None:
+        if not _record_id_matches(case_id, "case"):
+            return None
+        path = self.cases_dir / f"{case_id}.json"
+        if not self._record_exists("improvement_case", case_id):
+            return None
+        raw = self._read_object(path, "improvement case")
+        case = _improvement_case_from_dict(raw)
+        if workspace is not None and case.workspace != str(Path(workspace).expanduser().resolve()):
+            return None
+        if project_id is not None and case.project_id != _bounded_text(
+            project_id, field="project_id", limit=128
+        ):
+            return None
+        if user_id is not None and case.user_id != _bounded_text(
+            user_id, field="user_id", limit=128
+        ):
+            return None
+        return case
+
+    def list_improvement_cases(
+        self,
+        *,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        skill_id: str | None = None,
+        status: str | None = None,
+    ) -> list[ImprovementCase]:
+        workspace_value = (
+            str(Path(workspace).expanduser().resolve()) if workspace is not None else None
+        )
+        cases: list[ImprovementCase] = []
+        for raw in self._record_rows("improvement_case"):
+            case = _improvement_case_from_dict(raw)
+            if workspace_value is not None and case.workspace != workspace_value:
+                continue
+            if project_id is not None and case.project_id != project_id:
+                continue
+            if user_id is not None and case.user_id != user_id:
+                continue
+            if skill_id is not None and case.skill_id != skill_id:
+                continue
+            if status is not None and case.status != status:
+                continue
+            cases.append(case)
+        return sorted(cases, key=lambda item: (item.created_at, item.case_id))
+
+    def record_replay_trial(
+        self,
+        *,
+        case_id: str,
+        skill_id: str,
+        skill_hash: str,
+        version: str,
+        model_id: str,
+        parameters: Mapping[str, object] | None,
+        snapshot_ref: str,
+        started_at: str,
+        finished_at: str,
+        token_count: int,
+        duration_seconds: float,
+        tool_trace_ref: str,
+        final_output_ref: str,
+        assertion_result: Mapping[str, object] | None,
+        status: str,
+        trial_id: str | None = None,
+    ) -> ReplayTrial:
+        """Append one immutable replay result bound to an existing case."""
+        case = self.get_improvement_case(case_id)
+        if case is None:
+            raise SkillImprovementError("replay trial case was not found")
+        if case.skill_id != skill_id:
+            raise SkillImprovementError("replay trial Skill does not match its case")
+        if not _is_sha256(skill_hash):
+            raise SkillImprovementError("skill_hash must be a SHA-256 digest")
+        if version not in {"baseline", "candidate"}:
+            raise SkillImprovementError("replay trial version must be baseline or candidate")
+        if status not in REPLAY_TRIAL_STATUSES:
+            raise SkillImprovementError("invalid replay trial status")
+        if not isinstance(token_count, int) or token_count < 0:
+            raise SkillImprovementError("token_count must be a non-negative integer")
+        if not isinstance(duration_seconds, (int, float)) or duration_seconds < 0:
+            raise SkillImprovementError("duration_seconds must be non-negative")
+        trial_value = (
+            _bounded_text(trial_id, field="trial_id", limit=128)
+            if trial_id is not None
+            else f"trial-{uuid.uuid4()}"
+        )
+        trial = ReplayTrial(
+            trial_id=trial_value,
+            case_id=case_id,
+            skill_id=skill_id,
+            skill_hash=skill_hash.lower(),
+            version=version,
+            model_id=_bounded_text(model_id, field="model_id", limit=128),
+            parameters=_json_safe(parameters or {}),
+            snapshot_ref=_bounded_text(snapshot_ref, field="snapshot_ref", limit=256),
+            started_at=_bounded_text(started_at, field="started_at", limit=64),
+            finished_at=_bounded_text(finished_at, field="finished_at", limit=64),
+            token_count=token_count,
+            duration_seconds=float(duration_seconds),
+            tool_trace_ref=_bounded_text(tool_trace_ref, field="tool_trace_ref", limit=256),
+            final_output_ref=_bounded_text(final_output_ref, field="final_output_ref", limit=256),
+            assertion_result=_json_safe(assertion_result or {}),
+            status=status,
+        )
+        with self._lock:
+            if self._record_exists("replay_trial", trial.trial_id):
+                raise SkillImprovementError("replay trial ID already exists")
+            self._atomic_write(
+                self.replay_trials_dir / f"{trial.trial_id}.json", trial.to_dict()
+            )
+        return trial
+
+    def get_replay_trial(self, trial_id: str) -> ReplayTrial | None:
+        if not _record_id_matches(trial_id, "trial"):
+            return None
+        if not self._record_exists("replay_trial", trial_id):
+            return None
+        raw = self._read_object(
+            self.replay_trials_dir / f"{trial_id}.json", "replay trial"
+        )
+        return _replay_trial_from_dict(raw)
+
+    def list_replay_trials(self, *, case_id: str | None = None) -> list[ReplayTrial]:
+        trials = [
+            _replay_trial_from_dict(raw)
+            for raw in self._record_rows("replay_trial")
+        ]
+        if case_id is not None:
+            trials = [item for item in trials if item.case_id == case_id]
+        return sorted(trials, key=lambda item: (item.started_at, item.trial_id))
 
     def configure_scheduled_batch(
         self,
@@ -1281,6 +1681,7 @@ class SkillImprovementStore:
         baseline_content: str,
         candidate_content: str,
         evidence_ids: object,
+        case_ids: object = (),
         reason: str,
         expected_behavior: str,
         test_set_version: str,
@@ -1291,6 +1692,7 @@ class SkillImprovementStore:
         if skill_path.replace("\\", "/") != TRIAL_SKILL_RELATIVE_PATH:
             raise SkillImprovementError("candidate path must be the bug-fix Skill")
         ids = _refs(evidence_ids)
+        case_values = _refs(case_ids)
         if not ids:
             raise SkillImprovementError("at least one verified evidence ID is required")
         evidence = [self.get_feedback(item) for item in ids]
@@ -1318,6 +1720,22 @@ class SkillImprovementStore:
         projects = {item.project_id for item in evidence if item is not None}
         if projects != {project_id}:
             raise SkillImprovementError("candidate evidence must belong to one project")
+        cases = [self.get_improvement_case(item) for item in case_values]
+        if any(item is None for item in cases):
+            raise SkillImprovementError("candidate case was not found")
+        requester = _bounded_text(user_id, field="user_id", limit=128)
+        if any(
+            item is not None
+            and (
+                item.skill_id != TRIAL_SKILL_ID
+                or item.workspace != workspace_value
+                or item.project_id != project_id
+                or item.user_id != requester
+                or item.base_skill_hash != effective.content_hash
+            )
+            for item in cases
+        ):
+            raise SkillImprovementError("candidate case binding does not match the candidate")
         if content_sha256(baseline_content) == content_sha256(candidate_content):
             raise SkillImprovementError("candidate content must differ from its baseline")
         if _frontmatter(candidate_content) != _frontmatter(baseline_content):
@@ -1360,6 +1778,7 @@ class SkillImprovementStore:
                 task_ids=tuple(
                     sorted({item.task_id for item in evidence if item is not None})
                 ),
+                case_ids=case_values,
             )
             self._atomic_write(
                 self.candidates_dir / f"{candidate.candidate_id}.json", candidate.to_dict()
@@ -1401,6 +1820,7 @@ class SkillImprovementStore:
             user_id=str(raw.get("user_id") or ""),
             session_ids=_refs(raw.get("session_ids")),
             task_ids=_refs(raw.get("task_ids")),
+            case_ids=_refs(raw.get("case_ids")),
         )
         if content_sha256(candidate.candidate_content) != candidate.candidate_hash:
             raise SkillImprovementError("candidate content hash mismatch")
@@ -1447,23 +1867,29 @@ class SkillImprovementStore:
                 candidates.append(candidate)
         return candidates
 
-    def read_effective_snapshot(self, workspace: str | Path) -> SkillSnapshot:
-        """Read the only trusted on-disk version of the trial Skill."""
+    def read_effective_snapshot(
+        self,
+        workspace: str | Path,
+        *,
+        skill_id: str = TRIAL_SKILL_ID,
+    ) -> SkillSnapshot:
+        """Read the only trusted on-disk version of one registered Skill."""
+        target = skill_improvement_target(skill_id)
         root = Path(workspace).expanduser().resolve()
-        lexical_path = root / TRIAL_SKILL_RELATIVE_PATH
+        lexical_path = root / target.skill_path
         if lexical_path.parent.is_symlink() or lexical_path.is_symlink():
-            raise SkillImprovementError("effective bug-fix Skill cannot be a symlink")
+            raise SkillImprovementError(f"effective {skill_id} Skill cannot be a symlink")
         path = lexical_path.resolve()
-        expected = root / TRIAL_SKILL_RELATIVE_PATH
+        expected = root / target.skill_path
         if path != expected or not path.is_file():
-            raise SkillImprovementError("effective bug-fix Skill is unavailable")
+            raise SkillImprovementError(f"effective {skill_id} Skill is unavailable")
         try:
             content = path.read_text(encoding="utf-8")
         except OSError as exc:
-            raise SkillImprovementError("effective bug-fix Skill is unreadable") from exc
+            raise SkillImprovementError(f"effective {skill_id} Skill is unreadable") from exc
         return SkillSnapshot(
-            skill_id=TRIAL_SKILL_ID,
-            skill_path=TRIAL_SKILL_RELATIVE_PATH,
+            skill_id=skill_id,
+            skill_path=target.skill_path,
             content=content,
             content_hash=content_sha256(content),
             captured_at=_now(),
@@ -1476,6 +1902,7 @@ class SkillImprovementStore:
         workspace: str | Path,
         session_id: str,
         project_id: str,
+        skill_id: str = TRIAL_SKILL_ID,
     ) -> SkillSnapshot:
         """Pin the first effective version for a task; never silently refresh it."""
         task_key = content_sha256(_bounded_text(task_id, field="task_id", limit=128))
@@ -1489,13 +1916,14 @@ class SkillImprovementStore:
                 raw = self._read_object(path, "task snapshot")
                 if (
                     raw.get("task_id") != task_value
+                    or raw.get("skill_id") != skill_id
                     or raw.get("session_id") != session_value
                     or raw.get("project_id") != project_value
                     or raw.get("workspace") != workspace_value
                 ):
                     raise SkillImprovementError("task snapshot binding mismatch")
                 return self._snapshot_from_dict(raw)
-            effective = self.read_effective_snapshot(workspace)
+            effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
             snapshot = SkillSnapshot(
                 **self._snapshot_to_dict(effective),
                 task_id=task_value,
@@ -1658,6 +2086,17 @@ class SkillImprovementStore:
             eligible=bool(raw["eligible"]),
             status=str(raw["status"]),
             created_at=str(raw["created_at"]),
+            case_id=raw.get("case_id") if isinstance(raw.get("case_id"), str) else None,
+            baseline_trial_id=(
+                raw.get("baseline_trial_id")
+                if isinstance(raw.get("baseline_trial_id"), str)
+                else None
+            ),
+            candidate_trial_id=(
+                raw.get("candidate_trial_id")
+                if isinstance(raw.get("candidate_trial_id"), str)
+                else None
+            ),
         )
         expected_ids = {
             f"{category}:{version}:{repeat}"
@@ -2360,6 +2799,84 @@ def _category_successes(cases: list[dict[str, Any]], version: str) -> dict[str, 
         )
         for category in EVALUATION_CATEGORIES
     }
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        char in "0123456789abcdefABCDEF" for char in value
+    )
+
+
+def _improvement_case_from_dict(raw: Mapping[str, Any]) -> ImprovementCase:
+    status = str(raw.get("status", "eligible"))
+    if status not in IMPROVEMENT_CASE_STATES:
+        raise SkillImprovementError("invalid improvement case status")
+    skill_id = str(raw["skill_id"])
+    target = skill_improvement_target(skill_id)
+    if str(raw["profile_binding"]) != target.profile_binding:
+        raise SkillImprovementError("improvement case profile binding does not match target")
+    base_hash = str(raw["base_skill_hash"])
+    if not _is_sha256(base_hash):
+        raise SkillImprovementError("improvement case baseline hash is invalid")
+    return ImprovementCase(
+        case_id=str(raw["case_id"]),
+        skill_id=skill_id,
+        profile_binding=str(raw["profile_binding"]),
+        origin_run_id=str(raw["origin_run_id"]),
+        task_id=str(raw["task_id"]),
+        project_id=str(raw["project_id"]),
+        workspace=str(raw["workspace"]),
+        user_id=str(raw["user_id"]),
+        session_id=str(raw["session_id"]),
+        base_skill_hash=base_hash.lower(),
+        trigger_type=str(raw["trigger_type"]),
+        trigger_summary=str(raw["trigger_summary"]),
+        expected_behavior=str(raw["expected_behavior"]),
+        evidence_refs=_refs(raw.get("evidence_refs")),
+        replay_snapshot_ref=(
+            str(raw["replay_snapshot_ref"])
+            if isinstance(raw.get("replay_snapshot_ref"), str)
+            else None
+        ),
+        assertion_spec=dict(raw.get("assertion_spec") or {}),
+        status=status,
+        selected_batch_id=(
+            str(raw["selected_batch_id"])
+            if isinstance(raw.get("selected_batch_id"), str)
+            else None
+        ),
+        created_at=str(raw["created_at"]),
+    )
+
+
+def _replay_trial_from_dict(raw: Mapping[str, Any]) -> ReplayTrial:
+    status = str(raw["status"])
+    if status not in REPLAY_TRIAL_STATUSES:
+        raise SkillImprovementError("invalid replay trial status")
+    skill_hash = str(raw["skill_hash"])
+    if not _is_sha256(skill_hash):
+        raise SkillImprovementError("replay trial Skill hash is invalid")
+    version = str(raw["version"])
+    if version not in {"baseline", "candidate"}:
+        raise SkillImprovementError("replay trial version must be baseline or candidate")
+    return ReplayTrial(
+        trial_id=str(raw["trial_id"]),
+        case_id=str(raw["case_id"]),
+        skill_id=str(raw["skill_id"]),
+        skill_hash=skill_hash.lower(),
+        version=version,
+        model_id=str(raw["model_id"]),
+        parameters=dict(raw.get("parameters") or {}),
+        snapshot_ref=str(raw["snapshot_ref"]),
+        started_at=str(raw["started_at"]),
+        finished_at=str(raw["finished_at"]),
+        token_count=int(raw["token_count"]),
+        duration_seconds=float(raw["duration_seconds"]),
+        tool_trace_ref=str(raw["tool_trace_ref"]),
+        final_output_ref=str(raw["final_output_ref"]),
+        assertion_result=dict(raw.get("assertion_result") or {}),
+        status=status,
+    )
 
 
 def _record_id_matches(value: str, prefix: str) -> bool:
