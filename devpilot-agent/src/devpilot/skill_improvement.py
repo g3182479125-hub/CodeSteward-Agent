@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2344,13 +2344,20 @@ class SkillImprovementStore:
         job_id: str,
         *,
         lease_owner: str,
+        lock_held: bool = False,
     ) -> ScheduledBatchClaim | None:
         """Atomically claim new verified evidence before any model invocation."""
         owner = _bounded_text(lease_owner, field="lease_owner", limit=128)
-        with self._lock, self._process_lock():
+        lock_context = nullcontext() if lock_held else self._lock
+        process_context = nullcontext() if lock_held else self._process_lock()
+        with lock_context, process_context:
             batch = self.get_scheduled_batch_for_job(job_id)
             if batch is None:
                 return None
+            if batch.target_skill_ids != (TRIAL_SKILL_ID,):
+                raise SkillImprovementError(
+                    "scheduled batch configuration changed; retry the claim"
+                )
             if not batch.enabled:
                 return ScheduledBatchClaim("disabled", batch)
             now = time.time()
@@ -2515,6 +2522,12 @@ class SkillImprovementStore:
             batch = self.get_scheduled_batch_for_job(job_id)
             if batch is None:
                 return None
+            if batch.target_skill_ids == (TRIAL_SKILL_ID,):
+                return self._claim_legacy_scheduled_batch(
+                    job_id,
+                    lease_owner=owner,
+                    lock_held=True,
+                )
             if not batch.enabled:
                 return ScheduledBatchClaim("disabled", batch)
             now = time.time()

@@ -381,7 +381,10 @@ async def _run_scheduled_skill_batch(
             f"scheduled Skill batch {claim.status.replace('_', ' ')}"
         )
 
-    baseline = store.read_effective_snapshot(claim.batch.workspace)
+    baseline = store.read_effective_snapshot(
+        claim.batch.workspace,
+        skill_id=claim.case.skill_id if claim.case is not None else claim.batch.skill_id,
+    )
     prompt = build_scheduled_batch_prompt(
         claim,
         baseline_content=baseline.content,
