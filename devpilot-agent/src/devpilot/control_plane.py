@@ -663,6 +663,7 @@ class ControlPlaneManager:
 
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             backend = self.execution_backend
             run_id = entry.run_id
             cleanup = getattr(backend, "cleanup", None) if backend is not None else None
@@ -677,6 +678,7 @@ class ControlPlaneManager:
 
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             backend = self.execution_backend
             run_id = entry.run_id
             recover = getattr(backend, "recover", None) if backend is not None else None
@@ -693,13 +695,16 @@ class ControlPlaneManager:
         """Persist a server-side execution denial without consuming approval."""
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             self._event(entry, "execution.capability_denied", {"code": code})
             self._finish_run(entry, "failed", {"code": code})
 
     def finalize_run(self, change_set_id: str, result: str, payload: dict[str, Any]) -> None:
         """Finish a workflow-owned Run after its Artifact is durably recorded."""
         with self._mutex:
-            self._finish_run(self._require(change_set_id), result, payload)
+            entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
+            self._finish_run(entry, result, payload)
 
     def mark_delivery_failed(
         self,
@@ -713,6 +718,7 @@ class ControlPlaneManager:
         """Keep ChangeSet state consistent when verification passed but reporting failed."""
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             if entry.plan.change_set.status is ChangeSetStatus.VERIFIED:
                 entry.plan.change_set.transition_to(ChangeSetStatus.DELIVERY_FAILED)
                 self._persist_status(entry, failure_reason=reason)
@@ -731,6 +737,7 @@ class ControlPlaneManager:
             raise PatchError("USER_CONFIRMATION_REQUIRED", "explicit stop confirmation is required")
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             replay = self._check_idempotency(
                 idempotency_key, "stop", change_set_id, user_confirmation
             )
@@ -789,11 +796,21 @@ class ControlPlaneManager:
                     return "stop"
         return None
 
+    @staticmethod
+    def _reject_legacy_accepted(entry: _PendingChangeSet) -> None:
+        """Keep pre-removal accepted ChangeSets readable but not mutable."""
+        if entry.plan.change_set.status is ChangeSetStatus.ACCEPTED:
+            raise PatchError(
+                "CHANGESET_LEGACY_READ_ONLY",
+                "legacy accepted ChangeSet is readable only",
+            )
+
     def approve(self, change_set_id: str, capability: str = APPLY_CAPABILITY) -> dict[str, Any]:
         if capability not in {APPLY_CAPABILITY, ROLLBACK_CAPABILITY, VERIFY_CAPABILITY}:
             raise PatchError("CAPABILITY_INVALID", "unsupported approval capability")
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             self._require_trusted_project(entry)
             if capability == APPLY_CAPABILITY and entry.plan.change_set.status in {
                 ChangeSetStatus.APPLIED,
@@ -855,6 +872,7 @@ class ControlPlaneManager:
         """Run one allowlisted verification profile in the configured backend."""
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             if not full_access:
                 self._require_trusted_project(entry)
             replay = self._check_idempotency(
@@ -1037,6 +1055,7 @@ class ControlPlaneManager:
     ) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             if not full_access:
                 self._require_trusted_project(entry)
             replay = self._check_idempotency(
@@ -1131,6 +1150,7 @@ class ControlPlaneManager:
     ) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             self._require_trusted_project(entry)
             replay = self._check_idempotency(
                 idempotency_key, "rollback", change_set_id, approval_token
@@ -1163,6 +1183,7 @@ class ControlPlaneManager:
     def revoke(self, change_set_id: str) -> dict[str, Any]:
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             count = self.store.revoke_approvals(change_set_id) if self.store is not None else 0
             entry.memory_approvals.clear()
             self._event(entry, "changeset.approvals_revoked", {"count": count})
@@ -1198,6 +1219,7 @@ class ControlPlaneManager:
             raise PatchError("USER_CONFIRMATION_REQUIRED", "confirmation does not match capability")
         with self._mutex:
             entry = self._require(change_set_id)
+            self._reject_legacy_accepted(entry)
             self._require_trusted_project(entry)
             if self.store is not None and self.store.has_active_approval(change_set_id, capability):
                 raise PatchError("APPROVAL_ALREADY_ISSUED", "ChangeSet already has active approval")

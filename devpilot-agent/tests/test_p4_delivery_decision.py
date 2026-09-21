@@ -10,6 +10,7 @@ from test_p4_feature_delivery import _evidence, _manager, _patch
 
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.delivery_decisions import DeliveryDecisionWorkflow
+from devpilot.domain import ChangeSetStatus
 from devpilot.execution import FakeExecutionBackend
 from devpilot.nanobot_tools import GetDeliveryReportTool, ToolResult
 from devpilot.workflows import FeatureDeliveryWorkflow
@@ -66,6 +67,20 @@ def test_report_is_compact_redacted_and_exposes_recovery_actions(tmp_path: Path)
     assert "stdout" not in serialized
     assert "stderr" not in serialized
 
+
+def test_legacy_accepted_changeset_is_read_only(tmp_path: Path) -> None:
+    _store, _project, manager, proposal = _delivered(tmp_path)
+    entry = manager._entries[proposal.change_set_id]
+    entry.plan.change_set.status = ChangeSetStatus.ACCEPTED
+
+    report = DeliveryDecisionWorkflow(manager).report(proposal.change_set_id)
+    assert report["status"] == "accepted"
+    assert report["available_decisions"] == []
+    with pytest.raises(Exception, match="CHANGESET_LEGACY_READ_ONLY"):
+        manager.approve(proposal.change_set_id, capability="r1.rollback")
+    with pytest.raises(Exception, match="CHANGESET_LEGACY_READ_ONLY"):
+        manager.rollback(proposal.change_set_id, "legacy-token")
+
 def test_failed_delivery_can_stop_without_claiming_success(tmp_path: Path) -> None:
     _store, _project, manager, proposal = _delivered(tmp_path, exit_code=1)
     decision = DeliveryDecisionWorkflow(manager)
@@ -77,6 +92,9 @@ def test_failed_delivery_can_stop_without_claiming_success(tmp_path: Path) -> No
     assert stopped["status"] == "verification_failed"
     assert stopped["success_claimed"] is False
     assert stopped["stop_reason"] == "NONZERO_EXIT"
+    assert decision.stop(
+        proposal.change_set_id, "确认停止", idempotency_key="p4-04-stop"
+    ) == stopped
     after = decision.report(proposal.change_set_id)
     assert after["decision"]["type"] == "stop"
     assert after["available_decisions"] == ["rollback"]

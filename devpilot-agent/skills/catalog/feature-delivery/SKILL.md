@@ -81,8 +81,9 @@ Skill 只能建议上述已注册 Tool。`devpilot_propose_changeset` 仍作为�
 后，运行时可以调用 `devpilot_request_approval` 登记审批意图；真正的 Apply/Verification/Rollback
 由控制面用户动作携带 capability token 完成。Skill 不得伪造确认、读取或传播审批令牌。
 
-交付完成后，优先使用 `devpilot_get_delivery_report` 汇总事实。接受或停止必须由用户在
-当前 nanobot 对话中明确确认；回滚只能转到现有的 R1 rollback 审批入口，不能由 Skill
+交付完成后，优先使用 `devpilot_get_delivery_report` 汇总事实。验证通过后流程直接结束，
+不要求用户再输入“接受交付”或其他最终验收口令；如果用户要中止当前交付，停止必须由用户在
+当前 nanobot 对话中明确确认。回滚只能转到现有的 R1 rollback 审批入口，不能由 Skill
 自行取得 capability 或执行回滚。
 
 ## 执行步骤

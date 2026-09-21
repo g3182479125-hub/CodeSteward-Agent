@@ -66,8 +66,9 @@ Approval Token 或 ChangeSet 二次确认。先读取必要源码并生成最小
 - `devpilot_watch_run`：读取脱敏阶段事件，支持断点重放和持久快照降级；只读。
 - `devpilot_confirmed_action`：仅把 Gateway 签名的用户确认交给受信任 Broker；不接受 token。
 
-Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用户动作完成。接受或停止
-必须在 nanobot 对话中取得用户明确确认；回滚只返回现有 R1 审批入口，不得由 Skill 自行取得 capability。
+Skill 只能建议上述 Tool。Apply、Verify、Rollback 必须由控制面用户动作完成。停止必须在
+nanobot 对话中取得用户明确确认；验证通过后不再要求额外的最终验收。回滚只返回现有 R1
+审批入口，不得由 Skill 自行取得 capability。
 
 ## 执行步骤
 
