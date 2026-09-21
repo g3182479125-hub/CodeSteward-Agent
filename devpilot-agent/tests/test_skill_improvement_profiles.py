@@ -9,6 +9,7 @@ from devpilot.skill_improvement import (
     SKILL_IMPROVEMENT_TARGETS,
     SkillImprovementError,
     SkillImprovementStore,
+    content_sha256,
     task_snapshot_ref,
 )
 
@@ -190,10 +191,90 @@ def test_improvement_case_rejects_unverifiable_refs_and_is_idempotent(tmp_path: 
         actual_result="分析结果漏掉了测试入口。",
         evidence_refs=("run-analysis-1",),
     )
+    tool_evidence = store.record_feedback(
+        task_id="task-analysis-1",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="tool_result",
+        skill_id="repo-analysis",
+        skill_hash=skill_hash,
+        correction="工具输出声称分析完成。",
+        actual_result="没有受信用户确认。",
+        evidence_refs=("run-analysis-1",),
+    )
+    with pytest.raises(SkillImprovementError, match="source is not trusted"):
+        store.create_improvement_case(
+            **{
+                **kwargs,
+                "evidence_refs": (tool_evidence.evidence_id,),
+            }
+        )
     kwargs["evidence_refs"] = (evidence.evidence_id,)
     case = store.create_improvement_case(**kwargs)
     assert case == store.create_improvement_case(**kwargs)
     assert snapshot.content_hash == case.base_skill_hash
+
+
+def test_legacy_snapshot_id_is_readable_and_snapshot_invalidation_propagates(
+    tmp_path: Path,
+) -> None:
+    store, workspace = _store(tmp_path)
+    skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+    task_id = "task-analysis-legacy"
+    legacy_ref = content_sha256(task_id)
+    store._atomic_write(
+        store.snapshots_dir / f"{legacy_ref}.json",
+        {
+            "task_id": task_id,
+            "session_id": "session-1",
+            "project_id": "project-1",
+            "workspace": str(workspace.resolve()),
+            **store._snapshot_to_dict(skill),
+        },
+    )
+    assert store.get_task_snapshot(
+        legacy_ref,
+        workspace=workspace,
+        project_id="project-1",
+        session_id="session-1",
+        skill_id="repo-analysis",
+    ) is not None
+    evidence = store.record_feedback(
+        task_id=task_id,
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=skill.content_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-analysis-legacy",),
+    )
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id="run-analysis-legacy",
+        task_id=task_id,
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        base_skill_hash=skill.content_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="缺了测试入口。",
+        expected_behavior="输出测试入口。",
+        evidence_refs=(evidence.evidence_id,),
+        replay_snapshot_ref=legacy_ref,
+        assertion_spec={"kind": "analysis_fact"},
+    )
+    store.invalidate_task_snapshot(legacy_ref)
+    invalidated = store.get_improvement_case(case.case_id)
+    assert invalidated is not None
+    assert invalidated.status == "not_replayable"
 
 
 def test_delete_feedback_blocks_linked_case_and_replay(tmp_path: Path) -> None:

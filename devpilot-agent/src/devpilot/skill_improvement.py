@@ -37,7 +37,13 @@ REPLAY_TRIAL_STATUSES = frozenset(
     {"passed", "failed", "timeout", "cancelled", "infrastructure_error"}
 )
 FEEDBACK_SOURCE_TYPES = frozenset(
-    {"user_feedback", "tool_result", "model_inference", "external_content"}
+    {
+        "user_feedback",
+        "tool_result",
+        "trusted_verification",
+        "model_inference",
+        "external_content",
+    }
 )
 FEEDBACK_STATES = frozenset(
     {"verified", "pending_verification", "rejected", "deleted"}
@@ -79,6 +85,9 @@ EVALUATION_TEST_SET_VERSION = "p8-02-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
     r"^(run|tool|trace|session|test|feedback|case|trial|snapshot)-[A-Za-z0-9_.:-]{1,127}$"
+)
+_TRUSTED_VERIFICATION_REF_RE = re.compile(
+    r"^verification-[A-Za-z0-9_.:-]{1,127}$"
 )
 
 
@@ -831,13 +840,21 @@ class SkillImprovementStore:
             raise SkillImprovementError(
                 "model inference requires two independent evidence references"
             )
-        if source_type in {"model_inference", "external_content"} and not all(
-            _EVIDENCE_REF_RE.fullmatch(item) for item in refs
-        ):
+        if source_type in {
+            "model_inference",
+            "external_content",
+            "trusted_verification",
+        } and not all(_EVIDENCE_REF_RE.fullmatch(item) for item in refs):
             raise SkillImprovementError("verification references must be traceable IDs")
+        if source_type == "trusted_verification" and not any(
+            _TRUSTED_VERIFICATION_REF_RE.fullmatch(item) for item in refs
+        ):
+            raise SkillImprovementError(
+                "trusted verification requires a server verification reference"
+            )
         state = (
             "verified"
-            if source_type in {"user_feedback", "tool_result"}
+            if source_type in {"user_feedback", "tool_result", "trusted_verification"}
             else "pending_verification"
         )
         evidence = FeedbackEvidence(
@@ -871,10 +888,18 @@ class SkillImprovementStore:
         refs = tuple(dict.fromkeys((*evidence.evidence_refs, *_refs(independent_refs))))
         if evidence.source_type in {"model_inference", "external_content"} and len(refs) < 2:
             raise SkillImprovementError("independent verification evidence is required")
-        if evidence.source_type in {"model_inference", "external_content"} and not all(
-            _EVIDENCE_REF_RE.fullmatch(item) for item in refs
-        ):
+        if evidence.source_type in {
+            "model_inference",
+            "external_content",
+            "trusted_verification",
+        } and not all(_EVIDENCE_REF_RE.fullmatch(item) for item in refs):
             raise SkillImprovementError("verification references must be traceable IDs")
+        if evidence.source_type == "trusted_verification" and not any(
+            _TRUSTED_VERIFICATION_REF_RE.fullmatch(item) for item in refs
+        ):
+            raise SkillImprovementError(
+                "trusted verification requires a server verification reference"
+            )
         updated = FeedbackEvidence(
             **{
                 **evidence.to_dict(),
@@ -1080,8 +1105,8 @@ class SkillImprovementStore:
         if effective.content_hash != base_hash:
             raise SkillImprovementError("improvement case baseline does not match effective Skill")
         origin_value = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
-        if not _EVIDENCE_REF_RE.fullmatch(origin_value):
-            raise SkillImprovementError("origin_run_id must be a traceable run ID")
+        if not re.fullmatch(r"run-[A-Za-z0-9_.:-]{1,127}", origin_value):
+            raise SkillImprovementError("origin_run_id must be a run ID")
         task_value = _bounded_text(task_id, field="task_id", limit=128)
         project_value = _bounded_text(project_id, field="project_id", limit=128)
         user_value = _bounded_text(user_id, field="user_id", limit=128)
@@ -1110,6 +1135,22 @@ class SkillImprovementStore:
         }
         if any(item.processing_state != "verified" for item in unique_evidence.values()):
             raise SkillImprovementError("improvement case evidence must be verified")
+        allowed_sources = (
+            {"user_feedback"}
+            if trigger_type == "user_confirmed_missing_fact"
+            else {"trusted_verification"}
+        )
+        if any(item.source_type not in allowed_sources for item in unique_evidence.values()):
+            raise SkillImprovementError(
+                "improvement case evidence source is not trusted for this trigger"
+            )
+        if trigger_type == "trusted_verification_failed" and not any(
+            any(_TRUSTED_VERIFICATION_REF_RE.fullmatch(ref) for ref in item.evidence_refs)
+            for item in unique_evidence.values()
+        ):
+            raise SkillImprovementError(
+                "trusted verification case requires a server verification reference"
+            )
         if any(
             item.skill_id != skill_id
             or item.skill_hash != base_hash
@@ -1159,13 +1200,6 @@ class SkillImprovementStore:
                 "workspace": workspace_value,
                 "user_id": user_value,
                 "session_id": session_value,
-                "base_skill_hash": base_hash,
-                "trigger_type": trigger_type,
-                "trigger_summary": summary,
-                "expected_behavior": expected,
-                "evidence_refs": list(refs),
-                "replay_snapshot_ref": snapshot_ref,
-                "assertion_spec": assertion,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1173,6 +1207,44 @@ class SkillImprovementStore:
         )
         case_id = f"case-{content_sha256(identity)[:32]}"
         with self._lock, self._process_lock():
+            locked_effective = self.read_effective_snapshot(workspace, skill_id=skill_id)
+            if locked_effective.content_hash != base_hash:
+                raise SkillImprovementError("improvement case baseline changed during creation")
+            locked_evidence = {
+                item.evidence_id: item
+                for item in self.list_feedback(
+                    workspace=workspace_value,
+                    user_id=user_value,
+                    project_id=project_value,
+                    skill_id=skill_id,
+                    processing_state="verified",
+                )
+            }
+            if any(
+                evidence_id not in locked_evidence
+                or locked_evidence[evidence_id].skill_hash != base_hash
+                or locked_evidence[evidence_id].task_id != task_value
+                or locked_evidence[evidence_id].session_id != session_value
+                or locked_evidence[evidence_id].source_type not in allowed_sources
+                for evidence_id in unique_evidence
+            ):
+                raise SkillImprovementError("improvement case evidence changed during creation")
+            if snapshot_ref is not None:
+                locked_snapshot = self.get_task_snapshot(
+                    snapshot_ref,
+                    workspace=workspace_value,
+                    project_id=project_value,
+                    session_id=session_value,
+                    skill_id=skill_id,
+                )
+                if (
+                    locked_snapshot is None
+                    or locked_snapshot.task_id != task_value
+                    or locked_snapshot.content_hash != base_hash
+                ):
+                    raise SkillImprovementError(
+                        "improvement case snapshot changed during creation"
+                    )
             if self._record_exists("improvement_case", case_id):
                 existing = self.get_improvement_case(case_id)
                 if existing is None:
@@ -1366,6 +1438,42 @@ class SkillImprovementStore:
             candidate_id=candidate_id,
         )
         with self._lock, self._process_lock():
+            locked_case = self.get_improvement_case(case_id)
+            if (
+                locked_case is None
+                or locked_case.status in {"not_replayable", "ignored"}
+                or locked_case.skill_id != skill_id
+                or locked_case.replay_snapshot_ref != snapshot_ref
+            ):
+                raise SkillImprovementError("replay trial case changed during recording")
+            locked_snapshot = self.get_task_snapshot(
+                snapshot_ref,
+                workspace=locked_case.workspace,
+                project_id=locked_case.project_id,
+                session_id=locked_case.session_id,
+                skill_id=skill_id,
+            )
+            if (
+                locked_snapshot is None
+                or locked_snapshot.task_id != locked_case.task_id
+                or locked_snapshot.content_hash != locked_case.base_skill_hash
+            ):
+                raise SkillImprovementError("replay trial snapshot changed during recording")
+            if version == "baseline" and skill_hash.lower() != locked_case.base_skill_hash:
+                raise SkillImprovementError("baseline trial hash changed during recording")
+            if version == "candidate":
+                locked_candidate = self.get_candidate(
+                    candidate_id or "",
+                    workspace=locked_case.workspace,
+                    user_id=locked_case.user_id,
+                    project_id=locked_case.project_id,
+                )
+                if (
+                    locked_candidate is None
+                    or case_id not in locked_candidate.case_ids
+                    or locked_candidate.candidate_hash != skill_hash.lower()
+                ):
+                    raise SkillImprovementError("candidate trial changed during recording")
             if self._record_exists("replay_trial", trial.trial_id):
                 raise SkillImprovementError("replay trial ID already exists")
             self._atomic_write(
@@ -1373,7 +1481,15 @@ class SkillImprovementStore:
             )
         return trial
 
-    def get_replay_trial(self, trial_id: str) -> ReplayTrial | None:
+    def get_replay_trial(
+        self,
+        trial_id: str,
+        *,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> ReplayTrial | None:
         if not _record_id_matches(trial_id, "trial"):
             return None
         if not self._record_exists("replay_trial", trial_id):
@@ -1381,16 +1497,46 @@ class SkillImprovementStore:
         raw = self._read_object(
             self.replay_trials_dir / f"{trial_id}.json", "replay trial"
         )
-        return _replay_trial_from_dict(raw)
+        trial = _replay_trial_from_dict(raw)
+        case = self.get_improvement_case(trial.case_id)
+        if case is None:
+            return None
+        if workspace is not None and case.workspace != str(Path(workspace).expanduser().resolve()):
+            return None
+        if project_id is not None and case.project_id != project_id:
+            return None
+        if user_id is not None and case.user_id != user_id:
+            return None
+        if session_id is not None and case.session_id != session_id:
+            return None
+        return trial
 
-    def list_replay_trials(self, *, case_id: str | None = None) -> list[ReplayTrial]:
+    def list_replay_trials(
+        self,
+        *,
+        case_id: str | None = None,
+        workspace: str | Path | None = None,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[ReplayTrial]:
         trials = [
             _replay_trial_from_dict(raw)
             for raw in self._record_rows("replay_trial")
         ]
         if case_id is not None:
             trials = [item for item in trials if item.case_id == case_id]
-        return sorted(trials, key=lambda item: (item.started_at, item.trial_id))
+        scoped: list[ReplayTrial] = []
+        for trial in trials:
+            if self.get_replay_trial(
+                trial.trial_id,
+                workspace=workspace,
+                project_id=project_id,
+                user_id=user_id,
+                session_id=session_id,
+            ) is not None:
+                scoped.append(trial)
+        return sorted(scoped, key=lambda item: (item.started_at, item.trial_id))
 
     def configure_scheduled_batch(
         self,
@@ -2105,12 +2251,17 @@ class SkillImprovementStore:
         skill_id: str | None = None,
     ) -> SkillSnapshot | None:
         """Read a captured snapshot only when its private binding still matches."""
-        if not _record_id_matches(snapshot_ref, "snapshot"):
+        if not (_record_id_matches(snapshot_ref, "snapshot") or _is_sha256(snapshot_ref)):
             return None
         path = self.snapshots_dir / f"{snapshot_ref}.json"
         if not self._record_exists("snapshot", snapshot_ref):
+            self._invalidate_snapshot_dependents(snapshot_ref)
             return None
-        snapshot = self._snapshot_from_dict(self._read_object(path, "task snapshot"))
+        try:
+            snapshot = self._snapshot_from_dict(self._read_object(path, "task snapshot"))
+        except SkillImprovementError:
+            self._invalidate_snapshot_dependents(snapshot_ref)
+            return None
         if workspace is not None and snapshot.workspace != str(
             Path(workspace).expanduser().resolve()
         ):
@@ -2122,6 +2273,34 @@ class SkillImprovementStore:
         if skill_id is not None and snapshot.skill_id != skill_id:
             return None
         return snapshot
+
+    def invalidate_task_snapshot(self, snapshot_ref: str) -> None:
+        """Invalidate one private snapshot and all dependent unactivated records."""
+        if not (_record_id_matches(snapshot_ref, "snapshot") or _is_sha256(snapshot_ref)):
+            raise SkillImprovementError("invalid task snapshot reference")
+        with self._lock, self._process_lock():
+            self._delete_record_history("snapshot", snapshot_ref)
+            self._invalidate_snapshot_dependents(snapshot_ref)
+
+    def _invalidate_snapshot_dependents(self, snapshot_ref: str) -> None:
+        for case in self.list_improvement_cases():
+            if case.replay_snapshot_ref != snapshot_ref or case.status == "not_replayable":
+                continue
+            invalidated = replace(case, status="not_replayable")
+            self._atomic_write(
+                self.cases_dir / f"{case.case_id}.json", invalidated.to_dict()
+            )
+            for candidate in self.list_candidates(workspace=case.workspace):
+                if case.case_id not in candidate.case_ids or candidate.status == "active":
+                    continue
+                self._atomic_write(
+                    self.candidates_dir / f"{candidate.candidate_id}.json",
+                    {
+                        **candidate.to_dict(),
+                        "status": "stale",
+                        "result_refs": (),
+                    },
+                )
 
     def evaluate_candidate(
         self,
