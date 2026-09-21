@@ -1423,7 +1423,9 @@ class AgentLoop:
                 {
                     "devpilot_task_id": task_context.task_id,
                     "devpilot_project_id": "local-"
-                    + hashlib.sha256(str(scope.project_path.resolve()).encode()).hexdigest()[:16],
+                        + hashlib.sha256(str(scope.project_path.resolve()).encode()).hexdigest()[:16],
+                    "devpilot_profile_binding": task_context.profile_binding,
+                    "devpilot_skill_id": profile.skill_names[0],
                 }
             )
         # This is a server-owned attribute, written after inbound metadata is

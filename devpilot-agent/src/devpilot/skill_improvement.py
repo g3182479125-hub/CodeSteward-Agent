@@ -87,6 +87,7 @@ _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
     r"^(run|tool|trace|session|test|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
 )
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _TRUSTED_VERIFICATION_REF_RE = re.compile(
     r"^verification-[A-Za-z0-9_.-]{1,127}:[A-Za-z0-9_.-]{1,127}$"
 )
@@ -98,6 +99,13 @@ def _trusted_verification_parts(ref: str) -> tuple[str, str] | None:
         return None
     run_ref, change_set_id = ref.removeprefix("verification-").split(":", 1)
     return run_ref, change_set_id
+
+
+def _traceable_ref(value: str, *, origin_run_id: str | None = None) -> bool:
+    return bool(
+        _EVIDENCE_REF_RE.fullmatch(value)
+        or (origin_run_id is not None and value == origin_run_id)
+    )
 
 
 @dataclass(frozen=True)
@@ -859,7 +867,17 @@ class SkillImprovementStore:
                     """,
                     (change_set_id,),
                 ).fetchone()
-                if approval is None:
+                applied_payloads = [
+                    json.loads(str(row[1]))
+                    for row in events
+                    if row[0] == "changeset.applied"
+                ]
+                approved_apply = approval is not None or any(
+                    payload.get("execution_mode") == "full_access"
+                    for payload in applied_payloads
+                    if isinstance(payload, dict)
+                )
+                if not approved_apply:
                     return False
                 proposed = {
                     "feature-delivery": "feature_delivery.proposed",
@@ -876,6 +894,7 @@ class SkillImprovementStore:
         *,
         failure_ref: str,
         project_id: str,
+        expected_behavior: str | None = None,
     ) -> bool:
         if not _TRUSTED_FAILURE_REF_RE.fullmatch(failure_ref):
             return False
@@ -884,15 +903,65 @@ class SkillImprovementStore:
             with sqlite3.connect(self.database_path, timeout=30) as connection:
                 row = connection.execute(
                     """
-                    select r.project_id, e.event_type
+                    select r.project_id, r.kind, r.status, e.event_type, e.payload_json
                     from runs r join run_events e on e.run_id = r.id
                     where r.id = ? and r.project_id = ?
                     """,
                     (run_id, project_id),
                 ).fetchall()
                 return any(
-                    event_type in {"bug_check.failed", "test_check.failed"}
-                    for _project, event_type in row
+                    kind in {"bug-check", "test-check"}
+                    and status == "failed"
+                    and event_type in {"bug_check.failed", "test_check.failed"}
+                    and (
+                        expected_behavior is None
+                        or json.loads(str(payload)).get("expected_behavior")
+                        == expected_behavior
+                    )
+                    for _project, kind, status, event_type, payload in row
+                )
+        except sqlite3.Error:
+            return False
+
+    def _has_repo_analysis_fact(
+        self,
+        *,
+        origin_run_id: str,
+        project_id: str,
+        workspace: str,
+        expected_behavior: str,
+    ) -> bool:
+        """Validate a repo-analysis fact against the server-owned Run events."""
+        try:
+            with sqlite3.connect(self.database_path, timeout=30) as connection:
+                run = connection.execute(
+                    """
+                    select r.project_id, r.kind, p.real_path
+                    from runs r join projects p on p.id = r.project_id
+                    where r.id = ?
+                    """,
+                    (origin_run_id,),
+                ).fetchone()
+                if (
+                    run is None
+                    or run[0] != project_id
+                    or run[1] != "repo-analysis"
+                    or str(Path(run[2]).expanduser().resolve()) != workspace
+                ):
+                    return False
+                events = connection.execute(
+                    "select event_type, payload_json from run_events where run_id = ?",
+                    (origin_run_id,),
+                ).fetchall()
+                allowed = {
+                    "tool.completed",
+                    "evidence.inspect.completed",
+                    "evidence.search.completed",
+                    "evidence.read.completed",
+                }
+                return any(
+                    event_type in allowed and expected_behavior in str(payload)
+                    for event_type, payload in events
                 )
         except sqlite3.Error:
             return False
@@ -1254,7 +1323,7 @@ class SkillImprovementStore:
         if effective.content_hash != base_hash:
             raise SkillImprovementError("improvement case baseline does not match effective Skill")
         origin_value = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
-        if not re.fullmatch(r"run-[A-Za-z0-9_.:-]{1,127}", origin_value):
+        if not _RUN_ID_RE.fullmatch(origin_value):
             raise SkillImprovementError("origin_run_id must be a run ID")
         task_value = _bounded_text(task_id, field="task_id", limit=128)
         project_value = _bounded_text(project_id, field="project_id", limit=128)
@@ -1263,7 +1332,7 @@ class SkillImprovementStore:
         refs = _refs(evidence_refs)
         if not refs:
             raise SkillImprovementError("at least one evidence reference is required")
-        if not all(_EVIDENCE_REF_RE.fullmatch(ref) for ref in refs):
+        if not all(_traceable_ref(ref, origin_run_id=origin_value) for ref in refs):
             raise SkillImprovementError("evidence references must be traceable IDs")
         matched_evidence: list[FeedbackEvidence] = []
         for ref in refs:

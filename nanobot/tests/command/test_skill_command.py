@@ -387,6 +387,30 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
     skill_path = project_workspace / "skills" / "repo-analysis" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("---\nname: repo-analysis\n---\n\n# Repo analysis\n", encoding="utf-8")
+    from nanobot.command.builtin import _devpilot_project_id
+
+    project_id = _devpilot_project_id(project_workspace)
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute(
+            "create table projects (id text primary key, real_path text not null)"
+        )
+        connection.execute(
+            "create table runs (id text primary key, project_id text not null, kind text not null, status text not null)"
+        )
+        connection.execute(
+            "create table run_events (id integer primary key autoincrement, run_id text not null, event_type text not null, payload_json text not null)"
+        )
+        connection.execute(
+            "insert into projects values (?, ?)", (project_id, str(project_workspace.resolve()))
+        )
+        connection.execute(
+            "insert into runs values (?, ?, 'repo-analysis', 'completed')",
+            ("run-1", project_id),
+        )
+        connection.execute(
+            "insert into run_events (run_id, event_type, payload_json) values (?, ?, ?)",
+            ("run-1", "evidence.search.completed", '{"result":"tests/test_api.py"}'),
+        )
     task = {
         "task_id": "task-1",
         "profile_binding": "repo-analysis@1",

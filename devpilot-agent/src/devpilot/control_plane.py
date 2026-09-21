@@ -150,6 +150,7 @@ class VerificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX
+    skill_improvement_context: dict[str, Any] | None = None
 
 
 class ProjectTestRequest(BaseModel):
@@ -1019,12 +1020,13 @@ class ControlPlaneManager:
                 "stdout": redact_execution_output(result.stdout[-8000:]),
                 "stderr": redact_execution_output(result.stderr[-8000:]),
             }
-            self._event(entry, "changeset.verification_completed", payload)
-            if result.exit_code != 0 and skill_improvement_context is not None:
-                self._record_skill_improvement_failure(
-                    entry,
-                    skill_improvement_context,
-                )
+            self._event(
+                entry,
+                "changeset.verification_completed"
+                if result.exit_code == 0
+                else "changeset.verification_failed",
+                payload,
+            )
             if finalize_run:
                 self._finish_run(
                     entry,
@@ -1034,6 +1036,11 @@ class ControlPlaneManager:
                         "status": target.value,
                         "exit_code": result.exit_code,
                     },
+                )
+            if result.exit_code != 0 and skill_improvement_context is not None:
+                self._record_skill_improvement_failure(
+                    entry,
+                    skill_improvement_context,
                 )
             response = {
                 "change_set_id": change_set_id,
@@ -1145,7 +1152,14 @@ class ControlPlaneManager:
                 self._finish_run(entry, "failed", {"code": "APPLY_FAILED"})
                 raise RuntimeError("apply operation failed") from exc
             entry.receipt = receipt
-            self._event(entry, "changeset.applied", {"files": len(entry.plan.records)})
+            self._event(
+                entry,
+                "changeset.applied",
+                {
+                    "files": len(entry.plan.records),
+                    "execution_mode": "full_access" if full_access else "approved",
+                },
+            )
             result = {
                 "change_set_id": change_set_id,
                 "status": entry.plan.change_set.status.value,
@@ -2280,6 +2294,9 @@ def create_app(
             change_set_id,
             profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
             idempotency_key=idempotency_key,
+            skill_improvement_context=(
+                payload.skill_improvement_context if payload else None
+            ),
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/verification-cleanup")

@@ -340,6 +340,69 @@ def _is_trusted_full_access(request_context: Any | None = None) -> bool:
     )
 
 
+def _skill_improvement_context(
+    request_context: Any | None,
+    *,
+    project_path: str,
+    skill_id: str,
+    summary: str,
+    expected_behavior: str,
+    failure_evidence_refs: object = (),
+) -> dict[str, Any] | None:
+    """Build a server-verifiable improvement context for one Full Access turn."""
+    if os.environ.get("DEVPILOT_ENABLE_SKILL_IMPROVEMENT") != "1":
+        return None
+    attributes = getattr(request_context, "attributes", {})
+    if not isinstance(attributes, Mapping):
+        return None
+    task_id = attributes.get("devpilot_task_id")
+    project_id = attributes.get("devpilot_project_id")
+    profile_binding = attributes.get("devpilot_profile_binding")
+    sender_id = getattr(request_context, "sender_id", None)
+    session_id = (
+        getattr(request_context, "session_key", None)
+        or getattr(request_context, "chat_id", None)
+    )
+    workspace = Path(project_path).expanduser().resolve()
+    if not all(
+        isinstance(value, str) and value
+        for value in (task_id, project_id, profile_binding, sender_id, session_id)
+    ):
+        return None
+    try:
+        store = SkillImprovementStore.from_environment(workspace)
+        snapshot = store.capture_task_snapshot(
+            task_id=task_id,
+            workspace=workspace,
+            session_id=session_id,
+            project_id=project_id,
+            skill_id=skill_id,
+        )
+    except (OSError, ValueError, SkillImprovementError):
+        return None
+    raw_failure_refs = (
+        failure_evidence_refs
+        if isinstance(failure_evidence_refs, (list, tuple))
+        else ()
+    )
+    trusted_failure_refs = [
+        item if item.startswith("failure-") else f"failure-{item}"
+        for item in raw_failure_refs
+        if isinstance(item, str) and item.strip()
+    ]
+    return {
+        "skill_id": skill_id,
+        "profile_binding": profile_binding,
+        "task_id": task_id,
+        "user_id": sender_id,
+        "session_id": session_id,
+        "skill_hash": snapshot.content_hash,
+        "summary": summary,
+        "expected_behavior": expected_behavior,
+        "failure_evidence_refs": trusted_failure_refs,
+    }
+
+
 def _record_current_turn_proposal(
     result: Mapping[str, Any],
     *,
@@ -1016,13 +1079,18 @@ def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_full_access_apply_verify(
-    change_set_id: str, verification_profile: str | None
+    change_set_id: str,
+    verification_profile: str | None,
+    skill_improvement_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a server-owned direct action for one trusted Full Access proposal."""
 
+    payload: dict[str, Any] = {"profile": verification_profile or "python-syntax"}
+    if skill_improvement_context is not None:
+        payload["skill_improvement_context"] = dict(skill_improvement_context)
     return _post_control_plane(
         _change_set_path(change_set_id, "full-access-apply-verify"),
-        {"profile": verification_profile or "python-syntax"},
+        payload,
         idempotency_key=f"full-access-{change_set_id}",
     )
 
@@ -1034,6 +1102,10 @@ def _full_access_preview_and_execute(
     verification_profile: str | None,
     request_context: Any | None,
     project_id: str | None = None,
+    skill_id: str | None = None,
+    improvement_summary: str = "",
+    improvement_expected_behavior: str = "",
+    failure_evidence_refs: object = (),
 ) -> dict[str, Any]:
     """Preview, apply and verify a normal project edit without workflow gates."""
 
@@ -1058,8 +1130,21 @@ def _full_access_preview_and_execute(
             }
         )
         return proposal
+    improvement_context = None
+    if skill_id is not None:
+        improvement_context = _skill_improvement_context(
+            request_context,
+            project_path=project_path,
+            skill_id=skill_id,
+            summary=improvement_summary or "Full Access verification failed",
+            expected_behavior=improvement_expected_behavior
+            or f"{verification_profile or 'python-syntax'} verification passes",
+            failure_evidence_refs=failure_evidence_refs,
+        )
     execution = _post_full_access_apply_verify(
-        str(proposal["change_set_id"]), verification_profile
+        str(proposal["change_set_id"]),
+        verification_profile,
+        improvement_context,
     )
     proposal.update(
         {
@@ -2249,6 +2334,8 @@ class FeatureDeliveryProposeTool(Tool):
                             else "python-syntax"
                         ),
                         request_context=request_context,
+                        skill_id="feature-delivery",
+                        improvement_summary="Feature delivery verification failed",
                     ),
                     ensure_ascii=False,
                     sort_keys=True,
@@ -2366,6 +2453,10 @@ class BugFixProposeTool(Tool):
                             else "python-syntax"
                         ),
                         request_context=request_context,
+                        skill_id="bug-fix",
+                        improvement_summary=str(kwargs["symptom"]),
+                        improvement_expected_behavior=str(kwargs["expected_behavior"]),
+                        failure_evidence_refs=kwargs["failure_evidence_ids"],
                     ),
                     ensure_ascii=False,
                     sort_keys=True,

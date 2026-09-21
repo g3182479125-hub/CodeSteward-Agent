@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .skill_improvement import (
-    _EVIDENCE_REF_RE,
+    _RUN_ID_RE,
     SkillImprovementError,
     SkillImprovementStore,
     _bounded_text,
     _refs,
+    _traceable_ref,
     skill_improvement_target,
     task_snapshot_ref,
 )
@@ -46,12 +47,22 @@ class SkillImprovementCaseRecorder:
             raise SkillImprovementError("analysis feedback profile binding is invalid")
         origin = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
         refs = _refs(evidence_refs)
-        if not origin.startswith("run-") or any(
-            not _EVIDENCE_REF_RE.fullmatch(item) for item in refs
+        if not _RUN_ID_RE.fullmatch(origin) or any(
+            not _traceable_ref(item, origin_run_id=origin) for item in refs
         ):
             raise SkillImprovementError("analysis feedback evidence is not traceable")
         if not refs:
             raise SkillImprovementError("analysis feedback requires current Run evidence")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        if not self._store._has_repo_analysis_fact(
+            origin_run_id=origin,
+            project_id=project_id,
+            workspace=workspace_value,
+            expected_behavior=expected_behavior,
+        ):
+            raise SkillImprovementError(
+                "expected behavior is not proven by the current repo-analysis Run"
+            )
         snapshot_ref = replay_snapshot_ref or task_snapshot_ref(task_id)
         evidence = self._store.record_feedback(
             task_id=task_id,
@@ -126,6 +137,19 @@ class SkillImprovementCaseRecorder:
         origin = _bounded_text(origin_run_id, field="origin_run_id", limit=128)
         change_set = _bounded_text(change_set_id, field="change_set_id", limit=128)
         verification_ref = f"verification-{origin}:{change_set}"
+        failure_refs = _refs(failure_evidence_refs)
+        if skill_id == "bug-fix":
+            if not failure_refs:
+                raise SkillImprovementError("bug-fix verification requires failure evidence")
+            if not all(
+                self._store._has_trusted_failure_fact(
+                    failure_ref=ref,
+                    project_id=project_id,
+                    expected_behavior=expected_behavior,
+                )
+                for ref in failure_refs
+            ):
+                raise SkillImprovementError("bug-fix failure evidence is not server-trusted")
         verification = self._store.record_feedback(
             task_id=task_id,
             project_id=project_id,
@@ -141,9 +165,6 @@ class SkillImprovementCaseRecorder:
         )
         evidence_ids: list[str] = [verification.evidence_id]
         if skill_id == "bug-fix":
-            failure_refs = _refs(failure_evidence_refs)
-            if not failure_refs:
-                raise SkillImprovementError("bug-fix verification requires failure evidence")
             failure = self._store.record_feedback(
                 task_id=task_id,
                 project_id=project_id,
