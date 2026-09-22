@@ -15,6 +15,8 @@
 4. 真实 A/B 结果只会把候选推进到 `pending_confirmation`，不会自动激活；
 5. 用户确认后只影响新任务，旧任务继续使用自己的 Skill snapshot；`restore` 恢复到稳定版本；
 6. Cron 正常完成和租约恢复都发送独立系统通知，通知带有 candidate ID 元数据，不把通知混入普通模型回复。
+   候选生成后、Replay 前崩溃时，租约恢复会重新接管 `pending_evaluation` 候选并继续 Replay；
+   Replay 异常会收敛为批次失败并释放租约，不留下永久 claimed 状态。
 
 ## 自有合成 Git fixture 演练
 
