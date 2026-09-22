@@ -98,21 +98,21 @@ async def evaluate_candidate_replay(
     case_expected_behavior = case.expected_behavior
     if not case_expected_behavior.strip():
         raise SkillImprovementError("replay Case is missing expected behavior")
+    profile_name = case.profile_binding.split("@", 1)[0]
     if expected_behavior is not None and expected_behavior != case_expected_behavior:
         raise SkillImprovementError("replay assertion does not match the Case")
     spec_paths = _string_tuple(case.assertion_spec.get("expected_paths", ()))
-    if not spec_paths:
-        raise SkillImprovementError("replay Case is missing expected paths")
-    if expected_paths and tuple(expected_paths) != spec_paths:
-        raise SkillImprovementError("replay expected paths do not match the Case")
     spec_evidence = _string_tuple(
         case.assertion_spec.get("expected_evidence_refs", ())
     )
-    if not spec_evidence:
+    if profile_name == "repo-analysis" and not spec_paths:
+        raise SkillImprovementError("replay Case is missing expected paths")
+    if profile_name == "repo-analysis" and not spec_evidence:
         raise SkillImprovementError("replay Case is missing expected evidence refs")
+    if expected_paths and tuple(expected_paths) != spec_paths:
+        raise SkillImprovementError("replay expected paths do not match the Case")
     if expected_evidence_refs and tuple(expected_evidence_refs) != spec_evidence:
         raise SkillImprovementError("replay evidence refs do not match the Case")
-    profile_name = case.profile_binding.split("@", 1)[0]
     for key, supplied in (
         ("baseline_verification_passed", baseline_verification_passed),
         ("candidate_verification_passed", candidate_verification_passed),
@@ -178,7 +178,11 @@ async def evaluate_candidate_replay(
                 if version == "baseline"
                 else candidate_request.model_id
             ),
-            parameters={"max_iterations": baseline_request.max_iterations},
+            parameters={
+                "max_iterations": baseline_request.max_iterations,
+                "replay_max_tokens": baseline_request.max_tokens,
+                "replay_timeout_s": baseline_request.llm_timeout_s or 300,
+            },
             snapshot_ref=snapshot_ref,
             started_at=_now(),
             finished_at=_now(),
@@ -191,6 +195,10 @@ async def evaluate_candidate_replay(
                 "grader_kind": grade_kind,
                 "reason": reason,
                 "changed_paths": list(result.changed_paths),
+                "tool_trace": [dict(event) for event in result.tool_events],
+                "final_output": result.final_output,
+                "error": result.error,
+                "usage": dict(result.usage),
             },
             status=_trial_status(result, grade_passed),
             trial_id=trial_id,
@@ -220,5 +228,17 @@ async def evaluate_candidate_replay(
         user_id=user_id,
         project_id=project_id,
         model_id=candidate_request.model_id,
-        parameters={"max_iterations": candidate_request.max_iterations},
+        parameters={
+            "max_iterations": candidate_request.max_iterations,
+            "replay_max_tokens": candidate_request.max_tokens,
+            "replay_timeout_s": candidate_request.llm_timeout_s or 300,
+        },
+        budget={
+            "max_model_calls": 3,
+            "max_tokens": 20_000,
+            "max_seconds": 600,
+            "candidate_generation_max_tokens": 4_000,
+            "replay_max_tokens": 8_000,
+            "replay_timeout_s": 300,
+        },
     )

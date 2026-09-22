@@ -23,7 +23,7 @@ from typing import Any
 from nanobot.agent.runner import AgentRunner, AgentRunResult, AgentRunSpec
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.providers.base import ProviderConversationState
+from nanobot.providers.base import LLMProvider, LLMResponse, ProviderConversationState
 from nanobot.utils.llm_runtime import LLMRuntime
 
 REPLAY_VERSIONS = frozenset({"baseline", "candidate"})
@@ -143,6 +143,79 @@ class ReplayComparison:
     candidate: ReplayTrialResult
 
 
+class _ReplayBudgetProvider(LLMProvider):
+    """Provider proxy that stops a multi-turn replay at its hard budget."""
+
+    def __init__(self, delegate: LLMProvider, *, max_tokens: int, timeout_s: float) -> None:
+        super().__init__(api_key=delegate.api_key, api_base=delegate.api_base)
+        self._delegate = delegate
+        self._remaining_tokens = max_tokens
+        self._deadline = time.perf_counter() + timeout_s
+        self.supports_progress_deltas = delegate.supports_progress_deltas
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> LLMResponse:
+        remaining_seconds = self._deadline - time.perf_counter()
+        if remaining_seconds <= 0:
+            return LLMResponse(
+                content="replay time budget exhausted",
+                finish_reason="error",
+                error_kind="timeout",
+            )
+        if self._remaining_tokens <= 0:
+            return LLMResponse(
+                content="replay token budget exhausted",
+                finish_reason="error",
+                error_kind="infrastructure",
+            )
+        response = await self._delegate.chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=min(max_tokens, self._remaining_tokens),
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+        )
+        if not response.usage:
+            return LLMResponse(
+                content="replay provider usage unavailable",
+                finish_reason="error",
+                error_kind="infrastructure",
+            )
+        usage = dict(response.usage)
+        total = usage.get("total_tokens") or (
+            usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+        )
+        if total <= 0:
+            return LLMResponse(
+                content="replay provider usage unavailable",
+                finish_reason="error",
+                error_kind="infrastructure",
+                usage=usage,
+            )
+        self._remaining_tokens -= total
+        if self._remaining_tokens < 0:
+            return LLMResponse(
+                content="replay token budget exhausted",
+                finish_reason="error",
+                error_kind="infrastructure",
+                usage=usage,
+            )
+        return response
+
+    def get_default_model(self) -> str:
+        return self._delegate.get_default_model()
+
+
 def _validate_request(request: ReplayRequest) -> None:
     if request.version not in REPLAY_VERSIONS:
         raise SkillReplayError("replay version must be baseline or candidate")
@@ -163,8 +236,8 @@ def _validate_request(request: ReplayRequest) -> None:
         raise SkillReplayError("trusted replay roots are required")
     if not request.snapshot_commit or not re.fullmatch(r"[0-9a-fA-F]{40}", request.snapshot_commit):
         raise SkillReplayError("replay snapshot commit is required")
-    if request.max_iterations <= 0:
-        raise SkillReplayError("replay iteration budget must be positive")
+    if request.max_iterations <= 0 or request.max_iterations > 32:
+        raise SkillReplayError("replay iteration budget must be between 1 and 32")
     if request.max_tool_result_chars <= 0:
         raise SkillReplayError("replay tool-result budget must be positive")
     if request.max_tokens <= 0 or request.max_tokens > 8_000:
@@ -215,6 +288,13 @@ def _validate_worktree(request: ReplayRequest, worktree: Path) -> Path:
             text=True,
             timeout=15,
         )
+        clean_result = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain=v1", "--untracked-files=all"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SkillReplayError("replay worktree validation failed") from exc
     if (
@@ -222,8 +302,10 @@ def _validate_worktree(request: ReplayRequest, worktree: Path) -> Path:
         or Path(root_result.stdout.strip()).resolve() != worktree
         or commit_result.returncode != 0
         or commit_result.stdout.strip().lower() != snapshot_commit.lower()
+        or clean_result.returncode != 0
+        or clean_result.stdout.strip()
     ):
-        raise SkillReplayError("replay worktree is not bound to the captured snapshot")
+        raise SkillReplayError("replay worktree is not a clean captured snapshot")
     return worktree
 
 
@@ -275,6 +357,20 @@ def _changed_paths(worktree: Path) -> tuple[str, ...]:
             value = value[1:-1]
         paths.append(value.replace("\\", "/"))
     return tuple(sorted(set(paths)))
+
+
+def _replay_tool_events(result: AgentRunResult, limit: int) -> tuple[Mapping[str, str], ...]:
+    """Persist bounded tool outputs beside events for trusted evidence grading."""
+
+    events: list[Mapping[str, str]] = []
+    for index, raw_event in enumerate(result.tool_events):
+        event = dict(raw_event)
+        if index < len(result.tool_outputs):
+            tool_name, output = result.tool_outputs[index]
+            if tool_name == event.get("name"):
+                event["output"] = str(output)[:limit]
+        events.append(event)
+    return tuple(events)
 
 
 def _status_from_result(result: AgentRunResult) -> tuple[str, str | None]:
@@ -330,6 +426,14 @@ async def run_skill_replay(
         skill_path.write_text(skill_content, encoding="utf-8")
         replay_runtime = request.runtime.with_generation_overrides(
             max_tokens=request.max_tokens,
+        )
+        replay_runtime = replace(
+            replay_runtime,
+            provider=_ReplayBudgetProvider(
+                request.runtime.provider,
+                max_tokens=request.max_tokens,
+                timeout_s=request.llm_timeout_s or 300,
+            ),
         )
         context = RequestContext(
             channel="skill-replay",
@@ -388,7 +492,11 @@ async def run_skill_replay(
     return ReplayTrialResult(
         status=status,
         final_output=(result.final_content or "") if result is not None else "",
-        tool_events=tuple(result.tool_events) if result is not None else (),
+        tool_events=(
+            _replay_tool_events(result, request.max_tool_result_chars)
+            if result is not None
+            else ()
+        ),
         tools_used=tuple(result.tools_used) if result is not None else (),
         usage=dict(usage),
         duration_seconds=max(0.0, time.perf_counter() - started),
@@ -556,13 +664,19 @@ def grade_replay(
         item for item in result.changed_paths if item != skill_path
     )
     if grader_kind == "analysis_fact":
-        trace_text = json.dumps(result.tool_events, ensure_ascii=False, sort_keys=True)
-        evidence_text = f"{result.final_output}\n{trace_text}"
+        event_texts = [
+            json.dumps(event, ensure_ascii=False, sort_keys=True)
+            for event in result.tool_events
+            if event.get("status") == "ok"
+            and event.get("name") in _ANALYSIS_READ_TOOLS
+        ]
         expected_paths_ok = all(
-            str(path).replace("\\", "/") in evidence_text for path in expected_paths
+            any(str(path).replace("\\", "/") in text for text in event_texts)
+            for path in expected_paths
         )
         expected_evidence_ok = all(
-            str(reference) in evidence_text for reference in expected_evidence_refs
+            any(str(reference) in text for text in event_texts)
+            for reference in expected_evidence_refs
         )
         passed = (
             bool(expected_behavior)

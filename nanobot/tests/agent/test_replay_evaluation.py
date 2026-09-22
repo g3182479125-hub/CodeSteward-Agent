@@ -55,9 +55,15 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
     )
     candidate_result = ReplayTrialResult(
         status="passed",
-        final_output="new",
-        tool_events=(),
-        tools_used=(),
+        final_output="candidate fact is present",
+        tool_events=(
+            {
+                "name": "read_file",
+                "status": "ok",
+                "output": "src/main.py case-1",
+            },
+        ),
+        tools_used=("read_file",),
         usage={"total_tokens": 3},
         duration_seconds=0.2,
         changed_paths=(),
@@ -90,22 +96,13 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
     async def fake_comparison(*_args, **_kwargs):
         return ReplayComparison(baseline_result, candidate_result)
 
-    def fake_grade(request, result, **_kwargs):
-        return SimpleNamespace(
-            grader_kind="analysis_fact",
-            passed=result is candidate_result,
-            reason=(
-                "candidate fact present"
-                if result is candidate_result
-                else "baseline missing fact"
-            ),
-        )
-
     monkeypatch.setattr(replay_evaluation, "run_replay_comparison", fake_comparison)
-    monkeypatch.setattr(replay_evaluation, "grade_replay", fake_grade)
     request = SimpleNamespace(
         model_id="fake/model",
         max_iterations=8,
+        max_tokens=8_000,
+        llm_timeout_s=300.0,
+        skill_relative_path="skills/repo-analysis/SKILL.md",
         task_id="task-1",
         project_id="project-1",
         profile_name="repo-analysis",

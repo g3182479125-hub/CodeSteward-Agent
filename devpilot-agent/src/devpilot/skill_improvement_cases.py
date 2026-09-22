@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .skill_improvement import (
     _RUN_ID_RE,
@@ -20,6 +20,30 @@ from .skill_improvement import (
     _traceable_ref,
     skill_improvement_target,
 )
+
+
+def _assertion_spec(
+    value: Mapping[str, object] | None,
+    *,
+    required_strings: tuple[str, ...] = (),
+    required_bools: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Require server-owned facts needed by the selected deterministic grader."""
+
+    result = dict(value or {})
+    for key in required_strings:
+        raw = result.get(key)
+        items = (
+            cast(list[object] | tuple[object, ...], raw)
+            if isinstance(raw, (list, tuple))
+            else ()
+        )
+        if not items or not all(isinstance(item, str) and item.strip() for item in items):
+            raise SkillImprovementError(f"assertion_spec requires {key}")
+    for key in required_bools:
+        if not isinstance(result.get(key), bool):
+            raise SkillImprovementError(f"assertion_spec requires {key}")
+    return result
 
 
 class SkillImprovementCaseRecorder:
@@ -95,6 +119,15 @@ class SkillImprovementCaseRecorder:
             actual_result=expected_behavior,
             evidence_refs=tuple(dict.fromkeys((f"run-{origin}", *refs))),
         )
+        assertion = _assertion_spec(
+            assertion_spec
+            or {
+                "kind": target.grader_kind,
+                "expected_paths": (expected_behavior,),
+                "expected_evidence_refs": refs,
+            },
+            required_strings=("expected_paths", "expected_evidence_refs"),
+        )
         return self._store.create_improvement_case(
             skill_id="repo-analysis",
             profile_binding=profile_binding,
@@ -110,7 +143,7 @@ class SkillImprovementCaseRecorder:
             expected_behavior=expected_behavior,
             evidence_refs=(evidence.evidence_id, f"run-{origin}", *refs),
             replay_snapshot_ref=snapshot_ref,
-            assertion_spec=assertion_spec or {"kind": target.grader_kind},
+            assertion_spec=assertion,
         )
 
     def record_trusted_verification_failure(
@@ -199,6 +232,23 @@ class SkillImprovementCaseRecorder:
             skill_id=skill_id,
         ) is None:
             raise SkillImprovementError("task-start snapshot is unavailable")
+        required_bools = (
+            "baseline_verification_passed",
+            "candidate_verification_passed",
+            "baseline_failure_repaired",
+            "candidate_failure_repaired",
+        )
+        assertion = _assertion_spec(
+            assertion_spec
+            or {
+                "kind": target.grader_kind,
+                "baseline_verification_passed": False,
+                "candidate_verification_passed": True,
+                "baseline_failure_repaired": False,
+                "candidate_failure_repaired": skill_id == "bug-fix",
+            },
+            required_bools=required_bools,
+        )
         return self._store.create_improvement_case(
             skill_id=skill_id,
             profile_binding=profile_binding,
@@ -214,5 +264,5 @@ class SkillImprovementCaseRecorder:
             expected_behavior=expected_behavior,
             evidence_refs=(f"run-{origin}", *evidence_ids),
             replay_snapshot_ref=snapshot_ref,
-            assertion_spec=assertion_spec or {"kind": target.grader_kind},
+            assertion_spec=assertion,
         )
