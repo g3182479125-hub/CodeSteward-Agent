@@ -1210,23 +1210,6 @@ def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     return _model_result(result)
 
 
-def _post_full_access_apply_verify(
-    change_set_id: str,
-    verification_profile: str | None,
-    skill_improvement_context: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Run a server-owned direct action for one trusted Full Access proposal."""
-
-    payload: dict[str, Any] = {"profile": verification_profile or "python-syntax"}
-    if skill_improvement_context is not None:
-        payload["skill_improvement_context"] = dict(skill_improvement_context)
-    return _post_control_plane(
-        _change_set_path(change_set_id, "full-access-apply-verify"),
-        payload,
-        idempotency_key=f"full-access-{change_set_id}",
-    )
-
-
 def _full_access_preview_and_execute(
     *,
     project_path: str,
@@ -1239,7 +1222,7 @@ def _full_access_preview_and_execute(
     improvement_expected_behavior: str = "",
     failure_evidence_refs: object = (),
 ) -> dict[str, Any]:
-    """Preview, apply and verify a normal project edit without workflow gates."""
+    """Preview a Full Access edit; Apply/Verify remain confirmation-gated."""
 
     payload: dict[str, Any] = {
         "project_path": project_path,
@@ -1270,41 +1253,15 @@ def _full_access_preview_and_execute(
             }
         )
         return proposal
-    improvement_context = None
-    if skill_id is not None:
-        allowed_file_scope = tuple(
-            str(item.get("relative_path"))
-            for item in patches
-            if isinstance(item, Mapping) and isinstance(item.get("relative_path"), str)
-        )
-        improvement_context = _skill_improvement_context(
-            request_context,
-            project_path=project_path,
-            skill_id=skill_id,
-            summary=improvement_summary or "Full Access verification failed",
-            expected_behavior=improvement_expected_behavior
-            or f"{verification_profile or 'python-syntax'} verification passes",
-            failure_evidence_refs=failure_evidence_refs,
-            allowed_file_scope=allowed_file_scope,
-            verification_profile=verification_profile or "python-syntax",
-        )
-    if improvement_context is None:
-        execution = _post_full_access_apply_verify(
-            str(proposal["change_set_id"]),
-            verification_profile,
-        )
-    else:
-        execution = _post_full_access_apply_verify(
-            str(proposal["change_set_id"]),
-            verification_profile,
-            improvement_context,
-        )
     proposal.update(
         {
-            "requires_user_confirmation": False,
+            "requires_user_confirmation": True,
             "execution_mode": "full_access",
-            "execution": execution,
-            "next_step": "完全访问已直接应用并验证本次修改；请根据执行回执继续处理。",
+            "next_step": (
+                "已生成精确 ChangeSet 和 Diff，但还没有写入文件。请先展示 Diff，"
+                "等待用户明确确认后，再用 devpilot_confirmed_action 的 "
+                "action=apply_verify 执行 Apply 和 Verify。"
+            ),
         }
     )
     return proposal
@@ -1530,7 +1487,6 @@ def _change_set_path(change_set_id: str, action: str) -> str:
         "verify",
         "rollback",
         "approval-requests",
-        "full-access-apply-verify",
     }:
         raise ValueError("unsupported ChangeSet action")
     return f"/v1/change-sets/{value}/{action}"

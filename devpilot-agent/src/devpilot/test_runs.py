@@ -90,6 +90,7 @@ class ProjectTestRunResult:
     sandbox_id: str | None = None
     working_directory: str = ""
     dependency_profile: str = ""
+    dependency_fingerprint: str = ""
 
 
 class ProjectTestRunner:
@@ -129,6 +130,9 @@ class ProjectTestRunner:
             raise ProjectTestEntryError("no supported project test entry was found")
         working_directory = self._test_working_directory(snapshot)
         dependency_profile = self._dependency_profile(
+            snapshot, test_kind=test_kind, working_directory=working_directory
+        )
+        dependency_fingerprint = self._dependency_fingerprint(
             snapshot, test_kind=test_kind, working_directory=working_directory
         )
         before_hashes = self._target_hashes(snapshot, targets)
@@ -199,6 +203,7 @@ class ProjectTestRunner:
                 next_action=next_action,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
             )
         except Exception as exc:
             self.store.append_event(
@@ -220,6 +225,7 @@ class ProjectTestRunner:
                 next_action="查询该 Run 的执行状态；不要重复提交可能产生副作用的操作。",
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
             )
 
         fallback_used = False
@@ -265,6 +271,7 @@ class ProjectTestRunner:
                 sandbox_id=receipt.sandbox_id,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
             )
         self._record_receipt(
             run_id,
@@ -294,6 +301,7 @@ class ProjectTestRunner:
                 sandbox_id=receipt.sandbox_id,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
             )
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
@@ -307,6 +315,7 @@ class ProjectTestRunner:
                 sandbox_id=receipt.sandbox_id,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
             )
         try:
             self.store.record_test_check_failure_fact(
@@ -356,6 +365,7 @@ class ProjectTestRunner:
             sandbox_id=receipt.sandbox_id,
             working_directory=working_directory,
             dependency_profile=dependency_profile,
+            dependency_fingerprint=dependency_fingerprint,
         )
 
     @staticmethod
@@ -412,7 +422,16 @@ class ProjectTestRunner:
             for item in snapshot
             if item.relative_path.startswith(prefix)
         }
-        if test_kind == "node-test" and "package.json" in paths and "package-lock.json" in paths:
+        node_lockfiles = {
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "bun.lockb",
+        }
+        if test_kind == "node-test" and "package.json" in paths and paths.intersection(
+            node_lockfiles
+        ):
             return "node-npm-ci"
         if test_kind == "python-pytest":
             if "requirements.txt" in paths:
@@ -420,6 +439,58 @@ class ProjectTestRunner:
             if "pyproject.toml" in paths:
                 return "python-project"
         return ""
+
+    @staticmethod
+    def _dependency_fingerprint(
+        snapshot: tuple[ExecutionFile, ...], *, test_kind: str, working_directory: str
+    ) -> str:
+        """Hash server-selected dependency declarations for receipt auditing.
+
+        The fingerprint is evidence only; it never lets the model choose an
+        install command or reuse an environment without the server deciding
+        the profile again.
+        """
+
+        prefix = f"{working_directory}/" if working_directory else ""
+        paths = {
+            item.relative_path[len(prefix) :]: item
+            for item in snapshot
+            if item.relative_path.startswith(prefix)
+        }
+        if test_kind == "python-pytest":
+            names = {
+                "requirements.txt",
+                "pyproject.toml",
+                "uv.lock",
+                "poetry.lock",
+                "setup.cfg",
+                "setup.py",
+                "Pipfile",
+                "Pipfile.lock",
+            }
+        elif test_kind == "node-test":
+            names = {
+                "package.json",
+                "package-lock.json",
+                "npm-shrinkwrap.json",
+                "yarn.lock",
+                "pnpm-lock.yaml",
+                "bun.lockb",
+            }
+        else:
+            names = set()
+        manifest = [
+            {
+                "path": name,
+                "sha256": hashlib.sha256(paths[name].content).hexdigest(),
+            }
+            for name in sorted(names.intersection(paths))
+        ]
+        if not manifest:
+            return ""
+        return hashlib.sha256(
+            json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def command_for(test_kind: str) -> tuple[str, str]:

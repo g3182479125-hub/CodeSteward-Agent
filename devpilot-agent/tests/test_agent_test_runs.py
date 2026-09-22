@@ -222,6 +222,7 @@ def test_project_test_selects_nested_working_directory_and_dependency_profile(
     assert result.status == "passed"
     assert result.working_directory == "seed_repo"
     assert result.dependency_profile == "python-requirements"
+    assert len(result.dependency_fingerprint) == 64
     request = backend.requests[0]
     assert request.working_directory == "seed_repo"
     assert request.dependency_profile == "python-requirements"
@@ -388,6 +389,7 @@ def test_full_access_can_enroll_project_for_current_session_without_persistent_t
     assert result["sandbox_id"] == "fake-sandbox"
     security = store.get_project_security(result["project_id"])
     assert security["trust_state"] != "trusted"
+    assert ("websocket:full-access-session", result["project_id"]) not in manager._session_project_bindings  # type: ignore[reportPrivateUsage]
 
     client = TestClient(
         create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),

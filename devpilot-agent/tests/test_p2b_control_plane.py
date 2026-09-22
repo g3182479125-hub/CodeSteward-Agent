@@ -114,7 +114,7 @@ def test_preview_validation_failure_finishes_started_run(tmp_path: Path) -> None
     assert events[-1]["payload"]["code"] == "PRECONDITION_HASH_MISMATCH"
 
 
-def test_full_access_can_apply_and_verify_without_approval_token(tmp_path: Path) -> None:
+def test_full_access_changeset_still_requires_approval_before_apply(tmp_path: Path) -> None:
     backend = FakeExecutionBackend(stdout="syntax ok")
     manager, project = make_manager(tmp_path, execution_backend=backend)
     preview = manager.preview(
@@ -123,12 +123,22 @@ def test_full_access_can_apply_and_verify_without_approval_token(tmp_path: Path)
         patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
     )
 
-    result = manager.full_access_apply_verify(
-        str(preview["change_set_id"]),
-        idempotency_key="full-access-direct-test",
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    applied = manager.apply(
+        change_set_id,
+        str(apply_approval["approval_token"]),
+        idempotency_key="confirmed-apply-test",
+    )
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    result = manager.verify(
+        change_set_id,
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_SYNTAX,
+        idempotency_key="confirmed-verify-test",
     )
 
-    assert result["mode"] == "full_access"
+    assert applied["status"] == "applied"
     assert result["status"] == "verified"
     assert (project / "main.py").read_text(encoding="utf-8") == "print('ok')\n"
     assert backend.requests[0].command.startswith("python3 -m py_compile")
@@ -183,9 +193,13 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
         {"change_set_id": change_set_id, "workflow": "feature-delivery"},
     )
 
-    result = manager.full_access_apply_verify(
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    result = manager.verify(
         change_set_id,
-        idempotency_key="full-access-feature-failure",
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_SYNTAX,
         skill_improvement_context={
             "skill_id": "feature-delivery",
             "profile_binding": "feature-delivery@2",
@@ -305,9 +319,13 @@ def test_full_access_failed_bug_verification_records_case_with_failure_fact(
         {"change_set_id": change_set_id, "failure_evidence_ids": [failure_ref]},
     )
 
-    result = manager.full_access_apply_verify(
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    result = manager.verify(
         change_set_id,
-        idempotency_key="full-access-bug-failure",
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_SYNTAX,
         skill_improvement_context={
             "skill_id": "bug-fix",
             "profile_binding": "bug-fix@1",
@@ -364,9 +382,14 @@ def test_unknown_backend_failure_does_not_enter_skill_improvement(
         task_id="task-unknown-failure",
     )
 
-    result = manager.full_access_apply_verify(
-        str(preview["change_set_id"]),
-        idempotency_key="full-access-unknown-failure",
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+    result = manager.verify(
+        change_set_id,
+        str(verify_approval["approval_token"]),
+        profile=VerificationProfile.PYTHON_SYNTAX,
         skill_improvement_context={
             "skill_id": "feature-delivery",
             "verification_kind": "semantic",
@@ -377,7 +400,7 @@ def test_unknown_backend_failure_does_not_enter_skill_improvement(
     assert recorded == []
 
 
-def test_full_access_http_action_requires_internal_adapter_auth(tmp_path: Path) -> None:
+def test_full_access_direct_apply_verify_endpoint_is_removed(tmp_path: Path) -> None:
     manager, project = make_manager(tmp_path, execution_backend=FakeExecutionBackend())
     preview = manager.preview(
         project_path=project,
@@ -385,29 +408,24 @@ def test_full_access_http_action_requires_internal_adapter_auth(tmp_path: Path) 
         patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
     )
     change_set_id = str(preview["change_set_id"])
-    token = "full-access-control-plane-token-0123456789"
-    app = create_app(manager=manager, internal_auth_token=token)
+    app = create_app(
+        manager=manager,
+        internal_auth_token="control-plane-token-012345678901234567890123",
+    )
 
     from fastapi.testclient import TestClient
 
     with TestClient(app, client=("127.0.0.1", 50000)) as client:
-        rejected = client.post(
-            f"/v1/change-sets/{change_set_id}/full-access-apply-verify",
-            json={"profile": "python-syntax"},
-            headers={"Idempotency-Key": "full-access-http-test"},
-        )
-        accepted = client.post(
+        response = client.post(
             f"/v1/change-sets/{change_set_id}/full-access-apply-verify",
             json={"profile": "python-syntax"},
             headers={
                 "Idempotency-Key": "full-access-http-test",
-                "X-DevPilot-Internal-Token": token,
+                "X-DevPilot-Internal-Token": "control-plane-token-012345678901234567890123",
             },
         )
 
-    assert rejected.status_code == 401
-    assert accepted.status_code == 200
-    assert accepted.json()["status"] == "verified"
+    assert response.status_code == 404
 
 
 def test_control_plane_can_run_python_self_test_in_backend(tmp_path: Path) -> None:

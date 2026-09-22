@@ -61,7 +61,7 @@ ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
 INTERNAL_AUTH_HEADER = "X-DevPilot-Internal-Token"
 _INTERNAL_AUTH_PATHS = frozenset(
-    {"/approve", "/trust", "/revoke", "/full-access-apply-verify"}
+    {"/approve", "/trust", "/revoke"}
 )
 
 
@@ -493,6 +493,16 @@ class ControlPlaneManager:
         except Exception:
             self._abort(idempotency_key)
             raise
+        finally:
+            # Full Access enrollment is deliberately one-run scoped.  A later
+            # request in the same chat must re-enroll the exact project and
+            # current repository fingerprint instead of inheriting stale
+            # process-memory authorization.
+            if session_access_granted and session_id is not None:
+                self._release_session_project_access(
+                    session_id=session_id,
+                    project_id=resolved_project_id,
+                )
         response = {
             "project_id": result.project_id,
             "run_id": result.run_id,
@@ -508,6 +518,7 @@ class ControlPlaneManager:
             "sandbox_id": result.sandbox_id,
             "working_directory": result.working_directory,
             "dependency_profile": result.dependency_profile,
+            "dependency_fingerprint": result.dependency_fingerprint,
         }
         try:
             self._complete(idempotency_key, response)
@@ -544,6 +555,11 @@ class ControlPlaneManager:
             )
         self._session_project_bindings[key] = binding
         return True
+
+    def _release_session_project_access(self, *, session_id: str, project_id: str) -> None:
+        """Release one-run Full Access enrollment from process memory."""
+
+        self._session_project_bindings.pop((session_id, project_id), None)
 
     def preview(
         self,
@@ -1295,45 +1311,6 @@ class ControlPlaneManager:
             }
             self._complete(idempotency_key, result)
             return result
-
-    def full_access_apply_verify(
-        self,
-        change_set_id: str,
-        *,
-        profile: VerificationProfile = VerificationProfile.PYTHON_SYNTAX,
-        idempotency_key: str | None = None,
-        skill_improvement_context: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Apply and verify a ChangeSet for a trusted WebUI Full Access turn.
-
-        This skips project trust and approval-token checks, while preserving
-        patch preconditions, project locks, rollback receipts, verification
-        backend checks and redacted execution output.
-        """
-
-        if idempotency_key is None:
-            raise PatchError("IDEMPOTENCY_REQUIRED", "Idempotency-Key is required")
-        apply_result = self.apply(
-            change_set_id,
-            "full-access",
-            idempotency_key=f"{idempotency_key}:apply",
-            full_access=True,
-        )
-        verify_result = self.verify(
-            change_set_id,
-            "full-access",
-            profile=profile,
-            idempotency_key=f"{idempotency_key}:verify",
-            full_access=True,
-            skill_improvement_context=skill_improvement_context,
-        )
-        return {
-            "change_set_id": change_set_id,
-            "status": verify_result["status"],
-            "mode": "full_access",
-            "apply": apply_result,
-            "verify": verify_result,
-        }
 
     def rollback(
         self, change_set_id: str, approval_token: str, *, idempotency_key: str | None = None
@@ -2417,22 +2394,6 @@ def create_app(
             _header_token(authorization),
             profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
             idempotency_key=idempotency_key,
-        )
-
-    @app.post("/api/v1/change-sets/{change_set_id}/full-access-apply-verify")
-    @app.post("/v1/change-sets/{change_set_id}/full-access-apply-verify")
-    def full_access_apply_verify(
-        change_set_id: str,
-        payload: VerificationRequest | None = None,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ) -> dict[str, Any]:
-        return manager.full_access_apply_verify(
-            change_set_id,
-            profile=payload.profile if payload else VerificationProfile.PYTHON_SYNTAX,
-            idempotency_key=idempotency_key,
-            skill_improvement_context=(
-                payload.skill_improvement_context if payload else None
-            ),
         )
 
     @app.post("/api/v1/change-sets/{change_set_id}/verification-cleanup")

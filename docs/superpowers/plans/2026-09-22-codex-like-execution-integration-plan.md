@@ -10,6 +10,13 @@
 固定 Profile 测试、失败分类、有限恢复和 Failure Run 衔接；代码交付仍保持
 ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 
+## 当前进度（2026-09-23）
+
+- 已完成：执行结果错误分类、Full Access 当前 Run 项目接入、服务器固定 Profile、嵌套测试目录解析、依赖指纹、WebUI 任务绑定和验证失败 Run 收尾。
+- 已完成：Full Access 代码修改现在只生成 ChangeSet/Diff；Apply/Verify 必须经过已有的用户确认 Broker，已移除无确认的直通 Apply/Verify 接口。
+- 已验证：真实隔离缺陷项目基线为 `5 failed, 5 passed`，修复三处业务缺陷后通过 `10 passed`；组合回归命令退出码为 `0`。
+- 仍待完成：更完整的独立 prepare 持久化阶段、控制层有限重试协调器、跨重启恢复矩阵，以及 Standards/Spec 双轴 review 的最终收口。
+
 ## 现状基线
 
 已存在并复用：

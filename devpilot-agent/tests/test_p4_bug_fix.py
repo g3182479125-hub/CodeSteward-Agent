@@ -820,7 +820,7 @@ def test_bug_fix_tool_binds_proposal_to_request_context(
     assert request_context.attributes["devpilot_proposal"] == proposal
 
 
-def test_bug_fix_tool_uses_direct_execution_for_trusted_full_access(
+def test_bug_fix_tool_keeps_full_access_changeset_pending_for_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proposal = {
@@ -831,15 +831,6 @@ def test_bug_fix_tool_uses_direct_execution_for_trusted_full_access(
         "project_id": "project-1",
     }
     monkeypatch.setattr(nanobot_tools, "_post_preview", lambda _payload: dict(proposal))
-    monkeypatch.setattr(
-        nanobot_tools,
-        "_post_full_access_apply_verify",
-        lambda change_set_id, profile: {
-            "change_set_id": change_set_id,
-            "status": "verified",
-            "profile": profile,
-        },
-    )
     monkeypatch.setattr(
         nanobot_tools,
         "_post_bug_fix_proposal",
@@ -873,9 +864,9 @@ def test_bug_fix_tool_uses_direct_execution_for_trusted_full_access(
         )
     )
 
-    assert result["requires_user_confirmation"] is False
+    assert result["requires_user_confirmation"] is True
     assert result["execution_mode"] == "full_access"
-    assert result["execution"]["status"] == "verified"
+    assert "execution" not in result
 
 
 def test_full_access_fills_missing_update_hash_before_preview(
@@ -888,11 +879,6 @@ def test_full_access_fills_missing_update_hash_before_preview(
         nanobot_tools,
         "_post_preview",
         lambda payload: captured.update(payload) or {"change_set_id": "cs-hash"},
-    )
-    monkeypatch.setattr(
-        nanobot_tools,
-        "_post_full_access_apply_verify",
-        lambda *_args: {"status": "verified"},
     )
     request_context = SimpleNamespace(
         attributes={
@@ -945,11 +931,6 @@ def test_full_access_sensitive_patch_waits_for_privacy_confirmation(
         "project_id": "project-1",
     }
     monkeypatch.setattr(nanobot_tools, "_post_preview", lambda _payload: dict(proposal))
-    monkeypatch.setattr(
-        nanobot_tools,
-        "_post_full_access_apply_verify",
-        lambda *_args: pytest.fail("sensitive patch must wait for confirmation"),
-    )
     request_context = SimpleNamespace(
         attributes={
             "workspace_scope": {
