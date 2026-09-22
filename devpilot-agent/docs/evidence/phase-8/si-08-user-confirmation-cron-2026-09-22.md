@@ -16,6 +16,7 @@
 5. 用户确认后只影响新任务，旧任务继续使用自己的 Skill snapshot；`restore` 恢复到稳定版本；
 6. Cron 正常完成和租约恢复都发送独立系统通知，通知带有 candidate ID 元数据，不把通知混入普通模型回复。
    候选生成后、Replay 前崩溃时，租约恢复会重新接管 `pending_evaluation` 候选并继续 Replay；
+   即使候选已落为 `evaluation_failed` 且批次引用尚未写入，也会按 Case/批次范围重新接管；
    Replay 异常会收敛为批次失败并释放租约，不留下永久 claimed 状态。
 
 ## 自有合成 Git fixture 演练

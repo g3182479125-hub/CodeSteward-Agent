@@ -4,7 +4,7 @@
 
 - GitHub 仓库：`https://github.com/g3182479125-hub/devflow-agent`
 - 分支：`codex/h11-complete-handoff`
-- 最后代码提交（交接文档提交不改代码）：`4eab86344ccc916eaf138b7419f8439b533e076d`
+- 最后代码提交（交接文档提交不改代码）：`a280835241d56e2cbd273a3fcf4f496075d86ab2`
 - 计划：P0–P8、H1–H11 历史完成；三 Profile 扩展 SI-01–SI-08 已实施。
 - SI-08 证据：`devpilot-agent/docs/evidence/phase-8/si-08-user-confirmation-cron-2026-09-22.md`
 
@@ -18,6 +18,7 @@
    消耗预算和产生孤儿 Trial。
 4. 生产运行时为两条 Replay 提供独立 Provider；无法隔离时 fail-closed。
 5. Cron 正常完成与崩溃/租约恢复都发送独立系统通知，并携带 candidate ID。
+   未关联到批次的 `pending_evaluation` / `evaluation_failed` 孤儿候选也会按绑定范围恢复，避免重复生成。
 6. 兼容旧 Case：旧记录没有 `replay_prompt` 时仍可读取，但生产真实 Replay 会明确拒绝，避免
    用虚构输入产生误导性 A/B 结果；应重新从带原始任务输入的任务创建 Case。
 7. 更新 CURRENT_PLAN、三 Profile 计划和 SI-08 证据。
