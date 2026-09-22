@@ -197,6 +197,63 @@ def test_fc_backend_bootstraps_pytest_before_project_test(
     assert run_events[1] == ("run", "python -m pytest -q", 300, "/workspace/devpilot")
 
 
+def test_fc_backend_prepares_server_selected_project_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[object, ...]] = []
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
+            events.append((command, timeout, cwd))
+            return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+
+    class FakeSandbox:
+        sandbox_id = "dependency-bootstrap-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda *_args: None)
+        commands = FakeCommands()
+
+        def kill(self) -> None:
+            return None
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            return FakeSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            install_pytest=False,
+            allow_network=True,
+            network_policy_mode="provider-default",
+        )
+    )
+
+    result = backend.run(
+        valid_request(
+            files=(ExecutionFile("src/requirements.txt", b"pytest==8.0.0\n"),),
+            command="python -m pytest -q",
+            command_profile="project-pytest",
+            working_directory="src",
+            dependency_profile="python-requirements",
+        )
+    )
+
+    assert result.exit_code == 0
+    assert events == [
+        (
+            "python -m pip install --disable-pip-version-check -r "
+            "/workspace/devpilot/src/requirements.txt",
+            300,
+            "/workspace/devpilot/src",
+        ),
+        ("python -m pytest -q", 300, "/workspace/devpilot/src"),
+    ]
+
+
 def test_fc_backend_reports_pytest_bootstrap_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -18,6 +18,9 @@ MAX_EXECUTION_FILE_BYTES = 512 * 1024
 MAX_EXECUTION_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
 MAX_REQUEST_OUTPUT_BYTES = 64 * 1024
+DEPENDENCY_PROFILES = frozenset(
+    {"", "python-requirements", "python-project", "node-npm-ci"}
+)
 
 
 class ExecutionError(RuntimeError):
@@ -52,6 +55,8 @@ class ExecutionRequest:
     network_allowed: bool = False
     command_profile: str = ""
     max_output_bytes: int = MAX_EXECUTION_OUTPUT_BYTES
+    working_directory: str = ""
+    dependency_profile: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +109,24 @@ def validate_request(request: ExecutionRequest) -> None:
         )
     if not request.command.strip():
         raise ExecutionError("EXECUTION_COMMAND_EMPTY", "a verification command is required")
+    if request.dependency_profile not in DEPENDENCY_PROFILES:
+        raise ExecutionError(
+            "EXECUTION_DEPENDENCY_PROFILE_INVALID",
+            "dependency profile is not server-allowlisted",
+        )
+    if request.working_directory:
+        working_directory = request.working_directory.replace("\\", "/")
+        parts = tuple(part for part in working_directory.split("/") if part)
+        if (
+            not parts
+            or working_directory.startswith("/")
+            or ".." in parts
+            or any(":" in part for part in parts)
+        ):
+            raise ExecutionError(
+                "EXECUTION_WORKING_DIRECTORY_INVALID",
+                "working directory must be a relative uploaded path",
+            )
     if not 1 <= request.timeout_seconds <= 900:
         raise ExecutionError(
             "EXECUTION_TIMEOUT_INVALID", "timeout must be between 1 and 900 seconds"
@@ -315,4 +338,6 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         network_allowed=network_allowed,
         command_profile=str(payload.get("command_profile", "")),
         max_output_bytes=max_output_bytes,
+        working_directory=str(payload.get("working_directory", "")),
+        dependency_profile=str(payload.get("dependency_profile", "")),
     )

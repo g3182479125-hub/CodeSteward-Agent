@@ -506,6 +506,8 @@ class ControlPlaneManager:
             "retryable": result.retryable,
             "next_action": result.next_action,
             "sandbox_id": result.sandbox_id,
+            "working_directory": result.working_directory,
+            "dependency_profile": result.dependency_profile,
         }
         try:
             self._complete(idempotency_key, response)

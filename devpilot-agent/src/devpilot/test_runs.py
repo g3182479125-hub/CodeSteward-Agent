@@ -88,6 +88,8 @@ class ProjectTestRunResult:
     retryable: bool = False
     next_action: str | None = None
     sandbox_id: str | None = None
+    working_directory: str = ""
+    dependency_profile: str = ""
 
 
 class ProjectTestRunner:
@@ -125,6 +127,10 @@ class ProjectTestRunner:
         snapshot = self._snapshot(project)
         if not self._has_test_entry(test_kind, snapshot):
             raise ProjectTestEntryError("no supported project test entry was found")
+        working_directory = self._test_working_directory(snapshot)
+        dependency_profile = self._dependency_profile(
+            snapshot, test_kind=test_kind, working_directory=working_directory
+        )
         before_hashes = self._target_hashes(snapshot, targets)
         root_id, fingerprint = self.allowed_roots.binding_for(project)
         project_id = self.store.ensure_project(
@@ -159,6 +165,8 @@ class ProjectTestRunner:
             timeout_seconds=300,
             network_allowed=False,
             command_profile=command_profile,
+            working_directory=working_directory,
+            dependency_profile=dependency_profile,
         )
         try:
             receipt = self.execution_backend.run(request)
@@ -189,6 +197,8 @@ class ProjectTestRunner:
                 error_category=category,
                 retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
                 next_action=next_action,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
         except Exception as exc:
             self.store.append_event(
@@ -208,6 +218,8 @@ class ProjectTestRunner:
                 error_code="EXECUTION_RECEIPT_INVALID",
                 error_category="control_plane",
                 next_action="查询该 Run 的执行状态；不要重复提交可能产生副作用的操作。",
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
 
         fallback_used = False
@@ -224,6 +236,8 @@ class ProjectTestRunner:
                 timeout_seconds=300,
                 network_allowed=False,
                 command_profile=command_profile,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
             receipt = self.execution_backend.run(fallback_request)
             command = fallback_request.command
@@ -249,8 +263,16 @@ class ProjectTestRunner:
                 error_category="control_plane",
                 next_action="检查沙箱回执是否完整；在确认状态前不要重放测试。",
                 sandbox_id=receipt.sandbox_id,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
-        self._record_receipt(run_id, receipt, command)
+        self._record_receipt(
+            run_id,
+            receipt,
+            command,
+            working_directory=working_directory,
+            dependency_profile=dependency_profile,
+        )
         if fallback_used and self._fallback_failure_is_unsupported(receipt):
             self.store.append_event(
                 run_id,
@@ -270,6 +292,8 @@ class ProjectTestRunner:
                 error_category="dependency_prepare",
                 next_action="项目测试使用了 pytest fixture，必须准备受支持的 pytest 环境。",
                 sandbox_id=receipt.sandbox_id,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
@@ -281,6 +305,8 @@ class ProjectTestRunner:
                 command,
                 0,
                 sandbox_id=receipt.sandbox_id,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
         try:
             self.store.record_test_check_failure_fact(
@@ -313,6 +339,8 @@ class ProjectTestRunner:
                 error_category="test_process",
                 next_action="重新检查项目文件和测试证据后再生成修复提案。",
                 sandbox_id=receipt.sandbox_id,
+                working_directory=working_directory,
+                dependency_profile=dependency_profile,
             )
         self.store.finish_run(run_id, "failed", {"exit_code": receipt.exit_code})
         return ProjectTestRunResult(
@@ -326,10 +354,14 @@ class ProjectTestRunner:
             error_category="test_assertion",
             next_action="可以将该 Failure Run 交给 bug-fix Skill 生成 Changeset。",
             sandbox_id=receipt.sandbox_id,
+            working_directory=working_directory,
+            dependency_profile=dependency_profile,
         )
 
     @staticmethod
     def _execution_error_details(error_code: str) -> tuple[str, str]:
+        if error_code.startswith("FC_DEPENDENCY_INSTALL"):
+            return "dependency_prepare", "检查依赖声明和 FC 网络策略后重新准备环境。"
         if error_code in {"SANDBOX_UNAVAILABLE", "SANDBOX_TIMEOUT"}:
             return "sandbox", "检查 FC 沙箱状态；若回执未知，先查询 Run 再重试。"
         if error_code in {"CONTROL_PLANE_TRANSIENT", "ORPHAN_RUN_RECOVERABLE"}:
@@ -340,6 +372,54 @@ class ProjectTestRunner:
                 "检查服务器固定 Profile 和执行输入，不要把模型命令直接重放。",
             )
         return "execution", "查看该 Run 的执行回执，确认失败阶段后再决定下一步。"
+
+    @staticmethod
+    def _test_working_directory(snapshot: tuple[ExecutionFile, ...]) -> str:
+        """Choose a server-owned uploaded subdirectory for nested test projects."""
+
+        test_paths = sorted(
+            item.relative_path
+            for item in snapshot
+            if (
+                item.relative_path.rsplit("/", 1)[-1].startswith("test_")
+                and item.relative_path.endswith(".py")
+            )
+            or item.relative_path.endswith("_test.py")
+        )
+        if not test_paths:
+            return ""
+        top_levels = {
+            path.split("/", 1)[0]
+            for path in test_paths
+            if "/" in path
+        }
+        if len(top_levels) != 1:
+            return ""
+        candidate = next(iter(top_levels))
+        if candidate in {"tests", "test"}:
+            return ""
+        if all(path.startswith(candidate + "/") for path in test_paths):
+            return candidate
+        return ""
+
+    @staticmethod
+    def _dependency_profile(
+        snapshot: tuple[ExecutionFile, ...], *, test_kind: str, working_directory: str
+    ) -> str:
+        prefix = f"{working_directory}/" if working_directory else ""
+        paths = {
+            item.relative_path[len(prefix) :]
+            for item in snapshot
+            if item.relative_path.startswith(prefix)
+        }
+        if test_kind == "node-test" and "package.json" in paths and "package-lock.json" in paths:
+            return "node-npm-ci"
+        if test_kind == "python-pytest":
+            if "requirements.txt" in paths:
+                return "python-requirements"
+            if "pyproject.toml" in paths:
+                return "python-project"
+        return ""
 
     @staticmethod
     def command_for(test_kind: str) -> tuple[str, str]:
@@ -442,7 +522,15 @@ class ProjectTestRunner:
             raise ValueError("project test snapshot exceeds byte limit")
         return tuple(files)
 
-    def _record_receipt(self, run_id: str, receipt: ExecutionResult, command: str) -> None:
+    def _record_receipt(
+        self,
+        run_id: str,
+        receipt: ExecutionResult,
+        command: str,
+        *,
+        working_directory: str,
+        dependency_profile: str,
+    ) -> None:
         self.store.append_event(
             run_id,
             "test.execution.completed",
@@ -451,6 +539,8 @@ class ProjectTestRunner:
                 "backend": receipt.backend,
                 "sandbox_id": receipt.sandbox_id,
                 "command_profile": receipt.command_profile,
+                "working_directory": working_directory,
+                "dependency_profile": dependency_profile,
                 "exit_code": receipt.exit_code,
                 "duration_ms": receipt.duration_ms,
                 "stdout": redact_execution_output(receipt.stdout),

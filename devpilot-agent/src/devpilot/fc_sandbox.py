@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import json
 import os
+import shlex
 import tempfile
 import time
 from collections.abc import Iterator
@@ -36,6 +37,7 @@ SANDBOX_ROOT = "/workspace/devpilot"
 MAX_CLEANUP_ATTEMPTS = 3
 PYTEST_INSTALL_COMMAND = "python -m pip install --disable-pip-version-check pytest"
 PYTEST_INSTALL_TIMEOUT_SECONDS = 120
+DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 300
 _PERSIST_LOCK = RLock()
 FC_VERIFICATION_PROFILES = frozenset(
     {
@@ -277,6 +279,59 @@ class FCSandboxBackend:
             "project-pytest",
             "python-regression",
         }
+
+    @staticmethod
+    def _sandbox_working_directory(request: ExecutionRequest) -> str:
+        if not request.working_directory:
+            return SANDBOX_ROOT
+        normalized = request.working_directory.replace("\\", "/")
+        return f"{SANDBOX_ROOT}/{normalized}"
+
+    @staticmethod
+    def _dependency_command(request: ExecutionRequest) -> str | None:
+        working_directory = FCSandboxBackend._sandbox_working_directory(request)
+        if request.dependency_profile == "python-requirements":
+            return (
+                "python -m pip install --disable-pip-version-check -r "
+                f"{shlex.quote(working_directory + '/requirements.txt')}"
+            )
+        if request.dependency_profile == "python-project":
+            return (
+                "python -m pip install --disable-pip-version-check -e "
+                f"{shlex.quote(working_directory)}"
+            )
+        if request.dependency_profile == "node-npm-ci":
+            return "npm ci --ignore-scripts"
+        return None
+
+    @staticmethod
+    def _should_install_dependencies(request: ExecutionRequest) -> bool:
+        return bool(request.dependency_profile)
+
+    def _install_dependencies(self, sandbox_handle: Any, request: ExecutionRequest) -> None:
+        command = self._dependency_command(request)
+        if command is None:
+            return
+        try:
+            result = sandbox_handle.commands.run(
+                command,
+                timeout=DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
+                cwd=self._sandbox_working_directory(request),
+            )
+        except Exception as exc:
+            if not isinstance(getattr(exc, "exit_code", None), int):
+                raise ExecutionError(
+                    "FC_DEPENDENCY_INSTALL_FAILED",
+                    "FC Sandbox could not prepare project dependencies",
+                ) from exc
+            result = exc
+        exit_code = getattr(result, "exit_code", None)
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code != 0:
+            raise ExecutionError(
+                "FC_DEPENDENCY_INSTALL_FAILED",
+                "FC Sandbox could not prepare project dependencies",
+                details={"exit_code": exit_code},
+            )
 
     def _install_pytest(self, sandbox_handle: Any) -> None:
         """Install the fixed test runner dependency inside this short-lived sandbox."""
@@ -686,7 +741,13 @@ class FCSandboxBackend:
             raise ExecutionError(
                 "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
             )
+        install_dependencies = self._should_install_dependencies(request)
         install_pytest = self._should_install_pytest(request)
+        if install_dependencies and not self.config.allow_network:
+            raise ExecutionError(
+                "FC_DEPENDENCY_INSTALL_NETWORK_DENIED",
+                "project dependency preparation requires an explicitly permitted FC network policy",
+            )
         if (
             install_pytest
             and self.config.network_policy_mode == "required"
@@ -712,17 +773,22 @@ class FCSandboxBackend:
                 "timeout": min(
                     self.config.max_timeout_seconds,
                     request.timeout_seconds
+                    + (DEPENDENCY_INSTALL_TIMEOUT_SECONDS if install_dependencies else 0)
                     + (PYTEST_INSTALL_TIMEOUT_SECONDS if install_pytest else 0),
                 ),
             }
             if self.config.network_policy_mode == "required":
                 create_kwargs["allow_internet_access"] = (
                     self.config.allow_network
-                    if install_pytest
+                    if install_dependencies or install_pytest
                     else self.config.allow_network and request.network_allowed
                 )
-                if install_pytest and self.config.allow_network:
-                    effective_network_policy = "required-with-pytest-bootstrap"
+                if self.config.allow_network and (install_dependencies or install_pytest):
+                    effective_network_policy = (
+                        "required-with-dependency-bootstrap"
+                        if install_dependencies
+                        else "required-with-pytest-bootstrap"
+                    )
             sandbox_handle: Any = sandbox_cls.create(**create_kwargs)
             if sandbox_handle is None:
                 raise ExecutionError("FC_SANDBOX_CREATE_FAILED", "FC Sandbox returned no handle")
@@ -744,6 +810,12 @@ class FCSandboxBackend:
             with self._lock:
                 if state.cancel_requested:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
+            if install_dependencies:
+                stage = "dependency"
+                self._install_dependencies(sandbox_handle, request)
+                with self._lock:
+                    if state.cancel_requested:
+                        raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
             if install_pytest:
                 stage = "dependency"
                 self._install_pytest(sandbox_handle)
@@ -756,7 +828,7 @@ class FCSandboxBackend:
                     result = sandbox_handle.commands.run(
                         request.command,
                         timeout=request.timeout_seconds,
-                        cwd=SANDBOX_ROOT,
+                        cwd=self._sandbox_working_directory(request),
                     )
                 except TypeError as exc:
                     # Keep compatibility with older SDKs used by local

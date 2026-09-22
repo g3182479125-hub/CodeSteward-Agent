@@ -190,6 +190,42 @@ def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> N
     )
 
 
+def test_project_test_selects_nested_working_directory_and_dependency_profile(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    seed = project / "seed_repo"
+    tests = seed / "tests"
+    tests.mkdir(parents=True)
+    (seed / "main.py").write_text("def price():\n    return 80\n", encoding="utf-8")
+    (seed / "requirements.txt").write_text("pytest==8.0.0\n", encoding="utf-8")
+    (tests / "test_main.py").write_text(
+        "from main import price\n\n\ndef test_price():\n    assert price() == 80\n",
+        encoding="utf-8",
+    )
+    store, roots = _trusted_store(tmp_path, project)
+    backend = FakeExecutionBackend(exit_code=0)
+
+    result = ProjectTestRunner(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["seed_repo/main.py"],
+        symptom="price test fails",
+        expected_behavior="price test passes",
+    )
+
+    assert result.status == "passed"
+    assert result.working_directory == "seed_repo"
+    assert result.dependency_profile == "python-requirements"
+    request = backend.requests[0]
+    assert request.working_directory == "seed_repo"
+    assert request.dependency_profile == "python-requirements"
+
+
 def test_missing_pytest_does_not_turn_unsupported_fixture_into_failure_evidence(
     tmp_path: Path,
 ) -> None:
