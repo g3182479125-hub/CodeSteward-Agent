@@ -86,6 +86,34 @@ def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -
     assert reverted["status"] == "reverted"
 
 
+def test_preview_validation_failure_finishes_started_run(tmp_path: Path) -> None:
+    manager, project = make_manager(tmp_path)
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    with pytest.raises(PatchError, match="target changed since planning"):
+        manager.preview(
+            project_path=project,
+            project_id=None,
+            patches=[
+                FilePatch(
+                    "main.py",
+                    FileOperation.UPDATE,
+                    "print('changed')\n",
+                    expected_sha256="0" * 64,
+                )
+            ],
+        )
+
+    project_id = manager.store.list_projects()[0]["project_id"]  # type: ignore[union-attr]
+    run_id = manager.store.list_project_run_ids(  # type: ignore[union-attr]
+        project_id=project_id, kind="code-delivery"
+    )[0]
+    assert manager.store.get_run_status(run_id) == "failed"  # type: ignore[union-attr]
+    events = manager.store.list_run_events(run_id)  # type: ignore[union-attr]
+    assert events[-1]["event_type"] == "run.failed"
+    assert events[-1]["payload"]["code"] == "PRECONDITION_HASH_MISMATCH"
+
+
 def test_full_access_can_apply_and_verify_without_approval_token(tmp_path: Path) -> None:
     backend = FakeExecutionBackend(stdout="syntax ok")
     manager, project = make_manager(tmp_path, execution_backend=backend)

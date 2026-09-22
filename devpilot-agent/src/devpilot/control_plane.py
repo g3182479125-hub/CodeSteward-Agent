@@ -568,14 +568,33 @@ class ControlPlaneManager:
         task_value = task_id or f"task-{uuid.uuid4()}"
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", task_value):
             raise PatchError("TASK_ID_INVALID", "task_id is invalid")
-        plan = self.patch_service.plan(
-            project,
-            project_id=resolved_project_id,
-            task_id=task_value,
-            plan_id=f"plan-{uuid.uuid4()}",
-            run_id=run_id,
-            patches=patches,
-        )
+        try:
+            plan = self.patch_service.plan(
+                project,
+                project_id=resolved_project_id,
+                task_id=task_value,
+                plan_id=f"plan-{uuid.uuid4()}",
+                run_id=run_id,
+                patches=patches,
+            )
+        except PatchError as exc:
+            # Preview starts a durable Run before validating the complete
+            # patch.  If validation rejects the proposal, close that Run
+            # immediately instead of leaving the UI/model with a permanent
+            # "running" execution that invites unsafe retries.
+            if self.store is not None and run_id is not None:
+                try:
+                    self.store.finish_run(run_id, "failed", {"code": exc.code})
+                except Exception:
+                    pass
+            raise
+        except Exception:
+            if self.store is not None and run_id is not None:
+                try:
+                    self.store.finish_run(run_id, "failed", {"code": "INTERNAL_ERROR"})
+                except Exception:
+                    pass
+            raise
         entry = _PendingChangeSet(plan, run_id)
         with self._mutex:
             self._entries[plan.change_set.id] = entry
