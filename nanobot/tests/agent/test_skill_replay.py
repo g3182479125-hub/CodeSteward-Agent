@@ -33,6 +33,11 @@ class _FakeProvider(LLMProvider):
         return LLMResponse(content=self.response, tool_calls=[], usage={"total_tokens": 3})
 
 
+class _UnknownUsageProvider(_FakeProvider):
+    async def chat(self, **_: Any) -> LLMResponse:
+        return LLMResponse(content=self.response, tool_calls=[], usage={})
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 
@@ -203,6 +208,25 @@ async def test_replay_rejects_a_worktree_outside_the_trusted_root(tmp_path: Path
 
     assert result.status == "infrastructure_error"
     assert result.error == "replay worktree is outside the trusted private root"
+
+
+@pytest.mark.asyncio
+async def test_replay_fails_closed_when_provider_usage_is_unknown(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    request = _request(repo, tmp_path / "private-replays", "ok", [])
+    request = replace(
+        request,
+        runtime=LLMRuntime.capture(
+            _UnknownUsageProvider("ok"),
+            "fake/model",
+            context_window_tokens=4096,
+        ),
+    )
+
+    result = await run_skill_replay(request, "---\nname: repo-analysis\n---\n候选\n")
+
+    assert result.status == "infrastructure_error"
+    assert result.error == "replay provider usage unavailable"
 
 
 def test_replay_has_three_trusted_graders_and_rejects_scope_or_timeout() -> None:

@@ -181,6 +181,25 @@ def test_improvement_case_and_replay_trial_round_trip(
     ) == [trial]
     assert case.status in IMPROVEMENT_CASE_STATES
 
+    with pytest.raises(SkillImprovementError, match="hard budget"):
+        store.record_replay_trial(
+            case_id=case.case_id,
+            skill_id="repo-analysis",
+            skill_hash=skill_hash,
+            version="baseline",
+            model_id="deterministic-test",
+            parameters={"temperature": 0},
+            snapshot_ref=snapshot_ref,
+            started_at="2026-09-21T00:00:00+00:00",
+            finished_at="2026-09-21T00:00:01+00:00",
+            token_count=8_001,
+            duration_seconds=1.0,
+            tool_trace_ref="trace-over-budget",
+            final_output_ref="output-over-budget",
+            assertion_result={"passed": True, "grader_kind": "analysis_fact"},
+            status="passed",
+        )
+
 
 def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

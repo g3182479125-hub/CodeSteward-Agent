@@ -1424,8 +1424,6 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         for value in evidence_paths
                     ):
                         expected_paths = tuple(cast(str, value) for value in evidence_paths)
-                    elif "/" in expected or "\\" in expected:
-                        expected_paths = (expected,)
                     else:
                         raise ValueError(
                             "反馈必须绑定确定性文件路径；请在 task_context.evidence_paths 中提供"

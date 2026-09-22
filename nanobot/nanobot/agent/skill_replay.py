@@ -188,6 +188,10 @@ class _ReplayBudgetProvider(LLMProvider):
                 finish_reason="error",
                 error_kind="infrastructure",
             )
+        # Reserve the conservative prompt cost before entering the provider.
+        # If the call is cancelled or returns incomplete usage, the reservation
+        # remains consumed and the replay fails closed.
+        self._remaining_tokens -= prompt_reservation
         try:
             response = await asyncio.wait_for(
                 self._delegate.chat(
@@ -236,6 +240,9 @@ class _ReplayBudgetProvider(LLMProvider):
                 error_kind="infrastructure",
                 usage=usage,
             )
+        # Keep the full reported usage charged in addition to the reservation;
+        # this is intentionally conservative because provider tokenizers may
+        # count hidden/system/tool content differently from this proxy.
         self._remaining_tokens -= total
         if self._remaining_tokens < 0:
             return LLMResponse(

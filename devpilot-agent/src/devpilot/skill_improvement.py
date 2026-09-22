@@ -1906,6 +1906,10 @@ class SkillImprovementStore:
             raise SkillImprovementError("token_count must be a non-negative integer")
         if duration_seconds < 0:
             raise SkillImprovementError("duration_seconds must be non-negative")
+        if status in {"passed", "failed"} and (
+            token_count > 8_000 or duration_seconds > 300
+        ):
+            raise SkillImprovementError("replay trial exceeds its hard budget")
         if case.replay_snapshot_ref is None or snapshot_ref != case.replay_snapshot_ref:
             raise SkillImprovementError("replay trial snapshot does not match its case")
         snapshot = self.get_task_snapshot(
@@ -3550,11 +3554,20 @@ class SkillImprovementStore:
             replay_candidate.status == "passed"
             and replay_candidate.assertion_result.get("passed") is True
         )
+        budget_ok = (
+            baseline.token_count <= 8_000
+            and replay_candidate.token_count <= 8_000
+            and baseline.duration_seconds <= 300
+            and replay_candidate.duration_seconds <= 300
+            and baseline.token_count + replay_candidate.token_count <= 20_000
+            and baseline.duration_seconds + replay_candidate.duration_seconds <= 600
+        )
         eligible = (
             baseline_valid
             and baseline.status == "failed"
             and not baseline_passed
             and candidate_passed
+            and budget_ok
         )
         evaluation_id = f"evaluation-{uuid.uuid4()}"
         cases = (
