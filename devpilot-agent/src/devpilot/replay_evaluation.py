@@ -122,7 +122,7 @@ async def evaluate_candidate_replay(
         asserted = case.assertion_spec.get(key)
         if profile_name in {"feature-delivery", "bug-fix"} and not isinstance(asserted, bool):
             raise SkillImprovementError(f"replay Case is missing {key}")
-        if isinstance(asserted, bool) and asserted != supplied:
+        if isinstance(asserted, bool) and supplied and not asserted:
             raise SkillImprovementError("replay verification fact does not match the Case")
     requests = (baseline_request, candidate_request)
     for request in requests:
@@ -179,9 +179,21 @@ async def evaluate_candidate_replay(
                 else candidate_request.model_id
             ),
             parameters={
-                "max_iterations": baseline_request.max_iterations,
-                "replay_max_tokens": baseline_request.max_tokens,
-                "replay_timeout_s": baseline_request.llm_timeout_s or 300,
+                "max_iterations": (
+                    baseline_request.max_iterations
+                    if version == "baseline"
+                    else candidate_request.max_iterations
+                ),
+                "replay_max_tokens": (
+                    baseline_request.max_tokens
+                    if version == "baseline"
+                    else candidate_request.max_tokens
+                ),
+                "replay_timeout_s": (
+                    baseline_request.llm_timeout_s or 300
+                    if version == "baseline"
+                    else candidate_request.llm_timeout_s or 300
+                ),
             },
             snapshot_ref=snapshot_ref,
             started_at=_now(),
