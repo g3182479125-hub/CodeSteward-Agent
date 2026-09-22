@@ -1256,6 +1256,7 @@ class AgentLoop:
             return
         if not isinstance(payload, Mapping):
             return
+        payload = cast(Mapping[str, Any], payload)
 
         evidence_refs: list[str] = []
         file_hashes: list[tuple[str, str]] = []
@@ -1273,7 +1274,11 @@ class AgentLoop:
             if isinstance(value, str) and value:
                 evidence_refs.append(value)
             elif isinstance(value, (list, tuple)):
-                evidence_refs.extend(item for item in value if isinstance(item, str) and item)
+                evidence_refs.extend(
+                    item
+                    for item in cast(Iterable[object], value)
+                    if isinstance(item, str) and item
+                )
         if tool_name == "devpilot_read_code":
             path = payload.get("path")
             digest = payload.get("sha256")

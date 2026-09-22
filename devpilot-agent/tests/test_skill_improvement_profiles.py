@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -338,6 +339,57 @@ def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
     )
     assert saved_candidate is not None
     assert saved_candidate.status == "pending_confirmation"
+
+    over_budget_candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-1",
+        skill_path="skills/repo-analysis/SKILL.md",
+        baseline_content=baseline.content,
+        candidate_content=baseline.content + "\n- 输出完整测试入口。\n",
+        evidence_ids=(evidence.evidence_id,),
+        case_ids=(case.case_id,),
+        reason="验证聚合预算门禁。",
+        expected_behavior="输出 tests/test_api.py。",
+        test_set_version="si-07-real-replay-v1",
+        workspace=workspace,
+    )
+    over_budget_trial = store.record_replay_trial(
+        case_id=case.case_id,
+        skill_id="repo-analysis",
+        skill_hash=over_budget_candidate.candidate_hash,
+        version="candidate",
+        model_id="deterministic-test",
+        parameters={"temperature": 0},
+        snapshot_ref=snapshot_ref,
+        started_at="2026-09-22T00:00:04+00:00",
+        finished_at="2026-09-22T00:00:05+00:00",
+        token_count=3,
+        duration_seconds=1.0,
+        tool_trace_ref="trace-over-budget-aggregate",
+        final_output_ref="output-over-budget-aggregate",
+        assertion_result={"passed": True, "grader_kind": "analysis_fact"},
+        status="passed",
+        candidate_id=over_budget_candidate.candidate_id,
+    )
+    original_get_trial = store.get_replay_trial
+
+    def get_legacy_over_budget_trial(trial_id: str, **kwargs: object):
+        trial = original_get_trial(trial_id, **kwargs)
+        if trial is not None and trial_id == over_budget_trial.trial_id:
+            return replace(trial, token_count=13_000)
+        return trial
+
+    monkeypatch.setattr(store, "get_replay_trial", get_legacy_over_budget_trial)
+    over_budget_report = store.record_replay_evaluation(
+        over_budget_candidate.candidate_id,
+        case_id=case.case_id,
+        baseline_trial_id=baseline_trial.trial_id,
+        candidate_trial_id=over_budget_trial.trial_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+    assert over_budget_report.eligible is False
 
 
 def test_non_replayable_snapshot_is_recorded_without_model_eligibility(tmp_path: Path) -> None:
