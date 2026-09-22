@@ -1413,6 +1413,23 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     expected = expected.strip()
                     if not summary or not expected:
                         raise ValueError("反馈描述和 expected 都不能为空")
+                    raw_evidence_paths = task_context.get("evidence_paths", ())
+                    evidence_paths = (
+                        cast(list[object] | tuple[object, ...], raw_evidence_paths)
+                        if isinstance(raw_evidence_paths, (list, tuple))
+                        else ()
+                    )
+                    if evidence_paths and all(
+                        isinstance(value, str) and value.strip()
+                        for value in evidence_paths
+                    ):
+                        expected_paths = tuple(cast(str, value) for value in evidence_paths)
+                    elif "/" in expected or "\\" in expected:
+                        expected_paths = (expected,)
+                    else:
+                        raise ValueError(
+                            "反馈必须绑定确定性文件路径；请在 task_context.evidence_paths 中提供"
+                        )
                     skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
                     from devpilot.skill_improvement import task_snapshot_ref
                     from devpilot.skill_improvement_cases import SkillImprovementCaseRecorder
@@ -1432,7 +1449,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         replay_snapshot_ref=task_snapshot_ref(str(task_context["task_id"])),
                         assertion_spec={
                             "kind": "analysis_fact",
-                            "expected_paths": (expected,),
+                            "expected_paths": expected_paths,
                             "expected_evidence_refs": tuple(
                                 value
                                 for value in task_context.get("evidence_refs", ())

@@ -188,8 +188,8 @@ async def evaluate_candidate_replay(
             finished_at=_now(),
             token_count=result.token_count,
             duration_seconds=result.duration_seconds,
-            tool_trace_ref=f"trace-{uuid.uuid4()}",
-            final_output_ref=f"output-{uuid.uuid4()}",
+            tool_trace_ref=f"trace-{trial_id}",
+            final_output_ref=f"output-{trial_id}",
             assertion_result={
                 "passed": grade_passed,
                 "grader_kind": grade_kind,

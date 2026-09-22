@@ -177,7 +177,9 @@ class _ReplayBudgetProvider(LLMProvider):
             )
         prompt_reservation = max(
             256,
-            (len(str(messages)) + len(str(tools or ()))) // 2,
+            len(str(messages).encode("utf-8"))
+            + len(str(tools or ()).encode("utf-8"))
+            + 256,
         )
         available_completion = self._remaining_tokens - prompt_reservation
         if available_completion <= 0:
@@ -212,6 +214,18 @@ class _ReplayBudgetProvider(LLMProvider):
                 error_kind="infrastructure",
             )
         usage = dict(response.usage)
+        has_total = isinstance(usage.get("total_tokens"), int)
+        has_split = all(
+            isinstance(usage.get(key), int)
+            for key in ("prompt_tokens", "completion_tokens")
+        )
+        if not has_total and not has_split:
+            return LLMResponse(
+                content="replay provider usage is incomplete",
+                finish_reason="error",
+                error_kind="infrastructure",
+                usage=usage,
+            )
         total = usage.get("total_tokens") or (
             usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
         )

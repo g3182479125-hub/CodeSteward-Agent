@@ -1128,6 +1128,17 @@ class ControlPlaneManager:
                 expected_behavior=str(context["expected_behavior"]),
                 failure_evidence_refs=context.get("failure_evidence_refs", ()),
                 replay_snapshot_ref=str(context["replay_snapshot_ref"]),
+                assertion_spec={
+                    "kind": (
+                        "bug_fix_verification"
+                        if skill_id == "bug-fix"
+                        else "delivery_verification"
+                    ),
+                    "baseline_verification_passed": False,
+                    "candidate_verification_passed": True,
+                    "baseline_failure_repaired": False,
+                    "candidate_failure_repaired": skill_id == "bug-fix",
+                },
             )
         except (KeyError, TypeError, ValueError, OSError, SkillImprovementError) as exc:
             self._event(
@@ -1170,7 +1181,7 @@ class ControlPlaneManager:
                 patch_hash=entry.plan.patch_hash,
                 scope_hash=entry.plan.scope_hash,
                 capability="r1",
-                expires_at=approval["expires_at"],
+                expires_at=cast(datetime, approval["expires_at"]),
                 id=str(approval["id"]),
             )
             try:
