@@ -540,16 +540,15 @@ WebUI 投影，让临时插件生命周期进入现有活动轨迹，并统一�
 和权限放宽；尤其不得因解除会话锁死而重放未知副作用。当前历史计划称新普通/只读 Turn 可继续，
 但用户实际 WebUI 截图显示相反行为，因此 R0 的现场复现和归因是任何代码改动的强制前置。
 
-## 10. 提议中的后续扩展：三 Profile Skill 受控迭代（2026-09-21）
+## 10. 已批准并进行中的后续扩展：三 Profile Skill 受控迭代（2026-09-21）
 
 用户已提出将 P8 原先仅面向 `bug-fix` 的受控 Skill 改进试点，扩展到
 `repo-analysis`、`feature-delivery` 和 `bug-fix` 三个既有 Profile。该范围目前仅登记为
-**proposed，尚未实施或批准进入代码节点**；不改变 P0–P8、H1–H11 的历史完成状态，
-也不自动重开已完成节点。
+该扩展已经按节点推进：SI-01–SI-07 已实施并通过对应证据和 Standards/Spec 双轴复核；
+SI-08 尚未实施。它不改变 P0–P8、H1–H11 的历史完成状态，也不自动重开已完成节点。
 
 完整计划见
 [`THREE_PROFILE_SKILL_IMPROVEMENT_EXTENSION.md`](THREE_PROFILE_SKILL_IMPROVEMENT_EXTENSION.md)。
-后续实施必须按该计划的 SI-01–SI-08 顺序推进，并继续遵守本文第 0/6/7 节、ADR-0004
-和 Standards/Spec 双轴复核要求。第一步只能做 SI-01 的只读现状核对：确认实际
-TaskContext、SkillsLoader 生效路径、Skill hash、候选启用路径和现有 P8 数据兼容关系；
-在该核对完成并形成节点证据前，不得修改 Skill 改进运行时代码。
+下一步是 SI-08：用户确认、恢复、Cron 通知和自有合成 Git fixture 的端到端演练。继续遵守
+本文第 0/6/7 节、ADR-0004 和 Standards/Spec 双轴复核要求；不得把 SI-07 的 Replay
+通过误报成 SI-08 的用户确认或定时链路已完成。
