@@ -365,6 +365,7 @@ def _skill_improvement_context(
     task_id = attributes.get("devpilot_task_id")
     project_id = attributes.get("devpilot_project_id")
     profile_binding = attributes.get("devpilot_profile_binding")
+    replay_prompt = attributes.get("devpilot_replay_prompt")
     sender_id = getattr(request_context, "sender_id", None)
     session_id = (
         getattr(request_context, "session_key", None)
@@ -373,7 +374,14 @@ def _skill_improvement_context(
     workspace = Path(project_path).expanduser().resolve()
     if not all(
         isinstance(value, str) and value
-        for value in (task_id, project_id, profile_binding, sender_id, session_id)
+        for value in (
+            task_id,
+            project_id,
+            profile_binding,
+            sender_id,
+            session_id,
+            replay_prompt,
+        )
     ):
         return None
     task_id_value = cast(str, task_id)
@@ -422,11 +430,7 @@ def _skill_improvement_context(
         "replay_snapshot_ref": task_snapshot_ref(task_id_value),
         "summary": summary,
         "expected_behavior": expected_behavior,
-        "replay_prompt": (
-            attributes.get("devpilot_replay_prompt")
-            if isinstance(attributes.get("devpilot_replay_prompt"), str)
-            else None
-        ),
+        "replay_prompt": cast(str, replay_prompt),
         "verification_kind": "semantic",
         "allowed_file_scope": list(snapshot.allowed_file_scope),
         "verification_profile": snapshot.verification_profile,

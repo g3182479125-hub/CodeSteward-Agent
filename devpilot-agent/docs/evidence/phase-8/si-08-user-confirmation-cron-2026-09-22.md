@@ -10,7 +10,7 @@
 
 1. 候选必须处于 `pending_evaluation`（或允许重试的 `evaluation_failed`）才会调用模型；
 2. 生产 `/skill-improvement <candidate-id> evaluate` 使用 Case 保存的原始任务输入，绝不把
-   `expected_behavior` 这个 grader 断言当成用户问题；旧 Case 没有原始输入时使用中性的兼容提示；
+   `expected_behavior` 这个 grader 断言当成用户问题；旧 Case 没有原始输入时明确拒绝回放；
 3. 基线和候选各使用一个独立 Provider 实例，并使用同一份 Git snapshot 建立不同私有 worktree；
 4. 真实 A/B 结果只会把候选推进到 `pending_confirmation`，不会自动激活；
 5. 用户确认后只影响新任务，旧任务继续使用自己的 Skill snapshot；`restore` 恢复到稳定版本；
