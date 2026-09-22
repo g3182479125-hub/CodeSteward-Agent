@@ -1220,10 +1220,15 @@ class AgentLoop:
             and len(digest) == 64
             and all(char in "0123456789abcdefABCDEF" for char in digest)
         )[:20]
+        new_origin_run = bool(run_id and run_id != state.run_id)
         updated = dataclasses.replace(
             state,
-            evidence_refs=tuple(dict.fromkeys((*state.evidence_refs, *evidence_refs)))[:20],
-            file_hashes=validated_hashes or state.file_hashes,
+            evidence_refs=(
+                tuple(dict.fromkeys(evidence_refs))[:20]
+                if new_origin_run
+                else tuple(dict.fromkeys((*state.evidence_refs, *evidence_refs)))[:20]
+            ),
+            file_hashes=validated_hashes if new_origin_run else validated_hashes or state.file_hashes,
             run_id=run_id or state.run_id,
             change_set_id=change_set_id or state.change_set_id,
         )

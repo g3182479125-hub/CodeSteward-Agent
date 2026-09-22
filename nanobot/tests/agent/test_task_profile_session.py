@@ -174,6 +174,41 @@ def test_generic_tool_result_cannot_replace_origin_run(tmp_path) -> None:
     assert session.metadata["task_context"]["run_id"] == "origin-run"
 
 
+def test_new_origin_run_drops_stale_read_evidence(tmp_path) -> None:
+    loop = _loop(tmp_path)
+    loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
+    profile = loop.set_session_task_profile("cli:one", "repo-analysis")
+    session = loop.sessions.get_or_create("cli:one")
+    loop._ensure_task_context(session, profile, "inspect project", tmp_path)
+
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_inspect_project",
+        {},
+        '{"run_id":"origin-run-1"}',
+    )
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_read_code",
+        {},
+        '{"path":"old.py","sha256":"' + "a" * 64 + '"}',
+    )
+    loop._record_task_context_tool_result(
+        session,
+        profile,
+        "devpilot_inspect_project",
+        {},
+        '{"run_id":"origin-run-2"}',
+    )
+
+    stored = session.metadata["task_context"]
+    assert stored["run_id"] == "origin-run-2"
+    assert stored["file_hashes"] == []
+    assert stored["evidence_refs"] == ["origin-run-2"]
+
+
 def test_task_context_records_proposal_change_set_and_evidence(tmp_path) -> None:
     loop = _loop(tmp_path)
     loop.task_profiles.validate_runtime = lambda *_args: None  # type: ignore[method-assign]
