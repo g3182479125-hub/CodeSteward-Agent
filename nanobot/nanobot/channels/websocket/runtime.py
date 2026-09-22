@@ -544,7 +544,15 @@ class WebSocketChannel(BaseChannel):
         digest = hashlib.sha256(
             f"{self._devpilot_session_id}\n{chat_id}\n{turn_key}".encode("utf-8")
         ).hexdigest()[:32]
-        return {"devpilot_run_id": f"webui-{digest}"}
+        # A WebUI turn is the live DevPilot task boundary.  The control plane
+        # requires a server-issued task id before it will enroll a project for
+        # Full Access; deriving both bindings from the same opaque digest keeps
+        # them stable for every tool call in this turn without accepting an id
+        # from model text or browser input.
+        return {
+            "devpilot_run_id": f"webui-{digest}",
+            "devpilot_task_id": f"webui-task-{digest}",
+        }
 
     def _register_devpilot_proposal(
         self, chat_id: str, proposal: object

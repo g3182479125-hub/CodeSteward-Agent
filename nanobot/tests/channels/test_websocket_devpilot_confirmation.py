@@ -186,9 +186,11 @@ def test_trusted_webui_turn_gets_server_owned_run_binding() -> None:
 
     attrs = channel._devpilot_run_binding_attributes("trusted", "chat", "turn-1")
 
-    assert set(attrs) == {"devpilot_run_id"}
+    assert set(attrs) == {"devpilot_run_id", "devpilot_task_id"}
     assert attrs["devpilot_run_id"].startswith("webui-")
     assert len(attrs["devpilot_run_id"]) == len("webui-") + 32
+    assert attrs["devpilot_task_id"].startswith("webui-task-")
+    assert len(attrs["devpilot_task_id"]) == len("webui-task-") + 32
     assert attrs == channel._devpilot_run_binding_attributes("trusted", "chat", "turn-1")
 
 
