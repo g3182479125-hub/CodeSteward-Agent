@@ -410,6 +410,59 @@ def test_expired_lease_recovers_case_after_store_restart(
     assert recovered.batch.lease_owner == "owner-2"
 
 
+def test_expired_case_batch_recovers_failed_orphan_for_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    _replayable_snapshots(store, workspace, monkeypatch)
+    monkeypatch.setattr(store, "_has_trusted_verification_fact", lambda **kwargs: True)
+    monkeypatch.setattr(store, "_has_trusted_failure_fact", lambda **kwargs: True)
+    case = _create_case(store, workspace, "bug-fix", "failed-orphan")
+    batch_id = "batch-66666666-6666-6666-6666-666666666666"
+    store.configure_scheduled_batch(
+        batch_id=batch_id,
+        job_id="cron-failed-orphan",
+        workspace=workspace,
+        project_id="project-1",
+        user_id="user-1",
+        session_key="websocket:chat",
+        target_skill_ids=tuple(SKILL_IMPROVEMENT_TARGETS),
+    )
+    first = store.claim_scheduled_batch("cron-failed-orphan", lease_owner="owner-1")
+    assert first is not None and first.case is not None
+    baseline = store.read_effective_snapshot(workspace, skill_id="bug-fix")
+    evidence_id = next(
+        ref for ref in case.evidence_refs if store.get_feedback(ref) is not None
+    )
+    candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-1",
+        skill_path="skills/bug-fix/SKILL.md",
+        baseline_content=baseline.content,
+        candidate_content=baseline.content + "\n- Keep replayable failures recoverable.\n",
+        evidence_ids=(evidence_id,),
+        case_ids=(case.case_id,),
+        reason="Preserve the failed replay for recovery.",
+        expected_behavior="The next worker can resume replay.",
+        test_set_version="p8-02-v1",
+        batch_id=batch_id,
+        workspace=workspace,
+    )
+    store._set_candidate_status(candidate, "evaluation_failed")  # type: ignore[attr-defined]
+    running = store.get_scheduled_batch(batch_id)
+    assert running is not None and running.candidate_id is None
+    store._atomic_write(  # type: ignore[attr-defined]  # simulate a crashed worker lease
+        store.batches_dir / f"{batch_id}.json",
+        replace(running, lease_expires_at=0.0).to_dict(),
+    )
+
+    recovered = store.claim_scheduled_batch("cron-failed-orphan", lease_owner="owner-2")
+
+    assert recovered is not None and recovered.status == "claimed"
+    assert recovered.case is not None and recovered.case.case_id == case.case_id
+    assert recovered.batch.candidate_id == candidate.candidate_id
+
+
 def test_concurrent_claims_bind_one_case_to_one_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

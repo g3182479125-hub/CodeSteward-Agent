@@ -2606,7 +2606,7 @@ class SkillImprovementStore:
                             user_id=batch.user_id,
                             project_id=batch.project_id,
                         )
-                        if item.status == "pending_evaluation"
+                        if item.status in {"pending_evaluation", "evaluation_failed"}
                         and case.case_id in item.case_ids
                     ]
                     if orphan_candidates:
