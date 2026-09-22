@@ -47,11 +47,12 @@ nanobot\.venv\Scripts\python.exe -m pytest -q `
   nanobot/tests/agent/test_replay_evaluation.py `
   nanobot/tests/agent/test_skill_replay.py `
   devpilot-agent/tests/test_skill_improvement_profiles.py `
+  devpilot-agent/tests/test_skill_improvement_scheduling.py `
   devpilot-agent/tests/test_p8_02_skill_improvement.py `
   devpilot-agent/tests/test_p8_03_skill_improvement.py
 ```
 
-结果：`208 passed, 1 skipped`。
+结果：`218 passed, 1 skipped`。
 
 变更范围 Ruff 和 `git diff --check` 均通过。仓库全量测试仍包含历史环境相关失败，不能用它们
 否定本节点的受影响回归；完整限制记录在交接文档中。
