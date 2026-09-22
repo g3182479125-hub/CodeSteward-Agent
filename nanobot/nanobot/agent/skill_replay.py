@@ -87,11 +87,12 @@ class ReplayRequest:
     max_iterations: int = 8
     max_tool_result_chars: int = 12_000
     context_block_limit: int | None = None
-    llm_timeout_s: float | None = 600.0
+    llm_timeout_s: float | None = 300.0
     provider_state: ProviderConversationState | None = None
     private_worktree_root: Path | None = None
     source_repository_root: Path | None = None
     snapshot_commit: str | None = None
+    max_tokens: int = 8_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +167,12 @@ def _validate_request(request: ReplayRequest) -> None:
         raise SkillReplayError("replay iteration budget must be positive")
     if request.max_tool_result_chars <= 0:
         raise SkillReplayError("replay tool-result budget must be positive")
+    if request.max_tokens <= 0 or request.max_tokens > 8_000:
+        raise SkillReplayError("replay token budget must be between 1 and 8000")
+    if request.llm_timeout_s is not None and (
+        request.llm_timeout_s <= 0 or request.llm_timeout_s > 300
+    ):
+        raise SkillReplayError("replay timeout must be between 1 and 300 seconds")
     if not request.allowed_tools.issubset(set(request.tools.tool_names)):
         raise SkillReplayError("replay allowed tools are not registered")
 
@@ -321,11 +328,14 @@ async def run_skill_replay(
         skill_path = worktree / request.skill_relative_path
         skill_path.parent.mkdir(parents=True, exist_ok=True)
         skill_path.write_text(skill_content, encoding="utf-8")
+        replay_runtime = request.runtime.with_generation_overrides(
+            max_tokens=request.max_tokens,
+        )
         context = RequestContext(
             channel="skill-replay",
             chat_id=request.session_key,
             session_key=request.session_key,
-            runtime=request.runtime,
+            runtime=replay_runtime,
             workspace=worktree,
             attributes={
                 "devpilot_replay": True,
@@ -340,7 +350,7 @@ async def run_skill_replay(
                 AgentRunSpec(
                     initial_messages=_skill_message(request.initial_messages, skill_content),
                     tools=request.tools.restricted_to(request.allowed_tools),
-                    runtime=request.runtime,
+                    runtime=replay_runtime,
                     max_iterations=request.max_iterations,
                     max_tool_result_chars=request.max_tool_result_chars,
                     workspace=worktree,
@@ -418,14 +428,21 @@ async def run_replay_comparison(
         raise SkillReplayError("baseline and candidate must use different sessions")
     if baseline_request.provider_state is not None or candidate_request.provider_state is not None:
         raise SkillReplayError("replay cannot reuse provider conversation state")
+    if baseline_request.runtime.provider is candidate_request.runtime.provider:
+        raise SkillReplayError("baseline and candidate must use different providers")
     baseline_lease = baseline_request.worktree_factory()
     try:
         candidate_lease = candidate_request.worktree_factory()
     except Exception:
         await _cleanup(baseline_lease)
         raise
-    baseline_path = baseline_lease.path.expanduser().resolve()
-    candidate_path = candidate_lease.path.expanduser().resolve()
+    try:
+        baseline_path = _validate_worktree(baseline_request, baseline_lease.path)
+        candidate_path = _validate_worktree(candidate_request, candidate_lease.path)
+    except BaseException:
+        await _cleanup(baseline_lease)
+        await _cleanup(candidate_lease)
+        raise
     if baseline_path == candidate_path:
         await _cleanup(baseline_lease)
         await _cleanup(candidate_lease)
@@ -439,6 +456,50 @@ async def run_replay_comparison(
     except BaseException:
         await _cleanup(candidate_lease)
         raise
+    if (
+        not baseline.usage
+        or baseline.token_count > baseline_request.max_tokens
+        or baseline.duration_seconds > 300
+    ):
+        await _cleanup(candidate_lease)
+        return ReplayComparison(
+            baseline=baseline,
+            candidate=ReplayTrialResult(
+                status="infrastructure_error",
+                final_output="",
+                tool_events=(),
+                tools_used=(),
+                usage={},
+                duration_seconds=0.0,
+                changed_paths=(),
+                worktree_path=str(candidate_path),
+                error="replay baseline exceeded its hard budget or had unknown usage",
+            ),
+        )
+    remaining_seconds = 600 - baseline.duration_seconds
+    if remaining_seconds <= 0:
+        await _cleanup(candidate_lease)
+        return ReplayComparison(
+            baseline=baseline,
+            candidate=ReplayTrialResult(
+                status="infrastructure_error",
+                final_output="",
+                tool_events=(),
+                tools_used=(),
+                usage={},
+                duration_seconds=0.0,
+                changed_paths=(),
+                worktree_path=str(candidate_path),
+                error="replay comparison time budget was exhausted before candidate",
+            ),
+        )
+    candidate_request = replace(
+        candidate_request,
+        llm_timeout_s=min(
+            candidate_request.llm_timeout_s or 300,
+            remaining_seconds,
+        ),
+    )
     candidate = await run_skill_replay(
         candidate_request,
         candidate_skill,
@@ -446,11 +507,19 @@ async def run_replay_comparison(
     )
     total_tokens = baseline.token_count + candidate.token_count
     total_seconds = baseline.duration_seconds + candidate.duration_seconds
-    if total_tokens > 20_000 or total_seconds > 600:
+    if (
+        not candidate.usage
+        or candidate.token_count > candidate_request.max_tokens
+        or candidate.duration_seconds > 300
+        or total_tokens > 20_000
+        or total_seconds > 600
+    ):
         candidate = replace(
             candidate,
             status="infrastructure_error",
-            error="replay comparison budget was exhausted",
+            error=(
+                "replay comparison budget was exhausted or usage was unknown"
+            ),
         )
     if baseline.worktree_path == candidate.worktree_path:
         raise SkillReplayError("baseline and candidate reused one worktree")

@@ -96,16 +96,23 @@ async def evaluate_candidate_replay(
     if skill_content_hash(candidate_skill) != candidate.candidate_hash:
         raise SkillImprovementError("candidate Skill content does not match the candidate")
     case_expected_behavior = case.expected_behavior
+    if not case_expected_behavior.strip():
+        raise SkillImprovementError("replay Case is missing expected behavior")
     if expected_behavior is not None and expected_behavior != case_expected_behavior:
         raise SkillImprovementError("replay assertion does not match the Case")
     spec_paths = _string_tuple(case.assertion_spec.get("expected_paths", ()))
+    if not spec_paths:
+        raise SkillImprovementError("replay Case is missing expected paths")
     if expected_paths and tuple(expected_paths) != spec_paths:
         raise SkillImprovementError("replay expected paths do not match the Case")
     spec_evidence = _string_tuple(
         case.assertion_spec.get("expected_evidence_refs", ())
     )
+    if not spec_evidence:
+        raise SkillImprovementError("replay Case is missing expected evidence refs")
     if expected_evidence_refs and tuple(expected_evidence_refs) != spec_evidence:
         raise SkillImprovementError("replay evidence refs do not match the Case")
+    profile_name = case.profile_binding.split("@", 1)[0]
     for key, supplied in (
         ("baseline_verification_passed", baseline_verification_passed),
         ("candidate_verification_passed", candidate_verification_passed),
@@ -113,6 +120,8 @@ async def evaluate_candidate_replay(
         ("candidate_failure_repaired", candidate_failure_repaired),
     ):
         asserted = case.assertion_spec.get(key)
+        if profile_name in {"feature-delivery", "bug-fix"} and not isinstance(asserted, bool):
+            raise SkillImprovementError(f"replay Case is missing {key}")
         if isinstance(asserted, bool) and asserted != supplied:
             raise SkillImprovementError("replay verification fact does not match the Case")
     requests = (baseline_request, candidate_request)
@@ -120,7 +129,7 @@ async def evaluate_candidate_replay(
         if (
             request.task_id != case.task_id
             or request.project_id != case.project_id
-            or request.profile_name != case.profile_binding.split("@", 1)[0]
+            or request.profile_name != profile_name
             or request.skill_id != case.skill_id
             or request.snapshot_ref != snapshot_ref
             or request.snapshot_commit != snapshot.start_commit_sha

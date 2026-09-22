@@ -8,12 +8,11 @@ import pytest
 async def test_production_replay_orchestrator_persists_both_trials_and_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytest.importorskip("loguru")
-    from nanobot.agent.skill_replay import ReplayComparison, ReplayTrialResult
-
     from devpilot import replay_evaluation
     from devpilot.replay_evaluation import evaluate_candidate_replay
     from devpilot.skill_improvement import content_sha256
+
+    from nanobot.agent.skill_replay import ReplayComparison, ReplayTrialResult
 
     candidate = SimpleNamespace(
         candidate_id="candidate-1",
@@ -32,8 +31,11 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
         project_id="project-1",
         session_id="session-1",
         profile_binding="repo-analysis@1",
-        expected_behavior="",
-        assertion_spec={},
+        expected_behavior="candidate fact is present",
+        assertion_spec={
+            "expected_paths": ("src/main.py",),
+            "expected_evidence_refs": ("case-1",),
+        },
     )
     snapshot = SimpleNamespace(
         replayable=True,

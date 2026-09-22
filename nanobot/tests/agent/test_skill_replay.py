@@ -106,7 +106,16 @@ async def test_replay_uses_agent_runner_and_cleans_each_distinct_worktree(tmp_pa
     request = _request(repo, private_root, "测试入口是 tests/test_api.py。", paths)
 
     comparison = await run_replay_comparison(
-        replace(request, version="baseline", session_key=f"{request.session_key}-baseline"),
+        replace(
+            request,
+            version="baseline",
+            session_key=f"{request.session_key}-baseline",
+            runtime=LLMRuntime.capture(
+                _FakeProvider("测试入口是 tests/test_api.py。"),
+                "fake/model",
+                context_window_tokens=4096,
+            ),
+        ),
         request,
         baseline_skill="---\nname: repo-analysis\n---\n基线 Skill\n",
         candidate_skill="---\nname: repo-analysis\n---\n候选 Skill\n",
