@@ -356,6 +356,90 @@ async def test_scheduled_candidate_tool_uses_claimed_evidence_and_lease(
 
 
 @pytest.mark.asyncio
+async def test_unscheduled_candidate_tool_uses_server_owned_bug_fix_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_dir = tmp_path.parent / f"{tmp_path.name}-unscheduled-candidate-data"
+    data_dir.mkdir()
+    with sqlite3.connect(data_dir / "devpilot.db") as connection:
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
+        connection.execute(
+            "insert into alembic_version (version_num) values (?)",
+            ("0011_p8_skill_improvement_records",),
+        )
+        connection.execute(
+            """
+            create table skill_improvement_records (
+                id integer primary key autoincrement,
+                record_key text not null unique,
+                record_type text not null,
+                record_id text not null,
+                payload_json text not null,
+                record_mac text not null,
+                workspace text,
+                project_id text,
+                created_at text not null
+            )
+            """
+        )
+    monkeypatch.setenv("DEVPILOT_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
+
+    from devpilot.nanobot_tools import SkillCandidateTool
+    from devpilot.skill_improvement import SkillImprovementStore, content_sha256
+
+    from nanobot.agent.tools.context import RequestContext, request_context
+
+    project_workspace = tmp_path / "project"
+    skill_path = project_workspace / "skills" / "bug-fix" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    baseline = "---\nname: bug-fix\n---\n\n# Bug fix\n"
+    skill_path.write_text(baseline, encoding="utf-8")
+    project_id = "project-unscheduled"
+    store = SkillImprovementStore.from_environment(project_workspace)
+    evidence = store.record_feedback(
+        task_id="task-unscheduled",
+        project_id=project_id,
+        workspace=project_workspace,
+        user_id="user",
+        session_id="session-unscheduled",
+        source_type="user_feedback",
+        skill_id="bug-fix",
+        skill_hash=content_sha256(baseline),
+        correction="先复核失败断言。",
+        actual_result="之前的修复没有覆盖失败断言。",
+        evidence_refs=["run-unscheduled"],
+    )
+    context = RequestContext(
+        channel="websocket",
+        chat_id="chat-unscheduled",
+        sender_id="user",
+        workspace=project_workspace,
+        attributes={
+            "devpilot_task_id": "task-unscheduled",
+            "devpilot_project_id": project_id,
+        },
+    )
+    with request_context(context):
+        result = await SkillCandidateTool(project_workspace).execute(
+            project_id=project_id,
+            skill_path="skills/repo-analysis/SKILL.md",
+            baseline_content=baseline,
+            candidate_content=baseline + "\n- Re-check the failing assertion.\n",
+            evidence_ids=[evidence.evidence_id],
+            reason="The failed task did not re-check the assertion.",
+            expected_behavior="The proposal cites the fresh failing assertion.",
+            test_set_version="p8-02-v1",
+        )
+
+    assert not getattr(result, "is_error", False)
+    candidates = store.list_candidates(workspace=project_workspace)
+    assert len(candidates) == 1
+    assert candidates[0].skill_id == "bug-fix"
+    assert candidates[0].skill_path == "skills/bug-fix/SKILL.md"
+
+
+@pytest.mark.asyncio
 async def test_skill_improvement_is_disabled_without_controlled_mode(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -182,6 +182,145 @@ def test_improvement_case_and_replay_trial_round_trip(
     assert case.status in IMPROVEMENT_CASE_STATES
 
 
+def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    monkeypatch.setattr(store, "_project_is_trusted", lambda project_id, root: True)
+    monkeypatch.setattr(
+        "devpilot.skill_improvement.capture_git_snapshot",
+        lambda project, *, allowed_file_scope, verification_profile: GitReplaySnapshot(
+            repository_root=str(Path(project).resolve()),
+            repository_identity="test-repository",
+            start_commit_sha="b" * 40,
+            working_tree_clean=True,
+            allowed_file_scope=tuple(allowed_file_scope),
+            verification_profile=verification_profile,
+            replayable=True,
+        ),
+    )
+    baseline = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+    evidence = store.record_feedback(
+        task_id="task-replay-evaluation",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-replay-evaluation",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=baseline.content_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-replay-evaluation",),
+    )
+    store.capture_task_snapshot(
+        task_id="task-replay-evaluation",
+        workspace=workspace,
+        session_id="session-replay-evaluation",
+        project_id="project-1",
+        skill_id="repo-analysis",
+        allowed_file_scope=["src/main.py"],
+        verification_profile="python-syntax",
+    )
+    snapshot_ref = task_snapshot_ref("task-replay-evaluation")
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id="run-replay-evaluation",
+        task_id="task-replay-evaluation",
+        project_id="project-1",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-replay-evaluation",
+        base_skill_hash=baseline.content_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="分析结果漏掉了测试入口。",
+        expected_behavior="输出 tests/test_api.py。",
+        evidence_refs=(evidence.evidence_id, "run-replay-evaluation"),
+        replay_snapshot_ref=snapshot_ref,
+        assertion_spec={"kind": "analysis_fact", "expected": "tests/test_api.py"},
+    )
+    candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-1",
+        skill_path="skills/repo-analysis/SKILL.md",
+        baseline_content=baseline.content,
+        candidate_content=baseline.content + "\n- 输出测试入口。\n",
+        evidence_ids=(evidence.evidence_id,),
+        case_ids=(case.case_id,),
+        reason="补充测试入口识别。",
+        expected_behavior="输出 tests/test_api.py。",
+        test_set_version="si-07-real-replay-v1",
+        workspace=workspace,
+    )
+    baseline_trial = store.record_replay_trial(
+        case_id=case.case_id,
+        skill_id="repo-analysis",
+        skill_hash=baseline.content_hash,
+        version="baseline",
+        model_id="deterministic-test",
+        parameters={"temperature": 0},
+        snapshot_ref=snapshot_ref,
+        started_at="2026-09-22T00:00:00+00:00",
+        finished_at="2026-09-22T00:00:01+00:00",
+        token_count=3,
+        duration_seconds=1.0,
+        tool_trace_ref="trace-baseline",
+        final_output_ref="output-baseline",
+        assertion_result={
+            "passed": False,
+            "grader_kind": "analysis_fact",
+            "reason": "missing test entry",
+        },
+        status="failed",
+    )
+    candidate_trial = store.record_replay_trial(
+        case_id=case.case_id,
+        skill_id="repo-analysis",
+        skill_hash=candidate.candidate_hash,
+        version="candidate",
+        model_id="deterministic-test",
+        parameters={"temperature": 0},
+        snapshot_ref=snapshot_ref,
+        started_at="2026-09-22T00:00:02+00:00",
+        finished_at="2026-09-22T00:00:03+00:00",
+        token_count=3,
+        duration_seconds=1.0,
+        tool_trace_ref="trace-candidate",
+        final_output_ref="output-candidate",
+        assertion_result={
+            "passed": True,
+            "grader_kind": "analysis_fact",
+            "reason": "test entry present",
+        },
+        status="passed",
+        candidate_id=candidate.candidate_id,
+    )
+
+    report = store.record_replay_evaluation(
+        candidate.candidate_id,
+        case_id=case.case_id,
+        baseline_trial_id=baseline_trial.trial_id,
+        candidate_trial_id=candidate_trial.trial_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+
+    assert report.eligible is True
+    assert report.test_set_version == "si-07-real-replay-v1"
+    assert report.template == "agent-runner-replay-v1"
+    assert store.get_evaluation(report.evaluation_id) == report
+    saved_candidate = store.get_candidate(
+        candidate.candidate_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+    assert saved_candidate is not None
+    assert saved_candidate.status == "pending_confirmation"
+
+
 def test_non_replayable_snapshot_is_recorded_without_model_eligibility(tmp_path: Path) -> None:
     store, workspace = _store(tmp_path)
     skill_hash = store.read_effective_snapshot(workspace, skill_id="repo-analysis").content_hash

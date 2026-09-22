@@ -84,6 +84,7 @@ EVALUATION_CATEGORIES = ("original_failure", "nearby_holdout", "regression")
 EVALUATION_VERSIONS = ("baseline", "candidate")
 EVALUATION_REPEATS = 3
 EVALUATION_TEST_SET_VERSION = "p8-02-v1"
+REPLAY_EVALUATION_TEST_SET_VERSION = "si-07-real-replay-v1"
 _CONFIRMATION_TTL_SECONDS = 300
 _EVIDENCE_REF_RE = re.compile(
     r"^(run|tool|trace|session|test|failure|feedback|case|trial|snapshot|verification)-[A-Za-z0-9_.:-]{1,127}$"
@@ -3462,6 +3463,150 @@ class SkillImprovementStore:
         )
         return report
 
+    def record_replay_evaluation(
+        self,
+        candidate_id: str,
+        *,
+        case_id: str,
+        baseline_trial_id: str,
+        candidate_trial_id: str,
+        workspace: str | Path,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        model_id: str = "agent-runner-replay",
+        parameters: Mapping[str, Any] | None = None,
+        budget: Mapping[str, Any] | None = None,
+    ) -> EvaluationReport:
+        """Persist one trusted baseline/candidate Replay comparison.
+
+        This is the SI-07 seam.  It only consumes append-only trial records;
+        it never executes a model and never accepts final text as proof.  The
+        existing confirmation flow may decide what to do with an eligible
+        report, but this method never activates a Skill.
+        """
+
+        candidate = self.get_candidate(
+            candidate_id,
+            workspace=workspace,
+            user_id=user_id,
+            project_id=project_id,
+        )
+        if candidate is None:
+            raise SkillImprovementError("candidate not found")
+        if candidate.status not in {"pending_evaluation", "evaluation_failed"}:
+            raise SkillImprovementError("candidate is not awaiting replay evaluation")
+        case = self.get_improvement_case(case_id)
+        if case is None or case_id not in candidate.case_ids:
+            raise SkillImprovementError("replay case is not bound to the candidate")
+        if case.skill_id != candidate.skill_id:
+            raise SkillImprovementError("replay case Skill does not match the candidate")
+        workspace_value = str(Path(workspace).expanduser().resolve())
+        if candidate.workspace != workspace_value or case.workspace != workspace_value:
+            raise SkillImprovementError("replay evaluation workspace mismatch")
+        baseline = self.get_replay_trial(
+            baseline_trial_id,
+            workspace=workspace_value,
+            project_id=candidate.project_id,
+            user_id=candidate.user_id,
+            session_id=case.session_id,
+        )
+        replay_candidate = self.get_replay_trial(
+            candidate_trial_id,
+            workspace=workspace_value,
+            project_id=candidate.project_id,
+            user_id=candidate.user_id,
+            session_id=case.session_id,
+        )
+        if baseline is None or replay_candidate is None:
+            raise SkillImprovementError("replay trial was not found in the candidate scope")
+        if (
+            baseline.case_id != case_id
+            or replay_candidate.case_id != case_id
+            or baseline.version != "baseline"
+            or replay_candidate.version != "candidate"
+            or replay_candidate.candidate_id != candidate_id
+            or baseline.skill_hash != case.base_skill_hash
+            or replay_candidate.skill_hash != candidate.candidate_hash
+            or baseline.snapshot_ref != case.replay_snapshot_ref
+            or replay_candidate.snapshot_ref != case.replay_snapshot_ref
+        ):
+            raise SkillImprovementError("replay trials are not bound to the same case")
+        target = skill_improvement_target(case.skill_id)
+        for trial in (baseline, replay_candidate):
+            assertion = trial.assertion_result
+            if trial.status in {"passed", "failed"} and (
+                assertion.get("grader_kind") != target.grader_kind
+                or not isinstance(assertion.get("passed"), bool)
+                or (trial.status == "passed") != assertion["passed"]
+            ):
+                raise SkillImprovementError("replay trial assertion is not trusted")
+        baseline_passed = (
+            baseline.status == "passed"
+            and baseline.assertion_result.get("passed") is True
+        )
+        candidate_passed = (
+            replay_candidate.status == "passed"
+            and replay_candidate.assertion_result.get("passed") is True
+        )
+        eligible = candidate_passed and not baseline_passed
+        evaluation_id = f"evaluation-{uuid.uuid4()}"
+        cases = (
+            {
+                "version": "baseline",
+                "trial_id": baseline.trial_id,
+                "status": baseline.status,
+                "passed": baseline_passed,
+                "assertion": dict(baseline.assertion_result),
+                "tool_trace_ref": baseline.tool_trace_ref,
+                "final_output_ref": baseline.final_output_ref,
+            },
+            {
+                "version": "candidate",
+                "trial_id": replay_candidate.trial_id,
+                "status": replay_candidate.status,
+                "passed": candidate_passed,
+                "assertion": dict(replay_candidate.assertion_result),
+                "tool_trace_ref": replay_candidate.tool_trace_ref,
+                "final_output_ref": replay_candidate.final_output_ref,
+            },
+        )
+        report = EvaluationReport(
+            evaluation_id=evaluation_id,
+            candidate_id=candidate.candidate_id,
+            test_set_version=REPLAY_EVALUATION_TEST_SET_VERSION,
+            profile=target.profile_name,
+            template="agent-runner-replay-v1",
+            model_id=_bounded_text(model_id, field="model_id", limit=128),
+            parameters=_json_safe(parameters or {}),
+            start_file_hash=case.base_skill_hash,
+            budget=_json_safe(budget or {}),
+            cases=cases,
+            baseline_successes=int(baseline_passed),
+            candidate_successes=int(candidate_passed),
+            eligible=eligible,
+            status="eligible" if eligible else "no_verified_improvement",
+            created_at=_now(),
+            case_id=case_id,
+            baseline_trial_id=baseline.trial_id,
+            candidate_trial_id=replay_candidate.trial_id,
+        )
+        with self._lock, self._process_lock():
+            locked_candidate = self.get_candidate(
+                candidate_id,
+                workspace=workspace_value,
+                user_id=candidate.user_id,
+                project_id=candidate.project_id,
+            )
+            if locked_candidate is None or case_id not in locked_candidate.case_ids:
+                raise SkillImprovementError("candidate changed during replay evaluation")
+            self._atomic_write(self.evaluations_dir / f"{evaluation_id}.json", report.to_dict())
+            self._set_candidate_status(
+                locked_candidate,
+                "pending_confirmation" if eligible else "evaluation_failed",
+                result_refs=(evaluation_id,),
+            )
+        return report
+
     def get_evaluation(self, evaluation_id: str) -> EvaluationReport | None:
         if not _record_id_matches(evaluation_id, "evaluation"):
             return None
@@ -3497,16 +3642,22 @@ class SkillImprovementStore:
                 else None
             ),
         )
-        expected_ids = {
-            f"{category}:{version}:{repeat}"
-            for category in EVALUATION_CATEGORIES
-            for version in EVALUATION_VERSIONS
-            for repeat in range(1, EVALUATION_REPEATS + 1)
-        }
-        if len(report.cases) != len(expected_ids) or {
-            str(item.get("case_id")) for item in report.cases
-        } != expected_ids:
-            raise SkillImprovementError("evaluation case set was changed")
+        if report.test_set_version == REPLAY_EVALUATION_TEST_SET_VERSION:
+            if len(report.cases) != 2 or {
+                str(item.get("version")) for item in report.cases
+            } != {"baseline", "candidate"}:
+                raise SkillImprovementError("replay evaluation case set was changed")
+        else:
+            expected_ids = {
+                f"{category}:{version}:{repeat}"
+                for category in EVALUATION_CATEGORIES
+                for version in EVALUATION_VERSIONS
+                for repeat in range(1, EVALUATION_REPEATS + 1)
+            }
+            if len(report.cases) != len(expected_ids) or {
+                str(item.get("case_id")) for item in report.cases
+            } != expected_ids:
+                raise SkillImprovementError("evaluation case set was changed")
         return report
 
     def issue_confirmation(
