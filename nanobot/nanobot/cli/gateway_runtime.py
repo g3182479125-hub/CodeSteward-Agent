@@ -536,7 +536,12 @@ async def _run_scheduled_skill_batch(
             error = "scheduled Case has no original task input"
             store.finish_scheduled_batch(batch_id=claim.batch.batch_id, lease_owner=owner, error=error)
             raise CronJobSkippedError(error)
-        from devpilot.replay_evaluation import build_replay_requests
+        from importlib import import_module
+
+        build_replay_requests = cast(
+            Any,
+            import_module("devpilot.replay_evaluation").build_replay_requests,
+        )
 
         from nanobot.agent.task_profiles import DEFAULT_TASK_PROFILES
 
