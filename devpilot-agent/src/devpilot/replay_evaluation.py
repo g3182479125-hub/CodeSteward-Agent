@@ -5,14 +5,24 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from nanobot.agent.skill_replay import (
     ReplayRequest,
     ReplayTrialResult,
+    ReplayWorktreeLease,
     grade_replay,
     run_replay_comparison,
     skill_content_hash,
+)
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.providers.base import LLMProvider
+from nanobot.utils.llm_runtime import LLMRuntime
+
+from devpilot.replay_workspace import (
+    GitReplaySnapshot,
+    cleanup_private_worktree,
+    create_private_worktree,
 )
 
 from .skill_improvement import EvaluationReport, SkillImprovementError, SkillImprovementStore
@@ -38,6 +48,99 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     )
 
 
+class _ReplayProviderProxy(LLMProvider):
+    """Give each A/B leg an independent provider identity and call boundary."""
+
+    def __init__(self, delegate: LLMProvider) -> None:
+        super().__init__(api_key=delegate.api_key, api_base=delegate.api_base)
+        self._delegate = delegate
+        self.generation = delegate.generation
+        self.supports_progress_deltas = delegate.supports_progress_deltas
+
+    def get_default_model(self) -> str:
+        return self._delegate.get_default_model()
+
+    async def chat(self, **kwargs: Any):
+        return await self._delegate.chat(**kwargs)
+
+
+def build_replay_requests(
+    *,
+    snapshot: Any,
+    snapshot_ref: str,
+    profile_name: str,
+    skill_id: str,
+    task_id: str,
+    project_id: str,
+    model_id: str,
+    initial_message: str,
+    runtime: LLMRuntime,
+    tools: ToolRegistry,
+    private_root: Path,
+) -> tuple[ReplayRequest, ReplayRequest]:
+    """Build production-bound baseline/candidate requests from one snapshot."""
+    if not snapshot.repository_root or not snapshot.start_commit_sha:
+        raise SkillImprovementError("replay snapshot has no Git source")
+    git_snapshot = GitReplaySnapshot(
+        repository_root=str(snapshot.repository_root),
+        repository_identity=str(snapshot.repository_identity or ""),
+        start_commit_sha=str(snapshot.start_commit_sha),
+        working_tree_clean=bool(snapshot.working_tree_clean),
+        allowed_file_scope=tuple(snapshot.allowed_file_scope),
+        verification_profile=str(snapshot.verification_profile or ""),
+        replayable=True,
+    )
+    private_root.mkdir(parents=True, exist_ok=True)
+
+    def factory() -> ReplayWorktreeLease:
+        created = create_private_worktree(
+            git_snapshot,
+            private_root=private_root,
+            trusted_private_root=private_root,
+        )
+
+        def cleanup() -> None:
+            cleanup_private_worktree(
+                git_snapshot,
+                created,
+                trusted_private_root=private_root,
+            )
+
+        return ReplayWorktreeLease(path=created.path, cleanup=cleanup)
+
+    def request(version: str, provider: LLMProvider) -> ReplayRequest:
+        return ReplayRequest(
+            profile_name=profile_name,
+            skill_id=skill_id,
+            version=version,
+            skill_relative_path=f"skills/{skill_id}/SKILL.md",
+            snapshot_ref=snapshot_ref,
+            worktree_factory=factory,
+            initial_messages=({"role": "user", "content": initial_message},),
+            tools=tools,
+            runtime=LLMRuntime.capture(
+                provider,
+                model_id,
+                context_window_tokens=runtime.context_window_tokens,
+                model_preset=runtime.model_preset,
+                snapshot_signature=runtime.snapshot_signature,
+            ),
+            allowed_tools=frozenset(tools.tool_names),
+            task_id=task_id,
+            project_id=project_id,
+            session_key=f"devpilot:replay:{version}:{uuid.uuid4()}",
+            model_id=model_id,
+            private_worktree_root=private_root,
+            source_repository_root=Path(git_snapshot.repository_root),
+            snapshot_commit=git_snapshot.start_commit_sha,
+        )
+
+    return (
+        request("baseline", _ReplayProviderProxy(runtime.provider)),
+        request("candidate", _ReplayProviderProxy(runtime.provider)),
+    )
+
+
 async def evaluate_candidate_replay(
     store: SkillImprovementStore,
     *,
@@ -57,6 +160,7 @@ async def evaluate_candidate_replay(
     candidate_verification_passed: bool = False,
     baseline_failure_repaired: bool = False,
     candidate_failure_repaired: bool = False,
+    fixture_kind: str | None = None,
 ) -> EvaluationReport:
     """Execute, grade, and persist one real SI-07 comparison.
 
@@ -211,6 +315,7 @@ async def evaluate_candidate_replay(
                 "final_output": result.final_output,
                 "error": result.error,
                 "usage": dict(result.usage),
+                "fixture_kind": fixture_kind,
             },
             status=_trial_status(result, grade_passed),
             trial_id=trial_id,
@@ -231,6 +336,13 @@ async def evaluate_candidate_replay(
         candidate_grade.reason,
         "candidate",
     )
+    replay_parameters: dict[str, object] = {
+        "max_iterations": candidate_request.max_iterations,
+        "replay_max_tokens": candidate_request.max_tokens,
+        "replay_timeout_s": candidate_request.llm_timeout_s or 300,
+    }
+    if fixture_kind:
+        replay_parameters["fixture_kind"] = fixture_kind
     return store.record_replay_evaluation(
         candidate_id,
         case_id=case_id,
@@ -240,11 +352,7 @@ async def evaluate_candidate_replay(
         user_id=user_id,
         project_id=project_id,
         model_id=candidate_request.model_id,
-        parameters={
-            "max_iterations": candidate_request.max_iterations,
-            "replay_max_tokens": candidate_request.max_tokens,
-            "replay_timeout_s": candidate_request.llm_timeout_s or 300,
-        },
+        parameters=replay_parameters,
         budget={
             "max_model_calls": 3,
             "max_tokens": 20_000,

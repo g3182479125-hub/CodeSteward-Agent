@@ -424,7 +424,7 @@ async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
         case_ids=(case.case_id,),
         reason="补充测试入口识别。",
         expected_behavior="输出 tests/test_api.py。",
-        test_set_version="si-08-real-agent-runner-v1",
+        test_set_version="si-07-real-replay-v1",
         workspace=workspace,
     )
     snapshot_for_replay = GitReplaySnapshot(
@@ -466,13 +466,73 @@ async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
         project_id="project-si08",
         expected_paths=("tests/test_api.py",),
         expected_evidence_refs=(evidence.evidence_id,),
+        fixture_kind="synthetic_git_fixture",
     )
 
     assert report.eligible is True
     assert report.baseline_successes == 0
     assert report.candidate_successes == 1
+    assert report.parameters["fixture_kind"] == "synthetic_git_fixture"
     assert store.get_candidate(candidate.candidate_id).status == "pending_confirmation"
     assert not list(private_root.glob("replay-*"))
+
+    old_task = store.capture_task_snapshot(
+        task_id="task-si08-old-after-replay",
+        workspace=workspace,
+        session_id="session-old",
+        project_id="project-si08",
+        skill_id="repo-analysis",
+    )
+    confirmation = store.issue_confirmation(
+        candidate.candidate_id,
+        user_id="user-1",
+        session_id="session-confirm",
+        workspace=workspace,
+        project_id="project-si08",
+    )
+    active = store.activate_candidate(
+        confirmation.confirmation_id,
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-confirm",
+        project_id="project-si08",
+    )
+    assert active.content_hash == candidate.candidate_hash
+    assert (
+        store.capture_task_snapshot(
+            task_id="task-si08-old-after-replay",
+            workspace=workspace,
+            session_id="session-old",
+            project_id="project-si08",
+            skill_id="repo-analysis",
+        ).content_hash
+        == old_task.content_hash
+    )
+    assert (
+        store.capture_task_snapshot(
+            task_id="task-si08-new-after-replay",
+            workspace=workspace,
+            session_id="session-new",
+            project_id="project-si08",
+            skill_id="repo-analysis",
+        ).content_hash
+        == candidate.candidate_hash
+    )
+    with pytest.raises(SkillImprovementError, match="already consumed"):
+        store.activate_candidate(
+            confirmation.confirmation_id,
+            workspace=workspace,
+            user_id="user-1",
+            session_id="session-confirm",
+            project_id="project-si08",
+        )
+    restored = store.restore_candidate(
+        candidate.candidate_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-si08",
+    )
+    assert restored.content_hash == old_task.content_hash
 
 
 def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(

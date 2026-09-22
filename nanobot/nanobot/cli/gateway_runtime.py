@@ -506,6 +506,21 @@ async def _run_scheduled_skill_batch(
         claim.batch.batch_id,
         lease_owner=owner,
     )
+    if origin_channel and origin_chat_id and origin_channel != "cli":
+        await deliver(
+            OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=(
+                    "Scheduled Skill improvement candidate is ready for review: "
+                    f"`{current.candidate_id}`."
+                ),
+                metadata={
+                    "devpilot_system_notification": True,
+                    "devpilot_skill_candidate_id": current.candidate_id,
+                },
+            )
+        )
     if response and origin_channel and origin_chat_id and origin_channel != "cli":
         await deliver(
             OutboundMessage(channel=origin_channel, chat_id=origin_chat_id, content=response)

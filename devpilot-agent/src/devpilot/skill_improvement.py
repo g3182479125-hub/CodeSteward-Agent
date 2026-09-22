@@ -401,6 +401,7 @@ class SkillCandidate:
     session_ids: tuple[str, ...] = ()
     task_ids: tuple[str, ...] = ()
     case_ids: tuple[str, ...] = ()
+    baseline_content: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -425,6 +426,7 @@ class SkillCandidate:
             "session_ids": list(self.session_ids),
             "task_ids": list(self.task_ids),
             "case_ids": list(self.case_ids),
+            "baseline_content": self.baseline_content,
         }
 
 
@@ -2997,6 +2999,7 @@ class SkillImprovementStore:
                     sorted({item.task_id for item in evidence if item is not None})
                 ),
                 case_ids=case_values,
+                baseline_content=baseline_content,
             )
             self._atomic_write(
                 self.candidates_dir / f"{candidate.candidate_id}.json", candidate.to_dict()
@@ -3039,6 +3042,11 @@ class SkillImprovementStore:
             session_ids=_refs(raw.get("session_ids")),
             task_ids=_refs(raw.get("task_ids")),
             case_ids=_refs(raw.get("case_ids")),
+            baseline_content=(
+                raw.get("baseline_content")
+                if isinstance(raw.get("baseline_content"), str)
+                else None
+            ),
         )
         if content_sha256(candidate.candidate_content) != candidate.candidate_hash:
             raise SkillImprovementError("candidate content hash mismatch")

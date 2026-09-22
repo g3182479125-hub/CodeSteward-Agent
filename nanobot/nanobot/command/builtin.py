@@ -1534,12 +1534,11 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 evidence_summaries.append(f"- 证据摘要：{evidence.correction[:240]}")
         lines.extend(evidence_summaries)
         target = SKILL_IMPROVEMENT_TARGETS[candidate.skill_id]
-        baseline = store.read_effective_snapshot(
-            workspace, skill_id=candidate.skill_id
-        )
+        baseline = store.read_effective_snapshot(workspace, skill_id=candidate.skill_id)
+        baseline_content = candidate.baseline_content or baseline.content
         diff = "".join(
             difflib.unified_diff(
-                baseline.content.splitlines(keepends=True),
+                baseline_content.splitlines(keepends=True),
                 candidate.candidate_content.splitlines(keepends=True),
                 fromfile=f"active/{target.skill_path}",
                 tofile=f"candidate/{candidate.candidate_id}/{target.skill_path}",
@@ -1547,9 +1546,15 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         )
         lines.extend(["", "候选 Diff 摘要：", "```diff", diff[:8_000], "```"])
         if evaluation is not None:
+            baseline_total = sum(
+                1 for item in evaluation.cases if item.get("version") == "baseline"
+            )
+            candidate_total = sum(
+                1 for item in evaluation.cases if item.get("version") == "candidate"
+            )
             lines.extend([
-                f"- 固定对照：基线 {evaluation.baseline_successes}/9，"
-                f"候选 {evaluation.candidate_successes}/9",
+                f"- A/B 对照：基线 {evaluation.baseline_successes}/{baseline_total or '?'}，"
+                f"候选 {evaluation.candidate_successes}/{candidate_total or '?'}",
                 f"- 资格状态：`{_skill_status_label(evaluation.status)}`",
             ])
         lines.extend([
@@ -1560,15 +1565,85 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
         content = "\n".join(lines)
     elif args[1].lower() == "evaluate":
         try:
-            report = store.evaluate_candidate(
-                candidate.candidate_id,
-                workspace=workspace,
+            case = (
+                store.get_improvement_case(candidate.case_ids[-1])
+                if candidate.case_ids
+                else None
+            )
+            if case is None or case.replay_snapshot_ref is None:
+                raise ValueError("候选没有可用的 SI-08 回放案例")
+            if ctx.runtime is None:
+                raise ValueError("当前会话没有可用的模型运行时")
+            snapshot = store.get_task_snapshot(
+                case.replay_snapshot_ref,
+                workspace=case.workspace,
+                project_id=case.project_id,
+                session_id=case.session_id,
+                skill_id=case.skill_id,
+            )
+            if snapshot is None or snapshot.replayable is not True:
+                raise ValueError("候选回放快照不可用")
+            from devpilot.replay_evaluation import build_replay_requests
+
+            profile_name = case.profile_binding.split("@", 1)[0]
+            from nanobot.agent.task_profiles import DEFAULT_TASK_PROFILES
+
+            profile = DEFAULT_TASK_PROFILES.get(profile_name)
+            if profile is None:
+                raise ValueError("候选绑定了未知任务 Profile")
+            replay_tools = ctx.loop.tools.restricted_to(profile.allowed_tools)
+            baseline_request, candidate_request = build_replay_requests(
+                snapshot=snapshot,
+                snapshot_ref=case.replay_snapshot_ref,
+                profile_name=profile_name,
+                skill_id=case.skill_id,
+                task_id=case.task_id,
+                project_id=case.project_id,
+                model_id=ctx.runtime.model,
+                initial_message=case.expected_behavior,
+                runtime=ctx.runtime,
+                tools=replay_tools,
+                private_root=store.root / "replay-worktrees",
+            )
+            assertion = case.assertion_spec
+            report = await store.evaluate_candidate_replay(
+                candidate_id=candidate.candidate_id,
+                case_id=case.case_id,
+                baseline_request=baseline_request,
+                candidate_request=candidate_request,
+                baseline_skill=candidate.baseline_content
+                or store.read_effective_snapshot(
+                    workspace, skill_id=candidate.skill_id
+                ).content,
+                candidate_skill=candidate.candidate_content,
+                workspace=str(workspace),
                 user_id=user_id,
                 project_id=candidate.project_id,
+                expected_behavior=case.expected_behavior,
+                expected_paths=tuple(
+                    item for item in assertion.get("expected_paths", ()) if isinstance(item, str)
+                ),
+                expected_evidence_refs=tuple(
+                    item
+                    for item in assertion.get("expected_evidence_refs", ())
+                    if isinstance(item, str)
+                ),
+                baseline_verification_passed=bool(
+                    assertion.get("baseline_verification_passed", False)
+                ),
+                candidate_verification_passed=bool(
+                    assertion.get("candidate_verification_passed", False)
+                ),
+                baseline_failure_repaired=bool(
+                    assertion.get("baseline_failure_repaired", False)
+                ),
+                candidate_failure_repaired=bool(
+                    assertion.get("candidate_failure_repaired", False)
+                ),
             )
             content = (
-                f"P8-02 固定对照已完成：基线 "
-                f"{report.baseline_successes}/9，候选 {report.candidate_successes}/9；"
+                f"SI-08 真实 A/B 回放已完成：基线 {report.baseline_successes}，"
+                f"候选 {report.candidate_successes}；"
                 f"状态为 `{_skill_status_label(report.status)}`。"
             )
         except (ValueError, OSError) as exc:
