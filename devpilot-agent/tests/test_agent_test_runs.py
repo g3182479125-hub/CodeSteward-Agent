@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from nanobot.agent.tools.context import RequestContext, request_context
 
 import devpilot.nanobot_tools as nanobot_tools
 from devpilot.code_access import CodeAccessService
@@ -690,6 +691,37 @@ def test_agent_tool_posts_only_a_structured_project_test_request(
     assert "run-1" in str(result)
     assert captured["test_kind"] == "python-pytest"
     assert ProjectTestRunTool().read_only is True
+
+
+def test_agent_project_test_tool_resolves_relative_path_from_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        nanobot_tools,
+        "_post_project_test",
+        lambda payload: captured.update(payload) or {"status": "passed", "run_id": "run-2"},
+    )
+
+    with request_context(
+        RequestContext(
+            channel="websocket",
+            chat_id="chat-1",
+            workspace=tmp_path,
+        )
+    ):
+        result = asyncio.run(
+            ProjectTestRunTool().execute(
+                project_path="loop-engineering-demo-external",
+                test_kind="python-pytest",
+                target_files=["seed_repo/tests/test_pricing.py"],
+                symptom="test fails",
+                expected_behavior="test passes",
+            )
+        )
+
+    assert "run-2" in str(result)
+    assert captured["project_path"] == str(tmp_path / "loop-engineering-demo-external")
 
 
 def test_project_test_request_waits_for_the_fc_execution_window(

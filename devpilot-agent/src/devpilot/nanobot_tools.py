@@ -665,8 +665,22 @@ class ProjectTestRunTool(Tool):
                 else None
             )
             user_id = getattr(request_context, "sender_id", None)
+            raw_project_path = str(kwargs["project_path"])
+            workspace = getattr(request_context, "workspace", None)
+            try:
+                from nanobot.security.workspace_access import current_workspace_scope
+
+                scope = current_workspace_scope()
+                if scope is not None:
+                    workspace = scope.project_path
+            except (ImportError, AttributeError, TypeError, ValueError):
+                pass
+            project_path = _project_path(
+                raw_project_path,
+                Path(workspace) if workspace is not None else Path.cwd(),
+            )
             payload = {
-                "project_path": str(kwargs["project_path"]),
+                "project_path": project_path,
                 "test_kind": str(kwargs["test_kind"]),
                 "target_files": kwargs["target_files"],
                 "symptom": str(kwargs["symptom"]),
