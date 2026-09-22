@@ -3540,15 +3540,22 @@ class SkillImprovementStore:
                 or (trial.status == "passed") != assertion["passed"]
             ):
                 raise SkillImprovementError("replay trial assertion is not trusted")
+        baseline_valid = baseline.status in {"passed", "failed"}
         baseline_passed = (
-            baseline.status == "passed"
+            baseline_valid
+            and baseline.status == "passed"
             and baseline.assertion_result.get("passed") is True
         )
         candidate_passed = (
             replay_candidate.status == "passed"
             and replay_candidate.assertion_result.get("passed") is True
         )
-        eligible = candidate_passed and not baseline_passed
+        eligible = (
+            baseline_valid
+            and baseline.status == "failed"
+            and not baseline_passed
+            and candidate_passed
+        )
         evaluation_id = f"evaluation-{uuid.uuid4()}"
         cases = (
             {

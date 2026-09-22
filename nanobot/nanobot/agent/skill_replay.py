@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 import subprocess
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -18,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.runner import AgentRunner, AgentRunSpec
+from nanobot.agent.runner import AgentRunner, AgentRunResult, AgentRunSpec
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import ProviderConversationState
@@ -29,6 +31,22 @@ REPLAY_STATUSES = frozenset(
     {"passed", "failed", "timeout", "cancelled", "infrastructure_error"}
 )
 _PROTECTED_SKILL_PREFIX = "skills/"
+_PROFILE_SKILLS = {
+    "repo-analysis": "repo-analysis",
+    "feature-delivery": "feature-delivery",
+    "bug-fix": "bug-fix",
+}
+_ANALYSIS_READ_TOOLS = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "grep",
+        "search_files",
+        "devpilot_inspect_project",
+        "devpilot_read_code",
+        "devpilot_search_code",
+    }
+)
 
 
 class SkillReplayError(ValueError):
@@ -71,6 +89,9 @@ class ReplayRequest:
     context_block_limit: int | None = None
     llm_timeout_s: float | None = 600.0
     provider_state: ProviderConversationState | None = None
+    private_worktree_root: Path | None = None
+    source_repository_root: Path | None = None
+    snapshot_commit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +112,7 @@ class ReplayTrialResult:
     @property
     def token_count(self) -> int:
         total = self.usage.get("total_tokens")
-        if isinstance(total, int) and not isinstance(total, bool):
+        if total is not None:
             return max(0, total)
         return max(
             0,
@@ -99,8 +120,6 @@ class ReplayTrialResult:
                 value
                 for key, value in self.usage.items()
                 if key in {"prompt_tokens", "completion_tokens"}
-                and isinstance(value, int)
-                and not isinstance(value, bool)
             ),
         )
 
@@ -115,6 +134,14 @@ class ReplayGrade:
     changed_paths: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayComparison:
+    """The two isolated executions that make up one trusted A/B comparison."""
+
+    baseline: ReplayTrialResult
+    candidate: ReplayTrialResult
+
+
 def _validate_request(request: ReplayRequest) -> None:
     if request.version not in REPLAY_VERSIONS:
         raise SkillReplayError("replay version must be baseline or candidate")
@@ -125,8 +152,16 @@ def _validate_request(request: ReplayRequest) -> None:
         raise SkillReplayError("replay Skill path is unsafe")
     if not request.skill_relative_path.startswith(_PROTECTED_SKILL_PREFIX):
         raise SkillReplayError("replay Skill path must be under skills/")
+    if _PROFILE_SKILLS.get(request.profile_name) != request.skill_id:
+        raise SkillReplayError("replay profile and Skill do not match")
+    if request.skill_relative_path != f"skills/{request.skill_id}/SKILL.md":
+        raise SkillReplayError("replay Skill path does not match its Skill")
     if not request.snapshot_ref:
         raise SkillReplayError("replay snapshot reference is required")
+    if request.private_worktree_root is None or request.source_repository_root is None:
+        raise SkillReplayError("trusted replay roots are required")
+    if not request.snapshot_commit or not re.fullmatch(r"[0-9a-fA-F]{40}", request.snapshot_commit):
+        raise SkillReplayError("replay snapshot commit is required")
     if request.max_iterations <= 0:
         raise SkillReplayError("replay iteration budget must be positive")
     if request.max_tool_result_chars <= 0:
@@ -135,10 +170,60 @@ def _validate_request(request: ReplayRequest) -> None:
         raise SkillReplayError("replay allowed tools are not registered")
 
 
+def _validate_worktree(request: ReplayRequest, worktree: Path) -> Path:
+    """Enforce that the factory returned a fresh Git worktree in private storage."""
+
+    if request.private_worktree_root is None or request.source_repository_root is None:
+        raise SkillReplayError("trusted replay roots are required")
+    snapshot_commit = request.snapshot_commit
+    if snapshot_commit is None:
+        raise SkillReplayError("replay snapshot commit is required")
+    private_root = request.private_worktree_root.expanduser().resolve()
+    source_root = request.source_repository_root.expanduser().resolve()
+    worktree = worktree.expanduser().resolve()
+    if private_root == source_root or source_root in private_root.parents:
+        raise SkillReplayError("private replay root is inside the source repository")
+    try:
+        worktree.relative_to(private_root)
+    except ValueError as exc:
+        raise SkillReplayError("replay worktree is outside the trusted private root") from exc
+    if worktree == private_root or worktree.name.startswith("."):
+        raise SkillReplayError("replay worktree path is not private")
+    if source_root == worktree or source_root in worktree.parents:
+        raise SkillReplayError("replay worktree is the source repository")
+    if any(item.is_symlink() for item in (*private_root.parents, private_root, *worktree.parents)):
+        raise SkillReplayError("replay worktree path cannot use symlinks")
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        commit_result = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SkillReplayError("replay worktree validation failed") from exc
+    if (
+        root_result.returncode != 0
+        or Path(root_result.stdout.strip()).resolve() != worktree
+        or commit_result.returncode != 0
+        or commit_result.stdout.strip().lower() != snapshot_commit.lower()
+    ):
+        raise SkillReplayError("replay worktree is not bound to the captured snapshot")
+    return worktree
+
+
 def _skill_message(messages: Sequence[Mapping[str, Any]], skill_content: str) -> list[dict[str, Any]]:
     """Add a trusted Skill snapshot without mutating the caller's messages."""
 
-    if not isinstance(skill_content, str) or not skill_content.strip():
+    if not skill_content.strip():
         raise SkillReplayError("replay Skill content is empty")
     result = [deepcopy(dict(message)) for message in messages]
     block = (
@@ -185,10 +270,10 @@ def _changed_paths(worktree: Path) -> tuple[str, ...]:
     return tuple(sorted(set(paths)))
 
 
-def _status_from_result(result: Any) -> tuple[str, str | None]:
-    if getattr(result, "error", None):
-        return "infrastructure_error", str(result.error)
-    stop_reason = str(getattr(result, "stop_reason", "completed"))
+def _status_from_result(result: AgentRunResult) -> tuple[str, str | None]:
+    if result.error:
+        return "infrastructure_error", result.error
+    stop_reason = result.stop_reason
     if stop_reason in {"cancelled", "canceled"}:
         return "cancelled", None
     if stop_reason in {"timeout", "timed_out"}:
@@ -197,7 +282,9 @@ def _status_from_result(result: Any) -> tuple[str, str | None]:
         return "infrastructure_error", stop_reason
     if stop_reason in {"max_iterations", "driver_paused", "driver_finished"}:
         return "failed", stop_reason
-    return "passed", None
+    if stop_reason == "completed":
+        return "passed", None
+    return "infrastructure_error", f"unknown stop reason: {stop_reason}"
 
 
 async def _cleanup(lease: ReplayWorktreeLease) -> str | None:
@@ -222,12 +309,13 @@ async def run_skill_replay(
     lease = request.worktree_factory()
     worktree = lease.path.expanduser().resolve()
     started = time.perf_counter()
-    result: Any = None
+    result: AgentRunResult | None = None
     error: str | None = None
     cleanup_error: str | None = None
     status = "infrastructure_error"
     changed: tuple[str, ...] = ()
     try:
+        worktree = _validate_worktree(request, worktree)
         skill_path = worktree / request.skill_relative_path
         skill_path.parent.mkdir(parents=True, exist_ok=True)
         skill_path.write_text(skill_content, encoding="utf-8")
@@ -284,21 +372,51 @@ async def run_skill_replay(
             status = "infrastructure_error"
             error = error or "replay worktree cleanup failed"
 
-    usage = getattr(result, "usage", {}) if result is not None else {}
-    if not isinstance(usage, dict):
-        usage = {}
+    usage = result.usage if result is not None else {}
     return ReplayTrialResult(
         status=status,
-        final_output=str(getattr(result, "final_content", None) or ""),
-        tool_events=tuple(getattr(result, "tool_events", ()) or ()),
-        tools_used=tuple(str(item) for item in (getattr(result, "tools_used", ()) or ())),
-        usage={str(key): int(value) for key, value in usage.items() if isinstance(value, int)},
+        final_output=(result.final_content or "") if result is not None else "",
+        tool_events=tuple(result.tool_events) if result is not None else (),
+        tools_used=tuple(result.tools_used) if result is not None else (),
+        usage=dict(usage),
         duration_seconds=max(0.0, time.perf_counter() - started),
         changed_paths=changed,
         worktree_path=str(worktree),
         error=error,
         cleanup_error=cleanup_error,
     )
+
+
+async def run_replay_comparison(
+    baseline_request: ReplayRequest,
+    candidate_request: ReplayRequest,
+    *,
+    baseline_skill: str,
+    candidate_skill: str,
+) -> ReplayComparison:
+    """Run baseline and candidate from one snapshot in separate worktrees."""
+
+    _validate_request(baseline_request)
+    _validate_request(candidate_request)
+    if baseline_request.version != "baseline" or candidate_request.version != "candidate":
+        raise SkillReplayError("replay comparison requires baseline and candidate requests")
+    if any(
+        left != right
+        for left, right in (
+            (baseline_request.profile_name, candidate_request.profile_name),
+            (baseline_request.skill_id, candidate_request.skill_id),
+            (baseline_request.snapshot_ref, candidate_request.snapshot_ref),
+            (baseline_request.snapshot_commit, candidate_request.snapshot_commit),
+            (baseline_request.source_repository_root, candidate_request.source_repository_root),
+            (baseline_request.private_worktree_root, candidate_request.private_worktree_root),
+        )
+    ):
+        raise SkillReplayError("baseline and candidate are not bound to one snapshot")
+    baseline = await run_skill_replay(baseline_request, baseline_skill)
+    candidate = await run_skill_replay(candidate_request, candidate_skill)
+    if baseline.worktree_path == candidate.worktree_path:
+        raise SkillReplayError("baseline and candidate reused one worktree")
+    return ReplayComparison(baseline=baseline, candidate=candidate)
 
 
 def grade_replay(
@@ -309,6 +427,8 @@ def grade_replay(
     trusted_verification_passed: bool = False,
     original_failure_repaired: bool = False,
     allowed_file_scope: Sequence[str] = (),
+    expected_paths: Sequence[str] = (),
+    expected_evidence_refs: Sequence[str] = (),
 ) -> ReplayGrade:
     """Grade a trial using trusted facts; Skill text cannot alter this logic."""
 
@@ -319,6 +439,8 @@ def grade_replay(
     }.get(request.profile_name)
     if grader_kind is None:
         raise SkillReplayError("unsupported replay profile")
+    if _PROFILE_SKILLS.get(request.profile_name) != request.skill_id:
+        raise SkillReplayError("replay profile and Skill do not match")
     if result.status != "passed":
         return ReplayGrade(grader_kind, False, f"replay status is {result.status}", result.changed_paths)
 
@@ -327,11 +449,21 @@ def grade_replay(
         item for item in result.changed_paths if item != skill_path
     )
     if grader_kind == "analysis_fact":
+        trace_text = json.dumps(result.tool_events, ensure_ascii=False, sort_keys=True)
+        evidence_text = f"{result.final_output}\n{trace_text}"
+        expected_paths_ok = all(
+            str(path).replace("\\", "/") in evidence_text for path in expected_paths
+        )
+        expected_evidence_ok = all(
+            str(reference) in evidence_text for reference in expected_evidence_refs
+        )
         passed = (
             bool(expected_behavior)
             and expected_behavior in result.final_output
+            and expected_paths_ok
+            and expected_evidence_ok
             and not changed_without_skill
-            and not result.tools_used
+            and all(tool in _ANALYSIS_READ_TOOLS for tool in result.tools_used)
         )
         return ReplayGrade(
             grader_kind,

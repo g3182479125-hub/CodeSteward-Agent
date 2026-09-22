@@ -13,6 +13,7 @@ from nanobot.agent.skill_replay import (
     ReplayTrialResult,
     ReplayWorktreeLease,
     grade_replay,
+    run_replay_comparison,
     run_skill_replay,
 )
 from nanobot.agent.tools.registry import ToolRegistry
@@ -34,6 +35,12 @@ class _FakeProvider(LLMProvider):
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -85,6 +92,9 @@ def _request(
         project_id="project-replay",
         session_key=f"replay-{uuid.uuid4()}",
         model_id="fake/model",
+        private_worktree_root=private_root,
+        source_repository_root=repo,
+        snapshot_commit=_git_output(repo, "rev-parse", "HEAD"),
     )
 
 
@@ -95,11 +105,17 @@ async def test_replay_uses_agent_runner_and_cleans_each_distinct_worktree(tmp_pa
     paths: list[Path] = []
     request = _request(repo, private_root, "测试入口是 tests/test_api.py。", paths)
 
-    first = await run_skill_replay(request, "---\nname: repo-analysis\n---\n候选 Skill\n")
-    second = await run_skill_replay(request, "---\nname: repo-analysis\n---\n候选 Skill 2\n")
+    comparison = await run_replay_comparison(
+        replace(request, version="baseline"),
+        request,
+        baseline_skill="---\nname: repo-analysis\n---\n基线 Skill\n",
+        candidate_skill="---\nname: repo-analysis\n---\n候选 Skill\n",
+    )
+    first = comparison.baseline
+    second = comparison.candidate
 
-    assert first.status == "passed"
-    assert second.status == "passed"
+    assert first.status == "passed", (first.error, first.cleanup_error)
+    assert second.status == "passed", (second.error, second.cleanup_error)
     assert first.final_output == "测试入口是 tests/test_api.py。"
     assert first.worktree_path != second.worktree_path
     assert first.changed_paths == ("skills/repo-analysis/SKILL.md",)
@@ -128,6 +144,52 @@ async def test_replay_grader_rejects_infrastructure_and_untrusted_verification(
     ).passed is False
 
 
+def test_analysis_grader_binds_read_evidence_and_expected_path(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    request = _request(repo, tmp_path / "private-replays", "", [])
+    result = ReplayTrialResult(
+        status="passed",
+        final_output="测试入口是 tests/test_api.py。",
+        tool_events=({"path": "tests/test_api.py", "evidence": "case-123"},),
+        tools_used=("devpilot_read_code",),
+        usage={},
+        duration_seconds=0.1,
+        changed_paths=(),
+        worktree_path="private/replay",
+    )
+    assert grade_replay(
+        request,
+        result,
+        expected_behavior="tests/test_api.py",
+        expected_paths=("tests/test_api.py",),
+        expected_evidence_refs=("case-123",),
+    ).passed is True
+    assert grade_replay(
+        request,
+        result,
+        expected_behavior="tests/test_api.py",
+        expected_paths=("src/missing.py",),
+        expected_evidence_refs=("case-123",),
+    ).passed is False
+
+
+@pytest.mark.asyncio
+async def test_replay_rejects_a_worktree_outside_the_trusted_root(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    private_root = tmp_path / "private-replays"
+    request = _request(repo, private_root, "ok", [])
+    outside = tmp_path / "outside-replay"
+    unsafe = replace(
+        request,
+        worktree_factory=lambda: ReplayWorktreeLease(outside, lambda: None),
+    )
+
+    result = await run_skill_replay(unsafe, "---\nname: repo-analysis\n---\n候选\n")
+
+    assert result.status == "infrastructure_error"
+    assert result.error == "replay worktree is outside the trusted private root"
+
+
 def test_replay_has_three_trusted_graders_and_rejects_scope_or_timeout() -> None:
     request = ReplayRequest(
         profile_name="feature-delivery",
@@ -144,6 +206,9 @@ def test_replay_has_three_trusted_graders_and_rejects_scope_or_timeout() -> None
         project_id="project-replay",
         session_key="replay-session",
         model_id="fake/model",
+        private_worktree_root=Path("private"),
+        source_repository_root=Path("source"),
+        snapshot_commit="a" * 40,
     )
     passed = ReplayTrialResult(
         status="passed",
