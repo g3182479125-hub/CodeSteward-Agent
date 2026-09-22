@@ -120,12 +120,7 @@ class SkillImprovementCaseRecorder:
             evidence_refs=tuple(dict.fromkeys((f"run-{origin}", *refs))),
         )
         assertion = _assertion_spec(
-            assertion_spec
-            or {
-                "kind": target.grader_kind,
-                "expected_paths": (expected_behavior,),
-                "expected_evidence_refs": refs,
-            },
+            assertion_spec,
             required_strings=("expected_paths", "expected_evidence_refs"),
         )
         return self._store.create_improvement_case(
@@ -239,14 +234,7 @@ class SkillImprovementCaseRecorder:
             "candidate_failure_repaired",
         )
         assertion = _assertion_spec(
-            assertion_spec
-            or {
-                "kind": target.grader_kind,
-                "baseline_verification_passed": False,
-                "candidate_verification_passed": True,
-                "baseline_failure_repaired": False,
-                "candidate_failure_repaired": skill_id == "bug-fix",
-            },
+            assertion_spec,
             required_bools=required_bools,
         )
         return self._store.create_improvement_case(

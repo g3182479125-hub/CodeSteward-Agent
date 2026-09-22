@@ -1430,6 +1430,15 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         expected_behavior=expected,
                         evidence_refs=task_context.get("evidence_refs", ()),
                         replay_snapshot_ref=task_snapshot_ref(str(task_context["task_id"])),
+                        assertion_spec={
+                            "kind": "analysis_fact",
+                            "expected_paths": (expected,),
+                            "expected_evidence_refs": tuple(
+                                value
+                                for value in task_context.get("evidence_refs", ())
+                                if isinstance(value, str)
+                            ),
+                        },
                     )
                     content = f"已记录 repo-analysis 改进案例：`{case.case_id}`。"
                 except (ValueError, OSError) as exc:

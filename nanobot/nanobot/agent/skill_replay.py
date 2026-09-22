@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import re
 import subprocess
 import time
@@ -176,15 +175,36 @@ class _ReplayBudgetProvider(LLMProvider):
                 finish_reason="error",
                 error_kind="infrastructure",
             )
-        response = await self._delegate.chat(
-            messages=messages,
-            tools=tools,
-            model=model,
-            max_tokens=min(max_tokens, self._remaining_tokens),
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            tool_choice=tool_choice,
+        prompt_reservation = max(
+            256,
+            (len(str(messages)) + len(str(tools or ()))) // 2,
         )
+        available_completion = self._remaining_tokens - prompt_reservation
+        if available_completion <= 0:
+            return LLMResponse(
+                content="replay token budget reserved for context",
+                finish_reason="error",
+                error_kind="infrastructure",
+            )
+        try:
+            response = await asyncio.wait_for(
+                self._delegate.chat(
+                    messages=messages,
+                    tools=tools,
+                    model=model,
+                    max_tokens=min(max_tokens, available_completion),
+                    temperature=temperature,
+                    reasoning_effort=reasoning_effort,
+                    tool_choice=tool_choice,
+                ),
+                timeout=remaining_seconds,
+            )
+        except asyncio.TimeoutError:
+            return LLMResponse(
+                content="replay time budget exhausted",
+                finish_reason="error",
+                error_kind="timeout",
+            )
         if not response.usage:
             return LLMResponse(
                 content="replay provider usage unavailable",
@@ -665,10 +685,11 @@ def grade_replay(
     )
     if grader_kind == "analysis_fact":
         event_texts = [
-            json.dumps(event, ensure_ascii=False, sort_keys=True)
+            str(event.get("output", ""))
             for event in result.tool_events
             if event.get("status") == "ok"
             and event.get("name") in _ANALYSIS_READ_TOOLS
+            and isinstance(event.get("output"), str)
         ]
         expected_paths_ok = all(
             any(str(path).replace("\\", "/") in text for text in event_texts)
