@@ -2615,6 +2615,27 @@ class SkillImprovementStore:
                             key=lambda item: (item.created_at, item.candidate_id),
                         )[-1]
                 if candidate is not None:
+                    if candidate.status in {"pending_evaluation", "evaluation_failed"}:
+                        deadline = now + min(
+                            batch.max_duration_seconds,
+                            _MAX_SCHEDULED_DURATION_SECONDS,
+                        )
+                        resumed = replace(
+                            batch,
+                            status="running",
+                            candidate_id=candidate.candidate_id,
+                            lease_owner=owner,
+                            lease_expires_at=now + _SCHEDULED_LEASE_SECONDS,
+                            last_run_at=_now(),
+                            updated_at=_now(),
+                        )
+                        self._atomic_write(
+                            self.batches_dir / f"{batch.batch_id}.json", resumed.to_dict()
+                        )
+                        return ScheduledBatchClaim(
+                            "claimed", resumed, evidence, case,
+                            lease_owner=owner, deadline_at=deadline,
+                        )
                     recovered = replace(
                         batch,
                         status="candidate_created",

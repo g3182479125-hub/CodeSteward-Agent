@@ -284,6 +284,107 @@ async def _close_gateway_runtime(
         with suppress(asyncio.CancelledError, Exception):
             await runtime_tasks
 
+async def _evaluate_scheduled_candidate(
+    *, store: Any, claim: Any, agent: Any, candidate_id: str | None = None
+) -> Any:
+    """Run the SI-08 A/B Replay for a candidate created by native Cron."""
+    case = claim.case
+    candidate_value = candidate_id or claim.batch.candidate_id
+    candidate = store.get_candidate(
+        candidate_value,
+        workspace=claim.batch.workspace,
+        user_id=claim.batch.user_id,
+        project_id=claim.batch.project_id,
+    )
+    if candidate is None or case is None:
+        raise RuntimeError("scheduled candidate replay binding is unavailable")
+    if not case.replay_prompt:
+        raise RuntimeError("scheduled Case has no original task input")
+
+    from importlib import import_module
+
+    build_replay_requests = cast(
+        Any,
+        import_module("devpilot.replay_evaluation").build_replay_requests,
+    )
+    from nanobot.agent.task_profiles import DEFAULT_TASK_PROFILES
+
+    profile_name = case.profile_binding.split("@", 1)[0]
+    profile = DEFAULT_TASK_PROFILES.get(profile_name)
+    if profile is None:
+        raise RuntimeError("scheduled Case has an unknown task profile")
+    snapshot = store.get_task_snapshot(
+        case.replay_snapshot_ref or "",
+        workspace=case.workspace,
+        project_id=case.project_id,
+        session_id=case.session_id,
+        skill_id=case.skill_id,
+    )
+    if snapshot is None or snapshot.replayable is not True:
+        raise RuntimeError("scheduled Case replay snapshot is unavailable")
+    replay_runtime = agent.llm_runtime()
+    replay_tools = agent.tools.restricted_to(profile.allowed_tools)
+    baseline_request, candidate_request = build_replay_requests(
+        snapshot=snapshot,
+        snapshot_ref=case.replay_snapshot_ref or "",
+        profile_name=profile_name,
+        skill_id=case.skill_id,
+        task_id=case.task_id,
+        project_id=case.project_id,
+        model_id=replay_runtime.model,
+        initial_message=case.replay_prompt,
+        runtime=replay_runtime,
+        tools=replay_tools,
+        private_root=store.root / "replay-worktrees",
+        provider_factory=agent.runtime_resolver.provider_for_replay,
+    )
+    assertion = case.assertion_spec
+    await store.evaluate_candidate_replay(
+        candidate_id=candidate.candidate_id,
+        case_id=case.case_id,
+        baseline_request=baseline_request,
+        candidate_request=candidate_request,
+        baseline_skill=candidate.baseline_content
+        or store.read_effective_snapshot(
+            claim.batch.workspace, skill_id=candidate.skill_id
+        ).content,
+        candidate_skill=candidate.candidate_content,
+        workspace=claim.batch.workspace,
+        user_id=claim.batch.user_id,
+        project_id=claim.batch.project_id,
+        expected_behavior=case.expected_behavior,
+        expected_paths=tuple(
+            item for item in assertion.get("expected_paths", ()) if isinstance(item, str)
+        ),
+        expected_evidence_refs=tuple(
+            item
+            for item in assertion.get("expected_evidence_refs", ())
+            if isinstance(item, str)
+        ),
+        baseline_verification_passed=bool(
+            assertion.get("baseline_verification_passed", False)
+        ),
+        candidate_verification_passed=bool(
+            assertion.get("candidate_verification_passed", False)
+        ),
+        baseline_failure_repaired=bool(
+            assertion.get("baseline_failure_repaired", False)
+        ),
+        candidate_failure_repaired=bool(
+            assertion.get("candidate_failure_repaired", False)
+        ),
+        fixture_kind="scheduled_git_replay",
+    )
+    updated = store.get_candidate(
+        candidate.candidate_id,
+        workspace=claim.batch.workspace,
+        user_id=claim.batch.user_id,
+        project_id=claim.batch.project_id,
+    )
+    if updated is None or updated.status != "pending_confirmation":
+        raise RuntimeError("scheduled candidate did not reach confirmation")
+    return updated
+
 
 async def _run_scheduled_skill_batch(
     job: Any,
@@ -400,6 +501,60 @@ async def _run_scheduled_skill_batch(
         raise CronJobSkippedError(
             f"scheduled Skill batch {claim.status.replace('_', ' ')}"
         )
+
+    if claim.status == "claimed" and claim.batch.candidate_id and claim.case is not None:
+        try:
+            recovered_candidate = await _evaluate_scheduled_candidate(
+                store=store,
+                claim=claim,
+                agent=agent,
+            )
+        except asyncio.CancelledError:
+            store.finish_scheduled_batch(
+                claim.batch.batch_id,
+                lease_owner=owner,
+                cancelled=True,
+            )
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:600]}"
+            store.finish_scheduled_batch(
+                claim.batch.batch_id,
+                lease_owner=owner,
+                error=error,
+            )
+            if origin_channel and origin_chat_id and origin_channel != "cli":
+                await deliver(
+                    OutboundMessage(
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                        content=(
+                            "Scheduled Skill improvement replay failed: "
+                            f"{type(exc).__name__}."
+                        ),
+                    )
+                )
+            raise CronJobSkippedError(error) from exc
+        store.finish_scheduled_batch(
+            claim.batch.batch_id,
+            lease_owner=owner,
+        )
+        if origin_channel and origin_chat_id and origin_channel != "cli":
+            await deliver(
+                OutboundMessage(
+                    channel=origin_channel,
+                    chat_id=origin_chat_id,
+                    content=(
+                        "Scheduled Skill improvement candidate is ready for review: "
+                        f"`{recovered_candidate.candidate_id}`."
+                    ),
+                    metadata={
+                        "devpilot_system_notification": True,
+                        "devpilot_skill_candidate_id": recovered_candidate.candidate_id,
+                    },
+                )
+            )
+        raise CronJobSkippedError("scheduled Skill batch replay recovered")
 
     baseline = store.read_effective_snapshot(
         claim.batch.workspace,
@@ -532,93 +687,39 @@ async def _run_scheduled_skill_batch(
     if candidate is None:
         raise CronJobSkippedError("scheduled candidate could not be reloaded")
     if claim.case is not None:
-        if not claim.case.replay_prompt:
-            error = "scheduled Case has no original task input"
-            store.finish_scheduled_batch(batch_id=claim.batch.batch_id, lease_owner=owner, error=error)
-            raise CronJobSkippedError(error)
-        from importlib import import_module
-
-        build_replay_requests = cast(
-            Any,
-            import_module("devpilot.replay_evaluation").build_replay_requests,
-        )
-
-        from nanobot.agent.task_profiles import DEFAULT_TASK_PROFILES
-
-        profile_name = claim.case.profile_binding.split("@", 1)[0]
-        profile = DEFAULT_TASK_PROFILES.get(profile_name)
-        if profile is None:
-            raise CronJobSkippedError("scheduled Case has an unknown task profile")
-        snapshot = store.get_task_snapshot(
-            claim.case.replay_snapshot_ref or "",
-            workspace=claim.case.workspace,
-            project_id=claim.case.project_id,
-            session_id=claim.case.session_id,
-            skill_id=claim.case.skill_id,
-        )
-        if snapshot is None or snapshot.replayable is not True:
-            raise CronJobSkippedError("scheduled Case replay snapshot is unavailable")
-        replay_runtime = agent.llm_runtime()
-        replay_tools = agent.tools.restricted_to(profile.allowed_tools)
-        baseline_request, candidate_request = build_replay_requests(
-            snapshot=snapshot,
-            snapshot_ref=claim.case.replay_snapshot_ref or "",
-            profile_name=profile_name,
-            skill_id=claim.case.skill_id,
-            task_id=claim.case.task_id,
-            project_id=claim.case.project_id,
-            model_id=replay_runtime.model,
-            initial_message=claim.case.replay_prompt,
-            runtime=replay_runtime,
-            tools=replay_tools,
-            private_root=store.root / "replay-worktrees",
-            provider_factory=agent.runtime_resolver.provider_for_replay,
-        )
-        assertion = claim.case.assertion_spec
-        await store.evaluate_candidate_replay(
-            candidate_id=candidate.candidate_id,
-            case_id=claim.case.case_id,
-            baseline_request=baseline_request,
-            candidate_request=candidate_request,
-            baseline_skill=candidate.baseline_content
-            or store.read_effective_snapshot(
-                claim.batch.workspace, skill_id=candidate.skill_id
-            ).content,
-            candidate_skill=candidate.candidate_content,
-            workspace=claim.batch.workspace,
-            user_id=claim.batch.user_id,
-            project_id=claim.batch.project_id,
-            expected_behavior=claim.case.expected_behavior,
-            expected_paths=tuple(
-                item for item in assertion.get("expected_paths", ()) if isinstance(item, str)
-            ),
-            expected_evidence_refs=tuple(
-                item
-                for item in assertion.get("expected_evidence_refs", ())
-                if isinstance(item, str)
-            ),
-            baseline_verification_passed=bool(
-                assertion.get("baseline_verification_passed", False)
-            ),
-            candidate_verification_passed=bool(
-                assertion.get("candidate_verification_passed", False)
-            ),
-            baseline_failure_repaired=bool(
-                assertion.get("baseline_failure_repaired", False)
-            ),
-            candidate_failure_repaired=bool(
-                assertion.get("candidate_failure_repaired", False)
-            ),
-            fixture_kind="scheduled_git_replay",
-        )
-        candidate = store.get_candidate(
-            candidate.candidate_id,
-            workspace=claim.batch.workspace,
-            user_id=claim.batch.user_id,
-            project_id=claim.batch.project_id,
-        )
-        if candidate is None or candidate.status != "pending_confirmation":
-            raise CronJobSkippedError("scheduled candidate did not reach confirmation")
+        try:
+            candidate = await _evaluate_scheduled_candidate(
+                store=store,
+                claim=claim,
+                agent=agent,
+                candidate_id=current.candidate_id,
+            )
+        except asyncio.CancelledError:
+            store.finish_scheduled_batch(
+                claim.batch.batch_id,
+                lease_owner=owner,
+                cancelled=True,
+            )
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:600]}"
+            store.finish_scheduled_batch(
+                claim.batch.batch_id,
+                lease_owner=owner,
+                error=error,
+            )
+            if origin_channel and origin_chat_id and origin_channel != "cli":
+                await deliver(
+                    OutboundMessage(
+                        channel=origin_channel,
+                        chat_id=origin_chat_id,
+                        content=(
+                            "Scheduled Skill improvement replay failed: "
+                            f"{type(exc).__name__}."
+                        ),
+                    )
+                )
+            raise CronJobSkippedError(error) from exc
     store.finish_scheduled_batch(
         claim.batch.batch_id,
         lease_owner=owner,
