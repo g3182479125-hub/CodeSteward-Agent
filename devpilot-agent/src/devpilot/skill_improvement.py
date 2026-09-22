@@ -3781,15 +3781,22 @@ class SkillImprovementStore:
                 or not evaluation.eligible
             ):
                 raise SkillImprovementError("evaluation changed after confirmation")
-            current = self.read_effective_snapshot(workspace)
+            current = self.read_effective_snapshot(
+                workspace,
+                skill_id=confirmation.skill_id,
+            )
             if current.content_hash != confirmation.base_version_hash:
                 self._set_candidate_status(candidate, "stale")
                 raise SkillImprovementError("effective Skill changed after confirmation")
-            skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
+            skill_path = (
+                Path(workspace).expanduser().resolve()
+                / skill_improvement_target(confirmation.skill_id).skill_path
+            )
             journal = {
                 "phase": "prepared",
                 "confirmation_id": confirmation.confirmation_id,
                 "candidate_id": candidate.candidate_id,
+                "skill_id": confirmation.skill_id,
                 "workspace": str(Path(workspace).expanduser().resolve()),
                 "previous_content": current.content,
                 "previous_hash": current.content_hash,
@@ -3800,7 +3807,10 @@ class SkillImprovementStore:
             self._atomic_replace_text(skill_path, candidate.candidate_content)
             updated = ConfirmationRecord(**{**confirmation.to_dict(), "consumed_at": _now()})
             self._atomic_write(path, updated.to_dict())
-            active = self.read_effective_snapshot(workspace)
+            active = self.read_effective_snapshot(
+                workspace,
+                skill_id=confirmation.skill_id,
+            )
             self._append_jsonl(self.activations_file, {
                 **journal,
                 "phase": "committed",
@@ -3848,7 +3858,10 @@ class SkillImprovementStore:
             workspace_value = str(Path(workspace).expanduser().resolve())
             if candidate.workspace != workspace_value:
                 raise SkillImprovementError("candidate workspace mismatch")
-            current = self.read_effective_snapshot(workspace)
+            current = self.read_effective_snapshot(
+                workspace,
+                skill_id=candidate.skill_id,
+            )
             if current.content_hash != candidate.candidate_hash:
                 raise SkillImprovementError(
                     "restore stopped: effective Skill was externally modified"
@@ -3861,10 +3874,14 @@ class SkillImprovementStore:
             ]
             if not records or not isinstance(records[-1].get("previous_content"), str):
                 raise SkillImprovementError("stable version for restore is unavailable")
-            skill_path = Path(workspace).expanduser().resolve() / TRIAL_SKILL_RELATIVE_PATH
+            skill_path = (
+                Path(workspace).expanduser().resolve()
+                / skill_improvement_target(candidate.skill_id).skill_path
+            )
             restore_journal = {
                 "phase": "restore_prepared",
                 "candidate_id": candidate_id,
+                "skill_id": candidate.skill_id,
                 "workspace": workspace_value,
                 "active_hash": candidate.candidate_hash,
                 "restore_hash": content_sha256(records[-1]["previous_content"]),
@@ -3877,7 +3894,10 @@ class SkillImprovementStore:
                 self.activations_file,
                 {**restore_journal, "phase": "restore_committed"},
             )
-            restored = self.read_effective_snapshot(workspace)
+            restored = self.read_effective_snapshot(
+                workspace,
+                skill_id=candidate.skill_id,
+            )
             self._set_candidate_status(candidate, "stale")
             return restored
 
@@ -3902,7 +3922,14 @@ class SkillImprovementStore:
                 if candidate is None:
                     continue
                 try:
-                    current = self.read_effective_snapshot(workspace)
+                    current = self.read_effective_snapshot(
+                        workspace,
+                        skill_id=(
+                            record.get("skill_id")
+                            if isinstance(record.get("skill_id"), str)
+                            else candidate.skill_id
+                        ),
+                    )
                 except SkillImprovementError:
                     continue
                 restore_hash = record.get("restore_hash")
@@ -3928,7 +3955,14 @@ class SkillImprovementStore:
             if candidate is None:
                 continue
             try:
-                current = self.read_effective_snapshot(workspace)
+                current = self.read_effective_snapshot(
+                    workspace,
+                    skill_id=(
+                        record.get("skill_id")
+                        if isinstance(record.get("skill_id"), str)
+                        else candidate.skill_id
+                    ),
+                )
             except SkillImprovementError:
                 continue
             if current.content_hash == record.get("active_hash"):

@@ -340,6 +340,59 @@ def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
     assert saved_candidate is not None
     assert saved_candidate.status == "pending_confirmation"
 
+    # SI-08 closes the real-Replay path through the existing confirmation and
+    # snapshot boundaries: evaluation alone never activates, activation is
+    # one-time and only new tasks observe the candidate, then restore returns
+    # the stable baseline.
+    old_task = store.capture_task_snapshot(
+        task_id="task-before-si08-confirmation",
+        workspace=workspace,
+        session_id="session-1",
+        project_id="project-1",
+        skill_id="repo-analysis",
+    )
+    confirmation = store.issue_confirmation(
+        candidate.candidate_id,
+        user_id="user-1",
+        session_id="session-1",
+        workspace=workspace,
+        project_id="project-1",
+    )
+    active = store.activate_candidate(
+        confirmation.confirmation_id,
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-1",
+        project_id="project-1",
+    )
+    assert active.content_hash == candidate.candidate_hash
+    assert (
+        store.capture_task_snapshot(
+            task_id="task-before-si08-confirmation",
+            workspace=workspace,
+            session_id="session-1",
+            project_id="project-1",
+            skill_id="repo-analysis",
+        ).content_hash
+        == old_task.content_hash
+    )
+    new_task = store.capture_task_snapshot(
+        task_id="task-after-si08-confirmation",
+        workspace=workspace,
+        session_id="session-2",
+        project_id="project-1",
+        skill_id="repo-analysis",
+    )
+    assert new_task.content_hash == candidate.candidate_hash
+    restored = store.restore_candidate(
+        candidate.candidate_id,
+        workspace=workspace,
+        user_id="user-1",
+        project_id="project-1",
+    )
+    assert restored.content_hash == old_task.content_hash
+    assert store.get_candidate(candidate.candidate_id).status == "stale"
+
     over_budget_candidate = store.create_candidate(
         user_id="user-1",
         project_id="project-1",
