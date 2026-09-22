@@ -1413,20 +1413,27 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                     expected = expected.strip()
                     if not summary or not expected:
                         raise ValueError("反馈描述和 expected 都不能为空")
-                    raw_evidence_paths = task_context.get("evidence_paths", ())
-                    evidence_paths = (
-                        cast(list[object] | tuple[object, ...], raw_evidence_paths)
-                        if isinstance(raw_evidence_paths, (list, tuple))
+                    raw_file_hashes = task_context.get("file_hashes", ())
+                    file_hashes = (
+                        cast(list[object] | tuple[object, ...], raw_file_hashes)
+                        if isinstance(raw_file_hashes, (list, tuple))
                         else ()
                     )
-                    if evidence_paths and all(
-                        isinstance(value, str) and value.strip()
-                        for value in evidence_paths
-                    ):
-                        expected_paths = tuple(cast(str, value) for value in evidence_paths)
+                    trusted_paths = tuple(
+                        cast(str, item["path"])
+                        for item in file_hashes
+                        if isinstance(item, dict)
+                        and isinstance(item.get("path"), str)
+                        and item["path"].strip()
+                        and isinstance(item.get("sha256"), str)
+                        and len(item["sha256"]) == 64
+                        and all(char in "0123456789abcdefABCDEF" for char in item["sha256"])
+                    )
+                    if trusted_paths:
+                        expected_paths = tuple(dict.fromkeys(trusted_paths))
                     else:
                         raise ValueError(
-                            "反馈必须绑定确定性文件路径；请在 task_context.evidence_paths 中提供"
+                            "反馈必须绑定已读取文件；请先完成 repo-analysis 的 read_code 证据"
                         )
                     skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
                     from devpilot.skill_improvement import task_snapshot_ref

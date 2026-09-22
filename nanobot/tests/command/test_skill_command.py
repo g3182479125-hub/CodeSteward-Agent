@@ -524,7 +524,7 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
         "profile_binding": "repo-analysis@1",
         "run_id": "run-1",
         "evidence_refs": ("run-1", "tool-inspect-1"),
-        "evidence_paths": ("tests/test_api.py",),
+        "file_hashes": ({"path": "tests/test_api.py", "sha256": "a" * 64},),
     }
 
     rejected = await cmd_skill_improvement(
