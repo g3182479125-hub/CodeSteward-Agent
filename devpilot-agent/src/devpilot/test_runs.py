@@ -64,6 +64,16 @@ class ProjectTestEntryError(ValueError):
     """Raised when the server snapshot has no recognized test entry."""
 
 
+_RETRYABLE_EXECUTION_ERRORS = frozenset(
+    {
+        "SANDBOX_UNAVAILABLE",
+        "SANDBOX_TIMEOUT",
+        "CONTROL_PLANE_TRANSIENT",
+        "ORPHAN_RUN_RECOVERABLE",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ProjectTestRunResult:
     status: str
@@ -72,6 +82,12 @@ class ProjectTestRunResult:
     failure_run_id: str | None
     command: str
     exit_code: int | None
+    phase: str = "test"
+    error_code: str | None = None
+    error_category: str | None = None
+    retryable: bool = False
+    next_action: str | None = None
+    sandbox_id: str | None = None
 
 
 class ProjectTestRunner:
@@ -143,13 +159,33 @@ class ProjectTestRunner:
         try:
             receipt = self.execution_backend.run(request)
         except ExecutionError as exc:
+            category, next_action = self._execution_error_details(exc.code)
             self.store.append_event(
                 run_id,
                 "test.execution.failed",
-                {"code": exc.code, "message": exc.message, "command": command},
+                {
+                    "code": exc.code,
+                    "category": category,
+                    "message": exc.message,
+                    "command": command,
+                    "retryable": exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                    "next_action": next_action,
+                },
             )
             self.store.finish_run(run_id, "failed", {"code": exc.code})
-            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+            return ProjectTestRunResult(
+                "unknown",
+                project_id,
+                run_id,
+                None,
+                command,
+                None,
+                phase="execution",
+                error_code=exc.code,
+                error_category=category,
+                retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                next_action=next_action,
+            )
         except Exception as exc:
             self.store.append_event(
                 run_id,
@@ -157,7 +193,18 @@ class ProjectTestRunner:
                 {"code": "EXECUTION_RECEIPT_INVALID", "error_type": type(exc).__name__},
             )
             self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
-            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+            return ProjectTestRunResult(
+                "unknown",
+                project_id,
+                run_id,
+                None,
+                command,
+                None,
+                phase="execution",
+                error_code="EXECUTION_RECEIPT_INVALID",
+                error_category="control_plane",
+                next_action="查询该 Run 的执行状态；不要重复提交可能产生副作用的操作。",
+            )
 
         fallback_used = False
         if self._pytest_is_missing(receipt):
@@ -186,7 +233,19 @@ class ProjectTestRunner:
                 {"code": "TEST_RECEIPT_INCOMPLETE", "command": command},
             )
             self.store.finish_run(run_id, "failed", {"code": "TEST_RECEIPT_INCOMPLETE"})
-            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+            return ProjectTestRunResult(
+                "unknown",
+                project_id,
+                run_id,
+                None,
+                command,
+                None,
+                phase="execution",
+                error_code="TEST_RECEIPT_INCOMPLETE",
+                error_category="control_plane",
+                next_action="检查沙箱回执是否完整；在确认状态前不要重放测试。",
+                sandbox_id=receipt.sandbox_id,
+            )
         self._record_receipt(run_id, receipt, command)
         if fallback_used and self._fallback_failure_is_unsupported(receipt):
             self.store.append_event(
@@ -195,10 +254,30 @@ class ProjectTestRunner:
                 {"code": "TEST_FALLBACK_UNSUPPORTED", "command": command},
             )
             self.store.finish_run(run_id, "failed", {"code": "TEST_FALLBACK_UNSUPPORTED"})
-            return ProjectTestRunResult("unknown", project_id, run_id, None, command, None)
+            return ProjectTestRunResult(
+                "unknown",
+                project_id,
+                run_id,
+                None,
+                command,
+                receipt.exit_code,
+                phase="environment",
+                error_code="TEST_FALLBACK_UNSUPPORTED",
+                error_category="dependency_prepare",
+                next_action="项目测试使用了 pytest fixture，必须准备受支持的 pytest 环境。",
+                sandbox_id=receipt.sandbox_id,
+            )
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
-            return ProjectTestRunResult("passed", project_id, run_id, None, command, 0)
+            return ProjectTestRunResult(
+                "passed",
+                project_id,
+                run_id,
+                None,
+                command,
+                0,
+                sandbox_id=receipt.sandbox_id,
+            )
         try:
             self.store.record_test_check_failure_fact(
                 TestCheckFailureFact._from_server(  # pyright: ignore[reportPrivateUsage]
@@ -219,12 +298,44 @@ class ProjectTestRunner:
             )
             self.store.finish_run(run_id, "failed", {"code": "TEST_EVIDENCE_CHANGED"})
             return ProjectTestRunResult(
-                "unknown", project_id, run_id, None, command, receipt.exit_code
+                "unknown",
+                project_id,
+                run_id,
+                None,
+                command,
+                receipt.exit_code,
+                phase="test",
+                error_code="TEST_EVIDENCE_CHANGED",
+                error_category="test_process",
+                next_action="重新检查项目文件和测试证据后再生成修复提案。",
+                sandbox_id=receipt.sandbox_id,
             )
         self.store.finish_run(run_id, "failed", {"exit_code": receipt.exit_code})
         return ProjectTestRunResult(
-            "failed", project_id, run_id, run_id, command, receipt.exit_code
+            "failed",
+            project_id,
+            run_id,
+            run_id,
+            command,
+            receipt.exit_code,
+            error_code="TEST_FAILED",
+            error_category="test_assertion",
+            next_action="可以将该 Failure Run 交给 bug-fix Skill 生成 Changeset。",
+            sandbox_id=receipt.sandbox_id,
         )
+
+    @staticmethod
+    def _execution_error_details(error_code: str) -> tuple[str, str]:
+        if error_code in {"SANDBOX_UNAVAILABLE", "SANDBOX_TIMEOUT"}:
+            return "sandbox", "检查 FC 沙箱状态；若回执未知，先查询 Run 再重试。"
+        if error_code in {"CONTROL_PLANE_TRANSIENT", "ORPHAN_RUN_RECOVERABLE"}:
+            return "control_plane", "这是可恢复的控制层状态，使用同一幂等键查询或有限重试。"
+        if error_code.startswith("EXECUTION_"):
+            return (
+                "execution_request",
+                "检查服务器固定 Profile 和执行输入，不要把模型命令直接重放。",
+            )
+        return "execution", "查看该 Run 的执行回执，确认失败阶段后再决定下一步。"
 
     @staticmethod
     def command_for(test_kind: str) -> tuple[str, str]:

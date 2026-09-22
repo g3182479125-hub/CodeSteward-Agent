@@ -483,6 +483,12 @@ class ControlPlaneManager:
             "status": result.status,
             "command": result.command,
             "exit_code": result.exit_code,
+            "phase": result.phase,
+            "error_code": result.error_code,
+            "error_category": result.error_category,
+            "retryable": result.retryable,
+            "next_action": result.next_action,
+            "sandbox_id": result.sandbox_id,
         }
         try:
             self._complete(idempotency_key, response)

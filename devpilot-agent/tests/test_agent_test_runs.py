@@ -13,7 +13,12 @@ import devpilot.nanobot_tools as nanobot_tools
 from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
-from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
+from devpilot.execution import (
+    ExecutionError,
+    ExecutionRequest,
+    ExecutionResult,
+    FakeExecutionBackend,
+)
 from devpilot.nanobot_tools import ProjectTestRunTool
 from devpilot.patches import FilePatch
 from devpilot.paths import AllowedRoots
@@ -75,6 +80,43 @@ def test_agent_can_create_trusted_failure_run_from_a_project_pytest(tmp_path: Pa
     event_types = [event["event_type"] for event in state["events"]]
     assert "test.execution.completed" in event_types
     assert "test_check.failed" in event_types
+    assert result.error_code == "TEST_FAILED"
+    assert result.error_category == "test_assertion"
+    assert result.retryable is False
+
+
+def test_execution_failure_has_structured_recovery_metadata(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class UnavailableBackend:
+        name = "unavailable-backend"
+
+        def run(self, _request: object) -> ExecutionResult:
+            raise ExecutionError("SANDBOX_UNAVAILABLE", "provider is temporarily unavailable")
+
+    result = ProjectTestRunner(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=UnavailableBackend(),  # type: ignore[arg-type]
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="test cannot run",
+        expected_behavior="test should run",
+    )
+
+    assert result.status == "unknown"
+    assert result.phase == "execution"
+    assert result.error_code == "SANDBOX_UNAVAILABLE"
+    assert result.error_category == "sandbox"
+    assert result.retryable is True
+    assert result.next_action is not None
+    assert result.failure_run_id is None
 
 
 def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> None:
@@ -313,6 +355,11 @@ def test_project_test_api_returns_a_real_failure_receipt(tmp_path: Path) -> None
     payload = response.json()
     assert payload["status"] == "failed"
     assert payload["failure_run_id"] == payload["run_id"]
+    assert payload["phase"] == "test"
+    assert payload["error_code"] == "TEST_FAILED"
+    assert payload["error_category"] == "test_assertion"
+    assert payload["retryable"] is False
+    assert payload["sandbox_id"] == "fake-sandbox"
     assert store.get_run_state(payload["run_id"])["status"] == "failed"
     replay = client.post(
         "/v1/project-tests",
