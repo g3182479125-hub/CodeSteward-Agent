@@ -85,6 +85,7 @@ from .user_intent import capability_confirmation_matches, confirmation_matches
 
 _CONTROL_PLANE_ERROR_CODES = frozenset(
     {
+        "ACCESS_MODE_INVALID",
         "APPROVAL_ALREADY_ISSUED",
         "APPROVAL_INVALID",
         "APPROVAL_SCOPE_MISMATCH",
@@ -660,27 +661,30 @@ class ProjectTestRunTool(Tool):
                 else None
             )
             user_id = getattr(request_context, "sender_id", None)
+            payload = {
+                "project_path": str(kwargs["project_path"]),
+                "test_kind": str(kwargs["test_kind"]),
+                "target_files": kwargs["target_files"],
+                "symptom": str(kwargs["symptom"]),
+                "expected_behavior": str(kwargs["expected_behavior"]),
+                **(
+                    {
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "user_id": user_id,
+                    }
+                    if all(
+                        isinstance(value, str) and value
+                        for value in (task_id, session_id, user_id)
+                    )
+                    else {}
+                ),
+            }
+            full_access = _is_trusted_full_access(request_context)
             result = await asyncio.to_thread(
                 _post_project_test,
-                {
-                    "project_path": str(kwargs["project_path"]),
-                    "test_kind": str(kwargs["test_kind"]),
-                    "target_files": kwargs["target_files"],
-                    "symptom": str(kwargs["symptom"]),
-                    "expected_behavior": str(kwargs["expected_behavior"]),
-                    **(
-                        {
-                            "task_id": task_id,
-                            "session_id": session_id,
-                            "user_id": user_id,
-                        }
-                        if all(
-                            isinstance(value, str) and value
-                            for value in (task_id, session_id, user_id)
-                        )
-                        else {}
-                    ),
-                },
+                payload,
+                **({"workspace_access_mode": "full"} if full_access else {}),
             )
             return json.dumps(result, ensure_ascii=False, sort_keys=True)
         except HTTPError as exc:
@@ -1148,7 +1152,9 @@ def _post_bug_fix_proposal(payload: dict[str, Any]) -> dict[str, Any]:
     return _model_result(result)
 
 
-def _post_project_test(payload: dict[str, Any]) -> dict[str, Any]:
+def _post_project_test(
+    payload: dict[str, Any], *, workspace_access_mode: str | None = None
+) -> dict[str, Any]:
     canonical_payload = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -1164,6 +1170,7 @@ def _post_project_test(payload: dict[str, Any]) -> dict[str, Any]:
         payload,
         idempotency_key=idempotency_key,
         timeout_seconds=330,
+        workspace_access_mode=workspace_access_mode,
     )
 
 
@@ -1320,6 +1327,7 @@ def _post_control_plane(
     idempotency_key: str | None = None,
     redact: bool = True,
     timeout_seconds: int = 30,
+    workspace_access_mode: str | None = None,
 ) -> dict[str, Any]:
     """Call one local control-plane action and remove bearer-like secrets."""
     body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
@@ -1332,6 +1340,9 @@ def _post_control_plane(
         headers["X-DevPilot-Internal-Token"] = internal_auth_token
     if authorization_token:
         headers["Authorization"] = f"DevPilotGrant {authorization_token}"
+    if workspace_access_mode == "full":
+        # This is trusted transport metadata, not a model-visible argument.
+        headers["X-DevPilot-Workspace-Access"] = "full"
     request = Request(
         f"{_control_plane_url()}{path}",
         data=body,

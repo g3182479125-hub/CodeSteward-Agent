@@ -322,6 +322,60 @@ def test_project_test_api_requires_explicit_project_trust(tmp_path: Path) -> Non
         )
 
 
+def test_full_access_can_enroll_project_for_current_session_without_persistent_trust(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _untrusted_store(tmp_path, project)
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=FakeExecutionBackend(exit_code=0),
+    )
+
+    result = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="test cannot run",
+        expected_behavior="test passes",
+        session_id="websocket:full-access-session",
+        session_access_mode="full",
+    )
+
+    assert result["status"] == "passed"
+    assert result["phase"] == "test"
+    assert result["sandbox_id"] == "fake-sandbox"
+    security = store.get_project_security(result["project_id"])
+    assert security["trust_state"] != "trusted"
+
+    client = TestClient(
+        create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),
+        client=("127.0.0.1", 50000),
+        headers={"X-DevPilot-Internal-Token": "test-control-plane-token-0123456789"},
+    )
+    response = client.post(
+        "/v1/project-tests",
+        headers={
+            "Idempotency-Key": "full-access-project-test-1",
+            "X-DevPilot-Workspace-Access": "full",
+        },
+        json={
+            "project_path": str(project),
+            "session_id": "websocket:full-access-http-session",
+            "test_kind": "python-pytest",
+            "target_files": ["main.py"],
+            "symptom": "test cannot run",
+            "expected_behavior": "test passes",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["status"] == "passed"
+
+
 def test_project_test_api_returns_a_real_failure_receipt(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

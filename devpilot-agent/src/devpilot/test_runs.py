@@ -115,6 +115,7 @@ class ProjectTestRunner:
         task_id: str | None = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        session_access_granted: bool = False,
     ) -> ProjectTestRunResult:
         command, command_profile = self.command_for(test_kind)
         project = self.allowed_roots.require_project(project_path)
@@ -129,12 +130,15 @@ class ProjectTestRunner:
         project_id = self.store.ensure_project(
             str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
         )
-        try:
-            self.store.require_trusted_project(
-                project_id, repo_fingerprint=fingerprint, allowed_root_id=root_id
-            )
-        except ValueError as exc:
-            raise ProjectTestTrustError("trusted project is required for project tests") from exc
+        if not session_access_granted:
+            try:
+                self.store.require_trusted_project(
+                    project_id, repo_fingerprint=fingerprint, allowed_root_id=root_id
+                )
+            except ValueError as exc:
+                raise ProjectTestTrustError(
+                    "trusted project is required for project tests"
+                ) from exc
         run_id = self.store.start_run(project_id, kind="test-check")
         if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
             self.store.append_event(

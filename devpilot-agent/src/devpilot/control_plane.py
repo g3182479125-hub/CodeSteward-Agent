@@ -354,6 +354,7 @@ class ControlPlaneManager:
         self.patch_service = StructuredPatchService(allowed_roots=allowed_roots, store=store)
         self._entries: dict[str, _PendingChangeSet] = {}
         self._mutex = threading.RLock()
+        self._session_project_bindings: dict[tuple[str, str], tuple[str, str]] = {}
         if store is not None:
             for change_set_id in store.list_change_set_ids():
                 try:
@@ -373,6 +374,7 @@ class ControlPlaneManager:
         session_id: str | None = None,
         user_id: str | None = None,
         idempotency_key: str | None = None,
+        session_access_mode: str | None = None,
     ) -> dict[str, Any]:
         if self.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project test runs require durable storage")
@@ -380,10 +382,13 @@ class ControlPlaneManager:
             raise PatchError(
                 "EXECUTION_BACKEND_UNAVAILABLE", "no test execution backend is configured"
             )
+        if session_access_mode not in {None, "full"}:
+            raise PatchError("ACCESS_MODE_INVALID", "unsupported project test access mode")
         backend = self.execution_backend
         try:
+            project = self.patch_service.allowed_roots.require_project(project_path)
             project_snapshot = ProjectTestRunner._snapshot(  # pyright: ignore[reportPrivateUsage]
-                self.patch_service.allowed_roots.require_project(project_path)
+                project
             )
         except (PathBoundaryError, ValueError) as exc:
             raise PatchError("PROJECT_TEST_INVALID", str(exc)) from exc
@@ -444,6 +449,17 @@ class ControlPlaneManager:
                 "EXECUTION_PROJECT_NOT_ALLOWLISTED",
                 "project is not explicitly allowlisted for remote testing",
             )
+        root_id, fingerprint = self.patch_service.allowed_roots.binding_for(project)
+        resolved_project_id = self.store.ensure_project(
+            str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
+        )
+        session_access_granted = self._grant_session_project_access(
+            project_id=resolved_project_id,
+            root_id=root_id,
+            fingerprint=fingerprint,
+            session_id=session_id,
+            access_mode=session_access_mode,
+        )
         runner = ProjectTestRunner(
             allowed_roots=self.patch_service.allowed_roots,
             store=self.store,
@@ -466,6 +482,7 @@ class ControlPlaneManager:
                 task_id=task_id,
                 session_id=session_id,
                 user_id=user_id,
+                session_access_granted=session_access_granted,
             )
         except ProjectTestTrustError as exc:
             self._abort(idempotency_key)
@@ -496,6 +513,35 @@ class ControlPlaneManager:
             self._abort(idempotency_key)
             raise
         return response
+
+    def _grant_session_project_access(
+        self,
+        *,
+        project_id: str,
+        root_id: str,
+        fingerprint: str,
+        session_id: str | None,
+        access_mode: str | None,
+    ) -> bool:
+        """Bind Full Access project execution to one live session only."""
+
+        if access_mode != "full":
+            return False
+        if not session_id:
+            raise PatchError(
+                "PROJECT_ENROLLMENT_REQUIRED",
+                "Full Access project execution requires a live session",
+            )
+        key = (session_id, project_id)
+        binding = (root_id, fingerprint)
+        existing = self._session_project_bindings.get(key)
+        if existing is not None and existing != binding:
+            raise PatchError(
+                "PROJECT_ENROLLMENT_REQUIRED",
+                "the project changed since the current session enrolled it",
+            )
+        self._session_project_bindings[key] = binding
+        return True
 
     def preview(
         self,
@@ -2061,6 +2107,9 @@ def create_app(
         request: Request,
         payload: ProjectTestRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        workspace_access_mode: str | None = Header(
+            default=None, alias="X-DevPilot-Workspace-Access"
+        ),
     ) -> dict[str, Any]:
         return _contract_payload(
             request,
@@ -2074,6 +2123,7 @@ def create_app(
                 session_id=payload.session_id,
                 user_id=payload.user_id,
                 idempotency_key=idempotency_key,
+                session_access_mode=workspace_access_mode,
             ),
         )
 
