@@ -1,6 +1,7 @@
 # 三 Profile Skill 受控迭代扩展计划
 
-版本：0.1；2026-09-21；状态：**SI-01–SI-07 已实施；SI-08 待实施**。
+版本：0.1；2026-09-21；状态：**SI-01–SI-08 已实施**（SI-08 证据见
+`docs/evidence/phase-8/si-08-user-confirmation-cron-2026-09-22.md`）。
 
 ## 0. 定位、效力与禁止事项
 
@@ -178,6 +179,7 @@ class ImprovementCase:
     status: str
     selected_batch_id: str | None
     created_at: str
+    replay_prompt: str | None  # 原始任务输入；不得使用 expected_behavior 代替
 ```
 
 允许状态只有：
@@ -602,5 +604,4 @@ fixture 冒充真实 Replay 结果。
 每个节点先写失败测试，再做最小实现；完成后运行受影响回归。
 固定候选后，必须完成 Standards 和 Spec 两个独立 review；没有双 PASS 不得标记节点完成。
 ```
-
 

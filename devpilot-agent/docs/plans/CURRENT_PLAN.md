@@ -544,11 +544,12 @@ WebUI 投影，让临时插件生命周期进入现有活动轨迹，并统一�
 
 用户已提出将 P8 原先仅面向 `bug-fix` 的受控 Skill 改进试点，扩展到
 `repo-analysis`、`feature-delivery` 和 `bug-fix` 三个既有 Profile。该范围目前仅登记为
-该扩展已经按节点推进：SI-01–SI-07 已实施并通过对应证据和 Standards/Spec 双轴复核；
-SI-08 尚未实施。它不改变 P0–P8、H1–H11 的历史完成状态，也不自动重开已完成节点。
+该扩展已经按节点推进：SI-01–SI-08 已实施，并通过对应证据和 Standards/Spec 双轴复核；
+SI-08 的端到端证据覆盖合成 Git fixture、用户确认、激活、恢复和 Cron 独立通知。
+它不改变 P0–P8、H1–H11 的历史完成状态，也不自动重开已完成节点。
 
 完整计划见
 [`THREE_PROFILE_SKILL_IMPROVEMENT_EXTENSION.md`](THREE_PROFILE_SKILL_IMPROVEMENT_EXTENSION.md)。
-下一步是 SI-08：用户确认、恢复、Cron 通知和自有合成 Git fixture 的端到端演练。继续遵守
-本文第 0/6/7 节、ADR-0004 和 Standards/Spec 双轴复核要求；不得把 SI-07 的 Replay
-通过误报成 SI-08 的用户确认或定时链路已完成。
+SI-08 的限制是：端到端模型演练使用仓库自有的合成 Git fixture，不声称覆盖真实项目；
+feature-delivery 和 bug-fix 仍通过服务端受信 Verification 入口和回归测试覆盖。继续遵守本文
+第 0/6/7 节、ADR-0004 和 Standards/Spec 双轴复核要求。

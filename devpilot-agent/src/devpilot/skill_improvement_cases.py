@@ -68,6 +68,7 @@ class SkillImprovementCaseRecorder:
         evidence_refs: object,
         replay_snapshot_ref: str | None = None,
         assertion_spec: Mapping[str, object] | None = None,
+        replay_prompt: str | None = None,
     ) -> Any:
         """Record a current repo-analysis user correction and its Case."""
         target = skill_improvement_target("repo-analysis")
@@ -139,6 +140,7 @@ class SkillImprovementCaseRecorder:
             evidence_refs=(evidence.evidence_id, f"run-{origin}", *refs),
             replay_snapshot_ref=snapshot_ref,
             assertion_spec=assertion,
+            replay_prompt=replay_prompt,
         )
 
     def record_trusted_verification_failure(
@@ -159,6 +161,7 @@ class SkillImprovementCaseRecorder:
         failure_evidence_refs: object = (),
         replay_snapshot_ref: str | None = None,
         assertion_spec: Mapping[str, object] | None = None,
+        replay_prompt: str | None = None,
     ) -> Any:
         """Record a failure only from a server-owned ChangeSet verification fact."""
         target = skill_improvement_target(skill_id)
@@ -253,4 +256,5 @@ class SkillImprovementCaseRecorder:
             evidence_refs=(f"run-{origin}", *evidence_ids),
             replay_snapshot_ref=snapshot_ref,
             assertion_spec=assertion,
+            replay_prompt=replay_prompt,
         )

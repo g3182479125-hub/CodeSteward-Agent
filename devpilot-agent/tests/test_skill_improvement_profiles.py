@@ -60,17 +60,18 @@ class _SI08ReadCodeTool(Tool):
 
 
 class _SI08Provider(LLMProvider):
-    def __init__(self, *, candidate: bool) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.candidate = candidate
         self.calls = 0
 
     def get_default_model(self) -> str:
         return "synthetic/si08"
 
-    async def chat(self, **_: Any) -> LLMResponse:
+    async def chat(self, **kwargs: Any) -> LLMResponse:
         self.calls += 1
-        if not self.candidate:
+        messages = kwargs.get("messages", ())
+        candidate_skill_is_present = "输出测试入口" in repr(messages)
+        if not candidate_skill_is_present:
             return LLMResponse(
                 content="无法定位测试入口。",
                 usage={"total_tokens": 3},
@@ -405,6 +406,7 @@ async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
         trigger_type="user_confirmed_missing_fact",
         trigger_summary="分析结果漏掉了测试入口。",
         expected_behavior="输出 tests/test_api.py。",
+        replay_prompt="请找出项目里的测试入口。",
         evidence_refs=(evidence.evidence_id, "run-si08-real"),
         replay_snapshot_ref=snapshot_ref,
         assertion_spec={
@@ -441,7 +443,7 @@ async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
         snapshot=snapshot_for_replay,
         snapshot_ref=snapshot_ref,
         private_root=private_root,
-        provider=_SI08Provider(candidate=False),
+        provider=_SI08Provider(),
         version="baseline",
         evidence_ref=evidence.evidence_id,
     )
@@ -449,7 +451,7 @@ async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
         snapshot=snapshot_for_replay,
         snapshot_ref=snapshot_ref,
         private_root=private_root,
-        provider=_SI08Provider(candidate=True),
+        provider=_SI08Provider(),
         version="candidate",
         evidence_ref=evidence.evidence_id,
     )

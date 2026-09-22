@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -77,6 +79,7 @@ def build_replay_requests(
     runtime: LLMRuntime,
     tools: ToolRegistry,
     private_root: Path,
+    provider_factory: Callable[[], LLMProvider] | None = None,
 ) -> tuple[ReplayRequest, ReplayRequest]:
     """Build production-bound baseline/candidate requests from one snapshot."""
     if not snapshot.repository_root or not snapshot.start_commit_sha:
@@ -135,9 +138,23 @@ def build_replay_requests(
             snapshot_commit=git_snapshot.start_commit_sha,
         )
 
+    def isolated_provider() -> LLMProvider:
+        if provider_factory is not None:
+            provider = provider_factory()
+        else:
+            try:
+                provider = deepcopy(runtime.provider)
+            except Exception as exc:
+                raise SkillImprovementError(
+                    "replay requires an isolated provider factory"
+                ) from exc
+        if provider is runtime.provider:
+            raise SkillImprovementError("replay provider factory returned shared state")
+        return provider
+
     return (
-        request("baseline", _ReplayProviderProxy(runtime.provider)),
-        request("candidate", _ReplayProviderProxy(runtime.provider)),
+        request("baseline", _ReplayProviderProxy(isolated_provider())),
+        request("candidate", _ReplayProviderProxy(isolated_provider())),
     )
 
 
@@ -178,6 +195,8 @@ async def evaluate_candidate_replay(
     case = store.get_improvement_case(case_id)
     if candidate is None or case is None:
         raise SkillImprovementError("replay candidate or case was not found")
+    if candidate.status not in {"pending_evaluation", "evaluation_failed"}:
+        raise SkillImprovementError("candidate is not awaiting replay evaluation")
     if case_id not in candidate.case_ids:
         raise SkillImprovementError("replay case is not bound to the candidate")
     snapshot_ref = case.replay_snapshot_ref

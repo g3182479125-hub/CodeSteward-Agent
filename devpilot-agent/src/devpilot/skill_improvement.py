@@ -309,6 +309,10 @@ class ImprovementCase:
     status: str
     selected_batch_id: str | None
     created_at: str
+    # The task input used for a replay.  This is deliberately separate from
+    # expected_behavior: the latter is a trusted grader assertion and must
+    # never be sent to the model as if it were the user's request.
+    replay_prompt: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -331,6 +335,7 @@ class ImprovementCase:
             "status": self.status,
             "selected_batch_id": self.selected_batch_id,
             "created_at": self.created_at,
+            "replay_prompt": self.replay_prompt,
         }
 
 
@@ -1480,6 +1485,7 @@ class SkillImprovementStore:
         assertion_spec: Mapping[str, object] | None = None,
         status: str = "eligible",
         selected_batch_id: str | None = None,
+        replay_prompt: str | None = None,
     ) -> ImprovementCase:
         """Persist one server-validated case without invoking a model."""
         target = skill_improvement_target(skill_id)
@@ -1623,6 +1629,11 @@ class SkillImprovementStore:
             if snapshot.replayable is not True:
                 status = "not_replayable"
         assertion = _json_safe(assertion_spec or {})
+        replay_prompt_value = (
+            _bounded_text(replay_prompt, field="replay_prompt", limit=4_000)
+            if replay_prompt is not None
+            else None
+        )
         identity = json.dumps(
             {
                 "skill_id": skill_id,
@@ -1733,6 +1744,7 @@ class SkillImprovementStore:
                     or existing.evidence_refs != refs
                     or existing.replay_snapshot_ref != snapshot_ref
                     or existing.assertion_spec != assertion
+                    or existing.replay_prompt != replay_prompt_value
                 ):
                     raise SkillImprovementError(
                         "improvement case conflicts with existing origin_run_id"
@@ -1762,6 +1774,7 @@ class SkillImprovementStore:
                     else None
                 ),
                 created_at=_now(),
+                replay_prompt=replay_prompt_value,
             )
             self._atomic_write(self.cases_dir / f"{case.case_id}.json", case.to_dict())
             return case
@@ -4550,6 +4563,11 @@ def _improvement_case_from_dict(raw: Mapping[str, Any]) -> ImprovementCase:
             else None
         ),
         created_at=str(raw["created_at"]),
+        replay_prompt=(
+            str(raw["replay_prompt"])
+            if isinstance(raw.get("replay_prompt"), str)
+            else None
+        ),
     )
 
 

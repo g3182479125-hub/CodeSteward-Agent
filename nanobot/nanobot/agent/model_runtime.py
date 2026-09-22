@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import replace
 from types import MappingProxyType
 from typing import cast
 
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.config.schema import Config, ModelPresetConfig
+from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot, build_provider_snapshot
 from nanobot.utils.llm_runtime import LLMRuntime, runtime_from_provider_snapshot
 
@@ -72,6 +74,23 @@ class ModelRuntimeResolver:
             self.refresh()
             self._refresh_provider_generation()
         return self._runtime
+
+    def provider_for_replay(self) -> LLMProvider:
+        """Return a fresh provider instance for one isolated replay leg."""
+        runtime = self._runtime
+        if runtime.model_preset is not None and self._preset_snapshot_loader is not None:
+            return self._preset_snapshot_loader(runtime.model_preset).provider
+        if self._provider_snapshot_loader is not None:
+            snapshot = self._provider_snapshot_loader()
+            if snapshot.model == runtime.model:
+                return snapshot.provider
+        try:
+            provider = deepcopy(runtime.provider)
+        except Exception as exc:
+            raise ValueError("当前模型没有可用的独立回放 Provider") from exc
+        if provider is runtime.provider:
+            raise ValueError("回放 Provider 不得复用当前会话实例")
+        return provider
 
     def admit(self) -> LLMRuntime:
         """Resolve the immutable runtime for the next turn admission."""

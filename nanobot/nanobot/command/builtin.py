@@ -1600,10 +1600,14 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 task_id=case.task_id,
                 project_id=case.project_id,
                 model_id=ctx.runtime.model,
-                initial_message=case.expected_behavior,
+                initial_message=(
+                    case.replay_prompt
+                    or "请根据任务开始时记录的项目状态完成原始任务，并给出可验证的结果。"
+                ),
                 runtime=ctx.runtime,
                 tools=replay_tools,
                 private_root=store.root / "replay-worktrees",
+                provider_factory=ctx.loop.runtime_resolver.provider_for_replay,
             )
             assertion = case.assertion_spec
             report = await store.evaluate_candidate_replay(

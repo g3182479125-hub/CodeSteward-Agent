@@ -19,6 +19,7 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
         skill_id="repo-analysis",
         candidate_hash=content_sha256("candidate"),
         case_ids=("case-1",),
+        status="pending_evaluation",
     )
     case = SimpleNamespace(
         case_id="case-1",

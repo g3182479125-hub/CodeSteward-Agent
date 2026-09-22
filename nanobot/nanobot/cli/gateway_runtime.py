@@ -352,6 +352,10 @@ async def _run_scheduled_skill_batch(
                         "Scheduled Skill improvement candidate is ready for review: "
                         f"`{candidate_ids[-1]}`."
                     ),
+                    metadata={
+                        "devpilot_system_notification": True,
+                        "devpilot_skill_candidate_id": candidate_ids[-1],
+                    },
                 )
             )
         raise CronJobSkippedError("scheduled Skill batch candidate recovered")
