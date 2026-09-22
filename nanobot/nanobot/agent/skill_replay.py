@@ -302,11 +302,13 @@ async def _cleanup(lease: ReplayWorktreeLease) -> str | None:
 async def run_skill_replay(
     request: ReplayRequest,
     skill_content: str,
+    *,
+    lease: ReplayWorktreeLease | None = None,
 ) -> ReplayTrialResult:
     """Run one Skill with the shared AgentRunner in a fresh private worktree."""
 
     _validate_request(request)
-    lease = request.worktree_factory()
+    lease = lease or request.worktree_factory()
     worktree = lease.path.expanduser().resolve()
     started = time.perf_counter()
     result: AgentRunResult | None = None
@@ -412,8 +414,28 @@ async def run_replay_comparison(
         )
     ):
         raise SkillReplayError("baseline and candidate are not bound to one snapshot")
-    baseline = await run_skill_replay(baseline_request, baseline_skill)
-    candidate = await run_skill_replay(candidate_request, candidate_skill)
+    baseline_lease = baseline_request.worktree_factory()
+    try:
+        candidate_lease = candidate_request.worktree_factory()
+    except Exception:
+        await _cleanup(baseline_lease)
+        raise
+    baseline_path = baseline_lease.path.expanduser().resolve()
+    candidate_path = candidate_lease.path.expanduser().resolve()
+    if baseline_path == candidate_path:
+        await _cleanup(baseline_lease)
+        await _cleanup(candidate_lease)
+        raise SkillReplayError("baseline and candidate reused one worktree")
+    baseline = await run_skill_replay(
+        baseline_request,
+        baseline_skill,
+        lease=baseline_lease,
+    )
+    candidate = await run_skill_replay(
+        candidate_request,
+        candidate_skill,
+        lease=candidate_lease,
+    )
     if baseline.worktree_path == candidate.worktree_path:
         raise SkillReplayError("baseline and candidate reused one worktree")
     return ReplayComparison(baseline=baseline, candidate=candidate)
@@ -464,6 +486,11 @@ def grade_replay(
             and expected_evidence_ok
             and not changed_without_skill
             and all(tool in _ANALYSIS_READ_TOOLS for tool in result.tools_used)
+            and all(
+                event.get("status") == "ok"
+                and event.get("name") in _ANALYSIS_READ_TOOLS
+                for event in result.tool_events
+            )
         )
         return ReplayGrade(
             grader_kind,

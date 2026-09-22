@@ -150,7 +150,9 @@ def test_analysis_grader_binds_read_evidence_and_expected_path(tmp_path: Path) -
     result = ReplayTrialResult(
         status="passed",
         final_output="测试入口是 tests/test_api.py。",
-        tool_events=({"path": "tests/test_api.py", "evidence": "case-123"},),
+        tool_events=(
+            {"name": "devpilot_read_code", "status": "ok", "path": "tests/test_api.py", "evidence": "case-123"},
+        ),
         tools_used=("devpilot_read_code",),
         usage={},
         duration_seconds=0.1,

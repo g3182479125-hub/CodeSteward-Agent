@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from nanobot.agent.skill_replay import (
     ReplayRequest,
@@ -63,10 +64,11 @@ async def evaluate_candidate_replay(
         raise SkillImprovementError("replay candidate or case was not found")
     if case_id not in candidate.case_ids:
         raise SkillImprovementError("replay case is not bound to the candidate")
-    if case.replay_snapshot_ref is None:
+    snapshot_ref = case.replay_snapshot_ref
+    if snapshot_ref is None:
         raise SkillImprovementError("replay case has no snapshot")
     snapshot = store.get_task_snapshot(
-        case.replay_snapshot_ref,
+        snapshot_ref,
         workspace=case.workspace,
         project_id=case.project_id,
         session_id=case.session_id,
@@ -74,6 +76,23 @@ async def evaluate_candidate_replay(
     )
     if snapshot is None or not snapshot.replayable:
         raise SkillImprovementError("replay case snapshot is not usable")
+    repository_root = snapshot.repository_root
+    if not isinstance(repository_root, str) or not repository_root:
+        raise SkillImprovementError("replay snapshot has no repository root")
+    requests = (baseline_request, candidate_request)
+    for request in requests:
+        if (
+            request.task_id != case.task_id
+            or request.project_id != case.project_id
+            or request.profile_name != case.profile_binding.split("@", 1)[0]
+            or request.skill_id != case.skill_id
+            or request.snapshot_ref != snapshot_ref
+            or request.snapshot_commit != snapshot.start_commit_sha
+            or request.source_repository_root is None
+            or request.source_repository_root.expanduser().resolve()
+            != Path(repository_root).expanduser().resolve()
+        ):
+            raise SkillImprovementError("replay request is not bound to its Case snapshot")
 
     comparison = await run_replay_comparison(
         baseline_request,
@@ -115,7 +134,7 @@ async def evaluate_candidate_replay(
                 else candidate_request.model_id
             ),
             parameters={"max_iterations": baseline_request.max_iterations},
-            snapshot_ref=case.replay_snapshot_ref,
+            snapshot_ref=snapshot_ref,
             started_at=_now(),
             finished_at=_now(),
             token_count=result.token_count,

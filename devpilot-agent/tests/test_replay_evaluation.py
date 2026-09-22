@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,14 +21,21 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
     case = SimpleNamespace(
         case_id="case-1",
         skill_id="repo-analysis",
+        task_id="task-1",
         base_skill_hash="b" * 64,
         replay_snapshot_ref="snapshot-task-1",
         allowed_file_scope=("src/main.py",),
         workspace="/workspace/project",
         project_id="project-1",
         session_id="session-1",
+        profile_binding="repo-analysis@1",
     )
-    snapshot = SimpleNamespace(replayable=True, allowed_file_scope=("src/main.py",))
+    snapshot = SimpleNamespace(
+        replayable=True,
+        allowed_file_scope=("src/main.py",),
+        repository_root="/workspace/project",
+        start_commit_sha="a" * 40,
+    )
     baseline_result = ReplayTrialResult(
         status="passed",
         final_output="old",
@@ -88,7 +96,18 @@ async def test_production_replay_orchestrator_persists_both_trials_and_report(
 
     monkeypatch.setattr(replay_evaluation, "run_replay_comparison", fake_comparison)
     monkeypatch.setattr(replay_evaluation, "grade_replay", fake_grade)
-    request = SimpleNamespace(model_id="fake/model", max_iterations=8)
+    request = SimpleNamespace(
+        model_id="fake/model",
+        max_iterations=8,
+        task_id="task-1",
+        project_id="project-1",
+        profile_name="repo-analysis",
+        skill_id="repo-analysis",
+        snapshot_ref="snapshot-task-1",
+        snapshot_commit="a" * 40,
+        source_repository_root=Path("/workspace/project"),
+        private_worktree_root=Path("/private-replays"),
+    )
     store = FakeStore()
 
     report = await evaluate_candidate_replay(
