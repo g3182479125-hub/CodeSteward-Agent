@@ -18,6 +18,12 @@ metadata:
       - devpilot_get_delivery_report
       - devpilot_watch_run
       - devpilot_confirmed_action
+      - devpilot_create_temporary_tool
+      - devpilot_validate_temporary_tool
+      - devpilot_activate_temporary_tool
+      - devpilot_ensure_temporary_tool
+      - devpilot_persist_temporary_tool
+      - devpilot_discard_temporary_tools
     risk_level: R1
     source: catalog
 ---

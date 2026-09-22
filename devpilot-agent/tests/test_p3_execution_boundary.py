@@ -93,6 +93,26 @@ def test_python_regression_profile_uses_fixed_test_command_and_budget(tmp_path: 
     assert request.timeout_seconds == PYTHON_REGRESSION_TIMEOUT_SECONDS
     assert request.network_allowed is False
     assert {item.relative_path for item in request.files} == {"main.py", "tests/test_main.py"}
+    assert request.working_directory == ""
+
+
+def test_python_regression_profile_uses_nested_project_root(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "seed_repo" / "tests").mkdir(parents=True)
+    (project / "seed_repo" / "tests" / "test_main.py").write_text(
+        "import app\n", encoding="utf-8"
+    )
+    manager = ControlPlaneManager(allowed_roots=AllowedRoots.from_paths([tmp_path]))
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("seed_repo/app.py", FileOperation.CREATE, "VALUE = 1\n")],
+    )
+    entry = manager._require(str(preview["change_set_id"]))
+
+    request = build_verification_request(entry.plan, VerificationProfile.PYTHON_REGRESSION)
+
+    assert request.working_directory == "seed_repo"
 
 
 def test_execution_port_rejects_model_supplied_shell_or_non_allowlisted_command() -> None:

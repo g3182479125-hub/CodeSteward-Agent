@@ -86,6 +86,33 @@ def read_verification_snapshot_file(path: Path, relative_path: str) -> bytes | N
     return content
 
 
+def _pytest_working_directory(files: tuple[ExecutionFile, ...]) -> str:
+    """Choose one server-owned nested project root for pytest execution.
+
+    A repository may keep its runnable project below a wrapper directory, as
+    in ``seed_repo/tests``.  Running from that nested root preserves the same
+    import semantics as the project's own local test command while keeping
+    the command itself fixed and model-independent.
+    """
+
+    candidates: set[str] = set()
+    for item in files:
+        parts = tuple(part for part in item.relative_path.replace("\\", "/").split("/") if part)
+        if not parts:
+            continue
+        if parts[-1].startswith("test_") or parts[-1].endswith("_test.py"):
+            if "tests" in parts[:-1]:
+                index = parts.index("tests")
+                candidates.add("/".join(parts[:index]))
+            elif len(parts) > 1:
+                candidates.add("/".join(parts[:-1]))
+            else:
+                candidates.add("")
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return ""
+
+
 def _project_snapshot(plan: PatchPlan) -> tuple[ExecutionFile, ...]:
     """Collect a bounded UTF-8 snapshot, overlaying the proposed patch contents."""
 
@@ -171,7 +198,11 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
     if profile is VerificationProfile.PYTHON_SYNTAX:
         command = "python3 -m py_compile " + shlex.join(paths)
     elif profile is VerificationProfile.PYTHON_REGRESSION:
-        if not any(item.relative_path.startswith("tests/") for item in files):
+        if not any(
+            "/tests/" in f"/{item.relative_path.replace('\\', '/')}"
+            or item.relative_path.replace("\\", "/").startswith("tests/")
+            for item in files
+        ):
             raise ValueError("python-regression requires a tests/ snapshot")
         command = "python -m pytest -q"
     elif profile is VerificationProfile.PYTHON_RUN:
@@ -194,6 +225,11 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
         ),
         network_allowed=False,
         command_profile=profile.value,
+        working_directory=(
+            _pytest_working_directory(files)
+            if profile is VerificationProfile.PYTHON_REGRESSION
+            else ""
+        ),
     )
 
 

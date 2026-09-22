@@ -219,13 +219,14 @@ def _normalize_patch_hashes(patches: list[Any]) -> list[Any]:
 def _hydrate_full_access_patch_hashes(
     project_path: str, patches: list[Any]
 ) -> list[Any]:
-    """Fill omitted update/delete preconditions from the current local file.
+    """Bind update/delete preconditions to the current local file.
 
     Full Access is an explicit, trusted local capability.  The control plane
-    still enforces the hash at apply time, but the adapter can obtain the
-    current hash without making the model recite a mechanical value.  Invalid
-    paths are deliberately left to the control plane so it can return its
-    stable path diagnostic.
+    still enforces the hash at apply time, but the adapter owns the
+    precondition instead of trusting a model-produced hash.  This also keeps
+    Windows CRLF files byte-accurate when the model received normalized source
+    text from a read tool. Invalid paths are deliberately left to the control
+    plane so it can return its stable path diagnostic.
     """
 
     normalized = _normalize_patch_hashes(patches)
@@ -240,9 +241,7 @@ def _hydrate_full_access_patch_hashes(
             hydrated.append(patch)
             continue
         copied = dict(patch)
-        if copied.get("operation") not in {"update", "delete"} or copied.get(
-            "expected_sha256"
-        ):
+        if copied.get("operation") not in {"update", "delete"}:
             hydrated.append(copied)
             continue
         relative_path = copied.get("relative_path")
