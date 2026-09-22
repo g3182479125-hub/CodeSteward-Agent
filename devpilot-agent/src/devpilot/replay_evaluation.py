@@ -18,7 +18,7 @@ from nanobot.agent.skill_replay import (
     skill_content_hash,
 )
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.utils.llm_runtime import LLMRuntime
 
 from devpilot.replay_workspace import (
@@ -62,8 +62,25 @@ class _ReplayProviderProxy(LLMProvider):
     def get_default_model(self) -> str:
         return self._delegate.get_default_model()
 
-    async def chat(self, **kwargs: Any):
-        return await self._delegate.chat(**kwargs)
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> LLMResponse:
+        return await self._delegate.chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            tool_choice=tool_choice,
+        )
 
 
 def build_replay_requests(
@@ -152,9 +169,13 @@ def build_replay_requests(
             raise SkillImprovementError("replay provider factory returned shared state")
         return provider
 
+    baseline_provider = isolated_provider()
+    candidate_provider = isolated_provider()
+    if candidate_provider is baseline_provider:
+        raise SkillImprovementError("baseline and candidate share a Provider instance")
     return (
-        request("baseline", _ReplayProviderProxy(isolated_provider())),
-        request("candidate", _ReplayProviderProxy(isolated_provider())),
+        request("baseline", _ReplayProviderProxy(baseline_provider)),
+        request("candidate", _ReplayProviderProxy(candidate_provider)),
     )
 
 

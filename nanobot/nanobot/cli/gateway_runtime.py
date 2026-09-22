@@ -343,7 +343,23 @@ async def _run_scheduled_skill_batch(
     origin_chat_id = job.payload.origin_chat_id
     if claim.status == "candidate_created":
         candidate_ids = claim.batch.last_candidate_ids
-        if candidate_ids and origin_channel and origin_chat_id and origin_channel != "cli":
+        recovered_candidate = (
+            store.get_candidate(
+                candidate_ids[-1],
+                workspace=claim.batch.workspace,
+                user_id=claim.batch.user_id,
+                project_id=claim.batch.project_id,
+            )
+            if candidate_ids
+            else None
+        )
+        if (
+            recovered_candidate is not None
+            and recovered_candidate.status == "pending_confirmation"
+            and origin_channel
+            and origin_chat_id
+            and origin_channel != "cli"
+        ):
             await deliver(
                 OutboundMessage(
                     channel=origin_channel,
@@ -506,11 +522,108 @@ async def _run_scheduled_skill_batch(
                 )
             )
         raise CronJobSkippedError(error)
+
+    candidate = store.get_candidate(
+        current.candidate_id,
+        workspace=claim.batch.workspace,
+        user_id=claim.batch.user_id,
+        project_id=claim.batch.project_id,
+    )
+    if candidate is None:
+        raise CronJobSkippedError("scheduled candidate could not be reloaded")
+    if claim.case is not None:
+        if not claim.case.replay_prompt:
+            error = "scheduled Case has no original task input"
+            store.finish_scheduled_batch(batch_id=claim.batch.batch_id, lease_owner=owner, error=error)
+            raise CronJobSkippedError(error)
+        from devpilot.replay_evaluation import build_replay_requests
+
+        from nanobot.agent.task_profiles import DEFAULT_TASK_PROFILES
+
+        profile_name = claim.case.profile_binding.split("@", 1)[0]
+        profile = DEFAULT_TASK_PROFILES.get(profile_name)
+        if profile is None:
+            raise CronJobSkippedError("scheduled Case has an unknown task profile")
+        snapshot = store.get_task_snapshot(
+            claim.case.replay_snapshot_ref or "",
+            workspace=claim.case.workspace,
+            project_id=claim.case.project_id,
+            session_id=claim.case.session_id,
+            skill_id=claim.case.skill_id,
+        )
+        if snapshot is None or snapshot.replayable is not True:
+            raise CronJobSkippedError("scheduled Case replay snapshot is unavailable")
+        replay_runtime = agent.llm_runtime()
+        replay_tools = agent.tools.restricted_to(profile.allowed_tools)
+        baseline_request, candidate_request = build_replay_requests(
+            snapshot=snapshot,
+            snapshot_ref=claim.case.replay_snapshot_ref or "",
+            profile_name=profile_name,
+            skill_id=claim.case.skill_id,
+            task_id=claim.case.task_id,
+            project_id=claim.case.project_id,
+            model_id=replay_runtime.model,
+            initial_message=claim.case.replay_prompt,
+            runtime=replay_runtime,
+            tools=replay_tools,
+            private_root=store.root / "replay-worktrees",
+            provider_factory=agent.runtime_resolver.provider_for_replay,
+        )
+        assertion = claim.case.assertion_spec
+        await store.evaluate_candidate_replay(
+            candidate_id=candidate.candidate_id,
+            case_id=claim.case.case_id,
+            baseline_request=baseline_request,
+            candidate_request=candidate_request,
+            baseline_skill=candidate.baseline_content
+            or store.read_effective_snapshot(
+                claim.batch.workspace, skill_id=candidate.skill_id
+            ).content,
+            candidate_skill=candidate.candidate_content,
+            workspace=claim.batch.workspace,
+            user_id=claim.batch.user_id,
+            project_id=claim.batch.project_id,
+            expected_behavior=claim.case.expected_behavior,
+            expected_paths=tuple(
+                item for item in assertion.get("expected_paths", ()) if isinstance(item, str)
+            ),
+            expected_evidence_refs=tuple(
+                item
+                for item in assertion.get("expected_evidence_refs", ())
+                if isinstance(item, str)
+            ),
+            baseline_verification_passed=bool(
+                assertion.get("baseline_verification_passed", False)
+            ),
+            candidate_verification_passed=bool(
+                assertion.get("candidate_verification_passed", False)
+            ),
+            baseline_failure_repaired=bool(
+                assertion.get("baseline_failure_repaired", False)
+            ),
+            candidate_failure_repaired=bool(
+                assertion.get("candidate_failure_repaired", False)
+            ),
+            fixture_kind="scheduled_git_replay",
+        )
+        candidate = store.get_candidate(
+            candidate.candidate_id,
+            workspace=claim.batch.workspace,
+            user_id=claim.batch.user_id,
+            project_id=claim.batch.project_id,
+        )
+        if candidate is None or candidate.status != "pending_confirmation":
+            raise CronJobSkippedError("scheduled candidate did not reach confirmation")
     store.finish_scheduled_batch(
         claim.batch.batch_id,
         lease_owner=owner,
     )
-    if origin_channel and origin_chat_id and origin_channel != "cli":
+    if (
+        candidate.status == "pending_confirmation"
+        and origin_channel
+        and origin_chat_id
+        and origin_channel != "cli"
+    ):
         await deliver(
             OutboundMessage(
                 channel=origin_channel,

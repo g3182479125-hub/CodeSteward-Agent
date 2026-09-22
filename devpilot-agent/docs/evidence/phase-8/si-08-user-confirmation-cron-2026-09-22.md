@@ -1,7 +1,7 @@
 # SI-08 用户确认、恢复与 Cron 端到端证据
 
-日期：2026-09-22  
-分支：`codex/h11-complete-handoff`  
+日期：2026-09-22
+分支：`codex/h11-complete-handoff`
 节点：三 Profile Skill 受控迭代 SI-08
 
 ## 验收范围

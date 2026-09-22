@@ -255,18 +255,16 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     assert completed is not None
     assert completed.status == "candidate_created"
     assert completed.candidate_id is not None
-    assert len(delivered) == 2
+    # This legacy feedback-only batch has no SI-08 Case/replay input, so it
+    # must not claim that the candidate is ready for confirmation.
+    assert len(delivered) == 1
     assert all(item.channel == "websocket" for item in delivered)
-    assert "scheduled candidate result" in delivered[1].content
-    assert "candidate is ready for review" in delivered[0].content
-    assert delivered[0].metadata["devpilot_system_notification"] is True
-    assert delivered[0].metadata["devpilot_skill_candidate_id"] == completed.candidate_id
+    assert "scheduled candidate result" in delivered[0].content
     assert json.loads(connection.frames[0]) == {
         "event": "message",
         "chat_id": "chat",
         "text": delivered[0].content,
     }
-    assert json.loads(connection.frames[1])["text"] == delivered[1].content
     assert seen["process_kwargs"]["sender_id"] == "user"  # type: ignore[index]
     assert seen["process_kwargs"]["session_key"] == f"devpilot:skill-batch:{batch_id}"  # type: ignore[index]
     assert seen["runtime_max_tokens"] == 6_000
@@ -298,7 +296,7 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     finally:
         agent.process_direct = original_process_direct
     assert seen.get("process_calls", 0) == process_calls_before_no_evidence
-    assert len(delivered) == 2
+    assert len(delivered) == 1
 
     # A provider/agent turn that never returns is stopped by the persisted
     # batch deadline, not by a test double around asyncio.wait_for.
@@ -353,7 +351,7 @@ async def test_native_cron_runs_scheduled_skill_batch_to_websocket_delivery(
     assert timed_out.status == "failed"
     assert timed_out.last_error is not None
     assert timed_out.last_error.startswith("TimeoutError")
-    assert len(delivered) == 3
+    assert len(delivered) == 2
     assert "failed" in delivered[-1].content
 
     # The production AgentLoop cancellation path must find and cancel the
