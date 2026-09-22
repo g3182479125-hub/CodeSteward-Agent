@@ -1533,13 +1533,16 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             if evidence is not None:
                 evidence_summaries.append(f"- 证据摘要：{evidence.correction[:240]}")
         lines.extend(evidence_summaries)
-        baseline = store.read_effective_snapshot(workspace)
+        target = SKILL_IMPROVEMENT_TARGETS[candidate.skill_id]
+        baseline = store.read_effective_snapshot(
+            workspace, skill_id=candidate.skill_id
+        )
         diff = "".join(
             difflib.unified_diff(
                 baseline.content.splitlines(keepends=True),
                 candidate.candidate_content.splitlines(keepends=True),
-                fromfile="active/skills/bug-fix/SKILL.md",
-                tofile=f"candidate/{candidate.candidate_id}/SKILL.md",
+                fromfile=f"active/{target.skill_path}",
+                tofile=f"candidate/{candidate.candidate_id}/{target.skill_path}",
             )
         )
         lines.extend(["", "候选 Diff 摘要：", "```diff", diff[:8_000], "```"])

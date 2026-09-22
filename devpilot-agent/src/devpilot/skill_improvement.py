@@ -3917,18 +3917,20 @@ class SkillImprovementStore:
             if isinstance(candidate_id, str) and isinstance(workspace, str):
                 latest[(candidate_id, workspace)] = record
         for (candidate_id, workspace), record in latest.items():
+            candidate = self.get_candidate(candidate_id)
+            if candidate is None:
+                continue
+            skill_id = self._journal_skill_id(record, candidate)
+            if skill_id is None:
+                # A journal written for another profile must never be used to
+                # inspect or mutate this candidate's Skill file.
+                self._set_candidate_status(candidate, "stale")
+                continue
             if record.get("phase") in {"restore_prepared", "restore_committed"}:
-                candidate = self.get_candidate(candidate_id)
-                if candidate is None:
-                    continue
                 try:
                     current = self.read_effective_snapshot(
                         workspace,
-                        skill_id=(
-                            record.get("skill_id")
-                            if isinstance(record.get("skill_id"), str)
-                            else candidate.skill_id
-                        ),
+                        skill_id=skill_id,
                     )
                 except SkillImprovementError:
                     continue
@@ -3951,17 +3953,10 @@ class SkillImprovementStore:
                 continue
             if record.get("phase") not in {"prepared", "committed"}:
                 continue
-            candidate = self.get_candidate(candidate_id)
-            if candidate is None:
-                continue
             try:
                 current = self.read_effective_snapshot(
                     workspace,
-                    skill_id=(
-                        record.get("skill_id")
-                        if isinstance(record.get("skill_id"), str)
-                        else candidate.skill_id
-                    ),
+                    skill_id=skill_id,
                 )
             except SkillImprovementError:
                 continue
@@ -3991,6 +3986,18 @@ class SkillImprovementStore:
                 self._append_jsonl(self.activations_file, {**record, "phase": "aborted"})
             else:
                 self._set_candidate_status(candidate, "stale")
+
+    @staticmethod
+    def _journal_skill_id(
+        record: Mapping[str, Any], candidate: SkillCandidate
+    ) -> str | None:
+        """Return a legacy-compatible, candidate-bound journal Skill id."""
+        value = record.get("skill_id")
+        if value is None:
+            return candidate.skill_id
+        if isinstance(value, str) and value == candidate.skill_id:
+            return value
+        return None
 
     def _set_candidate_status(
         self,

@@ -1,11 +1,23 @@
 import sqlite3
+import subprocess
+import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
+from nanobot.agent.skill_replay import ReplayRequest, ReplayWorktreeLease
+from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.utils.llm_runtime import LLMRuntime
 
 from devpilot.paths import allowed_root_id, repository_fingerprint
-from devpilot.replay_workspace import GitReplaySnapshot
+from devpilot.replay_workspace import (
+    GitReplaySnapshot,
+    cleanup_private_worktree,
+    create_private_worktree,
+)
 from devpilot.skill_improvement import (
     IMPROVEMENT_CASE_STATES,
     REPLAY_TRIAL_STATUSES,
@@ -15,6 +27,152 @@ from devpilot.skill_improvement import (
     content_sha256,
     task_snapshot_ref,
 )
+
+
+class _SI08ReadCodeTool(Tool):
+    def __init__(self, evidence_ref: str) -> None:
+        self.evidence_ref = evidence_ref
+
+    @property
+    def name(self) -> str:
+        return "devpilot_read_code"
+
+    @property
+    def description(self) -> str:
+        return "Read the trusted synthetic test entry point."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+
+    @property
+    def read_only(self) -> bool:
+        return True
+
+    async def execute(self, *, path: str) -> str:
+        assert path == "tests/test_api.py"
+        return f"tests/test_api.py {self.evidence_ref}"
+
+
+class _SI08Provider(LLMProvider):
+    def __init__(self, *, candidate: bool) -> None:
+        super().__init__()
+        self.candidate = candidate
+        self.calls = 0
+
+    def get_default_model(self) -> str:
+        return "synthetic/si08"
+
+    async def chat(self, **_: Any) -> LLMResponse:
+        self.calls += 1
+        if not self.candidate:
+            return LLMResponse(
+                content="无法定位测试入口。",
+                usage={"total_tokens": 3},
+            )
+        if self.calls == 1:
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="si08-read-1",
+                        name="devpilot_read_code",
+                        arguments={"path": "tests/test_api.py"},
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"total_tokens": 3},
+            )
+        return LLMResponse(
+            content="输出 tests/test_api.py。",
+            usage={"total_tokens": 3},
+        )
+
+
+def _git_fixture(workspace: Path) -> None:
+    (workspace / "tests").mkdir()
+    (workspace / "tests" / "test_api.py").write_text(
+        "def test_api_entrypoint():\n    assert True\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(workspace), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(workspace), "config", "user.email", "si08@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(workspace), "config", "user.name", "SI08 Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(workspace), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(workspace), "commit", "-qm", "synthetic SI-08 fixture"],
+        check=True,
+    )
+
+
+def _si08_request(
+    *,
+    snapshot: GitReplaySnapshot,
+    snapshot_ref: str,
+    private_root: Path,
+    provider: LLMProvider,
+    version: str,
+    evidence_ref: str,
+) -> ReplayRequest:
+    private_root.mkdir(parents=True, exist_ok=True)
+
+    def worktree_factory() -> ReplayWorktreeLease:
+        created = create_private_worktree(
+            snapshot,
+            private_root=private_root,
+            trusted_private_root=private_root,
+        )
+
+        def cleanup() -> None:
+            cleanup_private_worktree(
+                snapshot,
+                created,
+                trusted_private_root=private_root,
+            )
+
+        return ReplayWorktreeLease(path=created.path, cleanup=cleanup)
+
+    tools = ToolRegistry()
+    tools.register(_SI08ReadCodeTool(evidence_ref))
+    return ReplayRequest(
+        profile_name="repo-analysis",
+        skill_id="repo-analysis",
+        version=version,
+        skill_relative_path="skills/repo-analysis/SKILL.md",
+        snapshot_ref=snapshot_ref,
+        worktree_factory=worktree_factory,
+        initial_messages=(
+            {"role": "user", "content": "请找出项目里的测试入口。"},
+        ),
+        tools=tools,
+        runtime=LLMRuntime.capture(
+            provider,
+            "synthetic/si08",
+            context_window_tokens=4096,
+        ),
+        allowed_tools=frozenset({"devpilot_read_code"}),
+        task_id="task-si08-real-runner",
+        project_id="project-si08",
+        session_key=f"si08-{version}-{uuid.uuid4()}",
+        model_id="synthetic/si08",
+        private_worktree_root=private_root,
+        source_repository_root=Path(snapshot.repository_root),
+        snapshot_commit=snapshot.start_commit_sha,
+        max_iterations=4,
+        max_tokens=8000,
+        llm_timeout_s=30,
+    )
 
 
 def _store(tmp_path: Path) -> tuple[SkillImprovementStore, Path]:
@@ -202,6 +360,121 @@ def test_improvement_case_and_replay_trial_round_trip(
         )
 
 
+@pytest.mark.asyncio
+async def test_si08_real_agent_runner_ab_evidence_and_confirmation_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, workspace = _store(tmp_path)
+    monkeypatch.setattr(store, "_project_is_trusted", lambda project_id, root: True)
+    _git_fixture(workspace)
+    baseline = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
+    evidence = store.record_feedback(
+        task_id="task-si08-real-runner",
+        project_id="project-si08",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-si08",
+        source_type="user_feedback",
+        skill_id="repo-analysis",
+        skill_hash=baseline.content_hash,
+        correction="补上测试入口。",
+        actual_result="分析结果漏掉了测试入口。",
+        evidence_refs=("run-si08-real",),
+    )
+    snapshot = store.capture_task_snapshot(
+        task_id="task-si08-real-runner",
+        workspace=workspace,
+        session_id="session-si08",
+        project_id="project-si08",
+        skill_id="repo-analysis",
+        allowed_file_scope=["tests/test_api.py"],
+        verification_profile="python-syntax",
+        source_evidence_refs=(evidence.evidence_id,),
+    )
+    snapshot_ref = task_snapshot_ref("task-si08-real-runner")
+    case = store.create_improvement_case(
+        skill_id="repo-analysis",
+        profile_binding="repo-analysis@1",
+        origin_run_id="run-si08-real",
+        task_id="task-si08-real-runner",
+        project_id="project-si08",
+        workspace=workspace,
+        user_id="user-1",
+        session_id="session-si08",
+        base_skill_hash=baseline.content_hash,
+        trigger_type="user_confirmed_missing_fact",
+        trigger_summary="分析结果漏掉了测试入口。",
+        expected_behavior="输出 tests/test_api.py。",
+        evidence_refs=(evidence.evidence_id, "run-si08-real"),
+        replay_snapshot_ref=snapshot_ref,
+        assertion_spec={
+            "kind": "analysis_fact",
+            "expected": "tests/test_api.py",
+            "expected_paths": ("tests/test_api.py",),
+            "expected_evidence_refs": (evidence.evidence_id,),
+        },
+    )
+    candidate = store.create_candidate(
+        user_id="user-1",
+        project_id="project-si08",
+        skill_path="skills/repo-analysis/SKILL.md",
+        baseline_content=baseline.content,
+        candidate_content=baseline.content + "\n- 输出测试入口。\n",
+        evidence_ids=(evidence.evidence_id,),
+        case_ids=(case.case_id,),
+        reason="补充测试入口识别。",
+        expected_behavior="输出 tests/test_api.py。",
+        test_set_version="si-08-real-agent-runner-v1",
+        workspace=workspace,
+    )
+    snapshot_for_replay = GitReplaySnapshot(
+        repository_root=str(snapshot.repository_root),
+        repository_identity=str(snapshot.repository_identity),
+        start_commit_sha=snapshot.start_commit_sha,
+        working_tree_clean=True,
+        allowed_file_scope=snapshot.allowed_file_scope,
+        verification_profile=str(snapshot.verification_profile),
+        replayable=True,
+    )
+    private_root = tmp_path / "private-replays"
+    baseline_request = _si08_request(
+        snapshot=snapshot_for_replay,
+        snapshot_ref=snapshot_ref,
+        private_root=private_root,
+        provider=_SI08Provider(candidate=False),
+        version="baseline",
+        evidence_ref=evidence.evidence_id,
+    )
+    candidate_request = _si08_request(
+        snapshot=snapshot_for_replay,
+        snapshot_ref=snapshot_ref,
+        private_root=private_root,
+        provider=_SI08Provider(candidate=True),
+        version="candidate",
+        evidence_ref=evidence.evidence_id,
+    )
+
+    report = await store.evaluate_candidate_replay(
+        candidate_id=candidate.candidate_id,
+        case_id=case.case_id,
+        baseline_request=baseline_request,
+        candidate_request=candidate_request,
+        baseline_skill=baseline.content,
+        candidate_skill=candidate.candidate_content,
+        workspace=str(workspace),
+        user_id="user-1",
+        project_id="project-si08",
+        expected_paths=("tests/test_api.py",),
+        expected_evidence_refs=(evidence.evidence_id,),
+    )
+
+    assert report.eligible is True
+    assert report.baseline_successes == 0
+    assert report.candidate_successes == 1
+    assert store.get_candidate(candidate.candidate_id).status == "pending_confirmation"
+    assert not list(private_root.glob("replay-*"))
+
+
 def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -366,6 +639,14 @@ def test_real_replay_evaluation_binds_baseline_candidate_and_stays_inactive(
         project_id="project-1",
     )
     assert active.content_hash == candidate.candidate_hash
+    with pytest.raises(SkillImprovementError, match="already consumed"):
+        store.activate_candidate(
+            confirmation.confirmation_id,
+            workspace=workspace,
+            user_id="user-1",
+            session_id="session-1",
+            project_id="project-1",
+        )
     assert (
         store.capture_task_snapshot(
             task_id="task-before-si08-confirmation",
