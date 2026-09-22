@@ -422,6 +422,11 @@ def _skill_improvement_context(
         "replay_snapshot_ref": task_snapshot_ref(task_id_value),
         "summary": summary,
         "expected_behavior": expected_behavior,
+        "replay_prompt": (
+            attributes.get("devpilot_replay_prompt")
+            if isinstance(attributes.get("devpilot_replay_prompt"), str)
+            else None
+        ),
         "verification_kind": "semantic",
         "allowed_file_scope": list(snapshot.allowed_file_scope),
         "verification_profile": snapshot.verification_profile,

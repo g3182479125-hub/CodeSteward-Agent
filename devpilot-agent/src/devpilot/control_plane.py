@@ -1126,6 +1126,12 @@ class ControlPlaneManager:
                 ).content_hash,
                 summary=str(context["summary"]),
                 expected_behavior=str(context["expected_behavior"]),
+                replay_prompt=(
+                    str(context["replay_prompt"])
+                    if isinstance(context.get("replay_prompt"), str)
+                    and context.get("replay_prompt")
+                    else None
+                ),
                 failure_evidence_refs=context.get("failure_evidence_refs", ()),
                 replay_snapshot_ref=str(context["replay_snapshot_ref"]),
                 assertion_spec={

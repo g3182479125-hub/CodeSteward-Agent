@@ -1454,6 +1454,12 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         skill_hash=skill.content_hash,
                         summary=summary,
                         expected_behavior=expected,
+                        replay_prompt=(
+                            str(task_context["goal"])
+                            if isinstance(task_context.get("goal"), str)
+                            and task_context.get("goal")
+                            else None
+                        ),
                         evidence_refs=task_context.get("evidence_refs", ()),
                         replay_snapshot_ref=task_snapshot_ref(str(task_context["task_id"])),
                         assertion_spec={
@@ -1572,6 +1578,8 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
             )
             if case is None or case.replay_snapshot_ref is None:
                 raise ValueError("候选没有可用的 SI-08 回放案例")
+            if not case.replay_prompt:
+                raise ValueError("候选没有保存原始任务输入，无法进行真实回放")
             if ctx.runtime is None:
                 raise ValueError("当前会话没有可用的模型运行时")
             snapshot = store.get_task_snapshot(
@@ -1600,10 +1608,7 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                 task_id=case.task_id,
                 project_id=case.project_id,
                 model_id=ctx.runtime.model,
-                initial_message=(
-                    case.replay_prompt
-                    or "请根据任务开始时记录的项目状态完成原始任务，并给出可验证的结果。"
-                ),
+                initial_message=case.replay_prompt,
                 runtime=ctx.runtime,
                 tools=replay_tools,
                 private_root=store.root / "replay-worktrees",
