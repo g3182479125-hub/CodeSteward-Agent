@@ -537,6 +537,17 @@ async def test_skill_improvement_feedback_requires_direct_user_command(tmp_path:
     )
     assert "用户在聊天中直接发起" in rejected.content
 
+    unrelated = await cmd_skill_improvement(
+        _ctx(
+            loop,
+            "/skill-improvement feedback unrelated fact --expected src/unknown.py",
+            is_user_turn=True,
+            session_metadata={"task_context": task},
+            workspace=project_workspace,
+        )
+    )
+    assert "已记录 repo-analysis 改进案例" not in unrelated.content
+
     accepted = await cmd_skill_improvement(
         _ctx(
             loop,

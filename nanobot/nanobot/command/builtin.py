@@ -1435,6 +1435,10 @@ async def cmd_skill_improvement(ctx: CommandContext) -> OutboundMessage:
                         raise ValueError(
                             "反馈必须绑定已读取文件；请先完成 repo-analysis 的 read_code 证据"
                         )
+                    if not any(path in expected for path in expected_paths):
+                        raise ValueError(
+                            "expected 必须明确指向本次 repo-analysis 已读取的文件"
+                        )
                     skill = store.read_effective_snapshot(workspace, skill_id="repo-analysis")
                     from devpilot.skill_improvement import task_snapshot_ref
                     from devpilot.skill_improvement_cases import SkillImprovementCaseRecorder
