@@ -3614,6 +3614,13 @@ class SkillImprovementStore:
             )
         return report
 
+    async def evaluate_candidate_replay(self, **kwargs: Any) -> EvaluationReport:
+        """Public production entry point for the real AgentRunner comparison."""
+
+        from .replay_evaluation import evaluate_candidate_replay
+
+        return await evaluate_candidate_replay(self, **kwargs)
+
     def get_evaluation(self, evaluation_id: str) -> EvaluationReport | None:
         if not _record_id_matches(evaluation_id, "evaluation"):
             return None

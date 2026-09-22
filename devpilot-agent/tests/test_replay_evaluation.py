@@ -2,33 +2,38 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from nanobot.agent.skill_replay import ReplayComparison, ReplayTrialResult
-
-from devpilot import replay_evaluation
-from devpilot.replay_evaluation import evaluate_candidate_replay
 
 
 @pytest.mark.asyncio
 async def test_production_replay_orchestrator_persists_both_trials_and_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("loguru")
+    from nanobot.agent.skill_replay import ReplayComparison, ReplayTrialResult
+
+    from devpilot import replay_evaluation
+    from devpilot.replay_evaluation import evaluate_candidate_replay
+    from devpilot.skill_improvement import content_sha256
+
     candidate = SimpleNamespace(
         candidate_id="candidate-1",
         skill_id="repo-analysis",
-        candidate_hash="c" * 64,
+        candidate_hash=content_sha256("candidate"),
         case_ids=("case-1",),
     )
     case = SimpleNamespace(
         case_id="case-1",
         skill_id="repo-analysis",
         task_id="task-1",
-        base_skill_hash="b" * 64,
+        base_skill_hash=content_sha256("baseline"),
         replay_snapshot_ref="snapshot-task-1",
         allowed_file_scope=("src/main.py",),
         workspace="/workspace/project",
         project_id="project-1",
         session_id="session-1",
         profile_binding="repo-analysis@1",
+        expected_behavior="",
+        assertion_spec={},
     )
     snapshot = SimpleNamespace(
         replayable=True,

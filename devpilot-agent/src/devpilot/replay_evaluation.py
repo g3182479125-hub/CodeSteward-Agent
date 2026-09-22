@@ -5,12 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from nanobot.agent.skill_replay import (
     ReplayRequest,
     ReplayTrialResult,
     grade_replay,
     run_replay_comparison,
+    skill_content_hash,
 )
 
 from .skill_improvement import EvaluationReport, SkillImprovementError, SkillImprovementStore
@@ -24,6 +26,16 @@ def _trial_status(result: ReplayTrialResult, passed: bool) -> str:
     if result.status != "passed":
         return result.status
     return "passed" if passed else "failed"
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(
+        item
+        for item in cast(list[object] | tuple[object, ...], value)
+        if isinstance(item, str)
+    )
 
 
 async def evaluate_candidate_replay(
@@ -79,6 +91,30 @@ async def evaluate_candidate_replay(
     repository_root = snapshot.repository_root
     if not isinstance(repository_root, str) or not repository_root:
         raise SkillImprovementError("replay snapshot has no repository root")
+    if skill_content_hash(baseline_skill) != case.base_skill_hash:
+        raise SkillImprovementError("baseline Skill content does not match the Case")
+    if skill_content_hash(candidate_skill) != candidate.candidate_hash:
+        raise SkillImprovementError("candidate Skill content does not match the candidate")
+    case_expected_behavior = case.expected_behavior
+    if expected_behavior is not None and expected_behavior != case_expected_behavior:
+        raise SkillImprovementError("replay assertion does not match the Case")
+    spec_paths = _string_tuple(case.assertion_spec.get("expected_paths", ()))
+    if expected_paths and tuple(expected_paths) != spec_paths:
+        raise SkillImprovementError("replay expected paths do not match the Case")
+    spec_evidence = _string_tuple(
+        case.assertion_spec.get("expected_evidence_refs", ())
+    )
+    if expected_evidence_refs and tuple(expected_evidence_refs) != spec_evidence:
+        raise SkillImprovementError("replay evidence refs do not match the Case")
+    for key, supplied in (
+        ("baseline_verification_passed", baseline_verification_passed),
+        ("candidate_verification_passed", candidate_verification_passed),
+        ("baseline_failure_repaired", baseline_failure_repaired),
+        ("candidate_failure_repaired", candidate_failure_repaired),
+    ):
+        asserted = case.assertion_spec.get(key)
+        if isinstance(asserted, bool) and asserted != supplied:
+            raise SkillImprovementError("replay verification fact does not match the Case")
     requests = (baseline_request, candidate_request)
     for request in requests:
         if (
@@ -103,9 +139,9 @@ async def evaluate_candidate_replay(
     baseline_grade = grade_replay(
         baseline_request,
         comparison.baseline,
-        expected_behavior=expected_behavior,
-        expected_paths=expected_paths,
-        expected_evidence_refs=expected_evidence_refs,
+        expected_behavior=case_expected_behavior,
+        expected_paths=spec_paths,
+        expected_evidence_refs=spec_evidence,
         trusted_verification_passed=baseline_verification_passed,
         original_failure_repaired=baseline_failure_repaired,
         allowed_file_scope=snapshot.allowed_file_scope,
@@ -113,9 +149,9 @@ async def evaluate_candidate_replay(
     candidate_grade = grade_replay(
         candidate_request,
         comparison.candidate,
-        expected_behavior=expected_behavior,
-        expected_paths=expected_paths,
-        expected_evidence_refs=expected_evidence_refs,
+        expected_behavior=case_expected_behavior,
+        expected_paths=spec_paths,
+        expected_evidence_refs=spec_evidence,
         trusted_verification_passed=candidate_verification_passed,
         original_failure_repaired=candidate_failure_repaired,
         allowed_file_scope=snapshot.allowed_file_scope,

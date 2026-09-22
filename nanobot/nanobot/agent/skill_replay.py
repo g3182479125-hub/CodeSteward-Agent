@@ -16,7 +16,7 @@ import subprocess
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -414,6 +414,10 @@ async def run_replay_comparison(
         )
     ):
         raise SkillReplayError("baseline and candidate are not bound to one snapshot")
+    if baseline_request.session_key == candidate_request.session_key:
+        raise SkillReplayError("baseline and candidate must use different sessions")
+    if baseline_request.provider_state is not None or candidate_request.provider_state is not None:
+        raise SkillReplayError("replay cannot reuse provider conversation state")
     baseline_lease = baseline_request.worktree_factory()
     try:
         candidate_lease = candidate_request.worktree_factory()
@@ -426,16 +430,28 @@ async def run_replay_comparison(
         await _cleanup(baseline_lease)
         await _cleanup(candidate_lease)
         raise SkillReplayError("baseline and candidate reused one worktree")
-    baseline = await run_skill_replay(
-        baseline_request,
-        baseline_skill,
-        lease=baseline_lease,
-    )
+    try:
+        baseline = await run_skill_replay(
+            baseline_request,
+            baseline_skill,
+            lease=baseline_lease,
+        )
+    except BaseException:
+        await _cleanup(candidate_lease)
+        raise
     candidate = await run_skill_replay(
         candidate_request,
         candidate_skill,
         lease=candidate_lease,
     )
+    total_tokens = baseline.token_count + candidate.token_count
+    total_seconds = baseline.duration_seconds + candidate.duration_seconds
+    if total_tokens > 20_000 or total_seconds > 600:
+        candidate = replace(
+            candidate,
+            status="infrastructure_error",
+            error="replay comparison budget was exhausted",
+        )
     if baseline.worktree_path == candidate.worktree_path:
         raise SkillReplayError("baseline and candidate reused one worktree")
     return ReplayComparison(baseline=baseline, candidate=candidate)
