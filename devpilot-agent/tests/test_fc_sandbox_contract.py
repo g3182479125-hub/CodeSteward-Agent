@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -252,6 +253,126 @@ def test_fc_backend_prepares_server_selected_project_dependencies(
         ),
         ("python -m pytest -q", 300, "/workspace/devpilot/src"),
     ]
+
+
+def test_fc_backend_reuses_prepared_environment_across_runs_and_restart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: list[tuple[object, ...] | str] = []
+
+    class FakeFiles:
+        def make_dir(self, path: str) -> None:
+            events.append(("mkdir", path))
+
+        def write(self, path: str, content: bytes) -> None:
+            events.append(("write", path, content))
+
+    class FakeCommands:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
+            events.append(("run", command, timeout, cwd))
+            return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
+
+    class FakeSandbox:
+        def __init__(self) -> None:
+            self.sandbox_id = "persistent-sandbox"
+            self.files = FakeFiles()
+            self.commands = FakeCommands()
+            self.killed = False
+
+        def is_running(self) -> bool:
+            return not self.killed
+
+        def kill(self) -> None:
+            self.killed = True
+            events.append("kill")
+
+    handles: list[FakeSandbox] = []
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            handle = FakeSandbox()
+            handles.append(handle)
+            events.append(("create",))
+            return handle
+
+        @classmethod
+        def connect(cls, sandbox_id: str, **_kwargs: object) -> FakeSandbox:
+            events.append(("connect", sandbox_id))
+            return handles[0]
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    config = FCSandboxConfig(
+        api_key="test-key",
+        api_url="https://api.example.invalid",
+        domain="example.invalid",
+        install_pytest=False,
+        network_policy_mode="provider-default",
+        state_dir=str(tmp_path),
+    )
+    request = valid_request(command_profile="project-pytest", command="python -m pytest -q")
+    backend = FCSandboxBackend(config)
+
+    prepared = backend.prepare(request, dependency_fingerprint="lock-v1")
+    assert prepared["status"] == "ready"
+    environment_id = prepared["environment_id"]
+    first = backend.run(replace(request, prepared_environment_id=environment_id))
+    assert first.sandbox_id == "persistent-sandbox"
+    assert "kill" not in events
+
+    restarted = FCSandboxBackend(config)
+    second = restarted.run(
+        replace(request, run_id="run-2", prepared_environment_id=environment_id)
+    )
+    assert second.sandbox_id == "persistent-sandbox"
+    assert len(handles) == 1
+    assert ("connect", "persistent-sandbox") in events
+
+
+def test_fc_prepare_fingerprint_change_creates_new_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    create_ids: list[str] = []
+
+    class FakeSandbox:
+        def __init__(self, sandbox_id: str) -> None:
+            self.sandbox_id = sandbox_id
+            self.files = SimpleNamespace(make_dir=lambda _path: None, write=lambda *_args: None)
+            self.commands = SimpleNamespace(
+                run=lambda _command, **_kwargs: SimpleNamespace(exit_code=0, stdout="", stderr="")
+            )
+
+        def is_running(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            return None
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            sandbox = FakeSandbox(f"sandbox-{len(create_ids) + 1}")
+            create_ids.append(sandbox.sandbox_id)
+            return sandbox
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            install_pytest=False,
+            network_policy_mode="provider-default",
+            state_dir=str(tmp_path),
+        )
+    )
+    request = valid_request(command_profile="project-pytest", command="python -m pytest -q")
+
+    first = backend.prepare(request, dependency_fingerprint="lock-v1")
+    second = backend.prepare(request, dependency_fingerprint="lock-v2")
+
+    assert first["environment_id"] != second["environment_id"]
+    assert create_ids == ["sandbox-1", "sandbox-2"]
 
 
 def test_fc_backend_reports_pytest_bootstrap_failure(

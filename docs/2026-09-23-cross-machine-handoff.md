@@ -3,7 +3,7 @@
 更新时间：2026-09-23  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
-本次继续开发提交：`70c0b7e`（`feat: add bounded project test recovery`）。
+本次继续开发提交：待本轮完成后更新（持久化 FC prepare + 真实 FC 验收）。
 
 ## 一、项目定位
 
@@ -29,6 +29,7 @@
 9. 项目测试 Run 现在记录请求、准备开始、准备成功/失败和依赖指纹；依赖准备失败不会创建代码 Failure Run。
 10. 对 `SANDBOX_UNAVAILABLE`、`SANDBOX_TIMEOUT`、`CONTROL_PLANE_TRANSIENT`、`ORPHAN_RUN_RECOVERABLE` 提供服务器受控恢复，最多两次，并把恢复 Run 链接回原 Run；测试断言失败、未知回执和依赖失败不自动重放。
 11. nanobot 项目测试适配器会自动消费受控恢复结果；P7 评测忽略测试生成的 `.pyc`，临时工具确认允许网关时间字段的微秒级序列化误差。
+12. FC prepare 已独立于测试 Run：按项目/Profile/依赖指纹生成环境 ID，状态落盘到 `DEVPILOT_FC_STATE_DIR\prepared`，跨 Run 和进程重连复用；TTL、指纹变化、不可查询状态和显式清理均有边界处理。
 
 ## 三、验证证据
 
@@ -134,18 +135,18 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 2. 使用真实 FC 项目跑一次：观察同一个 Run 的 `test.prepare.started` → `test.prepare.completed` → `test.execution.completed` 事件，以及真实 `sandbox_id`、退出码和依赖指纹。
 3. 人为模拟一次 `SANDBOX_UNAVAILABLE` 或 FC 超时，确认 WebUI/Agent 最终看到的是恢复结果或 `RETRY_EXHAUSTED`，不会重复生成同一幂等请求的无限 Run。
 4. 重新运行附着的 Standards/Spec 双轴 review；本候选已发起两轴审查，但 reviewer 接口返回空消息，未形成 PASS/FAIL。阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-*-review-blocked.md`。
-5. 最后再决定是否为真实 FC 引入独立持久 prepare 环境；这一步涉及 Sandbox 保活、跨进程恢复、清理失败和成本上限，不能只靠当前的 Run/Event 记录宣称完成。
+5. 检查真实 FC prepare 环境的 TTL 过期、依赖指纹变化和显式清理结果。
 
 ## 七、已知未完成项
 
 以下内容仍按冻结计划继续开发，不能把当前提交当作整个计划全部完成：
 
-- FC 中真正独立且可跨 Run 复用的 prepare 环境；当前只完成了持久化阶段事件，实际 bootstrap 仍在短生命周期测试 Sandbox 内执行；
-- 真实 FC 服务重启/断线场景下项目测试 recovery 矩阵的验收；本地 Fake/FC 生命周期合同测试已有覆盖；
+- 真实 FC 服务重启/断线场景下项目测试 recovery 矩阵的完整验收；当前已完成真实 FC 的 prepare → 两次跨 Run 执行 → cleanup 验证，仍需覆盖 provider 断线/超时注入；
+- FC provider 对长期 Sandbox 保活的实际成本与配额监控仍需在目标账号确认；代码有 TTL 和显式 cleanup，但不会替代 provider 侧账单/配额告警；
 - 本次候选提交的 Standards/Spec 双轴 review 仍未形成有效 PASS/FAIL 报告；当前仅记录了空输出阻塞，不得视为通过；
-- 基于环境指纹的跨 Run Sandbox 缓存和失效策略。
+- Standards/Spec 双轴 review 的有效 PASS/FAIL 报告；上一批 reviewer 返回空结果，当前阻塞记录仍保留。
 
-开发顺序建议：先完成双轴 review 和真实 FC recovery 验收，再评估是否实施持久 Sandbox；若 FC provider 不支持安全保活，则保留短生命周期环境，并把“准备阶段记录”作为最终边界写入计划。
+开发顺序建议：先完成本轮候选的双轴 review 有效报告，再补 provider 断线/超时注入验收；如目标账号不允许长时间保活，则把 TTL/显式 cleanup 作为运行边界，不绕过安全门禁。
 
 ## 七、重要路径
 

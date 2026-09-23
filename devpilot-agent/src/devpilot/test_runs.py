@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .execution import (
@@ -198,7 +198,49 @@ class ProjectTestRunner:
             working_directory=working_directory,
             dependency_profile=dependency_profile,
         )
+        prepared_environment_id: str | None = None
+        prepare_method = getattr(self.execution_backend, "prepare", None)
         try:
+            if callable(prepare_method):
+                preparation = prepare_method(
+                    request, dependency_fingerprint=dependency_fingerprint
+                )
+                if not isinstance(preparation, dict) or not isinstance(
+                    preparation.get("environment_id"), str
+                ):
+                    raise ExecutionError(
+                        "FC_PREPARE_RECEIPT_INVALID",
+                        "FC prepare did not return an environment identifier",
+                    )
+                prepared_environment_id = preparation["environment_id"]
+                self.store.append_event(
+                    run_id,
+                    "test.prepare.completed",
+                    {
+                        "command_profile": command_profile,
+                        "dependency_profile": dependency_profile,
+                        "dependency_fingerprint": dependency_fingerprint,
+                        "working_directory": working_directory,
+                        "sandbox_id": preparation.get("sandbox_id"),
+                        "environment_id": prepared_environment_id,
+                        "reused": bool(preparation.get("reused", False)),
+                        "expires_at": preparation.get("expires_at"),
+                        "status": preparation.get("status", "ready"),
+                    },
+                )
+                request = replace(request, prepared_environment_id=prepared_environment_id)
+            else:
+                self.store.append_event(
+                    run_id,
+                    "test.prepare.completed",
+                    {
+                        "command_profile": command_profile,
+                        "dependency_profile": dependency_profile,
+                        "dependency_fingerprint": dependency_fingerprint,
+                        "working_directory": working_directory,
+                        "status": "not_required" if not dependency_profile else "delegated",
+                    },
+                )
             receipt = self.execution_backend.run(request)
         except ExecutionError as exc:
             category, next_action = self._execution_error_details(exc.code)
@@ -273,6 +315,7 @@ class ProjectTestRunner:
                 command_profile=command_profile,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                prepared_environment_id=prepared_environment_id,
             )
             try:
                 receipt = self.execution_backend.run(fallback_request)
@@ -335,18 +378,6 @@ class ProjectTestRunner:
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
             )
-        self.store.append_event(
-            run_id,
-            "test.prepare.completed",
-            {
-                "command_profile": command_profile,
-                "dependency_profile": dependency_profile,
-                "dependency_fingerprint": dependency_fingerprint,
-                "working_directory": working_directory,
-                "sandbox_id": receipt.sandbox_id,
-                "status": "ready" if dependency_profile else "not_required",
-            },
-        )
         self._record_receipt(
             run_id,
             receipt,
@@ -444,7 +475,9 @@ class ProjectTestRunner:
 
     @staticmethod
     def _execution_error_details(error_code: str) -> tuple[str, str]:
-        if error_code.startswith(("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL")):
+        if error_code.startswith(
+            ("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL", "FC_PREPARE")
+        ):
             return "dependency_prepare", "检查依赖声明和 FC 网络策略后重新准备环境。"
         if error_code in {"SANDBOX_UNAVAILABLE", "SANDBOX_TIMEOUT"}:
             return "sandbox", "检查 FC 沙箱状态；若回执未知，先查询 Run 再重试。"

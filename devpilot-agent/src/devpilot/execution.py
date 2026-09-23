@@ -57,6 +57,7 @@ class ExecutionRequest:
     max_output_bytes: int = MAX_EXECUTION_OUTPUT_BYTES
     working_directory: str = ""
     dependency_profile: str = ""
+    prepared_environment_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +330,11 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
     max_output_bytes = payload.get("max_output_bytes", MAX_EXECUTION_OUTPUT_BYTES)
     if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
         raise ExecutionError("EXECUTION_INPUT_INVALID", "max_output_bytes must be an integer")
+    prepared_environment_id = payload.get("prepared_environment_id")
+    if prepared_environment_id is not None and not isinstance(prepared_environment_id, str):
+        raise ExecutionError(
+            "EXECUTION_INPUT_INVALID", "prepared_environment_id must be a string"
+        )
     return ExecutionRequest(
         run_id=run_id,
         project_id=project_id,
@@ -340,4 +346,5 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         max_output_bytes=max_output_bytes,
         working_directory=str(payload.get("working_directory", "")),
         dependency_profile=str(payload.get("dependency_profile", "")),
+        prepared_environment_id=prepared_environment_id,
     )

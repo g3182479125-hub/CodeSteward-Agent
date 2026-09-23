@@ -34,8 +34,10 @@ $env:E2B_API_KEY = "<API key from the FC console>"
 $env:E2B_API_URL = "https://api.<region>.e2b.fc.aliyuncs.com"
 $env:E2B_DOMAIN = "<region>.e2b.fc.aliyuncs.com"
 $env:DEVPILOT_FC_TEMPLATE = "code-interpreter-v1"
-# Python project tests temporarily install pytest in each new Sandbox.
+# Python project tests prepare pytest in a fingerprint-bound FC environment.
 $env:DEVPILOT_FC_INSTALL_PYTEST = "1"
+# Prepared environments are reused across test Runs until this TTL expires.
+$env:DEVPILOT_FC_PREPARE_TTL_SECONDS = "1800"
 ```
 
 The strict default sends a network-deny policy. Alibaba FC endpoints may reject that
@@ -51,8 +53,11 @@ for untrusted code or sensitive snapshots.
 
 When `DEVPILOT_FC_INSTALL_PYTEST` is `1` (the default), only the server-owned
 `project-pytest` profile runs `python -m pip install --disable-pip-version-check pytest`
-before the test command. The install is temporary and the Sandbox is still destroyed
-after the run. Set it to `0` only when using a template that already contains pytest.
+during the prepare stage. The prepared Sandbox is bound to the project/Profile/
+dependency fingerprint and reused across test Runs until
+`DEVPILOT_FC_PREPARE_TTL_SECONDS` expires (60–86400 seconds). A changed lockfile
+gets a new environment; an expired or unqueryable environment fails closed. Set it
+to `0` only when using a template that already contains pytest.
 The install requires the provider to permit outbound package access; in strict mode,
 set `$env:DEVPILOT_FC_ALLOW_NETWORK = "1"` explicitly.
 
@@ -73,8 +78,10 @@ applied:
 - `node-syntax`: syntax-check changed JavaScript files.
 
 Each request uses a complete but bounded UTF-8 project snapshot and a server-controlled command.
-The adapter excludes dependency/build/cache directories and secret-like files, creates one
-short-lived Sandbox, returns bounded stdout/stderr/exit code, and always calls `kill()` in cleanup.
+The adapter excludes dependency/build/cache directories and secret-like files, prepares a
+fingerprint-bound Sandbox, returns bounded stdout/stderr/exit code, and keeps the prepared
+environment separate from each test Run. Explicit cleanup calls `kill()`; TTL expiry and
+unqueryable recovery are visible failures rather than silent recreation.
 In strict mode the request includes the deny-network policy; in `provider-default` mode the FC
 endpoint receives no network-policy parameter, so provider network behavior is unknown and
 isolation is not proven. Remote verification also requires an explicit

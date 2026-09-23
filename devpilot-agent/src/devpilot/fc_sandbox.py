@@ -89,6 +89,7 @@ class FCSandboxConfig:
     network_policy_mode: str = "required"
     allowed_project_paths: tuple[str, ...] = ()
     state_dir: str | None = None
+    prepare_ttl_seconds: int = 1800
 
     @classmethod
     def from_environment(cls) -> FCSandboxConfig:
@@ -107,6 +108,19 @@ class FCSandboxConfig:
         if not 1 <= max_timeout_seconds <= 900:
             raise ExecutionError(
                 "FC_CONFIG_INVALID", "DEVPILOT_FC_MAX_TIMEOUT_SECONDS must be between 1 and 900"
+            )
+        try:
+            prepare_ttl_seconds = int(
+                os.environ.get("DEVPILOT_FC_PREPARE_TTL_SECONDS", "1800")
+            )
+        except ValueError as exc:
+            raise ExecutionError(
+                "FC_CONFIG_INVALID", "DEVPILOT_FC_PREPARE_TTL_SECONDS must be an integer"
+            ) from exc
+        if not 60 <= prepare_ttl_seconds <= 86_400:
+            raise ExecutionError(
+                "FC_CONFIG_INVALID",
+                "DEVPILOT_FC_PREPARE_TTL_SECONDS must be between 60 and 86400",
             )
         network_policy_mode = os.environ.get("DEVPILOT_FC_NETWORK_POLICY_MODE", "required").strip()
         if network_policy_mode not in {"required", "provider-default"}:
@@ -148,6 +162,7 @@ class FCSandboxConfig:
                 )
                 / "fc-runs"
             ),
+            prepare_ttl_seconds=prepare_ttl_seconds,
         )
 
 
@@ -210,10 +225,27 @@ class _FCSandboxRun:
     cleanup_done: bool = False
     cleanup_attempts: int = 0
     revision: int = 0
+    prepared_environment_id: str | None = None
+
+
+@dataclass(slots=True)
+class _FCPreparedEnvironment:
+    environment_id: str
+    sandbox_id: str | None = None
+    project_id: str = ""
+    command_profile: str = ""
+    dependency_profile: str = ""
+    dependency_fingerprint: str = ""
+    working_directory: str = ""
+    status: str = "preparing"
+    handle: Any | None = None
+    error_code: str | None = None
+    expires_at: float = 0.0
+    revision: int = 0
 
 
 class FCSandboxBackend:
-    """Run an explicit verification bundle in a short-lived FC Sandbox.
+    """Run explicit verification bundles in managed FC Sandbox environments.
 
     ``run`` remains the execution-port entry point used by the control plane.
     Lifecycle methods provide bounded cancellation, collection, and recovery
@@ -226,6 +258,7 @@ class FCSandboxBackend:
         self.config = config
         self._lock = RLock()
         self._runs: dict[str, _FCSandboxRun] = {}
+        self._prepared: dict[str, _FCPreparedEnvironment] = {}
 
     @property
     def verification_available(self) -> bool:
@@ -334,7 +367,7 @@ class FCSandboxBackend:
             )
 
     def _install_pytest(self, sandbox_handle: Any) -> None:
-        """Install the fixed test runner dependency inside this short-lived sandbox."""
+        """Install the fixed test runner dependency during environment prepare."""
 
         try:
             try:
@@ -393,12 +426,16 @@ class FCSandboxBackend:
             "cleanup_error": state.cleanup_error,
             "cleanup_attempts": state.cleanup_attempts,
             "cleanup_status": (
+                "preserved"
+                if state.prepared_environment_id
+                else
                 "cleaned"
                 if state.cleanup_done
                 else "manual_pending"
                 if state.cleanup_attempts >= MAX_CLEANUP_ATTEMPTS
                 else "pending"
             ),
+            "prepared_environment_id": state.prepared_environment_id,
             "network_policy": self.config.network_policy_mode,
         }
         if state.result is not None:
@@ -430,6 +467,158 @@ class FCSandboxBackend:
             return None
         digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
         return Path(self.config.state_dir).expanduser().resolve() / f"{digest}.json"
+
+    def _prepared_state_path(self, environment_id: str) -> Path | None:
+        if not self.config.state_dir:
+            return None
+        digest = hashlib.sha256(environment_id.encode("utf-8")).hexdigest()
+        return (
+            Path(self.config.state_dir).expanduser().resolve()
+            / "prepared"
+            / f"{digest}.json"
+        )
+
+    def _prepared_payload(self, environment: _FCPreparedEnvironment) -> dict[str, Any]:
+        return {
+            "environment_id": environment.environment_id,
+            "sandbox_id": environment.sandbox_id,
+            "project_id": environment.project_id,
+            "command_profile": environment.command_profile,
+            "dependency_profile": environment.dependency_profile,
+            "dependency_fingerprint": environment.dependency_fingerprint,
+            "working_directory": environment.working_directory,
+            "status": environment.status,
+            "error_code": environment.error_code,
+            "expires_at": environment.expires_at,
+            "revision": environment.revision,
+            "network_policy": self.config.network_policy_mode,
+        }
+
+    def _persist_prepared_unlocked(
+        self, environment: _FCPreparedEnvironment, path: Path
+    ) -> None:
+        current_revision = self._snapshot_revision(path)
+        if current_revision is not None and current_revision > environment.revision:
+            return
+        environment.revision = max(environment.revision, current_revision or 0) + 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=".fc-prepared-", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                payload = self._prepared_payload(environment)
+                payload["revision"] = environment.revision
+                json.dump(payload, temporary, ensure_ascii=False, sort_keys=True)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _persist_prepared(self, environment: _FCPreparedEnvironment) -> None:
+        path = self._prepared_state_path(environment.environment_id)
+        if path is None:
+            return
+        with _PERSIST_LOCK, _state_file_lock(path):
+            self._persist_prepared_unlocked(environment, path)
+
+    def _load_prepared_unlocked(self, environment_id: str) -> _FCPreparedEnvironment | None:
+        path = self._prepared_state_path(environment_id)
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("environment_id") != environment_id:
+            return None
+        try:
+            expires_at = float(payload.get("expires_at", 0.0))
+            revision = max(int(payload.get("revision", 0)), 0)
+        except (TypeError, ValueError):
+            return None
+        return _FCPreparedEnvironment(
+            environment_id=environment_id,
+            sandbox_id=str(payload["sandbox_id"]) if payload.get("sandbox_id") else None,
+            project_id=str(payload.get("project_id", "")),
+            command_profile=str(payload.get("command_profile", "")),
+            dependency_profile=str(payload.get("dependency_profile", "")),
+            dependency_fingerprint=str(payload.get("dependency_fingerprint", "")),
+            working_directory=str(payload.get("working_directory", "")),
+            status=str(payload.get("status", "unknown")),
+            error_code=str(payload["error_code"]) if payload.get("error_code") else None,
+            expires_at=expires_at,
+            revision=revision,
+        )
+
+    def _get_or_load_prepared(self, environment_id: str) -> _FCPreparedEnvironment | None:
+        environment = self._prepared.get(environment_id)
+        if environment is not None:
+            return environment
+        path = self._prepared_state_path(environment_id)
+        if path is None or not path.is_file():
+            return None
+        with _PERSIST_LOCK, _state_file_lock(path):
+            environment = self._load_prepared_unlocked(environment_id)
+        if environment is not None:
+            self._prepared[environment_id] = environment
+        return environment
+
+    def _prepared_environment_id(
+        self, request: ExecutionRequest, dependency_fingerprint: str
+    ) -> str:
+        identity = json.dumps(
+            {
+                "project_id": request.project_id,
+                "command_profile": request.command_profile,
+                "dependency_profile": request.dependency_profile,
+                "dependency_fingerprint": dependency_fingerprint,
+                "working_directory": request.working_directory,
+                "template": self.config.template,
+                "network_policy": self.config.network_policy_mode,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        return "fc-env-" + hashlib.sha256(identity).hexdigest()[:32]
+
+    def _invalidate_old_prepared_environments(
+        self, request: ExecutionRequest, dependency_fingerprint: str
+    ) -> None:
+        candidates = list(self._prepared.values())
+        prepared_path = (
+            Path(self.config.state_dir).expanduser().resolve() / "prepared"
+            if self.config.state_dir
+            else None
+        )
+        if prepared_path is not None and prepared_path.is_dir():
+            for path in prepared_path.glob("*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    environment_id = payload.get("environment_id")
+                except (OSError, ValueError, TypeError):
+                    continue
+                if not isinstance(environment_id, str):
+                    continue
+                if not any(item.environment_id == environment_id for item in candidates):
+                    loaded = self._get_or_load_prepared(environment_id)
+                    if loaded is not None:
+                        candidates.append(loaded)
+        for environment in candidates:
+            if (
+                environment.status == "ready"
+                and environment.project_id == request.project_id
+                and environment.command_profile == request.command_profile
+                and environment.dependency_profile == request.dependency_profile
+                and environment.working_directory == request.working_directory
+                and environment.dependency_fingerprint != dependency_fingerprint
+            ):
+                self.cleanup_prepared_environment(environment.environment_id)
 
     def _persist_state_unlocked(self, state: _FCSandboxRun, path: Path) -> None:
         """Write one restart-safe provider snapshot while its file lock is held."""
@@ -554,6 +743,11 @@ class FCSandboxBackend:
             cleanup_attempts=cleanup_attempts,
             cleanup_done=payload.get("cleanup_status") == "cleaned",
             revision=max(revision, 0),
+            prepared_environment_id=(
+                str(payload["prepared_environment_id"])
+                if payload.get("prepared_environment_id")
+                else None
+            ),
         )
 
     def _load_persisted_state(self, run_id: str) -> _FCSandboxRun | None:
@@ -571,6 +765,222 @@ class FCSandboxBackend:
         if state is not None:
             self._runs[run_id] = state
         return state
+
+    def _validate_prepare_policy(self, request: ExecutionRequest) -> None:
+        if request.timeout_seconds > self.config.max_timeout_seconds:
+            raise ExecutionError(
+                "FC_COST_CAP_EXCEEDED",
+                f"sandbox timeout exceeds the {self.config.max_timeout_seconds}s cost cap",
+            )
+        if request.network_allowed and not self.config.allow_network:
+            raise ExecutionError(
+                "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
+            )
+        if request.dependency_profile and not self.config.allow_network:
+            raise ExecutionError(
+                "FC_DEPENDENCY_INSTALL_NETWORK_DENIED",
+                "project dependency preparation requires an explicitly permitted FC network policy",
+            )
+        if (
+            self._should_install_pytest(request)
+            and self.config.network_policy_mode == "required"
+            and not self.config.allow_network
+        ):
+            raise ExecutionError(
+                "FC_PYTEST_INSTALL_NETWORK_DENIED",
+                "pytest bootstrap requires an explicitly permitted FC network policy",
+            )
+
+    def _create_sandbox(self, request: ExecutionRequest) -> Any:
+        sandbox_cls = _sandbox_class()
+        install_dependencies = self._should_install_dependencies(request)
+        install_pytest = self._should_install_pytest(request)
+        create_kwargs: dict[str, Any] = {
+            "template": self.config.template,
+            "api_key": self.config.api_key,
+            "api_url": self.config.api_url,
+            "domain": self.config.domain,
+            "timeout": min(
+                self.config.max_timeout_seconds,
+                request.timeout_seconds
+                + (DEPENDENCY_INSTALL_TIMEOUT_SECONDS if install_dependencies else 0)
+                + (PYTEST_INSTALL_TIMEOUT_SECONDS if install_pytest else 0),
+            ),
+        }
+        if self.config.network_policy_mode == "required":
+            create_kwargs["allow_internet_access"] = (
+                self.config.allow_network
+                if install_dependencies or install_pytest
+                else self.config.allow_network and request.network_allowed
+            )
+        sandbox = sandbox_cls.create(**create_kwargs)
+        if sandbox is None:
+            raise ExecutionError("FC_SANDBOX_CREATE_FAILED", "FC Sandbox returned no handle")
+        return sandbox
+
+    def _connect_handle(self, sandbox_id: str) -> Any:
+        sandbox_cls = _sandbox_class()
+        connector = getattr(sandbox_cls, "connect", None)
+        if not callable(connector):
+            raise ExecutionError(
+                "FC_PREPARE_RECOVERY_UNKNOWN",
+                "FC SDK cannot reconnect prepared environment",
+            )
+        try:
+            handle = connector(
+                sandbox_id,
+                api_key=self.config.api_key,
+                api_url=self.config.api_url,
+                domain=self.config.domain,
+            )
+            if not bool(handle.is_running()):
+                raise ExecutionError(
+                    "FC_PREPARE_EXPIRED",
+                    "prepared FC environment is no longer running",
+                )
+            return handle
+        except ExecutionError:
+            raise
+        except Exception as exc:
+            raise ExecutionError(
+                "FC_PREPARE_RECOVERY_UNKNOWN",
+                "prepared FC environment could not be queried safely",
+            ) from exc
+
+    @staticmethod
+    def _upload_files(sandbox_handle: Any, request: ExecutionRequest) -> None:
+        for item in request.files:
+            relative_path = item.relative_path.replace("\\", "/")
+            target = f"{SANDBOX_ROOT}/{relative_path}"
+            sandbox_handle.files.make_dir(target.rsplit("/", 1)[0])
+            sandbox_handle.files.write(target, item.content)
+
+    def prepare(
+        self, request: ExecutionRequest, *, dependency_fingerprint: str
+    ) -> dict[str, Any]:
+        """Create or reconnect a fingerprint-bound FC environment.
+
+        The environment is deliberately separate from a test Run.  It keeps
+        only the provider sandbox ID and non-sensitive preparation metadata on
+        disk, so a later Run or a restarted control-plane process can reconnect
+        without replaying dependency installation blindly.
+        """
+
+        validate_request(request)
+        self._validate_prepare_policy(request)
+        base_id = self._prepared_environment_id(request, dependency_fingerprint)
+        with self._lock:
+            environment = self._get_or_load_prepared(base_id)
+            if environment is not None and environment.status == "ready":
+                if environment.expires_at <= time.time():
+                    environment.status = "expired"
+                    environment.error_code = "FC_PREPARE_EXPIRED"
+                    self._persist_prepared(environment)
+                else:
+                    if environment.handle is None:
+                        environment.handle = self._connect_handle(environment.sandbox_id or "")
+                    return {
+                        "environment_id": environment.environment_id,
+                        "sandbox_id": environment.sandbox_id,
+                        "status": "ready",
+                        "reused": True,
+                        "expires_at": environment.expires_at,
+                        "dependency_fingerprint": environment.dependency_fingerprint,
+                    }
+            environment_id = base_id
+            if environment is not None:
+                environment_id = f"{base_id}-r{int(time.time() * 1000)}"
+            self._invalidate_old_prepared_environments(request, dependency_fingerprint)
+            environment = _FCPreparedEnvironment(
+                environment_id=environment_id,
+                project_id=request.project_id,
+                command_profile=request.command_profile,
+                dependency_profile=request.dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
+                working_directory=request.working_directory,
+            )
+            self._prepared[environment_id] = environment
+        sandbox: Any | None = None
+        try:
+            sandbox = self._create_sandbox(request)
+            environment.handle = sandbox
+            environment.sandbox_id = _sandbox_id(sandbox)
+            self._persist_prepared(environment)
+            self._upload_files(sandbox, request)
+            if self._should_install_dependencies(request):
+                self._install_dependencies(sandbox, request)
+            if self._should_install_pytest(request):
+                self._install_pytest(sandbox)
+            environment.status = "ready"
+            environment.expires_at = time.time() + self.config.prepare_ttl_seconds
+            environment.error_code = None
+            self._persist_prepared(environment)
+            return {
+                "environment_id": environment.environment_id,
+                "sandbox_id": environment.sandbox_id,
+                "status": "ready",
+                "reused": False,
+                "expires_at": environment.expires_at,
+                "dependency_fingerprint": dependency_fingerprint,
+            }
+        except ExecutionError as exc:
+            environment.status = "failed"
+            environment.error_code = exc.code
+            self._persist_prepared(environment)
+            if sandbox is not None:
+                try:
+                    sandbox.kill()
+                except Exception:
+                    pass
+            raise
+        except Exception as exc:
+            environment.status = "failed"
+            environment.error_code = _provider_error("create", exc).code
+            self._persist_prepared(environment)
+            if sandbox is not None:
+                try:
+                    sandbox.kill()
+                except Exception:
+                    pass
+            raise _provider_error("create", exc) from exc
+
+    def cleanup_prepared_environment(self, environment_id: str) -> dict[str, Any]:
+        """Dispose one cached environment; repeated cleanup is harmless."""
+
+        with self._lock:
+            environment = self._get_or_load_prepared(environment_id)
+            if environment is None:
+                return {"environment_id": environment_id, "status": "unknown"}
+            handle = environment.handle
+            if handle is None and environment.sandbox_id:
+                try:
+                    handle = self._connect_handle(environment.sandbox_id)
+                except ExecutionError:
+                    environment.status = "unknown"
+                    environment.error_code = "FC_PREPARE_RECOVERY_UNKNOWN"
+                    self._persist_prepared(environment)
+                    return {
+                        "environment_id": environment_id,
+                        "status": "unknown",
+                        "error_code": environment.error_code,
+                    }
+            if handle is not None:
+                try:
+                    handle.kill()
+                except Exception:
+                    environment.status = "cleanup_failed"
+                    environment.error_code = "FC_CLEANUP_FAILED"
+                    self._persist_prepared(environment)
+                    return {
+                        "environment_id": environment_id,
+                        "status": environment.status,
+                        "error_code": environment.error_code,
+                    }
+            environment.status = "cleaned"
+            environment.handle = None
+            environment.expires_at = 0.0
+            self._persist_prepared(environment)
+            return {"environment_id": environment_id, "status": "cleaned"}
 
     def get_run_state(self, run_id: str) -> dict[str, Any]:
         """Return a bounded lifecycle receipt, including a durable restart snapshot."""
@@ -732,72 +1142,65 @@ class FCSandboxBackend:
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:
         validate_request(request)
-        if request.timeout_seconds > self.config.max_timeout_seconds:
-            raise ExecutionError(
-                "FC_COST_CAP_EXCEEDED",
-                f"sandbox timeout exceeds the {self.config.max_timeout_seconds}s cost cap",
-            )
-        if request.network_allowed and not self.config.allow_network:
+        if request.prepared_environment_id is None:
+            self._validate_prepare_policy(request)
+        elif request.network_allowed and not self.config.allow_network:
             raise ExecutionError(
                 "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
             )
-        install_dependencies = self._should_install_dependencies(request)
-        install_pytest = self._should_install_pytest(request)
-        if install_dependencies and not self.config.allow_network:
-            raise ExecutionError(
-                "FC_DEPENDENCY_INSTALL_NETWORK_DENIED",
-                "project dependency preparation requires an explicitly permitted FC network policy",
-            )
-        if (
-            install_pytest
-            and self.config.network_policy_mode == "required"
-            and not self.config.allow_network
-        ):
-            raise ExecutionError(
-                "FC_PYTEST_INSTALL_NETWORK_DENIED",
-                "pytest bootstrap requires an explicitly permitted FC network policy",
-            )
+        install_dependencies = (
+            request.prepared_environment_id is None
+            and self._should_install_dependencies(request)
+        )
+        install_pytest = request.prepared_environment_id is None and self._should_install_pytest(
+            request
+        )
         state = self._reserve_run(request.run_id)
-        sandbox_cls = _sandbox_class()
         sandbox: Any | None = None
+        persistent_environment_id = request.prepared_environment_id
+        if persistent_environment_id is not None:
+            with self._lock:
+                environment = self._get_or_load_prepared(persistent_environment_id)
+                if environment is None or environment.status != "ready":
+                    raise ExecutionError(
+                        "FC_PREPARE_UNAVAILABLE", "prepared FC environment is not ready"
+                    )
+                if (
+                    environment.command_profile != request.command_profile
+                    or environment.dependency_profile != request.dependency_profile
+                ):
+                    raise ExecutionError(
+                        "FC_PREPARE_MISMATCH",
+                        "prepared FC environment does not match this test profile",
+                    )
+                if environment.expires_at <= time.time():
+                    raise ExecutionError(
+                        "FC_PREPARE_EXPIRED", "prepared FC environment has expired"
+                    )
+                if environment.handle is None:
+                    environment.handle = self._connect_handle(environment.sandbox_id or "")
+                sandbox = environment.handle
+                state.handle = sandbox
+                state.sandbox_id = environment.sandbox_id
+                state.prepared_environment_id = persistent_environment_id
+                state.status = "running"
+                self._persist_state(state)
         started = time.monotonic()
         stage = "create"
         primary_error: ExecutionError | None = None
         effective_network_policy = self.config.network_policy_mode
         try:
-            create_kwargs: dict[str, Any] = {
-                "template": self.config.template,
-                "api_key": self.config.api_key,
-                "api_url": self.config.api_url,
-                "domain": self.config.domain,
-                "timeout": min(
-                    self.config.max_timeout_seconds,
-                    request.timeout_seconds
-                    + (DEPENDENCY_INSTALL_TIMEOUT_SECONDS if install_dependencies else 0)
-                    + (PYTEST_INSTALL_TIMEOUT_SECONDS if install_pytest else 0),
-                ),
-            }
-            if self.config.network_policy_mode == "required":
-                create_kwargs["allow_internet_access"] = (
-                    self.config.allow_network
-                    if install_dependencies or install_pytest
-                    else self.config.allow_network and request.network_allowed
-                )
-                if self.config.allow_network and (install_dependencies or install_pytest):
-                    effective_network_policy = (
-                        "required-with-dependency-bootstrap"
-                        if install_dependencies
-                        else "required-with-pytest-bootstrap"
-                    )
-            sandbox_handle: Any = sandbox_cls.create(**create_kwargs)
-            if sandbox_handle is None:
-                raise ExecutionError("FC_SANDBOX_CREATE_FAILED", "FC Sandbox returned no handle")
-            sandbox = sandbox_handle
+            if sandbox is None:
+                sandbox_handle = self._create_sandbox(request)
+                sandbox = sandbox_handle
+                with self._lock:
+                    state.handle = sandbox_handle
+                    state.sandbox_id = _sandbox_id(sandbox_handle)
+                    state.status = "running"
+                    self._persist_state(state)
+            else:
+                sandbox_handle = sandbox
             with self._lock:
-                state.handle = sandbox_handle
-                state.sandbox_id = _sandbox_id(sandbox_handle)
-                state.status = "running"
-                self._persist_state(state)
                 if state.cancel_requested:
                     raise ExecutionError("FC_CANCELLED", "FC Sandbox run was cancelled")
             stage = "upload"
@@ -873,8 +1276,9 @@ class FCSandboxBackend:
                 template=self.config.template,
                 network_policy=effective_network_policy,
                 output_truncated=output_truncated,
-                # The adapter creates a short-lived sandbox from the explicit
-                # bundle and only admits server-owned verification commands.
+                # The adapter either uses a prepared environment or creates a
+                # short-lived sandbox for the explicit bundle and only admits
+                # server-owned verification commands.
                 # Even when the provider cannot enforce its optional network
                 # flag (``provider-default``), this contract still has no
                 # host-project write path and the request itself forbids
@@ -922,7 +1326,7 @@ class FCSandboxBackend:
         finally:
             with self._lock:
                 cleanup_done = state.cleanup_done
-            if sandbox is not None and not cleanup_done:
+            if sandbox is not None and not cleanup_done and persistent_environment_id is None:
                 try:
                     with self._lock:
                         state.cleanup_attempts += 1
