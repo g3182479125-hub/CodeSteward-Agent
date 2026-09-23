@@ -3,7 +3,7 @@
 更新时间：2026-09-23  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
-本次继续开发提交：待本轮完成后更新（持久化 FC prepare + 真实 FC 验收）。
+本次继续开发提交：`a0fbb1e`（`feat: persist FC project test environments`）。
 
 ## 一、项目定位
 
