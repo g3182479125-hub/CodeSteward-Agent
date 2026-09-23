@@ -46,6 +46,7 @@ FC_VERIFICATION_PROFILES = frozenset(
         "python-regression",
         "node-syntax",
         "project-pytest",
+        "project-unittest",
         "project-npm-test",
     }
 )
@@ -1338,6 +1339,7 @@ class FCSandboxBackend:
             return receipt
         except ExecutionError as exc:
             primary_error = exc
+            exc.details.setdefault("stage", stage)
             with self._lock:
                 state.error_code = exc.code
                 state.status = "cancelled" if exc.code == "FC_CANCELLED" else "failed"
@@ -1351,6 +1353,7 @@ class FCSandboxBackend:
                 if cancelled
                 else _provider_error(stage, exc)
             )
+            mapped.details.setdefault("stage", stage)
             primary_error = mapped
             with self._lock:
                 state.error_code = mapped.code
@@ -1360,17 +1363,57 @@ class FCSandboxBackend:
         finally:
             with self._lock:
                 cleanup_done = state.cleanup_done
-            if sandbox is not None and not cleanup_done and persistent_environment_id is None:
+            should_terminate = (
+                sandbox is not None
+                and not cleanup_done
+                and (persistent_environment_id is None or primary_error is not None)
+            )
+            if should_terminate:
                 try:
                     with self._lock:
                         state.cleanup_attempts += 1
-                    sandbox.kill()
+                    kill_confirmed = sandbox.kill()
                     with self._lock:
                         state.cleanup_done = True
                         state.cleanup_error = None
                         self._persist_state(state)
+                    if persistent_environment_id is not None:
+                        with self._lock:
+                            environment = self._get_or_load_prepared(
+                                persistent_environment_id
+                            )
+                            if environment is not None:
+                                environment.status = "cleaned"
+                                environment.error_code = (
+                                    primary_error.code
+                                    if primary_error is not None
+                                    else None
+                                )
+                                environment.handle = None
+                                environment.expires_at = 0.0
+                                self._persist_prepared(environment)
+                    if primary_error is not None:
+                        retryable_stage = stage in {"upload", "execute"}
+                        # The pinned E2B SDK contract returns True when it kills
+                        # a sandbox and False when that sandbox ID is not found;
+                        # either result proves no remote sandbox remains active.
+                        primary_error.details["safe_to_retry"] = (
+                            primary_error.code
+                            in {"FC_TIMEOUT", "FC_PROVIDER_UNAVAILABLE"}
+                            and retryable_stage
+                            and isinstance(kill_confirmed, bool)
+                        )
                 except Exception as exc:
                     cleanup_error = _provider_error("cleanup", exc)
+                    if persistent_environment_id is not None:
+                        with self._lock:
+                            environment = self._get_or_load_prepared(
+                                persistent_environment_id
+                            )
+                            if environment is not None:
+                                environment.status = "cleanup_failed"
+                                environment.error_code = cleanup_error.code
+                                self._persist_prepared(environment)
                     with self._lock:
                         state.cleanup_error = cleanup_error.code
                         cleanup_error.details.update(
@@ -1386,6 +1429,7 @@ class FCSandboxBackend:
                         )
                         if primary_error is not None:
                             primary_error.details.update(cleanup_error.details)
+                            primary_error.details["safe_to_retry"] = False
                         if primary_error is None:
                             state.status = "cleanup_failed"
                             state.error_code = cleanup_error.code
@@ -1401,4 +1445,11 @@ class FCSandboxBackend:
 def build_fc_backend_from_environment() -> ExecutionBackend:
     """Create the optional backend only when the caller explicitly requests it."""
 
+    from .backend_factory import fc_sandbox_enabled
+
+    if not fc_sandbox_enabled():
+        raise ExecutionError(
+            "FC_SANDBOX_DISABLED",
+            "FC Sandbox is disabled; set DEVPILOT_ENABLE_FC_SANDBOX=1 to opt in",
+        )
     return FCSandboxBackend(FCSandboxConfig.from_environment())

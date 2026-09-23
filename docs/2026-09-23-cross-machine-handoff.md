@@ -34,6 +34,7 @@
 12. FC prepare 已独立于测试 Run：按项目/Profile/依赖指纹生成环境 ID，状态落盘到 `DEVPILOT_FC_STATE_DIR\prepared`，跨 Run 和进程重连复用；TTL、指纹变化、不可查询状态和显式清理均有边界处理。
 13. 最终增量修复了三个安全边界：TTL 过期不会静默换新环境；旧环境清理失败会阻止新环境创建；复用前会校验项目、Profile、工作目录和依赖指纹。另修复了 Python 3.11 下 `verification.py` 的 Ruff 语法兼容问题。
 14. FC 超时和 provider 断连现在映射为稳定、可恢复的错误；项目测试恢复只对这两类瞬时故障开放有限重试，断言失败、依赖失败和未知回执不会重放。
+15. 2026-09-23 本地优先改造已完成本机实现、验证与双审：项目测试默认选择本机快照执行；FC Sandbox 默认关闭，只有 `-EnableFCSandbox` / `DEVPILOT_ENABLE_FC_SANDBOX=1` 显式开启才会创建远端 Sandbox。没有本地失败后自动切回 FC 的逻辑。ChangeSet、Apply、Verify、Rollback 与用户确认逻辑未放宽。
 
 ## 三、验证证据
 
@@ -52,16 +53,18 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src;E:\cod
 
 结果：退出码 `0`，全部通过。
 
-本次继续开发后的 DevPilot 全量测试（使用仓库配套 nanobot 环境，避免误用另一套全局 Python）：
+本地优先改造后的 DevPilot 全量测试（使用仓库配套 nanobot 环境，避免误用另一套全局 Python）：
 
 - 命令：`$env:PYTHONPATH="$PWD\devpilot-agent\src;$PWD\nanobot"; & .\nanobot\.venv\Scripts\python.exe -m pytest -q devpilot-agent/tests`
-- 结果：退出码 `0`（包含 3 个 skip）
-- Ruff：受影响源码和测试文件 `All checks passed!`
+- 最新结果：退出码 `0`，全量通过；5 个 skip：4 个 Windows 符号链接用例因当前进程无创建 symlink 权限，1 个真实 FC 用例因要求显式开启 live-test 和 sandbox opt-in。
+- Ruff：`devpilot-agent` 全量 `All checks passed!`
+- Pyright：新增/核心本地执行模块定向检查通过；不代表整个历史仓库通过全量 Pyright。
+- 集成启动脚本 Pester：4/4 通过，覆盖默认关闭与显式启用开关。
 - `git diff --check`：通过
-- Standards 增量 review：PASS，报告见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-standards-review.md`
-- Standards 最终故障恢复 review：PASS，报告见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-fault-recovery-standards-review.md`
-- Spec 最终故障恢复 review：reviewer 再次返回空结果，按规则记录为 BLOCKED，见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-fault-recovery-spec-review-blocked.md`
-- 故障注入定向测试：`61 passed`；全量测试：退出码 `0`，包含 3 个 skip。
+- 最终实现差异的 Standards 与 Spec subagent review：均 PASS。
+- 本次本地优先改造仍在工作区，未提交；请先用 `git status --short` 检查并保留本机现有改动，不要覆盖或整体回退。
+- ShopSphere 本地执行器集成试跑：Run `e896cf25-6fb1-46a9-b018-4419c1011726`；本地依赖准备完成，`execution_location=local` 且无 Sandbox ID，但最终 Run 是 `unknown / TEST_RECEIPT_INCOMPLETE`，没有可验收退出码。最可能原因是 `python -m unittest discover -v` 输出超过 16 KiB 回执限制并被截断；须修复/验证后再宣称项目级 E2E 通过。
+- 当前已运行的 `127.0.0.1:18800` Control Plane 仍报告只有 `fc-agent-sandbox` 且状态 degraded，说明服务进程尚未加载本轮 local-first 改动。挑战试跑通过当前源码的隔离本地 `ProjectTestRunner` 执行，没有调用 FC。完整 WebUI/Personal Agent 测试前需按新电脑本地路径重启/启动集成服务并确认后端目录列出 `local`。
 
 最新真实 WebUI + Full Access + FC 沙箱测试：
 
@@ -102,9 +105,12 @@ Set-Location ..\..
 
 - nanobot 的模型 API key、base URL、模型名；
 - `DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY`；
-- `DEVPILOT_CANDIDATE_GRANT_SECRET`；
-- FC 沙箱所需的 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN`；
-- 新电脑自己的 `DEVPILOT_ALLOWED_ROOTS` 和 `DEVPILOT_FC_ALLOWED_PROJECTS`。
+- `DEVPILOT_CANDIDATE_GRANT_SECRET`（仅在启用模型候选 / FC 功能时）；
+- 新电脑自己的 `DEVPILOT_ALLOWED_ROOTS`。
+
+默认本地执行不需要 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN` 或
+`DEVPILOT_FC_ALLOWED_PROJECTS`。如果将来明确启用 FC，再按本机账号配置这些值，
+并在启动时加 `-EnableFCSandbox`。
 
 这些值只放在本机环境变量或本机配置文件，不提交 GitHub。
 
@@ -130,30 +136,33 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 
 1. 先检查三个 health endpoint。
 2. 在 WebUI 新建对话，确认权限显示为 Full Access。
-3. 用一个位于 `AllowedRoots` 内的项目执行只读检查和 pytest。
-4. 确认回执包含真实 `run_id`、`sandbox_id`、退出码和通过/失败数量。
+3. 用一个位于 `AllowedRoots` 内的项目执行只读检查和项目测试。
+4. 默认应看到回执标记 `execution_location=local`、无 `sandbox_id`、真实退出码和通过/失败数量。
 5. 做代码修改时，确认 Agent 先展示 ChangeSet/Diff，并等待用户明确确认；没有确认不能写文件。
 6. 通过确认后再检查 Apply、Verify 和必要时 Rollback 的真实结果。
 
 ## 六、本次交接后的下一步
 
-当前这批代码已经完成“准备/测试结果分离”和“瞬时错误有限恢复”的最小闭环。下一台电脑建议按下面顺序继续：
+本轮“本地优先、FC 显式 opt-in”代码、全量 DevPilot 测试及双审均已完成；但 ShopSphere 真实项目通过 ProjectTestRunner 的端到端回执仍未验收。重要边界：本地项目测试不是 OS 沙箱，测试/依赖代码会以当前 Windows 用户权限运行并可使用主机默认网络；不要对不可信项目执行本地测试。
 
-1. 先按本文件第三节的命令运行 DevPilot 全量测试和组合回归，确认使用的是 `nanobot\.venv`，不要直接用可能指向旧项目的全局 `python`。
-2. 使用真实 FC 项目跑一次：观察同一个 Run 的 `test.prepare.started` → `test.prepare.completed` → `test.execution.completed` 事件，以及真实 `sandbox_id`、退出码和依赖指纹。
-3. 本地可重复的 FC 超时/断连注入已经完成，确认恢复结果、原 Run 关联和一次有限重试；换机后如有条件，再用目标 FC 账号做一次真实 provider 断线/超时演练。
-4. 补齐 Spec reviewer 的有效 PASS/FAIL 报告；Standards 已 PASS，但 Spec 接口仍返回空消息，不能把它当作通过。
-5. 检查真实 FC prepare 环境的 TTL 过期、依赖指纹变化和显式清理结果。
+此前这批代码已经完成“准备/测试结果分离”和“瞬时错误有限恢复”的最小闭环。下一台电脑建议按下面顺序继续：
+
+1. 先修复/确认 `project-unittest` 的输出回执问题。首选检查不带 `-v` 的固定 unittest 命令并同步更新 LocalExecutionBackend profile 验证和回归测试；仍须保持输出上限与“不接受截断回执”的契约。再用 ShopSphere 挑战副本重跑，要求 Run 有真实退出码、完整回执、`execution_location=local`、无 `sandbox_id` 且清理成功。
+2. 在另一台 Windows 电脑按第四节安装后，先运行第三节 DevPilot 全量测试，确认使用 `nanobot\\.venv`，不要误用其他全局 Python。
+3. 启动/重启集成服务后先检查 `http://127.0.0.1:18800/v1/security/backends`：FC 默认关闭时应显示 local 执行后端，不应只显示 `fc-agent-sandbox`。然后从 WebUI/Personal Agent 对 ShopSphere 运行只读分析和 unittest，确认沿用目标项目作用域。
+4. 默认启动应完全本地运行项目测试：确认回执 `execution_location=local` 且没有 `sandbox_id`。不需要 E2B 凭据。
+5. 若以后明确要验 FC Sandbox，在 `start-integrated-harness.ps1` 使用 `-EnableFCSandbox`，按本机 FC 账号配置凭据和白名单，再验证 FC 的真实回执、TTL 和清理行为。FC 真实 provider 故障演练仍需目标账号提供可控条件。
+6. 模型候选试验和临时工具候选评测若依赖 FC，FC 关闭时会保持不可用；不会偷偷在本机或云端自动启用。
 
 ## 七、已知未完成项
 
-以下内容仍按冻结计划继续开发，不能把当前提交当作整个计划全部完成：
+以下是独立的云端验收/运行事项，不影响本轮“默认本地执行、FC 可显式开启”的实现完成状态：
 
-- 目标 FC 账号上的真实 provider 断线/超时注入仍未执行；本地适配器和控制面的可重复故障注入已经完成，真实云端演练需要可控的 provider 故障条件；
+- 目标 FC 账号上的真实 provider 断线/超时注入仍未执行；本地适配器和控制面的可重复故障注入、重启恢复及不重放测试已完成，真实云端演练需要可控的 provider 故障条件；
 - FC provider 对长期 Sandbox 保活的实际成本与配额监控仍需在目标账号确认；代码有 TTL 和显式 cleanup，但不会替代 provider 侧账单/配额告警；
-- 本次候选的 Standards review 已 PASS；Spec review 仍未形成有效 PASS/FAIL 报告，当前仅记录空输出阻塞，不得视为通过；
+- 如果目标账号不允许可控故障演练，应记录限制及替代证据边界，不将模拟测试描述成云端验收。
 
-开发顺序建议：先完成本轮候选的双轴 review 有效报告，再补 provider 断线/超时注入验收；如目标账号不允许长时间保活，则把 TTL/显式 cleanup 作为运行边界，不绕过安全门禁。
+开发顺序建议：先在目标账号上补 provider 断线/超时注入验收，并检查真实 FC prepare 环境 TTL/清理；如目标账号不支持可控故障演练，应记录限制及替代证据边界，不将模拟测试描述成云端验收。如目标账号不允许长时间保活，则把 TTL/显式 cleanup 作为运行边界，不绕过安全门禁。
 
 ## 七、重要路径
 

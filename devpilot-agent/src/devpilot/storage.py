@@ -471,8 +471,14 @@ class ProjectStore:
             if project.allowed_root_id != allowed_root_id:
                 raise ValueError("allowed root binding does not match trusted project")
 
-    def start_run(self, project_id: str, kind: str = "repo-analysis") -> str:
-        run_id = str(uuid.uuid4())
+    def start_run(
+        self,
+        project_id: str,
+        kind: str = "repo-analysis",
+        *,
+        run_id: str | None = None,
+    ) -> str:
+        run_id = run_id or str(uuid.uuid4())
         with self._session_factory.begin() as session:
             session.add(
                 RunRecord(

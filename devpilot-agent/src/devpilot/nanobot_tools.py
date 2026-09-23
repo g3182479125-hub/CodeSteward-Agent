@@ -608,7 +608,10 @@ def _project_path(value: str, workspace: Path) -> str:
         "type": "object",
         "properties": {
             "project_path": {"type": "string", "minLength": 1},
-            "test_kind": {"type": "string", "enum": ["python-pytest", "node-test"]},
+            "test_kind": {
+                "type": "string",
+                "enum": ["python-pytest", "python-unittest", "node-test"],
+            },
             "target_files": {
                 "type": "array",
                 "minItems": 1,
@@ -629,7 +632,7 @@ def _project_path(value: str, workspace: Path) -> str:
     }
 )
 class ProjectTestRunTool(Tool):
-    """Run a project test in the configured sandbox and preserve the real receipt."""
+    """Run a project test locally by default and preserve its real receipt."""
 
     _scopes = {"core"}
 
@@ -640,9 +643,10 @@ class ProjectTestRunTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Run a needed project test in the configured sandbox. The server snapshots files, "
-            "records the actual receipt, and only a real non-zero exit creates failure evidence. "
-            "Use after inspecting the project; this never changes project files."
+            "Run a needed project test on the local machine by default. FC Sandbox is used only "
+            "when the operator explicitly enables DEVPILOT_ENABLE_FC_SANDBOX. The server snapshots "
+            "files, records the actual execution location and receipt, and only a real non-zero "
+            "test exit creates failure evidence. Use after inspecting the project."
         )
 
     @property

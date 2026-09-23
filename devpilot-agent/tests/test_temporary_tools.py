@@ -636,8 +636,9 @@ def test_validation_receipt_redacts_provider_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(
-    not os.environ.get("DEVPILOT_RUN_LIVE_FC"),
-    reason="live FC evidence is opt-in",
+    not os.environ.get("DEVPILOT_RUN_LIVE_FC")
+    or os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") != "1",
+    reason="live FC evidence requires both explicit live-test and sandbox opt-ins",
 )
 def test_fc_validator_final_checker_live_backend(tmp_path: Path) -> None:
     """Run the final checker version once through the configured FC provider."""

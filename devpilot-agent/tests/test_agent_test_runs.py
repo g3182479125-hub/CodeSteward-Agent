@@ -5,6 +5,7 @@ import hashlib
 import subprocess
 import sys
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +22,7 @@ from devpilot.execution import (
     FakeExecutionBackend,
 )
 from devpilot.nanobot_tools import ProjectTestRunTool
-from devpilot.patches import FilePatch
+from devpilot.patches import FilePatch, PatchError
 from devpilot.paths import AllowedRoots
 from devpilot.services import ProjectAnalysisService
 from devpilot.storage import ProjectStore
@@ -118,7 +119,7 @@ def test_execution_failure_has_structured_recovery_metadata(tmp_path: Path) -> N
     assert result.phase == "execution"
     assert result.error_code == "SANDBOX_UNAVAILABLE"
     assert result.error_category == "sandbox"
-    assert result.retryable is True
+    assert result.retryable is False
     assert result.next_action is not None
     assert result.failure_run_id is None
 
@@ -174,7 +175,11 @@ def test_transient_project_test_recovery_is_bounded_and_linked(tmp_path: Path) -
             return True
 
         def run(self, _request: object) -> ExecutionResult:
-            raise ExecutionError("SANDBOX_UNAVAILABLE", "provider is temporarily unavailable")
+            raise ExecutionError(
+                "SANDBOX_UNAVAILABLE",
+                "provider is temporarily unavailable",
+                details={"safe_to_retry": True},
+            )
 
     manager = ControlPlaneManager(
         allowed_roots=roots,
@@ -202,6 +207,347 @@ def test_transient_project_test_recovery_is_bounded_and_linked(tmp_path: Path) -
     event_types = [event["event_type"] for event in store.list_run_events(first["run_id"])]
     assert event_types.count("test.recovery.started") == 2
     assert "test.recovery.completed" in event_types
+
+
+def test_successful_project_test_recovery_cannot_be_replayed(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class RecoverOnceBackend:
+        name = "recover-once-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, request: object) -> ExecutionResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExecutionError(
+                    "FC_PROVIDER_UNAVAILABLE",
+                    "provider disconnected after safe termination",
+                    details={"safe_to_retry": True},
+                )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id=f"sandbox-{self.calls}",
+                exit_code=0,
+                stdout="passed",
+                stderr="",
+                duration_ms=1,
+                command_profile=getattr(request, "command_profile", ""),
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = RecoverOnceBackend()
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="one safe recovery succeeds",
+    )
+
+    recovered = manager.recover_project_test(first["run_id"])
+    replayed = manager.recover_project_test(first["run_id"])
+
+    assert recovered["status"] == "passed"
+    assert replayed["status"] == "passed"
+    assert replayed["already_recovered"] is True
+    assert replayed["run_id"] == recovered["run_id"]
+    assert backend.calls == 2
+
+
+@pytest.mark.parametrize("recovery_exit_code", [1, None])
+def test_nonretryable_recovery_outcome_cannot_be_replayed(
+    tmp_path: Path, recovery_exit_code: int | None
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class FailedRecoveryBackend:
+        name = "failed-recovery-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, request: object) -> ExecutionResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExecutionError(
+                    "FC_PROVIDER_UNAVAILABLE",
+                    "provider disconnected after safe termination",
+                    details={"safe_to_retry": True},
+                )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="recovery-sandbox",
+                exit_code=recovery_exit_code,  # type: ignore[arg-type]
+                stdout="failed" if recovery_exit_code else "",
+                stderr="",
+                duration_ms=1,
+                command_profile=getattr(request, "command_profile", ""),
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = FailedRecoveryBackend()
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="do not replay semantic failures or incomplete receipts",
+    )
+
+    recovered = manager.recover_project_test(first["run_id"])
+    assert recovered["status"] in {"failed", "unknown"}
+    with pytest.raises(PatchError, match="PROJECT_TEST_RECOVERY_NOT_RETRYABLE"):
+        manager.recover_project_test(first["run_id"])
+
+    assert backend.calls == 2
+
+
+def test_project_test_provider_error_without_termination_proof_is_not_retryable(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class UncertainBackend:
+        name = "uncertain-backend"
+        verification_available = True
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, _request: object) -> ExecutionResult:
+            raise ExecutionError(
+                "FC_PROVIDER_UNAVAILABLE", "execution outcome is unknown"
+            )
+
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=UncertainBackend(),  # type: ignore[arg-type]
+    )
+    result = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="unknown results are not replayed",
+    )
+
+    assert result["retryable"] is False
+    with pytest.raises(PatchError, match="PROJECT_TEST_NOT_RETRYABLE"):
+        manager.recover_project_test(result["run_id"])
+
+
+def test_concurrent_project_test_recovery_requests_do_not_start_two_runs(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+    recovery_started = Event()
+    allow_recovery_to_finish = Event()
+
+    class SlowRecoveryBackend:
+        name = "slow-recovery-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, request: object) -> ExecutionResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExecutionError(
+                    "FC_PROVIDER_UNAVAILABLE",
+                    "provider disconnected after safe termination",
+                    details={"safe_to_retry": True},
+                )
+            recovery_started.set()
+            assert allow_recovery_to_finish.wait(2)
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="recovered-sandbox",
+                exit_code=0,
+                stdout="passed",
+                stderr="",
+                duration_ms=1,
+                command_profile=getattr(request, "command_profile", ""),
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = SlowRecoveryBackend()
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="only one recovery runs at a time",
+    )
+    recovered: dict[str, object] = {}
+    errors: list[Exception] = []
+
+    def recover() -> None:
+        try:
+            recovered.update(manager.recover_project_test(first["run_id"]))
+        except Exception as exc:  # surfaced in the test thread below
+            errors.append(exc)
+
+    worker = Thread(target=recover, daemon=True)
+    worker.start()
+    assert recovery_started.wait(2)
+    with pytest.raises(PatchError, match="PROJECT_TEST_RECOVERY_IN_PROGRESS"):
+        manager.recover_project_test(first["run_id"])
+    assert backend.calls == 2
+
+    allow_recovery_to_finish.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert errors == []
+    assert recovered["status"] == "passed"
+    assert backend.calls == 2
+
+
+def test_interrupted_recovery_before_run_start_is_reconciled_after_restart(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class RestartBackend:
+        name = "restart-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, request: object) -> ExecutionResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExecutionError(
+                    "FC_PROVIDER_UNAVAILABLE",
+                    "provider disconnected after safe termination",
+                    details={"safe_to_retry": True},
+                )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="restart-recovered-sandbox",
+                exit_code=0,
+                stdout="passed",
+                stderr="",
+                duration_ms=1,
+                command_profile=getattr(request, "command_profile", ""),
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = RestartBackend()
+    first_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = first_manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="reconcile a recovery interrupted before Run creation",
+    )
+    intended_run_id = "reserved-before-restart"
+    recovery_key = f"project-test-recovery-{first['run_id']}-1"
+    reservation_state, _ = store.reserve_idempotency(recovery_key, "pending-request-hash")
+    assert reservation_state == "new"
+    assert store.get_idempotency(recovery_key) == ("pending-request-hash", None)
+    store.append_event(
+        first["run_id"],
+        "test.recovery.started",
+        {
+            "attempt": 1,
+            "code": "FC_PROVIDER_UNAVAILABLE",
+            "retryable": True,
+            "recovery_run_id": intended_run_id,
+            "idempotency_key": recovery_key,
+        },
+    )
+    restarted_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(PatchError, match="PROJECT_TEST_RECOVERY_INTERRUPTED"):
+        restarted_manager.recover_project_test(first["run_id"])
+    assert store.get_idempotency(recovery_key) is None
+    recovered = restarted_manager.recover_project_test(first["run_id"])
+
+    assert recovered["status"] == "passed"
+    assert recovered["retry_count"] == 2
+    assert recovered["run_id"] != intended_run_id
+    assert backend.calls == 2
+    attempts = [
+        event
+        for event in store.list_run_events(first["run_id"])
+        if event["event_type"] == "test.recovery.failed"
+    ]
+    assert attempts[-1]["payload"]["code"] == "RECOVERY_INTERRUPTED_BEFORE_RUN"
+    assert attempts[-1]["payload"]["safe_to_retry"] is True
 
 
 @pytest.mark.parametrize(
@@ -234,7 +580,7 @@ def test_injected_fc_provider_fault_enters_bounded_recovery(
         def run(self, request: object) -> ExecutionResult:
             self.calls += 1
             if self.calls == 1:
-                raise ExecutionError(error_code, message)
+                raise ExecutionError(error_code, message, details={"safe_to_retry": True})
             return ExecutionResult(
                 backend=self.name,
                 sandbox_id=f"sandbox-recovered-{self.calls}",
@@ -271,6 +617,178 @@ def test_injected_fc_provider_fault_enters_bounded_recovery(
     assert recovered["recovery_of"] == first["run_id"]
     assert recovered["retry_count"] == 1
     assert backend.calls == 2
+    parent_events = store.list_run_events(first["run_id"])
+    start_event = next(
+        event for event in parent_events if event["event_type"] == "test.recovery.started"
+    )
+    completion_event = next(
+        event for event in parent_events if event["event_type"] == "test.recovery.completed"
+    )
+    assert completion_event["payload"]["recovery_run_id"] == start_event["payload"][
+        "recovery_run_id"
+    ]
+
+
+def test_interrupted_running_recovery_is_cleaned_and_not_replayed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+    cleanup_calls: list[str] = []
+
+    class RestartBackend:
+        name = "restart-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.run_calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, _request: object) -> ExecutionResult:
+            self.run_calls += 1
+            raise ExecutionError(
+                "FC_PROVIDER_UNAVAILABLE",
+                "provider disconnected after safe termination",
+                details={"safe_to_retry": True},
+            )
+
+        def cleanup(self, run_id: str) -> dict[str, str]:
+            cleanup_calls.append(run_id)
+            return {"status": "cancelled", "cleanup_status": "cleaned"}
+
+    backend = RestartBackend()
+    first_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = first_manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="an interrupted remote recovery must be stopped, not replayed",
+    )
+    interrupted_run_id = "running-recovery-after-restart"
+    store.start_run(first["project_id"], kind="test-check", run_id=interrupted_run_id)
+    store.append_event(
+        first["run_id"],
+        "test.recovery.started",
+        {
+            "attempt": 1,
+            "code": "FC_PROVIDER_UNAVAILABLE",
+            "retryable": True,
+            "recovery_run_id": interrupted_run_id,
+            "idempotency_key": f"project-test-recovery-{first['run_id']}-1",
+        },
+    )
+    restarted_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(PatchError, match="PROJECT_TEST_RECOVERY_INTERRUPTED"):
+        restarted_manager.recover_project_test(first["run_id"])
+    with pytest.raises(PatchError, match="PROJECT_TEST_RECOVERY_NOT_RETRYABLE"):
+        restarted_manager.recover_project_test(first["run_id"])
+
+    assert cleanup_calls == [interrupted_run_id]
+    assert backend.run_calls == 1
+    assert store.get_run_state(interrupted_run_id)["status"] == "failed"
+    assert any(
+        event["event_type"] == "test.execution.incomplete"
+        for event in store.list_run_events(interrupted_run_id)
+    )
+    last_recovery = [
+        event
+        for event in store.list_run_events(first["run_id"])
+        if event["event_type"] == "test.recovery.failed"
+    ][-1]
+    assert last_recovery["payload"]["cleanup_status"] == "cleaned"
+    assert last_recovery["payload"]["safe_to_retry"] is False
+
+
+def test_interrupted_recovery_reconciles_completed_run_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class RestartBackend:
+        name = "restart-backend"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.run_calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, _request: object) -> ExecutionResult:
+            self.run_calls += 1
+            raise ExecutionError(
+                "FC_PROVIDER_UNAVAILABLE",
+                "provider disconnected after safe termination",
+                details={"safe_to_retry": True},
+            )
+
+    backend = RestartBackend()
+    first_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = first_manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider disconnected",
+        expected_behavior="find the completed result after the manager restarts",
+    )
+    completed_run_id = "completed-recovery-after-restart"
+    store.start_run(first["project_id"], kind="test-check", run_id=completed_run_id)
+    store.append_event(
+        completed_run_id,
+        "test.execution.completed",
+        {
+            "command": "python -m pytest -q",
+            "sandbox_id": "completed-sandbox",
+            "exit_code": 0,
+        },
+    )
+    store.finish_run(completed_run_id, "completed", {"exit_code": 0})
+    store.append_event(
+        first["run_id"],
+        "test.recovery.started",
+        {
+            "attempt": 1,
+            "code": "FC_PROVIDER_UNAVAILABLE",
+            "retryable": True,
+            "recovery_run_id": completed_run_id,
+            "idempotency_key": f"project-test-recovery-{first['run_id']}-1",
+        },
+    )
+    restarted_manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+
+    recovered = restarted_manager.recover_project_test(first["run_id"])
+
+    assert recovered["run_id"] == completed_run_id
+    assert recovered["status"] == "passed"
+    assert recovered["recovered_after_restart"] is True
+    assert backend.run_calls == 1
 
 
 def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> None:

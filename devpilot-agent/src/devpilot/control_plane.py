@@ -24,9 +24,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .backend_factory import build_project_execution_backend
 from .candidate_runner import CandidateTrialGrantIssuer, CandidateTrialRunner
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
-from .execution import ExecutionBackend, ExecutionError, FakeExecutionBackend
+from .execution import (
+    ExecutionBackend,
+    ExecutionError,
+    FakeExecutionBackend,
+    execution_receipt_location_is_consistent,
+)
 from .patches import (
     ApplyReceipt,
     AuthorizationGrant,
@@ -61,9 +67,7 @@ APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
 INTERNAL_AUTH_HEADER = "X-DevPilot-Internal-Token"
-_INTERNAL_AUTH_PATHS = frozenset(
-    {"/approve", "/trust", "/revoke"}
-)
+_INTERNAL_AUTH_PATHS = frozenset({"/approve", "/trust", "/revoke"})
 
 
 class ReplacementPayload(BaseModel):
@@ -83,9 +87,7 @@ class PatchPayload(BaseModel):
     operation: FileOperation
     content: str | None = None
     expected_sha256: str | None = None
-    replacements: list[ReplacementPayload] | None = Field(
-        default=None, min_length=1, max_length=20
-    )
+    replacements: list[ReplacementPayload] | None = Field(default=None, min_length=1, max_length=20)
 
     def to_file_patch(self, *, source_content: str | None = None) -> FilePatch:
         if self.replacements is not None:
@@ -112,9 +114,7 @@ class PatchPayload(BaseModel):
                         "PATCH_REPLACEMENT_NOT_UNIQUE",
                         "each replacement must match its requested count",
                     )
-                content = content.replace(
-                    replacement.find, replacement.replace, replacement.count
-                )
+                content = content.replace(replacement.find, replacement.replace, replacement.count)
         else:
             content = self.content
         return FilePatch(self.relative_path, self.operation, content, self.expected_sha256)
@@ -162,7 +162,7 @@ class ProjectTestRequest(BaseModel):
     task_id: str | None = Field(default=None, min_length=1, max_length=128)
     session_id: str | None = Field(default=None, min_length=1, max_length=256)
     user_id: str | None = Field(default=None, min_length=1, max_length=256)
-    test_kind: str = Field(pattern=r"^(?:python-pytest|node-test)$")
+    test_kind: str = Field(pattern=r"^(?:python-pytest|python-unittest|node-test)$")
     target_files: list[str] = Field(min_length=1, max_length=32)
     symptom: str = Field(min_length=1, max_length=4000)
     expected_behavior: str = Field(min_length=1, max_length=4000)
@@ -257,12 +257,16 @@ def _configured_roots() -> AllowedRoots:
 
 
 def _configured_data_dir() -> Path:
-    return Path(
-        os.environ.get(
-            "DEVPILOT_DATA_DIR",
-            str(Path.home() / ".nanobot-skill-improvement"),
+    return (
+        Path(
+            os.environ.get(
+                "DEVPILOT_DATA_DIR",
+                str(Path.home() / ".nanobot-skill-improvement"),
+            )
         )
-    ).expanduser().resolve()
+        .expanduser()
+        .resolve()
+    )
 
 
 def _candidate_trial_runner_from_environment(
@@ -281,9 +285,7 @@ def _candidate_trial_runner_from_environment(
         raise RuntimeError("model candidates require the explicitly configured FC backend")
     grant_secret = os.environ.get("DEVPILOT_CANDIDATE_GRANT_SECRET", "").encode("utf-8")
     if len(grant_secret) < 32:
-        raise RuntimeError(
-            "DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes"
-        )
+        raise RuntimeError("DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes")
     return CandidateTrialRunner(
         execution_backend,
         store=store,
@@ -362,6 +364,7 @@ class ControlPlaneManager:
         self.patch_service = StructuredPatchService(allowed_roots=allowed_roots, store=store)
         self._entries: dict[str, _PendingChangeSet] = {}
         self._mutex = threading.RLock()
+        self._active_recoveries: set[tuple[str, int]] = set()
         self._session_project_bindings: dict[tuple[str, str], tuple[str, str]] = {}
         if store is not None:
             for change_set_id in store.list_change_set_ids():
@@ -384,6 +387,7 @@ class ControlPlaneManager:
         idempotency_key: str | None = None,
         session_access_mode: str | None = None,
         retry_count: int = 0,
+        execution_run_id: str | None = None,
     ) -> dict[str, Any]:
         if self.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project test runs require durable storage")
@@ -440,9 +444,8 @@ class ControlPlaneManager:
                 "configured execution backend is not available for project tests",
             )
         supports_profile = getattr(backend, "supports_profile", None)
-        if (
-            type(backend) is not FakeExecutionBackend
-            and (not callable(supports_profile) or not supports_profile(command_profile))
+        if type(backend) is not FakeExecutionBackend and (
+            not callable(supports_profile) or not supports_profile(command_profile)
         ):
             raise PatchError(
                 "VERIFICATION_PROFILE_UNSUPPORTED",
@@ -492,6 +495,7 @@ class ControlPlaneManager:
                 session_id=session_id,
                 user_id=user_id,
                 session_access_granted=session_access_granted,
+                run_id=execution_run_id,
             )
         except ProjectTestTrustError as exc:
             self._abort(idempotency_key)
@@ -524,6 +528,8 @@ class ControlPlaneManager:
             "error_category": result.error_category,
             "retryable": result.retryable,
             "next_action": result.next_action,
+            "execution_location": result.execution_location,
+            "cleanup_status": result.cleanup_status,
             "sandbox_id": result.sandbox_id,
             "working_directory": result.working_directory,
             "dependency_profile": result.dependency_profile,
@@ -557,14 +563,319 @@ class ControlPlaneManager:
             raise PatchError(
                 "PERSISTENCE_REQUIRED", "project test recovery requires durable storage"
             )
+        stale_attempt: dict[str, Any] | None = None
+        stale_marker: tuple[str, int] | None = None
+        with self._mutex:
+            try:
+                preflight = self.store.get_run_state(run_id)
+            except KeyError as exc:
+                raise PatchError("RUN_NOT_FOUND", "project test Run does not exist") from exc
+            if preflight["kind"] != "test-check":
+                raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run is not a project test Run")
+            preflight_events = preflight["events"]
+            started = [
+                event
+                for event in preflight_events
+                if event["event_type"] == "test.recovery.started"
+            ]
+            terminal = {
+                event["payload"].get("attempt")
+                for event in preflight_events
+                if event["event_type"] in {"test.recovery.completed", "test.recovery.failed"}
+            }
+            stale_attempt = next(
+                (event for event in started if event["payload"].get("attempt") not in terminal),
+                None,
+            )
+            if stale_attempt is not None:
+                attempt_value = stale_attempt["payload"].get("attempt")
+                if not isinstance(attempt_value, int):
+                    raise PatchError(
+                        "PROJECT_TEST_RECOVERY_INTERRUPTED",
+                        "an interrupted recovery has invalid attempt evidence",
+                    )
+                stale_marker = (run_id, attempt_value)
+                if stale_marker in self._active_recoveries:
+                    raise PatchError(
+                        "PROJECT_TEST_RECOVERY_IN_PROGRESS",
+                        "a project test recovery is already in progress for this Run",
+                    )
+                self._active_recoveries.add(stale_marker)
+        if stale_attempt is not None and stale_marker is not None:
+            try:
+                return self._reconcile_interrupted_project_test_recovery(
+                    run_id, stale_attempt["payload"]
+                )
+            finally:
+                with self._mutex:
+                    self._active_recoveries.discard(stale_marker)
+        self._mutex.acquire()
         try:
-            state = self.store.get_run_state(run_id)
-        except KeyError as exc:
-            raise PatchError("RUN_NOT_FOUND", "project test Run does not exist") from exc
-        if state["kind"] != "test-check":
-            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run is not a project test Run")
-        events = state["events"]
-        failure = next(
+            try:
+                state = self.store.get_run_state(run_id)
+            except KeyError as exc:
+                raise PatchError("RUN_NOT_FOUND", "project test Run does not exist") from exc
+            if state["kind"] != "test-check":
+                raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run is not a project test Run")
+            events = state["events"]
+            successful_recovery = next(
+                (
+                    event
+                    for event in events
+                    if event["event_type"] == "test.recovery.completed"
+                    and event["payload"].get("status") == "passed"
+                ),
+                None,
+            )
+            if successful_recovery is not None:
+                payload = successful_recovery["payload"]
+                return {
+                    "run_id": payload.get("recovery_run_id"),
+                    "recovery_of": run_id,
+                    "status": "passed",
+                    "retry_count": payload.get("attempt"),
+                    "already_recovered": True,
+                }
+            started_attempts = [
+                event for event in events if event["event_type"] == "test.recovery.started"
+            ]
+            terminal_attempts = {
+                event["payload"].get("attempt")
+                for event in events
+                if event["event_type"] in {"test.recovery.completed", "test.recovery.failed"}
+            }
+            in_progress = next(
+                (
+                    event
+                    for event in started_attempts
+                    if event["payload"].get("attempt") not in terminal_attempts
+                ),
+                None,
+            )
+            if in_progress is not None:
+                raise PatchError(
+                    "PROJECT_TEST_RECOVERY_IN_PROGRESS",
+                    "a project test recovery is already in progress for this Run",
+                )
+            if any(
+                event["event_type"] == "test.recovery.failed"
+                and event["payload"].get("safe_to_retry") is not True
+                for event in events
+            ):
+                raise PatchError(
+                    "PROJECT_TEST_RECOVERY_NOT_RETRYABLE",
+                    "a previous recovery has no conclusive execution receipt",
+                )
+            previous_recovery = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event["event_type"] == "test.recovery.completed"
+                ),
+                None,
+            )
+            if previous_recovery is None:
+                failure_events = events
+            else:
+                recovery_payload = previous_recovery["payload"]
+                if recovery_payload.get("status") != "unknown":
+                    raise PatchError(
+                        "PROJECT_TEST_RECOVERY_NOT_RETRYABLE",
+                        "the previous recovery result is not a retryable provider failure",
+                    )
+                recovery_run_id = recovery_payload.get("recovery_run_id")
+                if not isinstance(recovery_run_id, str):
+                    raise PatchError(
+                        "PROJECT_TEST_RECOVERY_NOT_RETRYABLE",
+                        "the previous recovery has no linked Run receipt",
+                    )
+                try:
+                    recovery_state = self.store.get_run_state(recovery_run_id)
+                except KeyError as exc:
+                    raise PatchError(
+                        "PROJECT_TEST_RECOVERY_NOT_RETRYABLE",
+                        "the previous recovery Run receipt is unavailable",
+                    ) from exc
+                failure_events = recovery_state["events"]
+            failure = next(
+                (
+                    event
+                    for event in reversed(failure_events)
+                    if event["event_type"] in {"test.execution.failed", "test.prepare.failed"}
+                ),
+                None,
+            )
+            failure_payload = failure["payload"] if failure is not None else {}
+            error_code = failure_payload.get("code")
+            retryable = (
+                failure_payload.get("retryable") is True
+                and failure_payload.get("safe_to_retry") is True
+            )
+            retryable_codes = {
+                "SANDBOX_UNAVAILABLE",
+                "SANDBOX_TIMEOUT",
+                "FC_PROVIDER_UNAVAILABLE",
+                "FC_TIMEOUT",
+                "CONTROL_PLANE_TRANSIENT",
+                "ORPHAN_RUN_RECOVERABLE",
+            }
+            if previous_recovery is not None and (
+                not retryable or error_code not in retryable_codes
+            ):
+                raise PatchError(
+                    "PROJECT_TEST_RECOVERY_NOT_RETRYABLE",
+                    "the previous recovery lacks proof that its failure is safe to retry",
+                )
+            if not retryable or error_code not in retryable_codes:
+                raise PatchError(
+                    "PROJECT_TEST_NOT_RETRYABLE",
+                    "only a recorded transient sandbox/control-plane failure can be retried",
+                )
+            attempts = len(started_attempts)
+            if attempts >= PROJECT_TEST_RECOVERY_LIMIT:
+                self.store.append_event(
+                    run_id,
+                    "test.recovery.exhausted",
+                    {"retry_count": attempts, "code": "RETRY_EXHAUSTED"},
+                )
+                return {
+                    "run_id": run_id,
+                    "status": "unknown",
+                    "phase": "recovery",
+                    "error_code": "RETRY_EXHAUSTED",
+                    "error_category": "control_plane",
+                    "retryable": False,
+                    "retry_count": attempts,
+                    "next_action": "重试次数已达到上限，请检查 FC/控制层状态后重新发起测试。",
+                }
+            request_event = next(
+                (event for event in events if event["event_type"] == "test.request.created"),
+                None,
+            )
+            if request_event is None:
+                raise PatchError(
+                    "PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is incomplete"
+                )
+            request = request_event["payload"]
+            effective_session_id = session_id or request.get("session_id")
+            effective_user_id = user_id or request.get("user_id")
+            if not isinstance(request.get("project_path"), str) or not isinstance(
+                request.get("test_kind"), str
+            ):
+                raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is invalid")
+            attempt = attempts + 1
+            recovery_run_id = str(uuid.uuid4())
+            retry_key = f"project-test-recovery-{run_id}-{attempt}"
+            self.store.append_event(
+                run_id,
+                "test.recovery.started",
+                {
+                    "attempt": attempt,
+                    "code": error_code,
+                    "retryable": True,
+                    "recovery_run_id": recovery_run_id,
+                    "idempotency_key": retry_key,
+                },
+            )
+            self._active_recoveries.add((run_id, attempt))
+        finally:
+            self._mutex.release()
+        try:
+            try:
+                response = self.run_project_test(
+                    project_path=request["project_path"],
+                    test_kind=request["test_kind"],
+                    target_files=list(request.get("target_files", [])),
+                    symptom=str(request.get("symptom", "")),
+                    expected_behavior=str(request.get("expected_behavior", "")),
+                    task_id=request.get("task_id"),
+                    session_id=effective_session_id,
+                    user_id=effective_user_id,
+                    idempotency_key=retry_key,
+                    session_access_mode=session_access_mode,
+                    retry_count=attempt,
+                    execution_run_id=recovery_run_id,
+                )
+            except Exception as exc:
+                try:
+                    self.store.get_run_state(recovery_run_id)
+                    recovery_run_exists = True
+                except KeyError:
+                    recovery_run_exists = False
+                if not recovery_run_exists:
+                    self.store.append_event(
+                        run_id,
+                        "test.recovery.failed",
+                        {
+                            "attempt": attempt,
+                            "recovery_run_id": recovery_run_id,
+                            "error_type": type(exc).__name__,
+                            "safe_to_retry": True,
+                        },
+                    )
+                raise
+            self.store.append_event(
+                run_id,
+                "test.recovery.completed",
+                {
+                    "attempt": attempt,
+                    "recovery_run_id": response["run_id"],
+                    "status": response["status"],
+                },
+            )
+            response["recovery_of"] = run_id
+            return response
+        finally:
+            with self._mutex:
+                self._active_recoveries.discard((run_id, attempt))
+
+    def _reconcile_interrupted_project_test_recovery(
+        self, parent_run_id: str, attempt_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve a durable recovery-start event after the manager restarted."""
+
+        attempt = attempt_payload["attempt"]
+        recovery_run_id = attempt_payload.get("recovery_run_id")
+        idempotency_key = attempt_payload.get("idempotency_key")
+        if not isinstance(recovery_run_id, str):
+            self.store.append_event(
+                parent_run_id,
+                "test.recovery.failed",
+                {
+                    "attempt": attempt,
+                    "code": "RECOVERY_LINK_MISSING",
+                    "safe_to_retry": False,
+                },
+            )
+            raise PatchError(
+                "PROJECT_TEST_RECOVERY_INTERRUPTED",
+                "the interrupted recovery has no linked Run ID; inspect its state "
+                "before continuing",
+            )
+        try:
+            recovery_state = self.store.get_run_state(recovery_run_id)
+        except KeyError:
+            # The test Run row is created before any sandbox call.  Its absence
+            # proves this attempt never reached the execution backend.
+            if isinstance(idempotency_key, str):
+                self.store.abort_idempotency(idempotency_key)
+            self.store.append_event(
+                parent_run_id,
+                "test.recovery.failed",
+                {
+                    "attempt": attempt,
+                    "recovery_run_id": recovery_run_id,
+                    "code": "RECOVERY_INTERRUPTED_BEFORE_RUN",
+                    "safe_to_retry": True,
+                },
+            )
+            raise PatchError(
+                "PROJECT_TEST_RECOVERY_INTERRUPTED",
+                "the interrupted attempt never created a Run and may be retried",
+            ) from None
+
+        events = recovery_state["events"]
+        execution_failure = next(
             (
                 event
                 for event in reversed(events)
@@ -572,89 +883,107 @@ class ControlPlaneManager:
             ),
             None,
         )
-        failure_payload = failure["payload"] if failure is not None else {}
-        error_code = failure_payload.get("code")
-        retryable = bool(failure_payload.get("retryable"))
-        if not retryable or error_code not in {
-            "SANDBOX_UNAVAILABLE",
-            "SANDBOX_TIMEOUT",
-            "FC_PROVIDER_UNAVAILABLE",
-            "FC_TIMEOUT",
-            "CONTROL_PLANE_TRANSIENT",
-            "ORPHAN_RUN_RECOVERABLE",
-        }:
-            raise PatchError(
-                "PROJECT_TEST_NOT_RETRYABLE",
-                "only a recorded transient sandbox/control-plane failure can be retried",
-            )
-        attempts = sum(event["event_type"] == "test.recovery.started" for event in events)
-        if attempts >= PROJECT_TEST_RECOVERY_LIMIT:
-            self.store.append_event(
-                run_id,
-                "test.recovery.exhausted",
-                {"retry_count": attempts, "code": "RETRY_EXHAUSTED"},
-            )
-            return {
-                "run_id": run_id,
-                "status": "unknown",
-                "phase": "recovery",
-                "error_code": "RETRY_EXHAUSTED",
-                "error_category": "control_plane",
-                "retryable": False,
-                "retry_count": attempts,
-                "next_action": "重试次数已达到上限，请检查 FC/控制层状态后重新发起测试。",
-            }
-        request_event = next(
-            (event for event in events if event["event_type"] == "test.request.created"), None
+        failure_payload = execution_failure["payload"] if execution_failure else {}
+        safe_to_retry = (
+            failure_payload.get("retryable") is True
+            and failure_payload.get("safe_to_retry") is True
         )
-        if request_event is None:
-            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is incomplete")
-        request = request_event["payload"]
-        effective_session_id = session_id or request.get("session_id")
-        effective_user_id = user_id or request.get("user_id")
-        if not isinstance(request.get("project_path"), str) or not isinstance(
-            request.get("test_kind"), str
-        ):
-            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is invalid")
-        attempt = attempts + 1
-        self.store.append_event(
-            run_id,
-            "test.recovery.started",
-            {"attempt": attempt, "code": error_code, "retryable": True},
-        )
-        retry_key = f"project-test-recovery-{run_id}-{attempt}"
-        try:
-            response = self.run_project_test(
-                project_path=request["project_path"],
-                test_kind=request["test_kind"],
-                target_files=list(request.get("target_files", [])),
-                symptom=str(request.get("symptom", "")),
-                expected_behavior=str(request.get("expected_behavior", "")),
-                task_id=request.get("task_id"),
-                session_id=effective_session_id,
-                user_id=effective_user_id,
-                idempotency_key=retry_key,
-                session_access_mode=session_access_mode,
-                retry_count=attempt,
-            )
-        except Exception as exc:
+        if recovery_state["status"] == "running":
+            cleanup_status = "unavailable"
+            cleanup = getattr(self.execution_backend, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup_receipt = cleanup(recovery_run_id)
+                    if isinstance(cleanup_receipt, dict):
+                        cleanup_status = str(
+                            cleanup_receipt.get(
+                                "cleanup_status", cleanup_receipt.get("status", "unknown")
+                            )
+                        )
+                except Exception:
+                    cleanup_status = "unknown"
             self.store.append_event(
-                run_id,
+                recovery_run_id,
+                "test.execution.incomplete",
+                {
+                    "code": "RECOVERY_INTERRUPTED_OUTCOME_UNKNOWN",
+                    "cleanup_status": cleanup_status,
+                },
+            )
+            self.store.finish_run(
+                recovery_run_id,
+                "failed",
+                {
+                    "code": "RECOVERY_INTERRUPTED_OUTCOME_UNKNOWN",
+                    "cleanup_status": cleanup_status,
+                },
+            )
+            self.store.append_event(
+                parent_run_id,
                 "test.recovery.failed",
-                {"attempt": attempt, "error_type": type(exc).__name__},
+                {
+                    "attempt": attempt,
+                    "recovery_run_id": recovery_run_id,
+                    "code": "RECOVERY_INTERRUPTED_OUTCOME_UNKNOWN",
+                    "cleanup_status": cleanup_status,
+                    "safe_to_retry": False,
+                },
             )
-            raise
-        self.store.append_event(
-            run_id,
-            "test.recovery.completed",
-            {
-                "attempt": attempt,
-                "recovery_run_id": response["run_id"],
-                "status": response["status"],
-            },
+            raise PatchError(
+                "PROJECT_TEST_RECOVERY_INTERRUPTED",
+                "the interrupted Run was queried and stopped or left unknown; do not replay it",
+            )
+
+        execution_receipt = next(
+            (
+                event["payload"]
+                for event in reversed(events)
+                if event["event_type"] == "test.execution.completed"
+            ),
+            {},
         )
-        response["recovery_of"] = run_id
-        return response
+        has_failure_fact = any(event["event_type"] == "test_check.failed" for event in events)
+        if recovery_state["status"] == "completed" and execution_receipt.get("exit_code") == 0:
+            status_value = "passed"
+        elif has_failure_fact:
+            status_value = "failed"
+        else:
+            status_value = "unknown"
+        completion_payload: dict[str, Any] = {
+            "attempt": attempt,
+            "recovery_run_id": recovery_run_id,
+            "status": status_value,
+            "recovered_after_restart": True,
+        }
+        if execution_failure is not None:
+            completion_payload.update(
+                {
+                    "error_code": failure_payload.get("code"),
+                    "retryable": bool(safe_to_retry),
+                    "safe_to_retry": bool(safe_to_retry),
+                }
+            )
+        self.store.append_event(parent_run_id, "test.recovery.completed", completion_payload)
+        result = {
+            "run_id": recovery_run_id,
+            "recovery_of": parent_run_id,
+            "status": status_value,
+            "retry_count": attempt,
+            "recovered_after_restart": True,
+        }
+        if execution_receipt:
+            result.update(
+                {
+                    "command": execution_receipt.get("command"),
+                    "exit_code": execution_receipt.get("exit_code"),
+                    "execution_location": execution_receipt.get("execution_location"),
+                    "sandbox_id": execution_receipt.get("sandbox_id"),
+                }
+            )
+        if execution_failure is not None:
+            result["error_code"] = failure_payload.get("code")
+            result["retryable"] = bool(safe_to_retry)
+        return result
 
     def _grant_session_project_access(
         self,
@@ -1135,9 +1464,8 @@ class ControlPlaneManager:
                 raise PatchError(
                     "EXECUTION_BACKEND_UNAVAILABLE", "no execution backend is configured"
                 )
-            if (
-                type(self.execution_backend) is not FakeExecutionBackend
-                and not getattr(self.execution_backend, "verification_available", False)
+            if type(self.execution_backend) is not FakeExecutionBackend and not getattr(
+                self.execution_backend, "verification_available", False
             ):
                 self._event(
                     entry,
@@ -1151,9 +1479,8 @@ class ControlPlaneManager:
                     "configured execution backend is not available for verification",
                 )
             supports_profile = getattr(self.execution_backend, "supports_profile", None)
-            if (
-                type(self.execution_backend) is not FakeExecutionBackend
-                and (not callable(supports_profile) or not supports_profile(profile.value))
+            if type(self.execution_backend) is not FakeExecutionBackend and (
+                not callable(supports_profile) or not supports_profile(profile.value)
             ):
                 raise PatchError(
                     "VERIFICATION_PROFILE_UNSUPPORTED",
@@ -1208,6 +1535,11 @@ class ControlPlaneManager:
                 entry.plan.change_set.transition_to(ChangeSetStatus.VERIFYING)
                 self._persist_status(entry)
                 result = self.execution_backend.run(request)
+                if not execution_receipt_location_is_consistent(result):
+                    raise ExecutionError(
+                        "EXECUTION_RECEIPT_INVALID",
+                        "execution receipt location does not match its backend metadata",
+                    )
             except ExecutionError as exc:
                 if reserved:
                     self._abort(idempotency_key)
@@ -1246,6 +1578,7 @@ class ControlPlaneManager:
             )
             payload = {
                 "backend": result.backend,
+                "execution_location": result.execution_location,
                 "sandbox_id": result.sandbox_id,
                 "profile": profile.value,
                 "command_profile": result.command_profile or profile.value,
@@ -1297,6 +1630,7 @@ class ControlPlaneManager:
                 "change_set_id": change_set_id,
                 "status": target.value,
                 "backend": result.backend,
+                "execution_location": result.execution_location,
                 "sandbox_id": result.sandbox_id,
                 "profile": profile.value,
                 "command_profile": result.command_profile or profile.value,
@@ -1354,9 +1688,7 @@ class ControlPlaneManager:
                 replay_snapshot_ref=str(context["replay_snapshot_ref"]),
                 assertion_spec={
                     "kind": (
-                        "bug_fix_verification"
-                        if skill_id == "bug-fix"
-                        else "delivery_verification"
+                        "bug_fix_verification" if skill_id == "bug-fix" else "delivery_verification"
                     ),
                     "baseline_verification_passed": False,
                     "candidate_verification_passed": True,
@@ -1501,9 +1833,7 @@ class ControlPlaneManager:
                 allowed_root_id=root_id,
             )
         except (KeyError, PathBoundaryError, ValueError) as exc:
-            raise PatchError(
-                "PROJECT_TRUST_INVALID", "project trust validation failed"
-            ) from exc
+            raise PatchError("PROJECT_TRUST_INVALID", "project trust validation failed") from exc
 
     def request_approval(
         self, change_set_id: str, capability: str, user_confirmation: str
@@ -1697,11 +2027,7 @@ class ControlPlaneManager:
         raw = self.store.get_change_set(change_set_id)
         if raw is None:
             raise PatchError("CHANGESET_NOT_FOUND", "ChangeSet does not exist")
-        if (
-            not raw["project_path"]
-            or not raw["patches_json"]
-            or not raw["project_id"]
-        ):
+        if not raw["project_path"] or not raw["patches_json"] or not raw["project_id"]:
             raise PatchError("PERSISTENCE_CORRUPT", "ChangeSet recovery material is incomplete")
         patch_values = json.loads(raw["patches_json"])
         patches = tuple(
@@ -1837,9 +2163,7 @@ def _stored_request_id(response_json: str | None) -> str | None:
     except (TypeError, ValueError):
         return None
     candidate: Any = (
-        cast(dict[str, Any], payload).get("request_id")
-        if isinstance(payload, dict)
-        else None
+        cast(dict[str, Any], payload).get("request_id") if isinstance(payload, dict) else None
     )
     if isinstance(candidate, str) and _REQUEST_ID_PATTERN.fullmatch(candidate):
         return candidate
@@ -1863,6 +2187,7 @@ def _public_payload(
     payload: dict[str, Any], *, preserve_approval_token: bool = False
 ) -> dict[str, Any]:
     """Remove local coordinates and credentials from control-plane responses."""
+
     def clean(value: Any) -> Any:
         if isinstance(value, str):
             return redact_sensitive_text(value)
@@ -2009,6 +2334,20 @@ def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
                 "network_allowed": False,
             }
         ]
+    if getattr(backend, "name", None) == "local":
+        return [
+            {
+                "name": "local",
+                "status": "available",
+                "verified": False,
+                "capability": "local-verification-only",
+                "execution_location": "local",
+                "network_allowed": True,
+                "network_policy": "host-default-unrestricted",
+                "os_isolation": False,
+                "fc_opt_in": False,
+            }
+        ]
     config = getattr(backend, "config", None)
     verification_available = bool(getattr(backend, "verification_available", False))
     return [
@@ -2017,6 +2356,7 @@ def _backend_catalog(manager: ControlPlaneManager) -> list[dict[str, Any]]:
             "status": "degraded" if verification_available else "unavailable",
             "verified": False,
             "capability": "verification-only",
+            "execution_location": "fc",
             "network_allowed": bool(getattr(config, "allow_network", False)),
             "network_policy": str(getattr(config, "network_policy_mode", "unknown")),
             "region": str(getattr(config, "region", "")),
@@ -2035,17 +2375,20 @@ def create_app(
 ) -> FastAPI:
     if manager is None:
         resolved_data_dir = (
-            Path(data_dir) if data_dir is not None else _configured_data_dir()
-        ).expanduser().resolve()
+            (Path(data_dir) if data_dir is not None else _configured_data_dir())
+            .expanduser()
+            .resolve()
+        )
         store = ProjectStore(resolved_data_dir / "devpilot.db")
         store.require_schema_head("0011_p8_skill_improvement_records")
-        execution_backend: ExecutionBackend | None = None
-        if os.environ.get("DEVPILOT_ENABLE_FC_SANDBOX") == "1":
-            from .fc_sandbox import build_fc_backend_from_environment
-
-            execution_backend = build_fc_backend_from_environment()
+        execution_backend = build_project_execution_backend(
+            state_dir=resolved_data_dir / "local-execution"
+        )
+        candidate_execution_backend = (
+            execution_backend if execution_backend.name == "fc-agent-sandbox" else None
+        )
         candidate_trial_runner = _candidate_trial_runner_from_environment(
-            store=store, execution_backend=execution_backend
+            store=store, execution_backend=candidate_execution_backend
         )
         manager = ControlPlaneManager(
             allowed_roots=allowed_roots or _configured_roots(),
@@ -2126,9 +2469,7 @@ def create_app(
             elif request.headers.get("X-Request-ID") is None:
                 response_request_id = _idempotency_request_id(key)
             if store is not None:
-                bound_request_id = store.bind_idempotency_request_id(
-                    key, response_request_id
-                )
+                bound_request_id = store.bind_idempotency_request_id(key, response_request_id)
                 if bound_request_id is not None:
                     response_request_id = bound_request_id
         wrapped = await _json_response_with_request_id(
@@ -2149,9 +2490,7 @@ def create_app(
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_error_handler(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def http_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         error_details = {
             status.HTTP_404_NOT_FOUND: ("ROUTE_NOT_FOUND", "route not found"),
             status.HTTP_405_METHOD_NOT_ALLOWED: (
@@ -2159,9 +2498,7 @@ def create_app(
                 "method not allowed",
             ),
         }
-        code, message = error_details.get(
-            exc.status_code, ("HTTP_ERROR", "request failed")
-        )
+        code, message = error_details.get(exc.status_code, ("HTTP_ERROR", "request failed"))
         request_id = getattr(request.state, "request_id", _request_id(request))
         headers = dict(exc.headers or {})
         headers["X-Request-ID"] = request_id
@@ -2277,12 +2614,15 @@ def create_app(
     @app.post("/api/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/change-sets/preview", status_code=status.HTTP_201_CREATED)
     def preview(request: Request, payload: PreviewRequest) -> dict[str, Any]:
-        return _contract_payload(request, manager.preview(
-            project_path=payload.project_path,
-            project_id=payload.project_id,
-            task_id=payload.task_id,
-            patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
-        ))
+        return _contract_payload(
+            request,
+            manager.preview(
+                project_path=payload.project_path,
+                project_id=payload.project_id,
+                task_id=payload.task_id,
+                patches=_materialize_patch_payloads(manager, payload.project_path, payload.patches),
+            ),
+        )
 
     @app.post("/api/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
     @app.post("/v1/feature-delivery/proposals", status_code=status.HTTP_201_CREATED)
@@ -2385,13 +2725,16 @@ def create_app(
     @app.get("/v1/change-sets/{change_set_id}/diff")
     def get_change_set_diff(request: Request, change_set_id: str) -> dict[str, Any]:
         payload = manager.get(change_set_id)
-        return _contract_payload(request, {
-            "change_set_id": change_set_id,
-            "patch_hash": payload["patch_hash"],
-            "scope_hash": payload["scope_hash"],
-            "files": payload["files"],
-            "diff": payload["diff"],
-        })
+        return _contract_payload(
+            request,
+            {
+                "change_set_id": change_set_id,
+                "patch_hash": payload["patch_hash"],
+                "scope_hash": payload["scope_hash"],
+                "files": payload["files"],
+                "diff": payload["diff"],
+            },
+        )
 
     @app.get("/api/v1/runs/{run_id}")
     @app.get("/v1/runs/{run_id}")
@@ -2441,9 +2784,7 @@ def create_app(
                     },
                 )
         events = [
-            item
-            for item in manager.store.list_run_events(run_id)
-            if int(item["event_id"]) > cursor
+            item for item in manager.store.list_run_events(run_id) if int(item["event_id"]) > cursor
         ]
 
         def stream() -> Any:
@@ -2508,9 +2849,7 @@ def create_app(
 
     @app.post("/api/v1/change-sets/{change_set_id}/approval-requests")
     @app.post("/v1/change-sets/{change_set_id}/approval-requests")
-    def request_approval(
-        change_set_id: str, payload: ApprovalIntentRequest
-    ) -> dict[str, Any]:
+    def request_approval(change_set_id: str, payload: ApprovalIntentRequest) -> dict[str, Any]:
         return manager.request_approval(
             change_set_id, payload.capability, payload.user_confirmation
         )

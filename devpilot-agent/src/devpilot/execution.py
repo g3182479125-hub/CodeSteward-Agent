@@ -1,9 +1,9 @@
-"""Execution backend contracts for optional sandboxed verification.
+"""Execution backend contracts for local or optional sandboxed verification.
 
 The P2B control plane remains the authority for local ChangeSet approval and
-file mutation.  This module only defines the future verification boundary: a
-caller supplies an explicit, already-scoped file bundle and command, and a
-backend returns a bounded execution receipt.
+file mutation. This module defines the execution seam: a caller supplies an
+explicit, already-scoped file bundle and server-selected profile, and a backend
+returns a bounded execution receipt that identifies where execution occurred.
 """
 
 from __future__ import annotations
@@ -18,9 +18,7 @@ MAX_EXECUTION_FILE_BYTES = 512 * 1024
 MAX_EXECUTION_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
 MAX_REQUEST_OUTPUT_BYTES = 64 * 1024
-DEPENDENCY_PROFILES = frozenset(
-    {"", "python-requirements", "python-project", "node-npm-ci"}
-)
+DEPENDENCY_PROFILES = frozenset({"", "python-requirements", "python-project", "node-npm-ci"})
 
 
 class ExecutionError(RuntimeError):
@@ -37,7 +35,7 @@ class ExecutionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ExecutionFile:
-    """A file explicitly selected for a sandbox task."""
+    """A file explicitly selected for one verification snapshot."""
 
     relative_path: str
     content: bytes
@@ -45,7 +43,7 @@ class ExecutionFile:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRequest:
-    """Fully specified input for one isolated verification run."""
+    """Fully specified input for one profile-bound verification run."""
 
     run_id: str
     project_id: str
@@ -85,16 +83,38 @@ class ExecutionResult:
     # Set by the execution backend. Adapter/model metadata is not accepted as
     # proof that a non-zero exit is a semantic failure.
     failure_kind: str = "unknown"
+    execution_location: str = "fc"
 
 
 class ExecutionBackend(Protocol):
-    """Port implemented by local fake and remote sandbox backends."""
+    """Port implemented by local and sandbox execution adapters."""
 
     name: str
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:
         """Run one explicit verification request and return its receipt."""
         ...
+
+
+def execution_receipt_location_is_consistent(receipt: ExecutionResult) -> bool:
+    """Validate that location, backend, sandbox ID, and attestations agree."""
+
+    if receipt.execution_location == "local":
+        return (
+            receipt.backend == "local"
+            and not receipt.sandbox_id
+            and receipt.side_effect_count is None
+            and receipt.permission_violation is None
+        )
+    if receipt.execution_location == "fc":
+        return (
+            bool(receipt.backend)
+            and receipt.backend != "local"
+            and bool(receipt.sandbox_id)
+            and receipt.side_effect_count == 0
+            and receipt.permission_violation is False
+        )
+    return False
 
 
 def validate_request(request: ExecutionRequest) -> None:
@@ -195,6 +215,11 @@ def validate_command(command: str, input_paths: set[str]) -> None:
         ["python", "-m", "pytest", "-q"],
     ):
         return
+    if tokens in (
+        ["python3", "-m", "unittest", "discover", "-v"],
+        ["python", "-m", "unittest", "discover", "-v"],
+    ):
+        return
     if tokens == ["npm", "test"]:
         return
     if len(tokens) == 2 and tokens[0] in {"python3", "python"}:
@@ -207,8 +232,7 @@ def validate_command(command: str, input_paths: set[str]) -> None:
     if len(tokens) >= 3 and tokens[:2] == ["node", "--check"]:
         paths = tokens[2:]
         if not paths or any(
-            path not in input_paths
-            or not path.casefold().endswith((".js", ".mjs", ".cjs"))
+            path not in input_paths or not path.casefold().endswith((".js", ".mjs", ".cjs"))
             for path in paths
         ):
             raise ExecutionError(
@@ -272,13 +296,9 @@ class FakeExecutionBackend:
             or len(stderr_bytes) > request.max_output_bytes
         )
         if len(stdout_bytes) > request.max_output_bytes:
-            stdout = stdout_bytes[-request.max_output_bytes :].decode(
-                "utf-8", errors="replace"
-            )
+            stdout = stdout_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
         if len(stderr_bytes) > request.max_output_bytes:
-            stderr = stderr_bytes[-request.max_output_bytes :].decode(
-                "utf-8", errors="replace"
-            )
+            stderr = stderr_bytes[-request.max_output_bytes :].decode("utf-8", errors="replace")
         return ExecutionResult(
             backend=self.name,
             sandbox_id="fake-sandbox",
@@ -314,11 +334,7 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
     run_id = payload.get("run_id")
     project_id = payload.get("project_id")
     command = payload.get("command")
-    if not (
-        isinstance(run_id, str)
-        and isinstance(project_id, str)
-        and isinstance(command, str)
-    ):
+    if not (isinstance(run_id, str) and isinstance(project_id, str) and isinstance(command, str)):
         raise ExecutionError(
             "EXECUTION_INPUT_INVALID", "run_id, project_id and command are required"
         )
@@ -333,14 +349,10 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         raise ExecutionError("EXECUTION_INPUT_INVALID", "max_output_bytes must be an integer")
     prepared_environment_id = payload.get("prepared_environment_id")
     if prepared_environment_id is not None and not isinstance(prepared_environment_id, str):
-        raise ExecutionError(
-            "EXECUTION_INPUT_INVALID", "prepared_environment_id must be a string"
-        )
+        raise ExecutionError("EXECUTION_INPUT_INVALID", "prepared_environment_id must be a string")
     dependency_fingerprint = payload.get("dependency_fingerprint", "")
     if not isinstance(dependency_fingerprint, str):
-        raise ExecutionError(
-            "EXECUTION_INPUT_INVALID", "dependency_fingerprint must be a string"
-        )
+        raise ExecutionError("EXECUTION_INPUT_INVALID", "dependency_fingerprint must be a string")
     return ExecutionRequest(
         run_id=run_id,
         project_id=project_id,

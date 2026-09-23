@@ -17,8 +17,9 @@ from devpilot.control_plane import (
     create_app,
 )
 from devpilot.domain import FileOperation
-from devpilot.execution import FakeExecutionBackend
+from devpilot.execution import ExecutionRequest, ExecutionResult, FakeExecutionBackend
 from devpilot.fc_sandbox import FCSandboxBackend, FCSandboxConfig
+from devpilot.local_execution import LocalExecutionBackend
 from devpilot.nanobot_tools import (
     ExecuteChangeSetTool,
     ProposeChangeSetTool,
@@ -45,9 +46,7 @@ def make_manager(
     project_id = store.ensure_project(
         str(project), allowed_root_id=root_id, repo_fingerprint=fingerprint
     )
-    store.trust_project(
-        project_id, allowed_root_id=root_id, repo_fingerprint=fingerprint
-    )
+    store.trust_project(project_id, allowed_root_id=root_id, repo_fingerprint=fingerprint)
     return (
         ControlPlaneManager(
             allowed_roots=roots,
@@ -59,7 +58,7 @@ def make_manager(
 
 
 def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -> None:
-    backend = FakeExecutionBackend(stdout="syntax ok")
+    backend = LocalExecutionBackend(state_dir=tmp_path / "local-execution")
     manager, project = make_manager(tmp_path, execution_backend=backend)
     preview = manager.preview(
         project_path=project,
@@ -78,12 +77,65 @@ def test_control_plane_can_verify_applied_changeset_in_backend(tmp_path: Path) -
     )
 
     assert verified["status"] == "verified"
-    assert backend.requests[0].command.startswith("python3 -m py_compile")
-    assert backend.requests[0].files[0].content == b"print('ok')\n"
+    assert verified["execution_location"] == "local"
+    assert verified["backend"] == "local"
+    assert verified["sandbox_id"] == ""
+    project_id = str(manager.store.list_projects()[0]["project_id"])
+    run_id = manager.store.list_project_run_ids(project_id=project_id, kind="code-delivery")[0]
+    verification_event = next(
+        event
+        for event in manager.store.list_run_events(run_id)
+        if event["event_type"] == "changeset.verification_completed"
+    )
+    assert verification_event["payload"]["execution_location"] == "local"
 
     rollback_approval = manager.approve(change_set_id, "r1.rollback")
     reverted = manager.rollback(change_set_id, str(rollback_approval["approval_token"]))
     assert reverted["status"] == "reverted"
+
+
+def test_verify_rejects_receipt_with_inconsistent_execution_location(
+    tmp_path: Path,
+) -> None:
+    class InconsistentReceiptBackend(FakeExecutionBackend):
+        verification_available = True
+
+        def supports_profile(self, profile: str) -> bool:
+            return True
+
+        def run(self, request: ExecutionRequest) -> ExecutionResult:
+            result = super().run(request)
+            return dataclasses.replace(result, execution_location="local")
+
+    manager, project = make_manager(tmp_path, execution_backend=InconsistentReceiptBackend())
+    preview = manager.preview(
+        project_path=project,
+        project_id=None,
+        patches=[FilePatch("main.py", FileOperation.CREATE, "print('ok')\n")],
+    )
+    change_set_id = str(preview["change_set_id"])
+    apply_approval = manager.approve(change_set_id)
+    manager.apply(change_set_id, str(apply_approval["approval_token"]))
+    verify_approval = manager.approve(change_set_id, "r2.verify")
+
+    with pytest.raises(PatchError, match="verification failed"):
+        manager.verify(
+            change_set_id,
+            str(verify_approval["approval_token"]),
+            profile=VerificationProfile.PYTHON_SYNTAX,
+        )
+
+    persisted = manager.store.get_change_set(change_set_id)
+    assert persisted is not None
+    assert persisted["status"] == "verification_failed"
+    project_id = str(manager.store.list_projects()[0]["project_id"])
+    run_id = manager.store.list_project_run_ids(project_id=project_id, kind="code-delivery")[0]
+    failure_event = next(
+        event
+        for event in manager.store.list_run_events(run_id)
+        if event["event_type"] == "changeset.verification_failed"
+    )
+    assert failure_event["payload"]["code"] == "EXECUTION_RECEIPT_INVALID"
 
 
 def test_preview_validation_failure_finishes_started_run(tmp_path: Path) -> None:
@@ -155,9 +207,7 @@ def test_full_access_failed_verification_records_feature_case_from_server_fact(
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
     with sqlite3.connect(tmp_path / "data" / "devpilot.db") as connection:
-        connection.execute(
-            "create table alembic_version (version_num varchar(32) not null)"
-        )
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
         connection.execute(
             "insert into alembic_version values (?)",
             ("0011_p8_skill_improvement_records",),
@@ -272,9 +322,7 @@ def test_full_access_failed_bug_verification_records_case_with_failure_fact(
     monkeypatch.setenv("DEVPILOT_ENABLE_SKILL_IMPROVEMENT", "1")
     monkeypatch.setenv("DEVPILOT_DATA_DIR", str(tmp_path / "data"))
     with sqlite3.connect(tmp_path / "data" / "devpilot.db") as connection:
-        connection.execute(
-            "create table alembic_version (version_num varchar(32) not null)"
-        )
+        connection.execute("create table alembic_version (version_num varchar(32) not null)")
         connection.execute(
             "insert into alembic_version values (?)",
             ("0011_p8_skill_improvement_records",),
@@ -473,9 +521,7 @@ def test_control_plane_routes_python_regression_to_fc_pytest_bootstrap(
             events.append(("write", path, content))
 
     class FakeCommands:
-        def run(
-            self, command: str, *, timeout: int, cwd: str | None = None
-        ) -> SimpleNamespace:
+        def run(self, command: str, *, timeout: int, cwd: str | None = None) -> SimpleNamespace:
             events.append(("run", command, timeout, cwd))
             return SimpleNamespace(exit_code=0, stdout="5 passed", stderr="")
 
@@ -988,9 +1034,7 @@ def test_h5_factory_injects_durable_store_fc_backend_and_host_issuer(
     monkeypatch.setenv("DEVPILOT_ENABLE_MODEL_CANDIDATES", "1")
     monkeypatch.setenv("DEVPILOT_CANDIDATE_GRANT_SECRET", "h5-test-secret-012345678901234567890")
 
-    runner = _candidate_trial_runner_from_environment(
-        store=store, execution_backend=backend
-    )
+    runner = _candidate_trial_runner_from_environment(store=store, execution_backend=backend)
     manager = ControlPlaneManager(
         allowed_roots=AllowedRoots.from_paths([tmp_path]),
         store=store,

@@ -1,6 +1,18 @@
 $scriptPath = Join-Path $PSScriptRoot "..\scripts\start-integrated-harness.ps1"
 
 Describe "start-integrated-harness" {
+    It "keeps FC disabled unless the operator explicitly opts in" {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should Match '\[switch\]\$EnableFCSandbox'
+        $scriptText | Should Match '\$env:DEVPILOT_ENABLE_FC_SANDBOX = if \(\$EnableFCSandbox\)'
+        $scriptText | Should Match '\$env:DEVPILOT_ENABLE_MODEL_CANDIDATES = if \(\$EnableFCSandbox\)'
+        $scriptText | Should Not Match '\$env:DEVPILOT_ENABLE_FC_SANDBOX\s*=\s*"1"'
+        $scriptText | Should Match 'Remove-Item Env:E2B_API_KEY'
+        $scriptText | Should Match 'Remove-Item Env:E2B_API_URL'
+        $scriptText | Should Match 'Remove-Item Env:E2B_DOMAIN'
+    }
+
     It "defaults the FC test allowlist to the configured allowed roots" {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw
 

@@ -5,7 +5,8 @@ param(
     [string]$DataPath,
     [string]$AllowedRoots = "E:\codex-local",
     [switch]$SkipMigration,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$EnableFCSandbox
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,27 +103,35 @@ if (-not $env:DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY) {
 if (-not $env:DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY) {
     throw "DEVPILOT_HARNESS_SELECTION_INTEGRITY_KEY is not configured for this Windows user."
 }
-if (-not $env:DEVPILOT_CANDIDATE_GRANT_SECRET) {
-    $env:DEVPILOT_CANDIDATE_GRANT_SECRET = [Environment]::GetEnvironmentVariable(
-        "DEVPILOT_CANDIDATE_GRANT_SECRET", "User"
-    )
-}
-if ([Text.Encoding]::UTF8.GetByteCount($env:DEVPILOT_CANDIDATE_GRANT_SECRET) -lt 32) {
-    throw "DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes for this Windows user."
-}
 $env:DEVPILOT_ENABLE_EXPERIMENTAL_CONTROL_PLANE = "1"
-$env:DEVPILOT_ENABLE_FC_SANDBOX = "1"
+$env:DEVPILOT_ENABLE_FC_SANDBOX = if ($EnableFCSandbox) { "1" } else { "0" }
 $env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = "1"
-$env:DEVPILOT_ENABLE_MODEL_CANDIDATES = "1"
+$env:DEVPILOT_ENABLE_MODEL_CANDIDATES = if ($EnableFCSandbox) { "1" } else { "0" }
 $env:DEVPILOT_ENABLE_LOOP_HANDOFF = "1"
 $env:DEVPILOT_ENABLE_HARNESS_SELECTION = "1"
 $env:DEVPILOT_CONTROL_PLANE_URL = "http://127.0.0.1:18800"
 $env:DEVPILOT_ALLOWED_ROOTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
-# FC accepts only explicitly declared project roots.  The integrated Harness
-# already owns the allowed roots, so use them as the default test allowlist.
-# A caller can still supply a narrower explicit list before startup.
-if (-not $env:DEVPILOT_FC_ALLOWED_PROJECTS) {
-    $env:DEVPILOT_FC_ALLOWED_PROJECTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
+if ($EnableFCSandbox) {
+    if (-not $env:DEVPILOT_CANDIDATE_GRANT_SECRET) {
+        $env:DEVPILOT_CANDIDATE_GRANT_SECRET = [Environment]::GetEnvironmentVariable(
+            "DEVPILOT_CANDIDATE_GRANT_SECRET", "User"
+        )
+    }
+    if ([Text.Encoding]::UTF8.GetByteCount($env:DEVPILOT_CANDIDATE_GRANT_SECRET) -lt 32) {
+        throw "DEVPILOT_CANDIDATE_GRANT_SECRET must contain at least 32 bytes for this Windows user."
+    }
+    # FC accepts only explicitly declared project roots. The integrated Harness
+    # already owns the allowed roots, so use them as the default test allowlist.
+    # A caller can still supply a narrower explicit list before startup.
+    if (-not $env:DEVPILOT_FC_ALLOWED_PROJECTS) {
+        $env:DEVPILOT_FC_ALLOWED_PROJECTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
+    }
+}
+else {
+    Remove-Item Env:DEVPILOT_FC_ALLOWED_PROJECTS -ErrorAction SilentlyContinue
+    Remove-Item Env:E2B_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:E2B_API_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:E2B_DOMAIN -ErrorAction SilentlyContinue
 }
 $env:DEVPILOT_DATA_DIR = $DataPath
 $env:DEVPILOT_DATABASE_URL = $databaseUrl

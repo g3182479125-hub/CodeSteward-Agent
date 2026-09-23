@@ -14,6 +14,7 @@ from .execution import (
     ExecutionFile,
     ExecutionRequest,
     ExecutionResult,
+    execution_receipt_location_is_consistent,
 )
 from .paths import AllowedRoots
 from .redaction import redact_execution_output
@@ -31,6 +32,10 @@ _TEST_COMMANDS = {
     # pytest through the interpreter selected by the image so a real test
     # failure is distinguishable from a missing-command failure.
     "python-pytest": ("python -m pytest -q", "project-pytest"),
+    "python-unittest": (
+        "python -m unittest discover -v",
+        "project-unittest",
+    ),
     "node-test": ("npm test", "project-npm-test"),
 }
 _PLAIN_TEST_RUNNER_PATH = ".devpilot/plain_test_runner.py"
@@ -94,6 +99,8 @@ class ProjectTestRunResult:
     dependency_profile: str = ""
     dependency_fingerprint: str = ""
     retry_count: int = 0
+    execution_location: str = "unknown"
+    cleanup_status: str | None = None
 
 
 class ProjectTestRunner:
@@ -122,6 +129,7 @@ class ProjectTestRunner:
         session_id: str | None = None,
         user_id: str | None = None,
         session_access_granted: bool = False,
+        run_id: str | None = None,
     ) -> ProjectTestRunResult:
         command, command_profile = self.command_for(test_kind)
         project = self.allowed_roots.require_project(project_path)
@@ -138,6 +146,9 @@ class ProjectTestRunner:
         dependency_fingerprint = self._dependency_fingerprint(
             snapshot, test_kind=test_kind, working_directory=working_directory
         )
+        execution_location = (
+            "local" if getattr(self.execution_backend, "name", "") == "local" else "fc"
+        )
         before_hashes = self._target_hashes(snapshot, targets)
         root_id, fingerprint = self.allowed_roots.binding_for(project)
         project_id = self.store.ensure_project(
@@ -152,7 +163,7 @@ class ProjectTestRunner:
                 raise ProjectTestTrustError(
                     "trusted project is required for project tests"
                 ) from exc
-        run_id = self.store.start_run(project_id, kind="test-check")
+        run_id = self.store.start_run(project_id, kind="test-check", run_id=run_id)
         if all(isinstance(value, str) and value for value in (task_id, session_id, user_id)):
             self.store.append_event(
                 run_id,
@@ -205,9 +216,7 @@ class ProjectTestRunner:
         prepare_method = getattr(self.execution_backend, "prepare", None)
         try:
             if callable(prepare_method):
-                preparation = prepare_method(
-                    request, dependency_fingerprint=dependency_fingerprint
-                )
+                preparation = prepare_method(request, dependency_fingerprint=dependency_fingerprint)
                 if not isinstance(preparation, dict) or not isinstance(
                     preparation.get("environment_id"), str
                 ):
@@ -248,6 +257,8 @@ class ProjectTestRunner:
         except ExecutionError as exc:
             category, next_action = self._execution_error_details(exc.code)
             is_prepare_failure = category == "dependency_prepare"
+            retryable = self._error_is_retryable(exc)
+            cleanup_status = self._backend_cleanup_status(run_id)
             self.store.append_event(
                 run_id,
                 "test.prepare.failed" if is_prepare_failure else "test.execution.failed",
@@ -256,10 +267,12 @@ class ProjectTestRunner:
                     "category": category,
                     "message": exc.message,
                     "command": command,
-                    "retryable": exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                    "retryable": retryable,
+                    "safe_to_retry": retryable,
                     "next_action": next_action,
                     "dependency_profile": dependency_profile,
                     "dependency_fingerprint": dependency_fingerprint,
+                    "cleanup_status": cleanup_status,
                 },
             )
             self.store.finish_run(run_id, "failed", {"code": exc.code})
@@ -273,17 +286,24 @@ class ProjectTestRunner:
                 phase="prepare" if is_prepare_failure else "execution",
                 error_code=exc.code,
                 error_category=category,
-                retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                retryable=retryable,
                 next_action=next_action,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
+                execution_location=execution_location,
+                cleanup_status=cleanup_status,
             )
         except Exception as exc:
+            cleanup_status = self._backend_cleanup_status(run_id)
             self.store.append_event(
                 run_id,
                 "test.execution.failed",
-                {"code": "EXECUTION_RECEIPT_INVALID", "error_type": type(exc).__name__},
+                {
+                    "code": "EXECUTION_RECEIPT_INVALID",
+                    "error_type": type(exc).__name__,
+                    "cleanup_status": cleanup_status,
+                },
             )
             self.store.finish_run(run_id, "failed", {"code": "EXECUTION_RECEIPT_INVALID"})
             return ProjectTestRunResult(
@@ -300,6 +320,8 @@ class ProjectTestRunner:
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
+                execution_location=execution_location,
+                cleanup_status=cleanup_status,
             )
 
         fallback_used = False
@@ -325,6 +347,7 @@ class ProjectTestRunner:
                 receipt = self.execution_backend.run(fallback_request)
             except ExecutionError as exc:
                 category, next_action = self._execution_error_details(exc.code)
+                retryable = self._error_is_retryable(exc)
                 self.store.append_event(
                     run_id,
                     "test.execution.failed",
@@ -334,7 +357,8 @@ class ProjectTestRunner:
                         "message": exc.message,
                         "command": fallback_request.command,
                         "fallback": True,
-                        "retryable": exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                        "retryable": retryable,
+                        "safe_to_retry": retryable,
                         "next_action": next_action,
                     },
                 )
@@ -349,11 +373,12 @@ class ProjectTestRunner:
                     phase="execution",
                     error_code=exc.code,
                     error_category=category,
-                    retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                    retryable=retryable,
                     next_action=next_action,
                     working_directory=working_directory,
                     dependency_profile=dependency_profile,
                     dependency_fingerprint=dependency_fingerprint,
+                    execution_location=execution_location,
                 )
             command = fallback_request.command
 
@@ -377,10 +402,11 @@ class ProjectTestRunner:
                 error_code="TEST_RECEIPT_INCOMPLETE",
                 error_category="control_plane",
                 next_action="检查沙箱回执是否完整；在确认状态前不要重放测试。",
-                sandbox_id=receipt.sandbox_id,
+                sandbox_id=receipt.sandbox_id or None,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
+                execution_location=receipt.execution_location,
             )
         self._record_receipt(
             run_id,
@@ -407,10 +433,11 @@ class ProjectTestRunner:
                 error_code="TEST_FALLBACK_UNSUPPORTED",
                 error_category="dependency_prepare",
                 next_action="项目测试使用了 pytest fixture，必须准备受支持的 pytest 环境。",
-                sandbox_id=receipt.sandbox_id,
+                sandbox_id=receipt.sandbox_id or None,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
+                execution_location=receipt.execution_location,
             )
         if receipt.exit_code == 0:
             self.store.finish_run(run_id, "completed", {"exit_code": 0})
@@ -421,10 +448,11 @@ class ProjectTestRunner:
                 None,
                 command,
                 0,
-                sandbox_id=receipt.sandbox_id,
+                sandbox_id=receipt.sandbox_id or None,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
+                execution_location=receipt.execution_location,
             )
         try:
             self.store.record_test_check_failure_fact(
@@ -456,9 +484,10 @@ class ProjectTestRunner:
                 error_code="TEST_EVIDENCE_CHANGED",
                 error_category="test_process",
                 next_action="重新检查项目文件和测试证据后再生成修复提案。",
-                sandbox_id=receipt.sandbox_id,
+                sandbox_id=receipt.sandbox_id or None,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                execution_location=receipt.execution_location,
             )
         self.store.finish_run(run_id, "failed", {"exit_code": receipt.exit_code})
         return ProjectTestRunResult(
@@ -471,16 +500,47 @@ class ProjectTestRunner:
             error_code="TEST_FAILED",
             error_category="test_assertion",
             next_action="可以将该 Failure Run 交给 bug-fix Skill 生成 Changeset。",
-            sandbox_id=receipt.sandbox_id,
+            sandbox_id=receipt.sandbox_id or None,
             working_directory=working_directory,
             dependency_profile=dependency_profile,
             dependency_fingerprint=dependency_fingerprint,
+            execution_location=receipt.execution_location,
         )
+
+    @staticmethod
+    def _error_is_retryable(error: ExecutionError) -> bool:
+        """Require the backend to prove the failed remote operation is stopped."""
+
+        return (
+            error.code in _RETRYABLE_EXECUTION_ERRORS and error.details.get("safe_to_retry") is True
+        )
+
+    def _backend_cleanup_status(self, run_id: str) -> str | None:
+        getter = getattr(self.execution_backend, "get_run_state", None)
+        if not callable(getter):
+            return None
+        try:
+            state = getter(run_id)
+        except Exception:
+            return None
+        status = state.get("cleanup_status") if isinstance(state, dict) else None
+        return status if isinstance(status, str) else None
 
     @staticmethod
     def _execution_error_details(error_code: str) -> tuple[str, str]:
         if error_code.startswith(("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL", "FC_PREPARE")):
             return "dependency_prepare", "检查依赖声明和 FC 网络策略后重新准备环境。"
+        if error_code.startswith(("LOCAL_DEPENDENCY", "LOCAL_ENVIRONMENT_CREATE")):
+            return "dependency_prepare", "检查本机 Python/Node 工具链及项目依赖声明后重新准备环境。"
+        if error_code in {
+            "LOCAL_TIMEOUT",
+            "LOCAL_PREPARE_FAILED",
+            "LOCAL_TOOLCHAIN_MISSING",
+            "LOCAL_PROCESS_CONTAINMENT_FAILED",
+            "LOCAL_PROCESS_CLEANUP_FAILED",
+            "LOCAL_CLEANUP_FAILED",
+        }:
+            return "local_execution", "检查本机执行环境与超时设置；确认状态后再决定是否重试。"
         if error_code in {
             "SANDBOX_UNAVAILABLE",
             "SANDBOX_TIMEOUT",
@@ -512,11 +572,7 @@ class ProjectTestRunner:
         )
         if not test_paths:
             return ""
-        top_levels = {
-            path.split("/", 1)[0]
-            for path in test_paths
-            if "/" in path
-        }
+        top_levels = {path.split("/", 1)[0] for path in test_paths if "/" in path}
         if len(top_levels) != 1:
             return ""
         candidate = next(iter(top_levels))
@@ -543,11 +599,13 @@ class ProjectTestRunner:
             "pnpm-lock.yaml",
             "bun.lockb",
         }
-        if test_kind == "node-test" and "package.json" in paths and paths.intersection(
-            node_lockfiles
+        if (
+            test_kind == "node-test"
+            and "package.json" in paths
+            and paths.intersection(node_lockfiles)
         ):
             return "node-npm-ci"
-        if test_kind == "python-pytest":
+        if test_kind in {"python-pytest", "python-unittest"}:
             if "requirements.txt" in paths:
                 return "python-requirements"
             if "pyproject.toml" in paths:
@@ -571,7 +629,7 @@ class ProjectTestRunner:
             for item in snapshot
             if item.relative_path.startswith(prefix)
         }
-        if test_kind == "python-pytest":
+        if test_kind in {"python-pytest", "python-unittest"}:
             names = {
                 "requirements.txt",
                 "pyproject.toml",
@@ -645,9 +703,10 @@ class ProjectTestRunner:
     @staticmethod
     def _has_test_entry(test_kind: str, snapshot: tuple[ExecutionFile, ...]) -> bool:
         files = {item.relative_path: item.content for item in snapshot}
-        if test_kind == "python-pytest":
+        if test_kind in {"python-pytest", "python-unittest"}:
             return any(
-                path.rsplit("/", 1)[-1].startswith("test_") and path.endswith(".py")
+                path.rsplit("/", 1)[-1].startswith("test_")
+                and path.endswith(".py")
                 or path.endswith("_test.py")
                 for path in files
             )
@@ -659,8 +718,10 @@ class ProjectTestRunner:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return False
         scripts = parsed.get("scripts") if isinstance(parsed, dict) else None
-        return isinstance(scripts, dict) and isinstance(scripts.get("test"), str) and bool(
-            scripts["test"].strip()
+        return (
+            isinstance(scripts, dict)
+            and isinstance(scripts.get("test"), str)
+            and bool(scripts["test"].strip())
         )
 
     @staticmethod
@@ -668,12 +729,10 @@ class ProjectTestRunner:
         return bool(
             isinstance(receipt.exit_code, int)
             and not isinstance(receipt.exit_code, bool)
-            and receipt.sandbox_id
+            and execution_receipt_location_is_consistent(receipt)
             and receipt.command_profile == command_profile
             and isinstance(receipt.duration_ms, int)
             and receipt.duration_ms >= 0
-            and receipt.side_effect_count == 0
-            and receipt.permission_violation is False
             and not receipt.output_truncated
         )
 
@@ -684,9 +743,7 @@ class ProjectTestRunner:
             directories[:] = sorted(
                 name
                 for name in directories
-                if not is_verification_snapshot_excluded(
-                    str(Path(root, name).relative_to(project))
-                )
+                if not is_verification_snapshot_excluded(str(Path(root, name).relative_to(project)))
                 and not Path(root, name).is_symlink()
             )
             for name in sorted(names):
@@ -722,7 +779,8 @@ class ProjectTestRunner:
             {
                 "command": command,
                 "backend": receipt.backend,
-                "sandbox_id": receipt.sandbox_id,
+                "execution_location": receipt.execution_location,
+                "sandbox_id": receipt.sandbox_id or None,
                 "command_profile": receipt.command_profile,
                 "working_directory": working_directory,
                 "dependency_profile": dependency_profile,

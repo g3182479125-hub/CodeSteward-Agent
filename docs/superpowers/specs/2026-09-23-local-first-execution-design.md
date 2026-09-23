@@ -3,7 +3,7 @@
 ## Status
 
 - Date: 2026-09-23
-- Status: design proposed for user review
+- Status: implementation complete; DevPilot regression suite and reviews passed; ShopSphere end-to-end receipt issue remains
 - Scope: DevPilot project inspection/test execution backend selection
 - Related implementation: existing nanobot `exec` tool and DevPilot `ProjectTestRunner`
 
@@ -41,7 +41,7 @@ changed by this work.
 
 ### Backend selection
 
-Add a single explicit setting, `DEVPILOT_FC_SANDBOX_ENABLED`, defaulting to
+Reuse the existing `DEVPILOT_ENABLE_FC_SANDBOX` setting, defaulting to
 `0`/false. With the default value, project test execution selects a local
 execution adapter and must not instantiate, contact, prepare, or clean up an FC
 sandbox. When explicitly set to `1`, the existing FC adapter remains selectable.
@@ -107,23 +107,52 @@ local execution errors are not retried through FC while the setting is off.
 4. With explicit opt-in true, the existing FC selection path and FC contract
    tests continue to work; without credentials, the off-by-default path still
    works and does not require FC configuration.
-5. Local execution cannot escape the validated project snapshot/root through a
-   model-provided path or command; host secrets are not inherited.
+5. The runner rejects model-provided arbitrary commands and paths outside the
+   validated snapshot, and starts children with a reduced environment. This is
+   not an OS boundary: project/test code still runs with the current user's
+   filesystem and network permissions; the receipt and UI must say so.
 6. Existing DevPilot test, persistence, recovery, ChangeSet and nanobot tool
    integration regressions pass, and the final diff receives Standards and Spec
    subagent reviews as required by repository policy.
 
+## Implementation and verification record
+
+- FC Sandbox is disabled by default; only `DEVPILOT_ENABLE_FC_SANDBOX=1` (or
+  the startup script's `-EnableFCSandbox` switch) enables the existing FC path.
+- The local adapter runs fixed server-selected profiles against per-run project
+  snapshots, uses bounded child processes, and reports that host permissions and
+  network remain available. It does not claim OS-level isolation.
+- Local Run and Verify receipts validate `execution_location`, backend,
+  `sandbox_id`, and isolation attestations consistently. No local-to-FC fallback
+  is performed.
+- Full DevPilot test suite: passed; 5 skipped for Windows symlink privilege (4)
+  and explicit live-FC opt-in (1). Focused local execution/control-plane tests,
+  Ruff, targeted Pyright, startup-script Pester tests and `git diff --check` pass.
+- Standards and Spec subagent reviews: PASS on the final implementation diff.
+- A live FC provider test was intentionally not run; this change defaults FC
+  off, and does not claim live cloud-provider acceptance.
+- ShopSphere challenge through `ProjectTestRunner` reached local dependency
+  preparation successfully (`execution_location=local`, no `sandbox_id`), but
+  Run `e896cf25-6fb1-46a9-b018-4419c1011726` ended as
+  `TEST_RECEIPT_INCOMPLETE`; no test exit code was accepted. The fixed
+  `python -m unittest discover -v` output likely exceeded the 16 KiB receipt
+  limit, which causes truncated output to be rejected. Confirm/fix this before
+  calling the project-level end-to-end flow accepted.
+- The already-running Control Plane still advertised only the FC backend, so
+  this challenge was run through the current local backend code in an isolated
+  temporary harness rather than through the stale live service. Reload/restart
+  the integrated stack before a WebUI/Personal Agent acceptance run.
+
 ## Rollback
 
-Set `DEVPILOT_FC_SANDBOX_ENABLED=1` to explicitly restore the existing FC
+Set `DEVPILOT_ENABLE_FC_SANDBOX=1` to explicitly restore the existing FC
 backend while diagnosing a local-backend issue. Reverting the backend-selection
 change also restores the prior FC default, but the setting remains documented so
 the user can choose deliberately.
 
-## Open implementation detail
+## Operational warning
 
-Before implementation, inspect the exact `ExecutionBackend` contract, local
-runtime configuration loader, and project snapshot/dependency profile rules.
-Prefer the smallest adapter/configuration seam and reuse the existing nanobot
-local process runner only where its interface can preserve the DevPilot receipt
-and path contracts without duplicating execution policies.
+Local execution runs project and dependency code with the current user's OS
+permissions and host-default network access. Do not run untrusted projects
+locally. FC remains available only after explicit opt-in and valid local
+configuration; it is not used as an automatic fallback.

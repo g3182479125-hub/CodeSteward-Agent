@@ -333,6 +333,62 @@ def test_fc_backend_reuses_prepared_environment_across_runs_and_restart(
     assert ("connect", "persistent-sandbox") in events
 
 
+def test_fc_prepare_expired_environment_fails_closed_without_recreating(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    now = 1_000.0
+    create_ids: list[str] = []
+
+    class FakeSandbox:
+        def __init__(self, sandbox_id: str) -> None:
+            self.sandbox_id = sandbox_id
+            self.files = SimpleNamespace(make_dir=lambda _path: None, write=lambda *_args: None)
+            self.commands = SimpleNamespace(
+                run=lambda _command, **_kwargs: SimpleNamespace(exit_code=0, stdout="", stderr="")
+            )
+
+        def is_running(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            return None
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FakeSandbox:
+            sandbox = FakeSandbox(f"sandbox-{len(create_ids) + 1}")
+            create_ids.append(sandbox.sandbox_id)
+            return sandbox
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    monkeypatch.setattr("devpilot.fc_sandbox.time.time", lambda: now)
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            install_pytest=False,
+            network_policy_mode="provider-default",
+            state_dir=str(tmp_path),
+            prepare_ttl_seconds=60,
+        )
+    )
+    request = valid_request(
+        command_profile="project-pytest",
+        command="python -m pytest -q",
+        dependency_fingerprint="lock-v1",
+    )
+
+    prepared = backend.prepare(request, dependency_fingerprint="lock-v1")
+    now += 61
+
+    with pytest.raises(ExecutionError, match="FC_PREPARE_EXPIRED"):
+        backend.prepare(request, dependency_fingerprint="lock-v1")
+
+    assert prepared["expires_at"] == 1_060.0
+    assert create_ids == ["sandbox-1"]
+
+
 def test_fc_prepare_fingerprint_change_creates_new_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1017,8 +1073,8 @@ def test_fc_backend_maps_injected_provider_faults(
             run=lambda _command, **_kwargs: (_ for _ in ()).throw(provider_exception)
         )
 
-        def kill(self) -> None:
-            return None
+        def kill(self) -> bool:
+            return True
 
     class FaultFactory:
         @classmethod
@@ -1030,9 +1086,106 @@ def test_fc_backend_maps_injected_provider_faults(
         FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
     )
 
-    with pytest.raises(ExecutionError, match=error_code):
+    with pytest.raises(ExecutionError, match=error_code) as raised:
         backend.run(valid_request())
+    assert raised.value.details["stage"] == "execute"
+    assert raised.value.details["safe_to_retry"] is True
     assert backend.get_run_state("run-1")["error_code"] == error_code
+
+
+@pytest.mark.parametrize("kill_result", [True, False])
+def test_fc_prepared_execution_fault_terminates_environment_before_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kill_result: bool
+) -> None:
+    create_count = 0
+    kill_ids: list[str] = []
+
+    class FaultSandbox:
+        def __init__(self, sandbox_id: str) -> None:
+            self.sandbox_id = sandbox_id
+            self.files = SimpleNamespace(make_dir=lambda _path: None, write=lambda *_args: None)
+            self.commands = SimpleNamespace(
+                run=lambda _command, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("connection reset by peer")
+                )
+            )
+
+        def is_running(self) -> bool:
+            return True
+
+        def kill(self) -> bool:
+            kill_ids.append(self.sandbox_id)
+            return kill_result
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FaultSandbox:
+            nonlocal create_count
+            create_count += 1
+            return FaultSandbox(f"prepared-{create_count}")
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+            install_pytest=False,
+            network_policy_mode="provider-default",
+            state_dir=str(tmp_path),
+        )
+    )
+    request = valid_request(
+        command_profile="project-pytest",
+        command="python -m pytest -q",
+        dependency_fingerprint="lock-v1",
+    )
+    prepared = backend.prepare(request, dependency_fingerprint="lock-v1")
+
+    with pytest.raises(ExecutionError, match="FC_PROVIDER_UNAVAILABLE") as raised:
+        backend.run(replace(request, prepared_environment_id=prepared["environment_id"]))
+
+    assert raised.value.details["safe_to_retry"] is True
+    assert kill_ids == ["prepared-1"]
+    replacement = backend.prepare(request, dependency_fingerprint="lock-v1")
+    assert replacement["environment_id"] != prepared["environment_id"]
+    assert create_count == 2
+
+
+def test_fc_provider_fault_is_not_retryable_when_sandbox_termination_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UncleanableSandbox:
+        sandbox_id = "uncleanable-fault-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda *_args: None)
+        commands = SimpleNamespace(
+            run=lambda _command, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("connection reset by peer")
+            )
+        )
+
+        def kill(self) -> bool:
+            raise RuntimeError("provider disconnected during cleanup")
+
+    class Factory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> UncleanableSandbox:
+            return UncleanableSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=Factory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="invalid",
+        )
+    )
+
+    with pytest.raises(ExecutionError, match="FC_PROVIDER_UNAVAILABLE") as raised:
+        backend.run(valid_request())
+
+    assert raised.value.details["safe_to_retry"] is False
+    assert "cleanup_error" in raised.value.details
 
 
 def test_fc_backend_surfaces_cleanup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
