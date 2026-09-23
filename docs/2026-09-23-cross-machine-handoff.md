@@ -3,7 +3,7 @@
 更新时间：2026-09-23  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
-本次继续开发提交：以本分支最新提交为准（会在本次交付后更新）。
+本次继续开发提交：`70c0b7e`（`feat: add bounded project test recovery`）。
 
 ## 一、项目定位
 
@@ -133,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 1. 先运行本文件第三节的 DevPilot 全量测试和组合回归，确认环境安装无误。
 2. 使用真实 FC 项目跑一次：观察同一个 Run 的 `test.prepare.started` → `test.prepare.completed` → `test.execution.completed` 事件，以及真实 `sandbox_id`、退出码和依赖指纹。
 3. 人为模拟一次 `SANDBOX_UNAVAILABLE` 或 FC 超时，确认 WebUI/Agent 最终看到的是恢复结果或 `RETRY_EXHAUSTED`，不会重复生成同一幂等请求的无限 Run。
-4. 在固定候选提交上完成 Standards/Spec 双轴 review，并把两份报告放入 `devpilot-agent/docs/reviews/`。
+4. 重新运行附着的 Standards/Spec 双轴 review；本候选已发起两轴审查，但 reviewer 接口返回空消息，未形成 PASS/FAIL。阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-*-review-blocked.md`。
 5. 最后再决定是否为真实 FC 引入独立持久 prepare 环境；这一步涉及 Sandbox 保活、跨进程恢复、清理失败和成本上限，不能只靠当前的 Run/Event 记录宣称完成。
 
 ## 七、已知未完成项
@@ -142,7 +142,7 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 
 - FC 中真正独立且可跨 Run 复用的 prepare 环境；当前只完成了持久化阶段事件，实际 bootstrap 仍在短生命周期测试 Sandbox 内执行；
 - 真实 FC 服务重启/断线场景下项目测试 recovery 矩阵的验收；本地 Fake/FC 生命周期合同测试已有覆盖；
-- 本次候选提交的 Standards/Spec 双轴 review 最终报告；
+- 本次候选提交的 Standards/Spec 双轴 review 仍未形成有效 PASS/FAIL 报告；当前仅记录了空输出阻塞，不得视为通过；
 - 基于环境指纹的跨 Run Sandbox 缓存和失效策略。
 
 开发顺序建议：先完成双轴 review 和真实 FC recovery 验收，再评估是否实施持久 Sandbox；若 FC provider 不支持安全保活，则保留短生命周期环境，并把“准备阶段记录”作为最终边界写入计划。

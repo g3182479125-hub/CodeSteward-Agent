@@ -17,7 +17,7 @@ ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 - 已验证：真实隔离缺陷项目基线为 `5 failed, 5 passed`，修复三处业务缺陷后通过 `10 passed`；组合回归命令退出码为 `0`。
 - 本批完成：为每个项目测试 Run 持久化 `test.request.created`、`test.prepare.started`、`test.prepare.completed/failed`，依赖准备失败不再进入 Failure Run；新增服务端受控 recovery 入口，瞬时沙箱/控制层错误最多恢复两次，原 Run 与恢复 Run 有关联，断言失败、未知回执和依赖失败不会自动重放。
 - 本批完成：nanobot 的项目测试适配器会自动消费上述受控 recovery 结果，不把可恢复错误变成无上下文的笼统失败；临时工具确认允许网关分别生成 issued/expires 时的微秒级序列化误差；P7 基准忽略测试缓存文件。
-- 仍待完成：FC 当前实现仍把“依赖 bootstrap + 测试”放在一个短生命周期 Sandbox 中，尚未实现可跨 Run 复用的独立持久环境；服务重启/断线的项目测试集成矩阵仍需真实 FC 验收；本批代码还需完成 Standards/Spec 双轴 review 后才能写最终完成证据。
+- 仍待完成：FC 当前实现仍把“依赖 bootstrap + 测试”放在一个短生命周期 Sandbox 中，尚未实现可跨 Run 复用的独立持久环境；服务重启/断线的项目测试集成矩阵仍需真实 FC 验收；本批 Standards/Spec reviewer 已被派发但连续返回空报告，故双轴门禁仍为 BLOCKED，不能写最终完成证据。
 
 ## 现状基线
 
@@ -324,7 +324,7 @@ $env:PYTHONPATH="$PWD\devpilot-agent\src;$PWD\nanobot"
 git diff --check
 ```
 
-结果：上述 DevPilot 全量测试退出码 `0`；Ruff 和 `git diff --check` 通过。完整复核仍需在固定候选提交上记录 Standards/Spec 两份报告。
+结果：上述 DevPilot 全量测试退出码 `0`；Ruff 和 `git diff --check` 通过。双轴审查已按要求派发，但 reviewer 连续返回空结果；阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-*-review-blocked.md`，不能把本地检查当作双轴 PASS。
 
 每个阶段都记录实际命令、退出码、候选 SHA、未运行项和失败原因；不能用缺失测试冒充通过。
 
