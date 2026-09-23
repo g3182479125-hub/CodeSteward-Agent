@@ -57,6 +57,7 @@ class ExecutionRequest:
     max_output_bytes: int = MAX_EXECUTION_OUTPUT_BYTES
     working_directory: str = ""
     dependency_profile: str = ""
+    dependency_fingerprint: str = ""
     prepared_environment_id: str | None = None
 
 
@@ -335,6 +336,11 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         raise ExecutionError(
             "EXECUTION_INPUT_INVALID", "prepared_environment_id must be a string"
         )
+    dependency_fingerprint = payload.get("dependency_fingerprint", "")
+    if not isinstance(dependency_fingerprint, str):
+        raise ExecutionError(
+            "EXECUTION_INPUT_INVALID", "dependency_fingerprint must be a string"
+        )
     return ExecutionRequest(
         run_id=run_id,
         project_id=project_id,
@@ -346,5 +352,6 @@ def request_from_mapping(payload: Mapping[str, object]) -> ExecutionRequest:
         max_output_bytes=max_output_bytes,
         working_directory=str(payload.get("working_directory", "")),
         dependency_profile=str(payload.get("dependency_profile", "")),
+        dependency_fingerprint=dependency_fingerprint,
         prepared_environment_id=prepared_environment_id,
     )

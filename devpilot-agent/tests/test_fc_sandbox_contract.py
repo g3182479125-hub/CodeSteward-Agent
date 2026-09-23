@@ -310,7 +310,11 @@ def test_fc_backend_reuses_prepared_environment_across_runs_and_restart(
         network_policy_mode="provider-default",
         state_dir=str(tmp_path),
     )
-    request = valid_request(command_profile="project-pytest", command="python -m pytest -q")
+    request = valid_request(
+        command_profile="project-pytest",
+        command="python -m pytest -q",
+        dependency_fingerprint="lock-v1",
+    )
     backend = FCSandboxBackend(config)
 
     prepared = backend.prepare(request, dependency_fingerprint="lock-v1")

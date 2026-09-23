@@ -197,6 +197,7 @@ class ProjectTestRunner:
             command_profile=command_profile,
             working_directory=working_directory,
             dependency_profile=dependency_profile,
+            dependency_fingerprint=dependency_fingerprint,
         )
         prepared_environment_id: str | None = None
         prepare_method = getattr(self.execution_backend, "prepare", None)
@@ -315,6 +316,7 @@ class ProjectTestRunner:
                 command_profile=command_profile,
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
+                dependency_fingerprint=dependency_fingerprint,
                 prepared_environment_id=prepared_environment_id,
             )
             try:

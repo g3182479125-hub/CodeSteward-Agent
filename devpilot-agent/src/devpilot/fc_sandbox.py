@@ -618,7 +618,13 @@ class FCSandboxBackend:
                 and environment.working_directory == request.working_directory
                 and environment.dependency_fingerprint != dependency_fingerprint
             ):
-                self.cleanup_prepared_environment(environment.environment_id)
+                cleanup = self.cleanup_prepared_environment(environment.environment_id)
+                if cleanup.get("status") != "cleaned":
+                    raise ExecutionError(
+                        "FC_PREPARE_RECOVERY_UNKNOWN",
+                        "an older prepared FC environment could not be cleaned safely",
+                        details={"environment_id": environment.environment_id},
+                    )
 
     def _persist_state_unlocked(self, state: _FCSandboxRun, path: Path) -> None:
         """Write one restart-safe provider snapshot while its file lock is held."""
@@ -876,6 +882,10 @@ class FCSandboxBackend:
                     environment.status = "expired"
                     environment.error_code = "FC_PREPARE_EXPIRED"
                     self._persist_prepared(environment)
+                    raise ExecutionError(
+                        "FC_PREPARE_EXPIRED",
+                        "prepared FC environment has expired; clean it up before preparing again",
+                    )
                 else:
                     if environment.handle is None:
                         environment.handle = self._connect_handle(environment.sandbox_id or "")
@@ -955,7 +965,13 @@ class FCSandboxBackend:
             if handle is None and environment.sandbox_id:
                 try:
                     handle = self._connect_handle(environment.sandbox_id)
-                except ExecutionError:
+                except ExecutionError as exc:
+                    if exc.code == "FC_PREPARE_EXPIRED":
+                        environment.status = "cleaned"
+                        environment.error_code = exc.code
+                        environment.expires_at = 0.0
+                        self._persist_prepared(environment)
+                        return {"environment_id": environment_id, "status": "cleaned"}
                     environment.status = "unknown"
                     environment.error_code = "FC_PREPARE_RECOVERY_UNKNOWN"
                     self._persist_prepared(environment)
@@ -1167,6 +1183,9 @@ class FCSandboxBackend:
                 if (
                     environment.command_profile != request.command_profile
                     or environment.dependency_profile != request.dependency_profile
+                    or environment.project_id != request.project_id
+                    or environment.working_directory != request.working_directory
+                    or environment.dependency_fingerprint != request.dependency_fingerprint
                 ):
                     raise ExecutionError(
                         "FC_PREPARE_MISMATCH",
