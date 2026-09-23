@@ -1155,7 +1155,6 @@ class FCSandboxBackend:
         install_pytest = request.prepared_environment_id is None and self._should_install_pytest(
             request
         )
-        state = self._reserve_run(request.run_id)
         sandbox: Any | None = None
         persistent_environment_id = request.prepared_environment_id
         if persistent_environment_id is not None:
@@ -1180,6 +1179,9 @@ class FCSandboxBackend:
                 if environment.handle is None:
                     environment.handle = self._connect_handle(environment.sandbox_id or "")
                 sandbox = environment.handle
+        state = self._reserve_run(request.run_id)
+        if persistent_environment_id is not None:
+            with self._lock:
                 state.handle = sandbox
                 state.sandbox_id = environment.sandbox_id
                 state.prepared_environment_id = persistent_environment_id
