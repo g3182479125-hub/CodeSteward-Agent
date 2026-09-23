@@ -998,6 +998,43 @@ def test_fc_backend_preserves_sdk_nonzero_exit_result(monkeypatch: pytest.Monkey
     assert backend.get_run_state("run-1")["status"] == "failed"
 
 
+@pytest.mark.parametrize(
+    ("provider_exception", "error_code"),
+    [
+        (TimeoutError("connection timed out"), "FC_TIMEOUT"),
+        (RuntimeError("connection reset by peer"), "FC_PROVIDER_UNAVAILABLE"),
+    ],
+)
+def test_fc_backend_maps_injected_provider_faults(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_exception: Exception,
+    error_code: str,
+) -> None:
+    class FaultSandbox:
+        sandbox_id = "fault-injected-sandbox"
+        files = SimpleNamespace(make_dir=lambda _path: None, write=lambda _path, _data: None)
+        commands = SimpleNamespace(
+            run=lambda _command, **_kwargs: (_ for _ in ()).throw(provider_exception)
+        )
+
+        def kill(self) -> None:
+            return None
+
+    class FaultFactory:
+        @classmethod
+        def create(cls, **_kwargs: object) -> FaultSandbox:
+            return FaultSandbox()
+
+    monkeypatch.setitem(sys.modules, "e2b_code_interpreter", SimpleNamespace(Sandbox=FaultFactory))
+    backend = FCSandboxBackend(
+        FCSandboxConfig(api_key="test-key", api_url="https://api.example.invalid", domain="invalid")
+    )
+
+    with pytest.raises(ExecutionError, match=error_code):
+        backend.run(valid_request())
+    assert backend.get_run_state("run-1")["error_code"] == error_code
+
+
 def test_fc_backend_surfaces_cleanup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     class CleanupFailureSandbox:
         sandbox_id = "cleanup-failure-sandbox"

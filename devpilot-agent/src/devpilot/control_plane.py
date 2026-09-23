@@ -578,6 +578,8 @@ class ControlPlaneManager:
         if not retryable or error_code not in {
             "SANDBOX_UNAVAILABLE",
             "SANDBOX_TIMEOUT",
+            "FC_PROVIDER_UNAVAILABLE",
+            "FC_TIMEOUT",
             "CONTROL_PLANE_TRANSIENT",
             "ORPHAN_RUN_RECOVERABLE",
         }:

@@ -68,6 +68,8 @@ _RETRYABLE_EXECUTION_ERRORS = frozenset(
     {
         "SANDBOX_UNAVAILABLE",
         "SANDBOX_TIMEOUT",
+        "FC_PROVIDER_UNAVAILABLE",
+        "FC_TIMEOUT",
         "CONTROL_PLANE_TRANSIENT",
         "ORPHAN_RUN_RECOVERABLE",
     }
@@ -477,11 +479,14 @@ class ProjectTestRunner:
 
     @staticmethod
     def _execution_error_details(error_code: str) -> tuple[str, str]:
-        if error_code.startswith(
-            ("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL", "FC_PREPARE")
-        ):
+        if error_code.startswith(("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL", "FC_PREPARE")):
             return "dependency_prepare", "检查依赖声明和 FC 网络策略后重新准备环境。"
-        if error_code in {"SANDBOX_UNAVAILABLE", "SANDBOX_TIMEOUT"}:
+        if error_code in {
+            "SANDBOX_UNAVAILABLE",
+            "SANDBOX_TIMEOUT",
+            "FC_PROVIDER_UNAVAILABLE",
+            "FC_TIMEOUT",
+        }:
             return "sandbox", "检查 FC 沙箱状态；若回执未知，先查询 Run 再重试。"
         if error_code in {"CONTROL_PLANE_TRANSIENT", "ORPHAN_RUN_RECOVERABLE"}:
             return "control_plane", "这是可恢复的控制层状态，使用同一幂等键查询或有限重试。"

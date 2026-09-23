@@ -204,6 +204,75 @@ def test_transient_project_test_recovery_is_bounded_and_linked(tmp_path: Path) -
     assert "test.recovery.completed" in event_types
 
 
+@pytest.mark.parametrize(
+    ("error_code", "message"),
+    [
+        ("FC_TIMEOUT", "FC Sandbox execute timed out"),
+        ("FC_PROVIDER_UNAVAILABLE", "FC Sandbox provider is disconnected"),
+    ],
+)
+def test_injected_fc_provider_fault_enters_bounded_recovery(
+    tmp_path: Path, error_code: str, message: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class FaultInjectedBackend:
+        name = "fc-fault-injected"
+        verification_available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, request: object) -> ExecutionResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise ExecutionError(error_code, message)
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id=f"sandbox-recovered-{self.calls}",
+                exit_code=0,
+                stdout="recovered",
+                stderr="",
+                duration_ms=1,
+                command_profile=getattr(request, "command_profile", ""),
+                side_effect_count=0,
+                permission_violation=False,
+            )
+
+    backend = FaultInjectedBackend()
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=backend,  # type: ignore[arg-type]
+    )
+    first = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="provider interrupted the test",
+        expected_behavior="the test can be retried safely",
+    )
+
+    assert first["status"] == "unknown"
+    assert first["error_code"] == error_code
+    assert first["error_category"] == "sandbox"
+    assert first["retryable"] is True
+    recovered = manager.recover_project_test(first["run_id"])
+
+    assert recovered["status"] == "passed"
+    assert recovered["recovery_of"] == first["run_id"]
+    assert recovered["retry_count"] == 1
+    assert backend.calls == 2
+
+
 def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

@@ -65,6 +65,19 @@ def _provider_error(stage: str, exc: Exception) -> ExecutionError:
         return ExecutionError("FC_AUTH_FAILED", "FC Sandbox authentication was rejected")
     if any(marker in normalized for marker in ("timeout", "timed out", "deadline exceeded")):
         return ExecutionError("FC_TIMEOUT", f"FC Sandbox {stage} timed out")
+    if any(
+        marker in normalized
+        for marker in (
+            "connection reset",
+            "connection aborted",
+            "disconnected",
+            "temporarily unavailable",
+            "service unavailable",
+        )
+    ):
+        return ExecutionError(
+            "FC_PROVIDER_UNAVAILABLE", f"FC Sandbox {stage} provider is unavailable"
+        )
     codes = {
         "create": "FC_SANDBOX_CREATE_FAILED",
         "upload": "FC_UPLOAD_FAILED",
