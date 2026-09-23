@@ -3,8 +3,9 @@
 更新时间：2026-09-23  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
-本次继续开发最终提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
+持久化环境边界修复提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
 本轮故障恢复提交：`5c186c1`（`fix: recover bounded FC provider faults`）。
+当前交接提交：`9c40ed9`（`docs: record final fault recovery review`）。
 
 ## 一、项目定位
 
