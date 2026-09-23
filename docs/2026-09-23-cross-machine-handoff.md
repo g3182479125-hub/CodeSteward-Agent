@@ -1,11 +1,11 @@
 # DevFlow Agent 跨电脑交接文档
 
-更新时间：2026-09-23  
+更新时间：2026-09-24  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
 持久化环境边界修复提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
 本轮故障恢复提交：`5c186c1`（`fix: recover bounded FC provider faults`）。
-当前交接提交：`9c40ed9`（`docs: record final fault recovery review`）。
+本轮本地优先实现提交：`b20c01c`（`feat: default project verification to local execution`）。
 
 ## 一、项目定位
 
@@ -62,7 +62,7 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src;E:\cod
 - 集成启动脚本 Pester：4/4 通过，覆盖默认关闭与显式启用开关。
 - `git diff --check`：通过
 - 最终实现差异的 Standards 与 Spec subagent review：均 PASS。
-- 本次本地优先改造仍在工作区，未提交；请先用 `git status --short` 检查并保留本机现有改动，不要覆盖或整体回退。
+- 本地优先实现与当前交接记录已提交在 `b20c01c`；切换电脑后先确认 `git status --short`，不要覆盖或整体回退任何后续本机改动。
 - ShopSphere 本地执行器集成试跑：Run `e896cf25-6fb1-46a9-b018-4419c1011726`；本地依赖准备完成，`execution_location=local` 且无 Sandbox ID，但最终 Run 是 `unknown / TEST_RECEIPT_INCOMPLETE`，没有可验收退出码。最可能原因是 `python -m unittest discover -v` 输出超过 16 KiB 回执限制并被截断；须修复/验证后再宣称项目级 E2E 通过。
 - 当前已运行的 `127.0.0.1:18800` Control Plane 仍报告只有 `fc-agent-sandbox` 且状态 degraded，说明服务进程尚未加载本轮 local-first 改动。挑战试跑通过当前源码的隔离本地 `ProjectTestRunner` 执行，没有调用 FC。完整 WebUI/Personal Agent 测试前需按新电脑本地路径重启/启动集成服务并确认后端目录列出 `local`。
 
