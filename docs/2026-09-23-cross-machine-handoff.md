@@ -1,6 +1,6 @@
 # DevFlow Agent 跨电脑交接文档
 
-更新时间：2026-09-24  
+更新时间：2026-09-24
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
 持久化环境边界修复提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
