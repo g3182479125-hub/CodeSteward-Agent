@@ -18,7 +18,8 @@ ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 - 本批完成：为每个项目测试 Run 持久化 `test.request.created`、`test.prepare.started`、`test.prepare.completed/failed`，依赖准备失败不再进入 Failure Run；新增服务端受控 recovery 入口，瞬时沙箱/控制层错误最多恢复两次，原 Run 与恢复 Run 有关联，断言失败、未知回执和依赖失败不会自动重放。
 - 本批完成：nanobot 的项目测试适配器会自动消费上述受控 recovery 结果，不把可恢复错误变成无上下文的笼统失败；临时工具确认允许网关分别生成 issued/expires 时的微秒级序列化误差；P7 基准忽略测试缓存文件。
 - 本批补完：FC prepare 已从测试 Run 中拆出，按项目/Profile/依赖指纹生成并持久化环境，支持跨 Run、跨进程重连复用，TTL、指纹变化、不可查询状态和显式 cleanup 均 fail-closed；真实 FC 已完成一次 prepare → 两次跨 Run 执行 → cleanup 验收。
-- 仍待完成：真实 FC provider 断线/超时注入下的项目测试 recovery 矩阵，以及本候选有效的 Standards/Spec 双轴 PASS/FAIL 报告；上一批 reviewer 接口连续返回空报告，不能把双轴门禁当作通过。
+- 已补强：TTL 过期、旧环境清理失败、跨项目/工作目录/依赖指纹复用都会 fail-closed；`verification.py` 恢复 Python 3.11 兼容性。
+- 仍待完成：真实 FC provider 断线/超时注入下的项目测试 recovery 矩阵；Standards 增量 review 已 PASS，但 Spec reviewer 接口仍返回空报告，不能把双轴门禁当作完全通过。
 
 ## 现状基线
 
@@ -325,7 +326,7 @@ $env:PYTHONPATH="$PWD\devpilot-agent\src;$PWD\nanobot"
 git diff --check
 ```
 
-结果：上述 DevPilot 全量测试退出码 `0`；Ruff 和 `git diff --check` 通过；真实 FC `sandbox-check` 通过，另有真实 FC prepare → 两次跨 Run 执行 → cleanup 通过。双轴审查已按要求派发，但 reviewer 连续返回空结果；阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-*-review-blocked.md`，不能把本地检查当作双轴 PASS。
+结果：上述 DevPilot 全量测试退出码 `0`；Ruff 和 `git diff --check` 通过；真实 FC `sandbox-check` 通过，另有真实 FC prepare → 两次跨 Run 执行 → cleanup 通过。Standards 增量 review PASS；Spec reviewer 仍返回空结果，阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-spec-review-blocked.md`，不能把本地检查当作双轴 PASS。
 
 每个阶段都记录实际命令、退出码、候选 SHA、未运行项和失败原因；不能用缺失测试冒充通过。
 

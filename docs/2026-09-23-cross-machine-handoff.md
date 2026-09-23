@@ -3,7 +3,7 @@
 更新时间：2026-09-23  
 当前分支：`codex/h11-complete-handoff`  
 实现基线提交：`48e7647`（`fix: gate full access changesets behind confirmation`）
-本次继续开发提交：`a0fbb1e`（`feat: persist FC project test environments`）。
+本次继续开发最终提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
 
 ## 一、项目定位
 
@@ -30,6 +30,7 @@
 10. 对 `SANDBOX_UNAVAILABLE`、`SANDBOX_TIMEOUT`、`CONTROL_PLANE_TRANSIENT`、`ORPHAN_RUN_RECOVERABLE` 提供服务器受控恢复，最多两次，并把恢复 Run 链接回原 Run；测试断言失败、未知回执和依赖失败不自动重放。
 11. nanobot 项目测试适配器会自动消费受控恢复结果；P7 评测忽略测试生成的 `.pyc`，临时工具确认允许网关时间字段的微秒级序列化误差。
 12. FC prepare 已独立于测试 Run：按项目/Profile/依赖指纹生成环境 ID，状态落盘到 `DEVPILOT_FC_STATE_DIR\prepared`，跨 Run 和进程重连复用；TTL、指纹变化、不可查询状态和显式清理均有边界处理。
+13. 最终增量修复了三个安全边界：TTL 过期不会静默换新环境；旧环境清理失败会阻止新环境创建；复用前会校验项目、Profile、工作目录和依赖指纹。另修复了 Python 3.11 下 `verification.py` 的 Ruff 语法兼容问题。
 
 ## 三、验证证据
 
@@ -48,12 +49,14 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src;E:\cod
 
 结果：退出码 `0`，全部通过。
 
-本次继续开发后的 DevPilot 全量测试：
+本次继续开发后的 DevPilot 全量测试（使用仓库配套 nanobot 环境，避免误用另一套全局 Python）：
 
-- 命令：`python -m pytest -q devpilot-agent/tests`
+- 命令：`$env:PYTHONPATH="$PWD\devpilot-agent\src;$PWD\nanobot"; & .\nanobot\.venv\Scripts\python.exe -m pytest -q devpilot-agent/tests`
 - 结果：退出码 `0`（包含 3 个 skip）
 - Ruff：受影响源码和测试文件 `All checks passed!`
 - `git diff --check`：通过
+- Standards 增量 review：PASS，报告见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-standards-review.md`
+- Spec 增量 review：reviewer 再次返回空结果，按规则记录为 BLOCKED，见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-spec-review-blocked.md`
 
 最新真实 WebUI + Full Access + FC 沙箱测试：
 
@@ -131,10 +134,10 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 
 当前这批代码已经完成“准备/测试结果分离”和“瞬时错误有限恢复”的最小闭环。下一台电脑建议按下面顺序继续：
 
-1. 先运行本文件第三节的 DevPilot 全量测试和组合回归，确认环境安装无误。
+1. 先按本文件第三节的命令运行 DevPilot 全量测试和组合回归，确认使用的是 `nanobot\.venv`，不要直接用可能指向旧项目的全局 `python`。
 2. 使用真实 FC 项目跑一次：观察同一个 Run 的 `test.prepare.started` → `test.prepare.completed` → `test.execution.completed` 事件，以及真实 `sandbox_id`、退出码和依赖指纹。
 3. 人为模拟一次 `SANDBOX_UNAVAILABLE` 或 FC 超时，确认 WebUI/Agent 最终看到的是恢复结果或 `RETRY_EXHAUSTED`，不会重复生成同一幂等请求的无限 Run。
-4. 重新运行附着的 Standards/Spec 双轴 review；本候选已发起两轴审查，但 reviewer 接口返回空消息，未形成 PASS/FAIL。阻塞记录见 `devpilot-agent/docs/reviews/2026-09-23-project-test-recovery-*-review-blocked.md`。
+4. 补齐 Spec reviewer 的有效 PASS/FAIL 报告；Standards 已 PASS，但 Spec 接口仍返回空消息，不能把它当作通过。
 5. 检查真实 FC prepare 环境的 TTL 过期、依赖指纹变化和显式清理结果。
 
 ## 七、已知未完成项
@@ -143,8 +146,8 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 
 - 真实 FC 服务重启/断线场景下项目测试 recovery 矩阵的完整验收；当前已完成真实 FC 的 prepare → 两次跨 Run 执行 → cleanup 验证，仍需覆盖 provider 断线/超时注入；
 - FC provider 对长期 Sandbox 保活的实际成本与配额监控仍需在目标账号确认；代码有 TTL 和显式 cleanup，但不会替代 provider 侧账单/配额告警；
-- 本次候选提交的 Standards/Spec 双轴 review 仍未形成有效 PASS/FAIL 报告；当前仅记录了空输出阻塞，不得视为通过；
-- Standards/Spec 双轴 review 的有效 PASS/FAIL 报告；上一批 reviewer 返回空结果，当前阻塞记录仍保留。
+- 本次候选的 Standards review 已 PASS；Spec review 仍未形成有效 PASS/FAIL 报告，当前仅记录空输出阻塞，不得视为通过；
+- 真实 FC provider 断线/超时注入仍未在目标账号执行，需要可控的 provider 故障注入条件。
 
 开发顺序建议：先完成本轮候选的双轴 review 有效报告，再补 provider 断线/超时注入验收；如目标账号不允许长时间保活，则把 TTL/显式 cleanup 作为运行边界，不绕过安全门禁。
 
