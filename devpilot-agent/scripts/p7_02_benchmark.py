@@ -125,7 +125,11 @@ def _load_task_profile_catalog(commit: str) -> tuple[type[Any], type[ValueError]
 
 def _fixture_manifest(task: BenchmarkTask) -> tuple[tuple[str, str], ...]:
     root = REPO_ROOT / task.fixture
-    files = sorted(path for path in root.rglob("*") if path.is_file())
+    files = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    )
     return tuple(
         (
             str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
@@ -140,7 +144,7 @@ def _read_fixture(task: BenchmarkTask) -> dict[str, str]:
     return {
         str(path.relative_to(root)).replace("\\", "/"): path.read_text(encoding="utf-8")
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     }
 
 

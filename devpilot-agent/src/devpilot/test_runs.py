@@ -91,6 +91,7 @@ class ProjectTestRunResult:
     working_directory: str = ""
     dependency_profile: str = ""
     dependency_fingerprint: str = ""
+    retry_count: int = 0
 
 
 class ProjectTestRunner:
@@ -161,6 +162,31 @@ class ProjectTestRunner:
                     "workspace": str(project),
                 },
             )
+        self.store.append_event(
+            run_id,
+            "test.request.created",
+            {
+                "project_path": str(project),
+                "test_kind": test_kind,
+                "target_files": list(targets),
+                "symptom": symptom,
+                "expected_behavior": expected_behavior,
+                "session_id": session_id,
+                "user_id": user_id,
+                "task_id": task_id,
+            },
+        )
+        self.store.append_event(
+            run_id,
+            "test.prepare.started",
+            {
+                "command_profile": command_profile,
+                "dependency_profile": dependency_profile,
+                "dependency_fingerprint": dependency_fingerprint,
+                "working_directory": working_directory,
+                "status": "preparing" if dependency_profile else "not_required",
+            },
+        )
         request = ExecutionRequest(
             run_id=run_id,
             project_id=project_id,
@@ -176,9 +202,10 @@ class ProjectTestRunner:
             receipt = self.execution_backend.run(request)
         except ExecutionError as exc:
             category, next_action = self._execution_error_details(exc.code)
+            is_prepare_failure = category == "dependency_prepare"
             self.store.append_event(
                 run_id,
-                "test.execution.failed",
+                "test.prepare.failed" if is_prepare_failure else "test.execution.failed",
                 {
                     "code": exc.code,
                     "category": category,
@@ -186,6 +213,8 @@ class ProjectTestRunner:
                     "command": command,
                     "retryable": exc.code in _RETRYABLE_EXECUTION_ERRORS,
                     "next_action": next_action,
+                    "dependency_profile": dependency_profile,
+                    "dependency_fingerprint": dependency_fingerprint,
                 },
             )
             self.store.finish_run(run_id, "failed", {"code": exc.code})
@@ -196,7 +225,7 @@ class ProjectTestRunner:
                 None,
                 command,
                 None,
-                phase="execution",
+                phase="prepare" if is_prepare_failure else "execution",
                 error_code=exc.code,
                 error_category=category,
                 retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
@@ -245,7 +274,40 @@ class ProjectTestRunner:
                 working_directory=working_directory,
                 dependency_profile=dependency_profile,
             )
-            receipt = self.execution_backend.run(fallback_request)
+            try:
+                receipt = self.execution_backend.run(fallback_request)
+            except ExecutionError as exc:
+                category, next_action = self._execution_error_details(exc.code)
+                self.store.append_event(
+                    run_id,
+                    "test.execution.failed",
+                    {
+                        "code": exc.code,
+                        "category": category,
+                        "message": exc.message,
+                        "command": fallback_request.command,
+                        "fallback": True,
+                        "retryable": exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                        "next_action": next_action,
+                    },
+                )
+                self.store.finish_run(run_id, "failed", {"code": exc.code})
+                return ProjectTestRunResult(
+                    "unknown",
+                    project_id,
+                    run_id,
+                    None,
+                    fallback_request.command,
+                    None,
+                    phase="execution",
+                    error_code=exc.code,
+                    error_category=category,
+                    retryable=exc.code in _RETRYABLE_EXECUTION_ERRORS,
+                    next_action=next_action,
+                    working_directory=working_directory,
+                    dependency_profile=dependency_profile,
+                    dependency_fingerprint=dependency_fingerprint,
+                )
             command = fallback_request.command
 
         if not isinstance(receipt, ExecutionResult) or not self._receipt_is_complete(
@@ -273,6 +335,18 @@ class ProjectTestRunner:
                 dependency_profile=dependency_profile,
                 dependency_fingerprint=dependency_fingerprint,
             )
+        self.store.append_event(
+            run_id,
+            "test.prepare.completed",
+            {
+                "command_profile": command_profile,
+                "dependency_profile": dependency_profile,
+                "dependency_fingerprint": dependency_fingerprint,
+                "working_directory": working_directory,
+                "sandbox_id": receipt.sandbox_id,
+                "status": "ready" if dependency_profile else "not_required",
+            },
+        )
         self._record_receipt(
             run_id,
             receipt,
@@ -370,7 +444,7 @@ class ProjectTestRunner:
 
     @staticmethod
     def _execution_error_details(error_code: str) -> tuple[str, str]:
-        if error_code.startswith("FC_DEPENDENCY_INSTALL"):
+        if error_code.startswith(("FC_DEPENDENCY_INSTALL", "FC_PYTEST_INSTALL")):
             return "dependency_prepare", "检查依赖声明和 FC 网络策略后重新准备环境。"
         if error_code in {"SANDBOX_UNAVAILABLE", "SANDBOX_TIMEOUT"}:
             return "sandbox", "检查 FC 沙箱状态；若回执未知，先查询 Run 再重试。"

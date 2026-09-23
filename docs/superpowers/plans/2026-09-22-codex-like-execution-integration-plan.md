@@ -10,12 +10,14 @@
 固定 Profile 测试、失败分类、有限恢复和 Failure Run 衔接；代码交付仍保持
 ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 
-## 当前进度（2026-09-23）
+## 当前进度（2026-09-23，继续开发批次）
 
 - 已完成：执行结果错误分类、Full Access 当前 Run 项目接入、服务器固定 Profile、嵌套测试目录解析、依赖指纹、WebUI 任务绑定和验证失败 Run 收尾。
 - 已完成：Full Access 代码修改现在只生成 ChangeSet/Diff；Apply/Verify 必须经过已有的用户确认 Broker，已移除无确认的直通 Apply/Verify 接口。
 - 已验证：真实隔离缺陷项目基线为 `5 failed, 5 passed`，修复三处业务缺陷后通过 `10 passed`；组合回归命令退出码为 `0`。
-- 仍待完成：更完整的独立 prepare 持久化阶段、控制层有限重试协调器、跨重启恢复矩阵，以及 Standards/Spec 双轴 review 的最终收口。
+- 本批完成：为每个项目测试 Run 持久化 `test.request.created`、`test.prepare.started`、`test.prepare.completed/failed`，依赖准备失败不再进入 Failure Run；新增服务端受控 recovery 入口，瞬时沙箱/控制层错误最多恢复两次，原 Run 与恢复 Run 有关联，断言失败、未知回执和依赖失败不会自动重放。
+- 本批完成：nanobot 的项目测试适配器会自动消费上述受控 recovery 结果，不把可恢复错误变成无上下文的笼统失败；临时工具确认允许网关分别生成 issued/expires 时的微秒级序列化误差；P7 基准忽略测试缓存文件。
+- 仍待完成：FC 当前实现仍把“依赖 bootstrap + 测试”放在一个短生命周期 Sandbox 中，尚未实现可跨 Run 复用的独立持久环境；服务重启/断线的项目测试集成矩阵仍需真实 FC 验收；本批代码还需完成 Standards/Spec 双轴 review 后才能写最终完成证据。
 
 ## 现状基线
 
@@ -159,6 +161,8 @@ ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 
 **完成条件**：项目没有本地 pytest 或 node_modules 时，Agent 可以在隔离环境完成准备；准备失败时给出环境错误而不是伪造测试结果。
 
+**本批边界**：Run/Event 已把准备开始、准备成功/失败和依赖指纹分开记录；FC 适配器仍在同一次短生命周期执行中完成 bootstrap 和测试，不能把该事件记录误解为已实现跨 Run 环境缓存。独立持久环境属于后续真实 FC 能力批次。
+
 ### 4. 执行协调层与有界恢复
 
 **目标**：把接入、预检、准备、测试、持久化和恢复串成一个 Agent 可调用的动作。
@@ -193,6 +197,8 @@ ChangeSet、Apply、Verify、Rollback，隐私读取和外发仍需要确认。
 - 通过、环境失败、控制层失败、测试失败四类结果互不混淆。
 
 **完成条件**：单次 Agent 请求可以从项目路径走到真实测试结果，并在失败时给出可继续执行的下一步。
+
+**本批实现**：`POST /v1/project-tests/{run_id}/recovery` 只接受服务器记录的四类瞬时错误，最多建立两次关联恢复 Run；nanobot 适配器在同一次项目测试请求内自动调用该入口，非幂等的测试断言、依赖失败和不完整回执不会进入恢复。
 
 ### 5. Failure Run 到代码交付闭环
 
@@ -303,6 +309,22 @@ uv run pytest tests/test_p2a_code_access.py tests/test_p2a_patches.py -q
 - nanobot 工具/Runtime 集成测试；
 - WebUI 构建和相关前端检查；
 - 真实 FC fixture 与隔离缺陷项目验收。
+
+本批实际验证：
+
+```powershell
+$env:PYTHONPATH="$PWD\devpilot-agent\src;$PWD\nanobot"
+& .\nanobot\.venv\Scripts\python.exe -m pytest -q devpilot-agent/tests
+& .\nanobot\.venv\Scripts\python.exe -m ruff check `
+  devpilot-agent/src/devpilot/test_runs.py `
+  devpilot-agent/src/devpilot/control_plane.py `
+  devpilot-agent/src/devpilot/nanobot_tools.py `
+  devpilot-agent/src/devpilot/temporary_tools.py `
+  devpilot-agent/tests/test_agent_test_runs.py
+git diff --check
+```
+
+结果：上述 DevPilot 全量测试退出码 `0`；Ruff 和 `git diff --check` 通过。完整复核仍需在固定候选提交上记录 Standards/Spec 两份报告。
 
 每个阶段都记录实际命令、退出码、候选 SHA、未运行项和失败原因；不能用缺失测试冒充通过。
 

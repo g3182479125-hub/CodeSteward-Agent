@@ -125,6 +125,9 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "PROJECT_TRUST_INVALID",
         "PROJECT_TRUST_REQUIRED",
         "PROJECT_TEST_INVALID",
+        "PROJECT_TEST_NOT_RETRYABLE",
+        "PROJECT_TEST_RECOVERY_INVALID",
+        "RETRY_EXHAUSTED",
         "RUN_NOT_FOUND",
         "SANDBOX_UNAVAILABLE",
         "SANDBOX_TIMEOUT",
@@ -1182,13 +1185,30 @@ def _post_project_test(
     # pytest (300 seconds).  Keep a small response/cleanup margin so the
     # nanobot adapter does not report a client-side timeout after FC has
     # already run the test successfully.
-    return _post_control_plane(
+    result = _post_control_plane(
         "/v1/project-tests",
         payload,
         idempotency_key=idempotency_key,
         timeout_seconds=330,
         workspace_access_mode=workspace_access_mode,
     )
+    # A transient sandbox/control-plane result is safe to recover because the
+    # server records the original Run and bounds recovery attempts.  Do not
+    # replay assertion failures, dependency failures, or unknown receipts.
+    for attempt in range(2):
+        if not result.get("retryable") or not isinstance(result.get("run_id"), str):
+            break
+        result = _post_control_plane(
+            f"/v1/project-tests/{result['run_id']}/recovery",
+            {
+                "session_id": payload.get("session_id"),
+                "user_id": payload.get("user_id"),
+            },
+            idempotency_key=f"{idempotency_key}-recovery-{attempt + 1}",
+            timeout_seconds=330,
+            workspace_access_mode=workspace_access_mode,
+        )
+    return result
 
 
 def _post_test_repair_proposal(payload: dict[str, Any]) -> dict[str, Any]:

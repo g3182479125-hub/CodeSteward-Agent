@@ -56,6 +56,7 @@ from .verification import VerificationProfile, build_verification_request, verif
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18800
 DEFAULT_TOKEN_TTL = timedelta(minutes=5)
+PROJECT_TEST_RECOVERY_LIMIT = 2
 APPLY_CAPABILITY = "r1.apply"
 ROLLBACK_CAPABILITY = "r1.rollback"
 VERIFY_CAPABILITY = "r2.verify"
@@ -165,6 +166,13 @@ class ProjectTestRequest(BaseModel):
     target_files: list[str] = Field(min_length=1, max_length=32)
     symptom: str = Field(min_length=1, max_length=4000)
     expected_behavior: str = Field(min_length=1, max_length=4000)
+
+
+class ProjectTestRecoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str | None = Field(default=None, min_length=1, max_length=256)
+    user_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class TrustProjectRequest(BaseModel):
@@ -375,6 +383,7 @@ class ControlPlaneManager:
         user_id: str | None = None,
         idempotency_key: str | None = None,
         session_access_mode: str | None = None,
+        retry_count: int = 0,
     ) -> dict[str, Any]:
         if self.store is None:
             raise PatchError("PERSISTENCE_REQUIRED", "project test runs require durable storage")
@@ -519,12 +528,130 @@ class ControlPlaneManager:
             "working_directory": result.working_directory,
             "dependency_profile": result.dependency_profile,
             "dependency_fingerprint": result.dependency_fingerprint,
+            "retry_count": retry_count,
         }
         try:
             self._complete(idempotency_key, response)
         except Exception:
             self._abort(idempotency_key)
             raise
+        return response
+
+    def recover_project_test(
+        self,
+        run_id: str,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        session_access_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Retry one explicitly recoverable project-test Run at most twice.
+
+        Recovery creates a new sandbox attempt only after the original Run has
+        a server-recorded retryable control/execution error.  The original Run
+        remains immutable evidence and records the linked attempt; assertion
+        failures, dependency failures, and unknown receipts are never replayed.
+        """
+
+        if self.store is None:
+            raise PatchError(
+                "PERSISTENCE_REQUIRED", "project test recovery requires durable storage"
+            )
+        try:
+            state = self.store.get_run_state(run_id)
+        except KeyError as exc:
+            raise PatchError("RUN_NOT_FOUND", "project test Run does not exist") from exc
+        if state["kind"] != "test-check":
+            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run is not a project test Run")
+        events = state["events"]
+        failure = next(
+            (
+                event
+                for event in reversed(events)
+                if event["event_type"] in {"test.execution.failed", "test.prepare.failed"}
+            ),
+            None,
+        )
+        failure_payload = failure["payload"] if failure is not None else {}
+        error_code = failure_payload.get("code")
+        retryable = bool(failure_payload.get("retryable"))
+        if not retryable or error_code not in {
+            "SANDBOX_UNAVAILABLE",
+            "SANDBOX_TIMEOUT",
+            "CONTROL_PLANE_TRANSIENT",
+            "ORPHAN_RUN_RECOVERABLE",
+        }:
+            raise PatchError(
+                "PROJECT_TEST_NOT_RETRYABLE",
+                "only a recorded transient sandbox/control-plane failure can be retried",
+            )
+        attempts = sum(event["event_type"] == "test.recovery.started" for event in events)
+        if attempts >= PROJECT_TEST_RECOVERY_LIMIT:
+            self.store.append_event(
+                run_id,
+                "test.recovery.exhausted",
+                {"retry_count": attempts, "code": "RETRY_EXHAUSTED"},
+            )
+            return {
+                "run_id": run_id,
+                "status": "unknown",
+                "phase": "recovery",
+                "error_code": "RETRY_EXHAUSTED",
+                "error_category": "control_plane",
+                "retryable": False,
+                "retry_count": attempts,
+                "next_action": "重试次数已达到上限，请检查 FC/控制层状态后重新发起测试。",
+            }
+        request_event = next(
+            (event for event in events if event["event_type"] == "test.request.created"), None
+        )
+        if request_event is None:
+            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is incomplete")
+        request = request_event["payload"]
+        effective_session_id = session_id or request.get("session_id")
+        effective_user_id = user_id or request.get("user_id")
+        if not isinstance(request.get("project_path"), str) or not isinstance(
+            request.get("test_kind"), str
+        ):
+            raise PatchError("PROJECT_TEST_RECOVERY_INVALID", "Run request evidence is invalid")
+        attempt = attempts + 1
+        self.store.append_event(
+            run_id,
+            "test.recovery.started",
+            {"attempt": attempt, "code": error_code, "retryable": True},
+        )
+        retry_key = f"project-test-recovery-{run_id}-{attempt}"
+        try:
+            response = self.run_project_test(
+                project_path=request["project_path"],
+                test_kind=request["test_kind"],
+                target_files=list(request.get("target_files", [])),
+                symptom=str(request.get("symptom", "")),
+                expected_behavior=str(request.get("expected_behavior", "")),
+                task_id=request.get("task_id"),
+                session_id=effective_session_id,
+                user_id=effective_user_id,
+                idempotency_key=retry_key,
+                session_access_mode=session_access_mode,
+                retry_count=attempt,
+            )
+        except Exception as exc:
+            self.store.append_event(
+                run_id,
+                "test.recovery.failed",
+                {"attempt": attempt, "error_type": type(exc).__name__},
+            )
+            raise
+        self.store.append_event(
+            run_id,
+            "test.recovery.completed",
+            {
+                "attempt": attempt,
+                "recovery_run_id": response["run_id"],
+                "status": response["status"],
+            },
+        )
+        response["recovery_of"] = run_id
         return response
 
     def _grant_session_project_access(
@@ -2121,6 +2248,26 @@ def create_app(
                 session_id=payload.session_id,
                 user_id=payload.user_id,
                 idempotency_key=idempotency_key,
+                session_access_mode=workspace_access_mode,
+            ),
+        )
+
+    @app.post("/api/v1/project-tests/{run_id}/recovery")
+    @app.post("/v1/project-tests/{run_id}/recovery")
+    def recover_project_test(
+        request: Request,
+        run_id: str,
+        payload: ProjectTestRecoveryRequest,
+        workspace_access_mode: str | None = Header(
+            default=None, alias="X-DevPilot-Workspace-Access"
+        ),
+    ) -> dict[str, Any]:
+        return _contract_payload(
+            request,
+            manager.recover_project_test(
+                run_id,
+                session_id=payload.session_id,
+                user_id=payload.user_id,
                 session_access_mode=workspace_access_mode,
             ),
         )

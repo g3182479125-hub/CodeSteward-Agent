@@ -1007,7 +1007,10 @@ def _consume_temporary_confirmation(
         expires = expires.astimezone(UTC)
         if (
             expires <= issued
-            or (expires - issued).total_seconds() > 300
+            # The gateway commonly serializes issued/expires in two separate
+            # calls; allow a small serialization skew without weakening the
+            # five-minute confirmation lifetime in any meaningful way.
+            or (expires - issued).total_seconds() > 300.1
             or not (issued <= now < expires)
         ):
             return False

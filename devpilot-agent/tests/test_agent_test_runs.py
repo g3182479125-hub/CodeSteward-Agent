@@ -79,6 +79,9 @@ def test_agent_can_create_trusted_failure_run_from_a_project_pytest(tmp_path: Pa
     assert state["kind"] == "test-check"
     assert state["status"] == "failed"
     event_types = [event["event_type"] for event in state["events"]]
+    assert event_types.index("test.prepare.started") < event_types.index(
+        "test.prepare.completed"
+    )
     assert "test.execution.completed" in event_types
     assert "test_check.failed" in event_types
     assert result.error_code == "TEST_FAILED"
@@ -118,6 +121,87 @@ def test_execution_failure_has_structured_recovery_metadata(tmp_path: Path) -> N
     assert result.retryable is True
     assert result.next_action is not None
     assert result.failure_run_id is None
+
+
+def test_dependency_prepare_failure_is_not_a_test_failure(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "requirements.txt").write_text("does-not-exist==0\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class DependencyFailureBackend:
+        name = "dependency-failure"
+
+        def run(self, _request: object) -> ExecutionResult:
+            raise ExecutionError("FC_DEPENDENCY_INSTALL_FAILED", "dependency install failed")
+
+    result = ProjectTestRunner(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=DependencyFailureBackend(),  # type: ignore[arg-type]
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="test cannot start",
+        expected_behavior="test runs",
+    )
+
+    assert result.status == "unknown"
+    assert result.phase == "prepare"
+    assert result.failure_run_id is None
+    assert result.error_category == "dependency_prepare"
+    events = [event["event_type"] for event in store.list_run_events(result.run_id)]
+    assert "test.prepare.failed" in events
+    assert "test_check.failed" not in events
+
+
+def test_transient_project_test_recovery_is_bounded_and_linked(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "test_main.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+
+    class TransientBackend:
+        name = "transient-backend"
+        verification_available = True
+
+        @staticmethod
+        def supports_profile(_profile: str) -> bool:
+            return True
+
+        def run(self, _request: object) -> ExecutionResult:
+            raise ExecutionError("SANDBOX_UNAVAILABLE", "provider is temporarily unavailable")
+
+    manager = ControlPlaneManager(
+        allowed_roots=roots,
+        store=store,
+        execution_backend=TransientBackend(),  # type: ignore[arg-type]
+    )
+    first = manager.run_project_test(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="test cannot start",
+        expected_behavior="test runs",
+    )
+    second = manager.recover_project_test(first["run_id"])
+    third = manager.recover_project_test(first["run_id"])
+    exhausted = manager.recover_project_test(first["run_id"])
+
+    assert second["recovery_of"] == first["run_id"]
+    assert second["retry_count"] == 1
+    assert third["recovery_of"] == first["run_id"]
+    assert third["retry_count"] == 2
+    assert exhausted["error_code"] == "RETRY_EXHAUSTED"
+    assert exhausted["retry_count"] == 2
+    assert len(store.list_project_run_ids(project_id=first["project_id"], kind="test-check")) == 3
+    event_types = [event["event_type"] for event in store.list_run_events(first["run_id"])]
+    assert event_types.count("test.recovery.started") == 2
+    assert "test.recovery.completed" in event_types
 
 
 def test_missing_pytest_uses_a_dependency_free_plain_runner(tmp_path: Path) -> None:
@@ -389,7 +473,10 @@ def test_full_access_can_enroll_project_for_current_session_without_persistent_t
     assert result["sandbox_id"] == "fake-sandbox"
     security = store.get_project_security(result["project_id"])
     assert security["trust_state"] != "trusted"
-    assert ("websocket:full-access-session", result["project_id"]) not in manager._session_project_bindings  # type: ignore[reportPrivateUsage]
+    assert (
+        "websocket:full-access-session",
+        result["project_id"],
+    ) not in manager._session_project_bindings  # type: ignore[reportPrivateUsage]
 
     client = TestClient(
         create_app(manager=manager, internal_auth_token="test-control-plane-token-0123456789"),

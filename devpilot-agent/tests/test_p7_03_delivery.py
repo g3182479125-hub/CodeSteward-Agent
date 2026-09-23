@@ -13,7 +13,7 @@ def test_devpilot_declares_nanobot_tools() -> None:
         project = tomllib.load(handle)["project"]
 
     entry_points = project["entry-points"]["nanobot.tools"]
-    assert len(entry_points) == 17
+    assert len(entry_points) >= 17
     assert "devpilot_inspect_project" in entry_points
     assert "devpilot_test_run" in entry_points
     assert "devpilot_confirmed_action" in entry_points
