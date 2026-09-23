@@ -198,10 +198,11 @@ def build_verification_request(plan: PatchPlan, profile: VerificationProfile) ->
     if profile is VerificationProfile.PYTHON_SYNTAX:
         command = "python3 -m py_compile " + shlex.join(paths)
     elif profile is VerificationProfile.PYTHON_REGRESSION:
+        normalized_snapshot_paths = tuple(item.relative_path.replace("\\", "/") for item in files)
         if not any(
-            "/tests/" in f"/{item.relative_path.replace('\\', '/')}"
-            or item.relative_path.replace("\\", "/").startswith("tests/")
-            for item in files
+            "/tests/" in f"/{relative_path}"
+            or relative_path.startswith("tests/")
+            for relative_path in normalized_snapshot_paths
         ):
             raise ValueError("python-regression requires a tests/ snapshot")
         command = "python -m pytest -q"
