@@ -6,6 +6,8 @@
 持久化环境边界修复提交：`eac3973`（`fix: fail closed on stale FC prepared environments`）。
 本轮故障恢复提交：`5c186c1`（`fix: recover bounded FC provider faults`）。
 本轮本地优先实现提交：`b20c01c`（`feat: default project verification to local execution`）。
+本轮 unittest 回执修复提交：`9c93123`（`fix: keep unittest receipts within output budget`）。
+本轮双轴审查记录提交：`0062bad`（`docs: record unittest output review`）。
 
 ## 一、项目定位
 
