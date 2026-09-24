@@ -69,7 +69,6 @@ from .action_broker import (
     ConfirmationContext,
     ConfirmationReservation,
 )
-from .backend_factory import fc_sandbox_enabled
 from .code_access import CodeAccessError, CodeAccessService
 from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
@@ -1190,10 +1189,18 @@ def _post_project_test(
     ).hexdigest()[:48]
     # Local project tests may run for up to six hours. FC keeps its own short
     # provider window, so the client must not wait six hours for an FC call.
+    # Read the control plane's selected backend instead of trusting a possibly
+    # different environment in the nanobot process.
+    backend_catalog = _get_control_plane("/v1/security/backends").get("backends")
+    execution_location = "fc"
+    if isinstance(backend_catalog, list) and backend_catalog:
+        backend = backend_catalog[0]
+        if isinstance(backend, dict) and backend.get("execution_location") == "local":
+            execution_location = "local"
     project_test_request_timeout = (
-        _FC_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
-        if fc_sandbox_enabled()
-        else _LOCAL_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
+        _LOCAL_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
+        if execution_location == "local"
+        else _FC_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
     )
     result = _post_control_plane(
         "/v1/project-tests",

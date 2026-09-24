@@ -1445,6 +1445,9 @@ def test_project_test_request_waits_for_the_local_execution_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
         def __enter__(self) -> FakeResponse:
             return self
 
@@ -1452,13 +1455,16 @@ def test_project_test_request_waits_for_the_local_execution_window(
             return None
 
         def read(self, _limit: int) -> bytes:
-            return b'{"status":"failed","run_id":"run-1"}'
+            return self.body
 
-    def fake_urlopen(_request: object, timeout: int) -> FakeResponse:
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        url = str(getattr(request, "full_url", ""))
+        if url.endswith("/v1/security/backends"):
+            assert timeout == 10
+            return FakeResponse(b'{"backends":[{"execution_location":"local"}]}')
         assert timeout == 6 * 60 * 60 + 60
-        return FakeResponse()
+        return FakeResponse(b'{"status":"failed","run_id":"run-1"}')
 
-    monkeypatch.setenv("DEVPILOT_ENABLE_FC_SANDBOX", "0")
     monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
     result = nanobot_tools._post_project_test(
         {
@@ -1477,6 +1483,9 @@ def test_project_test_request_keeps_the_fc_client_window_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
         def __enter__(self) -> FakeResponse:
             return self
 
@@ -1484,13 +1493,16 @@ def test_project_test_request_keeps_the_fc_client_window_bounded(
             return None
 
         def read(self, _limit: int) -> bytes:
-            return b'{"status":"failed","run_id":"run-fc-1"}'
+            return self.body
 
-    def fake_urlopen(_request: object, timeout: int) -> FakeResponse:
+    def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+        url = str(getattr(request, "full_url", ""))
+        if url.endswith("/v1/security/backends"):
+            assert timeout == 10
+            return FakeResponse(b'{"backends":[{"execution_location":"fc"}]}')
         assert timeout == 330
-        return FakeResponse()
+        return FakeResponse(b'{"status":"failed","run_id":"run-fc-1"}')
 
-    monkeypatch.setenv("DEVPILOT_ENABLE_FC_SANDBOX", "1")
     monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)
     result = nanobot_tools._post_project_test(
         {
