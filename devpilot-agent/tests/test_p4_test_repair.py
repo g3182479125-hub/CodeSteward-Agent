@@ -175,6 +175,78 @@ def test_test_repair_allows_explicit_regression_test_scope(tmp_path: Path) -> No
     assert proposal.allowed_files == ("src/demo/main.py", "tests/test_regression.py")
 
 
+def test_test_repair_rejects_unlisted_regression_test_scope(tmp_path: Path) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
+    )
+    regression_test = project / "tests" / "test_regression.py"
+    regression_test.write_text("def test_regression():\n    assert True\n", encoding="utf-8")
+    patch = _patch(project, "tests/test_regression.py", "assert True", "assert 1 == 1")
+
+    with pytest.raises(WorkflowError, match="TEST_REPAIR_SCOPE_INVALID"):
+        _TestRepairWorkflow(manager).propose(
+            project_path=project,
+            patches=[patch],
+            analysis_evidence_ids=[analysis_id],
+            failure_evidence_ids=[failure_id],
+            symptom="python-run check fails",
+            expected_behavior="the saved check passes",
+            non_goals=["dependency changes"],
+            allowed_files=["src/demo/main.py"],
+            verification_profile=VerificationProfile.PYTHON_RUN,
+        )
+
+
+def test_test_repair_rejects_stale_hash_for_regression_test_scope(tmp_path: Path) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
+    )
+    regression_test = project / "tests" / "test_regression.py"
+    regression_test.write_text("def test_regression():\n    assert True\n", encoding="utf-8")
+    patch = _patch(project, "tests/test_regression.py", "assert True", "assert 1 == 1")
+    stale_patch = FilePatch(
+        patch.relative_path,
+        patch.operation,
+        patch.content,
+        "0" * 64,
+    )
+
+    with pytest.raises(WorkflowError, match="TEST_REPAIR_FAILURE_EVIDENCE_INVALID"):
+        _TestRepairWorkflow(manager).propose(
+            project_path=project,
+            patches=[stale_patch],
+            analysis_evidence_ids=[analysis_id],
+            failure_evidence_ids=[failure_id],
+            symptom="python-run check fails",
+            expected_behavior="the saved check passes",
+            non_goals=["dependency changes"],
+            allowed_files=["src/demo/main.py", "tests/test_regression.py"],
+            verification_profile=VerificationProfile.PYTHON_RUN,
+        )
+
+
+def test_test_repair_rejects_non_test_extra_scope(tmp_path: Path) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
+    )
+    extra_source = project / "src" / "demo" / "extra.py"
+    extra_source.write_text("VALUE = 1\n", encoding="utf-8")
+    patch = _patch(project, "src/demo/extra.py", "VALUE = 1", "VALUE = 2")
+
+    with pytest.raises(WorkflowError, match="TEST_REPAIR_SCOPE_INVALID"):
+        _TestRepairWorkflow(manager).propose(
+            project_path=project,
+            patches=[patch],
+            analysis_evidence_ids=[analysis_id],
+            failure_evidence_ids=[failure_id],
+            symptom="python-run check fails",
+            expected_behavior="the saved check passes",
+            non_goals=["dependency changes"],
+            allowed_files=["src/demo/main.py", "src/demo/extra.py"],
+            verification_profile=VerificationProfile.PYTHON_RUN,
+        )
+
+
 def test_g03_success_writes_test_repair_artifact(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(
         tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
