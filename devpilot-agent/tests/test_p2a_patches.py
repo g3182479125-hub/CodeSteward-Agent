@@ -262,6 +262,30 @@ def test_changeset_byte_and_line_budgets_are_rejected(tmp_path: Path) -> None:
         )
     assert error.value.code == "PATCH_LIMIT_EXCEEDED"
 
+
+def test_large_update_uses_diff_budget_not_full_post_image(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    before = "\n".join(f"line {index}" for index in range(12_000)) + "\n"
+    target = project / "large-test.py"
+    target.write_bytes(before.encode("utf-8"))
+    after = before.replace("line 6000", "line 6000 updated", 1)
+    service = make_service(project)
+
+    plan = service.plan(
+        project,
+        patches=(
+            FilePatch(
+                "large-test.py",
+                FileOperation.UPDATE,
+                after,
+                expected_sha256=digest(before),
+            ),
+        ),
+    )
+
+    assert len(after.encode("utf-8")) > MAX_PATCH_BYTES
+    assert plan.records[0].after_sha256 == digest(after)
+
     too_many_lines = "x\n" * (MAX_PATCH_LINES + 1)
     with pytest.raises(PatchError) as error:
         service.plan(

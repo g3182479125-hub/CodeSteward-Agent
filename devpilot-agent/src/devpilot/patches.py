@@ -290,7 +290,17 @@ class StructuredPatchService:
                 raise PatchError("PATCH_CONTENT_REQUIRED", "create and update require content")
             after_hash = sha256_bytes(after) if after is not None else None
             content_hash = sha256_bytes(after or b"")
-            patch_bytes += len(after or b"")
+            # An update carries the complete post-image for safe atomic apply,
+            # but its budget should measure the actual reviewable patch.  A
+            # large test module with a three-line regression assertion must not
+            # be rejected merely because its stored replacement is larger than
+            # MAX_PATCH_BYTES; the file-size, changed-line, and total-file
+            # limits still apply independently.
+            patch_bytes += (
+                len(self._diff(relative_path, before or b"", after or b"").encode("utf-8"))
+                if operation is FileOperation.UPDATE
+                else len(after or b"")
+            )
             patch_lines += self._changed_lines(before or b"", after or b"")
             if patch_bytes > MAX_PATCH_BYTES or patch_lines > MAX_PATCH_LINES:
                 raise PatchError(
