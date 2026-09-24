@@ -10,6 +10,16 @@ training-projects/python-project-template-bugfix
 复制出来的独立 Python 项目，保留 MIT 许可。项目中的 `main.py` 故意保留了三个缺陷，
 所以录制开始时测试应该失败；Agent 修复、FC 验证、回滚之后，项目应该回到这个失败基线。
 
+另一个可用于完整 Bug-fix 闭环的项目是：
+
+```text
+training-projects/shopsphere-bugfix
+```
+
+这是 ShopSphere 的脱敏本地训练副本，保留了当前的并发取消订单修复和密码重置
+模板修复。它不是主仓库的 WebUI 本身；录制时要把它作为被修复项目登记并授权。
+具体的当前状态、启动方式、已知限制和下一步见最新交接文档。
+
 ## 项目里有什么
 
 ```text
