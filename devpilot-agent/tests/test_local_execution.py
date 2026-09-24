@@ -28,7 +28,7 @@ def _request(tmp_path: Path, source: str) -> ExecutionRequest:
             ExecutionFile("tests/__init__.py", b""),
             ExecutionFile("tests/test_sample.py", source.encode("utf-8")),
         ),
-        command="python -m unittest discover -v",
+        command="python -m unittest discover",
         timeout_seconds=15,
         command_profile="project-unittest",
         working_directory="",
@@ -504,6 +504,51 @@ def test_project_test_run_uses_local_unittest_and_marks_receipt_location(
     execution = next(event for event in events if event["event_type"] == "test.execution.completed")
     assert execution["payload"]["execution_location"] == "local"
     assert execution["payload"]["sandbox_id"] is None
+
+
+def test_project_test_run_uses_non_verbose_unittest_for_large_passing_suites(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    (project / "main.py").write_text("value = 4\n", encoding="utf-8")
+    (tests / "__init__.py").write_text("", encoding="utf-8")
+    methods = "\n".join(
+        f"    def test_case_{index:03d}(self):\n        self.assertTrue(True)"
+        for index in range(500)
+    )
+    (tests / "test_main.py").write_text(
+        "import unittest\n\nclass ValueTest(unittest.TestCase):\n" + methods + "\n",
+        encoding="utf-8",
+    )
+    store = ProjectStore(tmp_path / "data" / "devpilot.db")
+    store.initialize()
+    backend = LocalExecutionBackend(state_dir=tmp_path / "local-runs")
+    manager = ControlPlaneManager(
+        allowed_roots=AllowedRoots.from_paths([tmp_path]),
+        store=store,
+        execution_backend=backend,
+    )
+
+    result = manager.run_project_test(
+        project_path=project,
+        test_kind="python-unittest",
+        target_files=["main.py"],
+        symptom="A large successful suite used to produce an oversized verbose receipt.",
+        expected_behavior="The fixed non-verbose command produces a complete receipt.",
+        session_id="websocket:truncated-success",
+        session_access_mode="full",
+    )
+
+    assert result["status"] == "passed"
+    assert result["command"] == "python -m unittest discover"
+    execution = next(
+        event
+        for event in store.list_run_events(result["run_id"])
+        if event["event_type"] == "test.execution.completed"
+    )
+    assert execution["payload"]["output_truncated"] is False
 
 
 def test_project_test_run_persists_prepare_cleanup_failure(

@@ -64,6 +64,8 @@ $env:PYTHONPATH='E:\codex-local\nanobot-devpilot-agent\devpilot-agent\src;E:\cod
 - 最终实现差异的 Standards 与 Spec subagent review：均 PASS。
 - 本地优先实现与当前交接记录已提交在 `b20c01c`；切换电脑后先确认 `git status --short`，不要覆盖或整体回退任何后续本机改动。
 - ShopSphere 本地执行器集成试跑：Run `e896cf25-6fb1-46a9-b018-4419c1011726`；本地依赖准备完成，`execution_location=local` 且无 Sandbox ID，但最终 Run 是 `unknown / TEST_RECEIPT_INCOMPLETE`，没有可验收退出码。最可能原因是 `python -m unittest discover -v` 输出超过 16 KiB 回执限制并被截断；须修复/验证后再宣称项目级 E2E 通过。
+- 2026-09-24 已修复上述固定命令问题：`python-unittest` 现在统一使用不带 `-v` 的 `python -m unittest discover`，并同步更新控制面命令表、本地 Profile 校验和通用执行 allowlist；仍严格拒绝 `output_truncated` 回执。新增大规模通过套件回归，证明正常输出不再因 verbose 模式被误截断。DevPilot 全量测试、Ruff 和 `git diff --check` 均通过。
+- 当前电脑没有交接中约定的 `E:\codex-local\agent-demo-projects\shopsphere` 挑战副本，因此本轮只完成执行器修复和回归验证，尚未虚报 ShopSphere 的真实项目级 E2E 结果。
 - 当前已运行的 `127.0.0.1:18800` Control Plane 仍报告只有 `fc-agent-sandbox` 且状态 degraded，说明服务进程尚未加载本轮 local-first 改动。挑战试跑通过当前源码的隔离本地 `ProjectTestRunner` 执行，没有调用 FC。完整 WebUI/Personal Agent 测试前需按新电脑本地路径重启/启动集成服务并确认后端目录列出 `local`。
 
 最新真实 WebUI + Full Access + FC 沙箱测试：
@@ -147,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 
 此前这批代码已经完成“准备/测试结果分离”和“瞬时错误有限恢复”的最小闭环。下一台电脑建议按下面顺序继续：
 
-1. 先修复/确认 `project-unittest` 的输出回执问题。首选检查不带 `-v` 的固定 unittest 命令并同步更新 LocalExecutionBackend profile 验证和回归测试；仍须保持输出上限与“不接受截断回执”的契约。再用 ShopSphere 挑战副本重跑，要求 Run 有真实退出码、完整回执、`execution_location=local`、无 `sandbox_id` 且清理成功。
+1. 在交接电脑重新建立或找到 `E:\codex-local\agent-demo-projects\shopsphere` 挑战副本后重跑 ShopSphere。当前固定命令已是不带 `-v` 的 `python -m unittest discover`，仍须保持输出上限与“不接受截断回执”的契约；要求 Run 有真实退出码、完整回执、`execution_location=local`、无 `sandbox_id` 且清理成功。
 2. 在另一台 Windows 电脑按第四节安装后，先运行第三节 DevPilot 全量测试，确认使用 `nanobot\\.venv`，不要误用其他全局 Python。
 3. 启动/重启集成服务后先检查 `http://127.0.0.1:18800/v1/security/backends`：FC 默认关闭时应显示 local 执行后端，不应只显示 `fc-agent-sandbox`。然后从 WebUI/Personal Agent 对 ShopSphere 运行只读分析和 unittest，确认沿用目标项目作用域。
 4. 默认启动应完全本地运行项目测试：确认回执 `execution_location=local` 且没有 `sandbox_id`。不需要 E2B 凭据。

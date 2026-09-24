@@ -32,10 +32,7 @@ _TEST_COMMANDS = {
     # pytest through the interpreter selected by the image so a real test
     # failure is distinguishable from a missing-command failure.
     "python-pytest": ("python -m pytest -q", "project-pytest"),
-    "python-unittest": (
-        "python -m unittest discover -v",
-        "project-unittest",
-    ),
+    "python-unittest": ("python -m unittest discover", "project-unittest"),
     "node-test": ("npm test", "project-npm-test"),
 }
 _PLAIN_TEST_RUNNER_PATH = ".devpilot/plain_test_runner.py"

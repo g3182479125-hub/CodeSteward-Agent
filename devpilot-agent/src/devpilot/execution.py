@@ -216,8 +216,8 @@ def validate_command(command: str, input_paths: set[str]) -> None:
     ):
         return
     if tokens in (
-        ["python3", "-m", "unittest", "discover", "-v"],
-        ["python", "-m", "unittest", "discover", "-v"],
+        ["python3", "-m", "unittest", "discover"],
+        ["python", "-m", "unittest", "discover"],
     ):
         return
     if tokens == ["npm", "test"]:

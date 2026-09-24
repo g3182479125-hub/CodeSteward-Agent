@@ -496,8 +496,8 @@ class LocalExecutionBackend:
                     ("python3", "-m", "pytest", "-q"),
                 },
                 "project-unittest": {
-                    ("python", "-m", "unittest", "discover", "-v"),
-                    ("python3", "-m", "unittest", "discover", "-v"),
+                    ("python", "-m", "unittest", "discover"),
+                    ("python3", "-m", "unittest", "discover"),
                 },
                 "project-npm-test": {("npm", "test")},
             }
@@ -623,7 +623,6 @@ class LocalExecutionBackend:
                 "-m",
                 "unittest",
                 "discover",
-                "-v",
             ]
         elif profile == "project-npm-test":
             command = self._npm_command("test")
