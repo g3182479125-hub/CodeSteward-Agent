@@ -6,7 +6,8 @@ param(
     [string]$AllowedRoots = "E:\codex-local",
     [switch]$SkipMigration,
     [switch]$ValidateOnly,
-    [switch]$EnableFCSandbox
+    [switch]$EnableFCSandbox,
+    [switch]$OpenBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -200,4 +201,15 @@ if (-not $controlPlaneHealthy) {
 }
 
 Write-Host "Starting nanobot WebUI with H6/H8/H9 live Harness features enabled."
-& $nanobotExe webui --no-open --yes --config $ConfigPath --workspace $WorkspacePath --port 8765 --gateway-port 18790
+$webuiArguments = @(
+    "webui",
+    "--yes",
+    "--config", $ConfigPath,
+    "--workspace", $WorkspacePath,
+    "--port", "8765",
+    "--gateway-port", "18790"
+)
+if (-not $OpenBrowser) {
+    $webuiArguments += "--no-open"
+}
+& $nanobotExe @webuiArguments

@@ -177,3 +177,38 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 - Agent 工具：`devpilot-agent/src/devpilot/nanobot_tools.py`
 - 项目测试恢复接口：`POST /v1/project-tests/{run_id}/recovery`
 - 冻结计划：`docs/superpowers/plans/2026-09-22-codex-like-execution-integration-plan.md`
+
+## 2026-09-24 晚间补充：ShopSphere 个人 Agent 实测
+
+本节记录本机继续验证的最新结果；若与本文前面较早的“尚未做 Personal Agent 端到端测试”描述冲突，以本节为准。旧的 FC 云端验收结论仍是历史状态，不代表本次测试启用了 FC。
+
+### 本轮结果与证据
+
+- 已从 Personal Agent WebUI 直接向 Agent 提交 ShopSphere 任务；运行采用本地执行，FC Sandbox 保持关闭。
+- 测试项目是本机独立挑战副本：`C:\Users\G3182\.nanobot\recording-workspace\shopsphere-agent-challenge-20260924`。仓库内的 `training-projects/shopsphere-bugfix` 是修复后的基线，不是本次故意植入缺陷的挑战副本。
+- Agent 全量运行命令：`python -m unittest discover -s tests -t .`。Run ID：`61e35864-5efd-4f0f-9d08-f0b4cffe4dd0`；共 223 项，222 通过、1 失败，耗时约 526 秒。失败用例为 `tests.test_shop.TestConcurrentOrderCancellation.test_two_cancellations_restore_variant_stock_only_once`，并发取消时断言得到两个成功者而非一个。
+- 初步根因已确认：挑战副本 `shop/orders.py` 的状态更新被故意回退成仅按订单 ID 更新，缺少“仅当当前状态仍为预期状态时更新”的条件。并发请求因此都可能声称取消成功并重复恢复库存。
+- Personal Agent 已生成待审 Changeset：`5f632ad2-ef8a-44b9-bf44-f5f9d09998f1`，状态 `planned`，范围仅 `shop/orders.py`。建议修复为带原状态条件的原子更新，并检查 `rowcount`；竞争失败的一方返回冲突，不重复执行库存恢复。
+- **该 Changeset 尚未获批、尚未 Apply，也尚未 Verify。** 本交接不把“提出修复”写成“已修复”。用户明确确认后，仍需在 Agent 中走正常 Changeset 审批，再 Apply，并运行上述完整 unittest 命令；只有验证结果通过才能报告完成。
+
+### 换机与数据边界
+
+- 挑战副本、Agent 的 Run/Changeset 状态及 Control Plane 数据库均是本机状态，不在本 Git 仓库，也没有上传 GitHub。ChangeSet ID 在另一台电脑上不会自动存在。
+- 若换机前未在本机完成审批与验证，请在新电脑从仓库中的固定 ShopSphere 基线重新创建独立挑战副本，再按冻结计划植入同一并发取消缺陷并复测；不要把故意带缺陷的副本覆盖到 `training-projects/shopsphere-bugfix`，也不要将挑战项目推送到 GitHub。
+- 本次测试没有启用 FC；项目测试在本地以当前 Windows 用户权限执行。只对可信的隔离副本运行测试。
+- WebUI 认证本轮改用 Nanobot 官方浏览器启动流程。此前启动脚本固定传入 `--no-open`，会落到需要手工输入 token 的裸 WebUI 页面。本次为 `start-integrated-harness.ps1` 增加可选 `-OpenBrowser`：默认仍保持不自动打开浏览器；显式传入时不加 `--no-open`，由 Nanobot 打开带 bootstrap 认证流程的页面。已在本机验证启动后浏览器自动完成认证。不要把 bootstrap token、配置文件、数据库或会话数据写入交接文档或提交。
+
+示例（参数替换为新电脑自己的本地路径；密钥只从本机配置读取）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrated-harness.ps1 `
+  -StateRoot <本机状态目录> `
+  -AllowedRoots <本机项目根目录> `
+  -OpenBrowser
+```
+
+### 下一步
+
+1. 若仍在本机继续：打开 Personal Agent 中上述待审 Changeset，检查 Diff 与仅一文件的范围，明确批准后 Apply；随后运行 `python -m unittest discover -s tests -t .`，记录新的 Run ID、退出码、223 项结果和本地执行回执。
+2. 若已换电脑：先按前文安装步骤配置该电脑自己的模型和 Harness，再重建挑战副本；原本机的 Run/Changeset 不能迁移，按冻结计划重新触发分析、测试和 Changeset。
+3. 无论哪台电脑，都保留“先审 ChangeSet，再 Apply，再 Verify”的流程；不要因 Full Access 绕过这项明确保留的代码变更确认。
