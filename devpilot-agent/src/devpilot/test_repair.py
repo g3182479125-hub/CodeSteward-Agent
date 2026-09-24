@@ -42,6 +42,7 @@ _SUPPORTED_PROFILES = frozenset({VerificationProfile.PYTHON_RUN, VerificationPro
 # repair workflow usable for strengthening the reproducer without turning the
 # whole trusted project into an unbounded write scope.
 _TEST_SUPPORT_PREFIX = "tests/"
+_TEST_SUPPORT_FILES = frozenset({"pytest.ini"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -950,7 +951,7 @@ class TestRepairWorkflow:
     @staticmethod
     def _is_test_support_path(value: str) -> bool:
         normalized = value.replace("\\", "/").casefold()
-        return normalized.startswith(_TEST_SUPPORT_PREFIX)
+        return normalized.startswith(_TEST_SUPPORT_PREFIX) or normalized in _TEST_SUPPORT_FILES
 
     @classmethod
     def _paths(cls, values: Iterable[str], field: str) -> tuple[str, ...]:

@@ -247,6 +247,29 @@ def test_test_repair_rejects_non_test_extra_scope(tmp_path: Path) -> None:
         )
 
 
+def test_test_repair_allows_explicit_pytest_config_scope(tmp_path: Path) -> None:
+    _, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
+    )
+    pytest_config = project / "pytest.ini"
+    pytest_config.write_text("[pytest]\naddopts = -q\n", encoding="utf-8")
+    patch = _patch(project, "pytest.ini", "addopts = -q", "addopts =")
+
+    proposal = _TestRepairWorkflow(manager).propose(
+        project_path=project,
+        patches=[patch],
+        analysis_evidence_ids=[analysis_id],
+        failure_evidence_ids=[failure_id],
+        symptom="python-run check fails",
+        expected_behavior="the saved check passes",
+        non_goals=["dependency changes"],
+        allowed_files=["src/demo/main.py", "pytest.ini"],
+        verification_profile=VerificationProfile.PYTHON_RUN,
+    )
+
+    assert proposal.allowed_files == ("src/demo/main.py", "pytest.ini")
+
+
 def test_g03_success_writes_test_repair_artifact(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(
         tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
