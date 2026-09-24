@@ -44,7 +44,7 @@ def test_fake_backend_keeps_execution_port_deterministic() -> None:
     [
         ({"files": ()}, "EXECUTION_INPUT_EMPTY"),
         ({"command": "  "}, "EXECUTION_COMMAND_EMPTY"),
-        ({"timeout_seconds": 901}, "EXECUTION_TIMEOUT_INVALID"),
+        ({"timeout_seconds": 6 * 60 * 60 + 1}, "EXECUTION_TIMEOUT_INVALID"),
         ({"files": (ExecutionFile("../escape.py", b"x"),)}, "EXECUTION_PATH_INVALID"),
         (
             {"files": (ExecutionFile("src/main.py", b"x"), ExecutionFile("src/main.py", b"y"))},

@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .execution import (
+    MAX_EXECUTION_TIMEOUT_SECONDS,
     ExecutionBackend,
     ExecutionError,
     ExecutionFile,
@@ -36,6 +37,7 @@ _TEST_COMMANDS = {
     "node-test": ("npm test", "project-npm-test"),
 }
 _PLAIN_TEST_RUNNER_PATH = ".devpilot/plain_test_runner.py"
+_FC_PROJECT_TEST_TIMEOUT_SECONDS = 300
 _PLAIN_TEST_RUNNER = b'''"""Minimal dependency-free fallback for plain test functions."""
 from pathlib import Path
 import inspect
@@ -146,6 +148,11 @@ class ProjectTestRunner:
         execution_location = (
             "local" if getattr(self.execution_backend, "name", "") == "local" else "fc"
         )
+        timeout_seconds = (
+            MAX_EXECUTION_TIMEOUT_SECONDS
+            if execution_location == "local"
+            else _FC_PROJECT_TEST_TIMEOUT_SECONDS
+        )
         before_hashes = self._target_hashes(snapshot, targets)
         root_id, fingerprint = self.allowed_roots.binding_for(project)
         project_id = self.store.ensure_project(
@@ -202,7 +209,7 @@ class ProjectTestRunner:
             project_id=project_id,
             files=snapshot,
             command=command,
-            timeout_seconds=300,
+            timeout_seconds=timeout_seconds,
             network_allowed=False,
             command_profile=command_profile,
             working_directory=working_directory,
@@ -332,7 +339,7 @@ class ProjectTestRunner:
                 project_id=project_id,
                 files=fallback_files,
                 command=f"python /workspace/devpilot/{_PLAIN_TEST_RUNNER_PATH}",
-                timeout_seconds=300,
+                timeout_seconds=timeout_seconds,
                 network_allowed=False,
                 command_profile=command_profile,
                 working_directory=working_directory,

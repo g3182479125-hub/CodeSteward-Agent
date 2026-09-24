@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 
@@ -16,6 +17,7 @@ from devpilot.code_access import CodeAccessService
 from devpilot.control_plane import ControlPlaneManager, create_app
 from devpilot.domain import FileOperation
 from devpilot.execution import (
+    MAX_EXECUTION_TIMEOUT_SECONDS,
     ExecutionError,
     ExecutionRequest,
     ExecutionResult,
@@ -899,6 +901,45 @@ def test_project_test_selects_nested_working_directory_and_dependency_profile(
     assert request.dependency_profile == "python-requirements"
 
 
+def test_local_project_test_uses_the_six_hour_execution_limit(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def price():\n    return 80\n", encoding="utf-8")
+    (project / "test_main.py").write_text(
+        "from main import price\n\n\ndef test_price():\n    assert price() == 80\n",
+        encoding="utf-8",
+    )
+    store, roots = _trusted_store(tmp_path, project)
+
+    class LocalFakeBackend(FakeExecutionBackend):
+        name = "local"
+
+        def run(self, request: ExecutionRequest) -> ExecutionResult:
+            receipt = super().run(request)
+            return replace(
+                receipt,
+                backend="local",
+                sandbox_id="",
+                side_effect_count=None,
+                permission_violation=None,
+                execution_location="local",
+            )
+
+    backend = LocalFakeBackend()
+    result = ProjectTestRunner(
+        allowed_roots=roots, store=store, execution_backend=backend
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["main.py"],
+        symptom="the project test needs a long local execution window",
+        expected_behavior="the local test runner allows up to six hours",
+    )
+
+    assert result.status == "passed"
+    assert backend.requests[0].timeout_seconds == MAX_EXECUTION_TIMEOUT_SECONDS
+
+
 def test_missing_pytest_does_not_turn_unsupported_fixture_into_failure_evidence(
     tmp_path: Path,
 ) -> None:
@@ -1414,7 +1455,7 @@ def test_project_test_request_waits_for_the_fc_execution_window(
             return b'{"status":"failed","run_id":"run-1"}'
 
     def fake_urlopen(_request: object, timeout: int) -> FakeResponse:
-        assert timeout == 330
+        assert timeout == 6 * 60 * 60 + 60
         return FakeResponse()
 
     monkeypatch.setattr(nanobot_tools, "urlopen", fake_urlopen)

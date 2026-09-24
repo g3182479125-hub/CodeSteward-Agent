@@ -1185,15 +1185,16 @@ def _post_project_test(
     idempotency_key = "project-test-" + hashlib.sha256(
         canonical_payload.encode("utf-8")
     ).hexdigest()[:48]
-    # The control plane can spend up to the FC project-test limit executing
-    # pytest (300 seconds).  Keep a small response/cleanup margin so the
-    # nanobot adapter does not report a client-side timeout after FC has
-    # already run the test successfully.
+    # Local project tests may run for up to six hours. Keep a small response
+    # margin so the nanobot adapter does not report a client-side timeout
+    # after the control plane has already completed the test. FC still
+    # enforces its own shorter provider cost cap on the server side.
+    project_test_request_timeout = 6 * 60 * 60 + 60
     result = _post_control_plane(
         "/v1/project-tests",
         payload,
         idempotency_key=idempotency_key,
-        timeout_seconds=330,
+        timeout_seconds=project_test_request_timeout,
         workspace_access_mode=workspace_access_mode,
     )
     # A transient sandbox/control-plane result is safe to recover because the
@@ -1209,7 +1210,7 @@ def _post_project_test(
                 "user_id": payload.get("user_id"),
             },
             idempotency_key=f"{idempotency_key}-recovery-{attempt + 1}",
-            timeout_seconds=330,
+            timeout_seconds=project_test_request_timeout,
             workspace_access_mode=workspace_access_mode,
         )
     return result

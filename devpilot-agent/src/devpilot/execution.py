@@ -18,6 +18,7 @@ MAX_EXECUTION_FILE_BYTES = 512 * 1024
 MAX_EXECUTION_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_EXECUTION_OUTPUT_BYTES = 16 * 1024
 MAX_REQUEST_OUTPUT_BYTES = 64 * 1024
+MAX_EXECUTION_TIMEOUT_SECONDS = 6 * 60 * 60
 DEPENDENCY_PROFILES = frozenset({"", "python-requirements", "python-project", "node-npm-ci"})
 
 
@@ -149,9 +150,10 @@ def validate_request(request: ExecutionRequest) -> None:
                 "EXECUTION_WORKING_DIRECTORY_INVALID",
                 "working directory must be a relative uploaded path",
             )
-    if not 1 <= request.timeout_seconds <= 900:
+    if not 1 <= request.timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS:
         raise ExecutionError(
-            "EXECUTION_TIMEOUT_INVALID", "timeout must be between 1 and 900 seconds"
+            "EXECUTION_TIMEOUT_INVALID",
+            f"timeout must be between 1 and {MAX_EXECUTION_TIMEOUT_SECONDS} seconds",
         )
     if (
         not isinstance(request.max_output_bytes, int)
