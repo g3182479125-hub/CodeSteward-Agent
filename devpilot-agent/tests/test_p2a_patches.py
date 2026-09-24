@@ -286,6 +286,32 @@ def test_large_update_uses_diff_budget_not_full_post_image(tmp_path: Path) -> No
     assert len(after.encode("utf-8")) > MAX_PATCH_BYTES
     assert plan.records[0].after_sha256 == digest(after)
 
+
+def test_large_update_diff_still_hits_byte_budget(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    before = "\n".join(f"before {index} " + "x" * 100 for index in range(500)) + "\n"
+    target = project / "large-diff.py"
+    target.write_bytes(before.encode("utf-8"))
+    after = "\n".join(f"after {index} " + "y" * 100 for index in range(500)) + "\n"
+    service = make_service(project)
+
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch(
+                    "large-diff.py",
+                    FileOperation.UPDATE,
+                    after,
+                    expected_sha256=digest(before),
+                ),
+            ),
+        )
+
+    assert len(after.encode("utf-8")) < MAX_PATCH_BYTES
+    assert error.value.code == "PATCH_LIMIT_EXCEEDED"
+
+
     too_many_lines = "x\n" * (MAX_PATCH_LINES + 1)
     with pytest.raises(PatchError) as error:
         service.plan(
