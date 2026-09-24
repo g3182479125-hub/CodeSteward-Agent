@@ -39,6 +39,24 @@ def test_fake_backend_keeps_execution_port_deterministic() -> None:
     assert backend.requests[0].files[0].relative_path == "src/main.py"
 
 
+def test_fc_backend_enforces_cost_cap_for_prepared_environment() -> None:
+    backend = FCSandboxBackend(
+        FCSandboxConfig(
+            api_key="test-key",
+            api_url="https://api.example.invalid",
+            domain="example.invalid",
+        )
+    )
+
+    with pytest.raises(ExecutionError, match="FC_COST_CAP_EXCEEDED"):
+        backend.run(
+            valid_request(
+                timeout_seconds=901,
+                prepared_environment_id="prepared-env-1",
+            )
+        )
+
+
 @pytest.mark.parametrize(
     "overrides, code",
     [

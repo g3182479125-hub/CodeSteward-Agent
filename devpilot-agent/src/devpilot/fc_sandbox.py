@@ -787,11 +787,6 @@ class FCSandboxBackend:
         return state
 
     def _validate_prepare_policy(self, request: ExecutionRequest) -> None:
-        if request.timeout_seconds > self.config.max_timeout_seconds:
-            raise ExecutionError(
-                "FC_COST_CAP_EXCEEDED",
-                f"sandbox timeout exceeds the {self.config.max_timeout_seconds}s cost cap",
-            )
         if request.network_allowed and not self.config.allow_network:
             raise ExecutionError(
                 "FC_NETWORK_DENIED", "network access is disabled by DevPilot policy"
@@ -1172,6 +1167,11 @@ class FCSandboxBackend:
 
     def run(self, request: ExecutionRequest) -> ExecutionResult:
         validate_request(request)
+        if request.timeout_seconds > self.config.max_timeout_seconds:
+            raise ExecutionError(
+                "FC_COST_CAP_EXCEEDED",
+                f"sandbox timeout exceeds the {self.config.max_timeout_seconds}s cost cap",
+            )
         if request.prepared_environment_id is None:
             self._validate_prepare_policy(request)
         elif request.network_allowed and not self.config.allow_network:

@@ -69,6 +69,7 @@ from .action_broker import (
     ConfirmationContext,
     ConfirmationReservation,
 )
+from .backend_factory import fc_sandbox_enabled
 from .code_access import CodeAccessError, CodeAccessService
 from .event_bridge import project_run_state, project_sse_events
 from .inspector import MAX_FILE_BYTES, MAX_FILES, MAX_METADATA_BYTES
@@ -161,6 +162,8 @@ _CONTROL_PLANE_ERROR_CODES = frozenset(
         "DELIVERY_REPORT_INVALID",
     }
 )
+_LOCAL_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS = 6 * 60 * 60 + 60
+_FC_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS = 300 + 30
 
 _PATCH_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -1185,11 +1188,13 @@ def _post_project_test(
     idempotency_key = "project-test-" + hashlib.sha256(
         canonical_payload.encode("utf-8")
     ).hexdigest()[:48]
-    # Local project tests may run for up to six hours. Keep a small response
-    # margin so the nanobot adapter does not report a client-side timeout
-    # after the control plane has already completed the test. FC still
-    # enforces its own shorter provider cost cap on the server side.
-    project_test_request_timeout = 6 * 60 * 60 + 60
+    # Local project tests may run for up to six hours. FC keeps its own short
+    # provider window, so the client must not wait six hours for an FC call.
+    project_test_request_timeout = (
+        _FC_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
+        if fc_sandbox_enabled()
+        else _LOCAL_PROJECT_TEST_REQUEST_TIMEOUT_SECONDS
+    )
     result = _post_control_plane(
         "/v1/project-tests",
         payload,
