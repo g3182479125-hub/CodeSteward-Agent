@@ -152,6 +152,29 @@ def test_g03_proposal_binds_python_and_node_saved_failures(tmp_path: Path) -> No
         )
 
 
+def test_test_repair_allows_explicit_regression_test_scope(tmp_path: Path) -> None:
+    store, project, manager, analysis_id, failure_id = _setup(
+        tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN
+    )
+    regression_test = project / "tests" / "test_regression.py"
+    regression_test.write_text("def test_regression():\n    assert True\n", encoding="utf-8")
+    patch = _patch(project, "tests/test_regression.py", "assert True", "assert 1 == 1")
+
+    proposal = _TestRepairWorkflow(manager).propose(
+        project_path=project,
+        patches=[patch],
+        analysis_evidence_ids=[analysis_id],
+        failure_evidence_ids=[failure_id],
+        symptom="python-run check fails",
+        expected_behavior="the saved check passes",
+        non_goals=["dependency changes"],
+        allowed_files=["src/demo/main.py", "tests/test_regression.py"],
+        verification_profile=VerificationProfile.PYTHON_RUN,
+    )
+
+    assert proposal.allowed_files == ("src/demo/main.py", "tests/test_regression.py")
+
+
 def test_g03_success_writes_test_repair_artifact(tmp_path: Path) -> None:
     store, project, manager, analysis_id, failure_id = _setup(
         tmp_path, _PYTHON_FIXTURE, "src/demo/main.py", VerificationProfile.PYTHON_RUN

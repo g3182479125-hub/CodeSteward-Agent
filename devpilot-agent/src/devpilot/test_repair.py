@@ -37,6 +37,11 @@ from .workflows import (
 
 MAX_REPAIR_ATTEMPTS = 3
 _SUPPORTED_PROFILES = frozenset({VerificationProfile.PYTHON_RUN, VerificationProfile.NODE_SYNTAX})
+# Test-repair proposals may include an explicitly listed regression test even
+# when the saved failure was observed in production code.  This keeps the
+# repair workflow usable for strengthening the reproducer without turning the
+# whole trusted project into an unbounded write scope.
+_TEST_SUPPORT_PREFIX = "tests/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,23 +504,33 @@ class TestRepairWorkflow:
             raise WorkflowError("TEST_REPAIR_INPUT_INVALID", "at least one patch is required")
         allowed_keys = {self._path_key(item) for item in clean_allowed}
         target_keys = {self._path_key(item) for item in target_files}
+        current_hashes = dict(before_hashes)
+        for relative_path in clean_allowed:
+            key = self._path_key(relative_path)
+            if key in current_hashes or not self._is_test_support_path(relative_path):
+                continue
+            candidate = project / relative_path
+            if candidate.is_file():
+                current_hashes[key] = hashlib.sha256(candidate.read_bytes()).hexdigest()
         seen: set[str] = set()
         for patch in patch_values:
             path = self._path(patch.relative_path, "patch path")
             key = self._path_key(path)
-            if key in seen or key not in allowed_keys or key not in target_keys:
+            if key in seen or key not in allowed_keys or (
+                key not in target_keys and not self._is_test_support_path(path)
+            ):
                 raise WorkflowError(
                     "TEST_REPAIR_SCOPE_INVALID",
-                    "every patch must be unique and within saved failure scope",
+                    "every patch must be unique and within saved failure scope or tests/",
                 )
             seen.add(key)
             if patch.operation.value in {
                 "update",
                 "delete",
-            } and patch.expected_sha256 != before_hashes.get(key):
+            } and patch.expected_sha256 != current_hashes.get(key):
                 raise WorkflowError(
                     "TEST_REPAIR_FAILURE_EVIDENCE_INVALID",
-                    "patch expected_sha256 must match saved test failure hash",
+                    "patch expected_sha256 must match the saved or current file hash",
                 )
         preview = self.manager.preview(
             project_path=project, project_id=None, patches=list(patch_values)
@@ -931,6 +946,11 @@ class TestRepairWorkflow:
     @staticmethod
     def _path_key(value: str) -> str:
         return value.casefold() if os.name == "nt" else value
+
+    @staticmethod
+    def _is_test_support_path(value: str) -> bool:
+        normalized = value.replace("\\", "/").casefold()
+        return normalized.startswith(_TEST_SUPPORT_PREFIX)
 
     @classmethod
     def _paths(cls, values: Iterable[str], field: str) -> tuple[str, ...]:
