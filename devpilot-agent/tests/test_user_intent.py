@@ -8,6 +8,8 @@ from devpilot.user_intent import (
 def test_classifies_natural_language_confirmation_intents() -> None:
     assert classify_user_intent("把刚才的修改去掉，恢复原版本").intent == "rollback"
     assert classify_user_intent("按这个方案做，改完跑测试").intent == "apply_verify"
+    assert classify_user_intent("仅应用").intent == "apply"
+    assert classify_user_intent("只应用这一个变更").intent == "apply"
     assert classify_user_intent("这个项目可以信任").intent == "trust_project"
     assert classify_user_intent("启用这个插件吧").intent == "plugin_confirm"
     assert classify_user_intent("接受这次交付").intent == "none"
@@ -15,8 +17,13 @@ def test_classifies_natural_language_confirmation_intents() -> None:
 
 def test_explicit_negation_never_becomes_authorization() -> None:
     assert classify_user_intent("先别执行，暂时只看看").intent == "none"
+    assert classify_user_intent("不要仅应用，先只看看").intent == "none"
+    assert classify_user_intent("不要只应用").intent == "none"
+    assert classify_user_intent("不要只应用，改完跑测试").intent == "none"
     assert classify_user_intent("不要回滚，先保留当前版本").intent == "none"
     assert not confirmation_matches("先别执行", "apply")
+    assert not confirmation_matches("不要只应用", "apply")
+    assert not capability_confirmation_matches("不要仅应用", "r1.apply")
 
 
 def test_bare_acknowledgement_requires_single_pending_context() -> None:
