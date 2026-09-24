@@ -316,6 +316,19 @@ def _parse_inbound_payload(raw: str) -> str | None:
 # namespace small enough to rule out path traversal / quote injection tricks.
 _CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_:-]{1,64}$")
 
+# An apply/rollback confirmation still needs a complete signed context, but it
+# does not need a verification snapshot.  Test-support-only ChangeSets (for
+# example, deleting a temporary pytest.ini) legitimately have no changed
+# Python file from which to build that snapshot.  Keep the context shape
+# stable with explicit non-applicable values; ActionBroker only binds the
+# verification fields for verify/apply_verify actions.
+_NON_APPLICABLE_VERIFICATION_BINDING = {
+    "verification_profile": "not-applicable",
+    "verification_profile_version": "not-applicable",
+    "verification_snapshot_hash": "0" * 64,
+    "verification_check_set_hash": "0" * 64,
+}
+
 
 def _is_valid_chat_id(value: Any) -> TypeGuard[str]:
     return isinstance(value, str) and _CHAT_ID_RE.match(value) is not None
@@ -682,7 +695,7 @@ class WebSocketChannel(BaseChannel):
         }
 
     def _resolve_devpilot_tuple(
-        self, chat_id: str, confirmation: object
+        self, chat_id: str, confirmation: object, *, action: str | None = None
     ) -> dict[str, str] | None:
         """Resolve the server-registered proposal against the current ChangeSet.
 
@@ -740,9 +753,11 @@ class WebSocketChannel(BaseChannel):
         }
         if not all(current.get(key) == value for key, value in values.items()):
             return None
-        if any(not isinstance(current.get(key), str) or not current[key] for key in binding_keys):
-            return None
-        return {**values, **{key: str(current[key]) for key in binding_keys}}
+        if all(isinstance(current.get(key), str) and current[key] for key in binding_keys):
+            return {**values, **{key: str(current[key]) for key in binding_keys}}
+        if action in {"apply", "rollback"} and current.get("verification_available") is False:
+            return {**values, **_NON_APPLICABLE_VERIFICATION_BINDING}
+        return None
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -1369,11 +1384,13 @@ class WebSocketChannel(BaseChannel):
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
             trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
+            user_action = self._devpilot_user_action(content) if trusted_webui else None
             resolved_confirmation = (
                 await asyncio.to_thread(
                     self._resolve_devpilot_tuple,
                     cid,
                     envelope.get("devpilot_confirmation"),
+                    action=user_action,
                 )
                 if trusted_webui
                 else None

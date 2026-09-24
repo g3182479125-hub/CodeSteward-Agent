@@ -309,3 +309,72 @@ def test_gateway_resolves_server_registered_confirmation_against_current_control
     mismatch = {**tuple_value, "patch_hash": "d" * 64}
     assert channel._resolve_devpilot_tuple("chat", mismatch) is None
     assert channel._resolve_devpilot_tuple("other-chat", None) is None
+
+
+def test_gateway_allows_apply_confirmation_without_verification_snapshot(monkeypatch) -> None:
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            import json
+
+            return json.dumps({**tuple_value, "verification_available": False}).encode()
+
+    monkeypatch.setattr(
+        "nanobot.channels.websocket.runtime.urlopen",
+        lambda _request, timeout: _Response(),
+    )
+    channel = object.__new__(WebSocketChannel)
+    channel._devpilot_pending_proposals = {"chat": tuple_value}
+    resolved = channel._resolve_devpilot_tuple("chat", None, action="apply")
+
+    assert resolved == {
+        **tuple_value,
+        "verification_profile": "not-applicable",
+        "verification_profile_version": "not-applicable",
+        "verification_snapshot_hash": "0" * 64,
+        "verification_check_set_hash": "0" * 64,
+    }
+
+
+def test_gateway_does_not_fabricate_verification_binding_for_apply_verify(monkeypatch) -> None:
+    tuple_value = {
+        "change_set_id": "cs-1",
+        "plan_hash": "a" * 64,
+        "patch_hash": "b" * 64,
+        "scope_hash": "c" * 64,
+        "project_id": "project-1",
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            import json
+
+            return json.dumps({**tuple_value, "verification_available": False}).encode()
+
+    monkeypatch.setattr(
+        "nanobot.channels.websocket.runtime.urlopen",
+        lambda _request, timeout: _Response(),
+    )
+    channel = object.__new__(WebSocketChannel)
+    channel._devpilot_pending_proposals = {"chat": tuple_value}
+
+    assert channel._resolve_devpilot_tuple("chat", None, action="apply_verify") is None

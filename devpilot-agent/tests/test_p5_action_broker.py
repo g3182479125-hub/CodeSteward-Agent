@@ -551,6 +551,67 @@ def test_broker_combines_apply_and_verification_with_one_bound_confirmation() ->
     assert calls[1][2] != calls[3][2]
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_status"),
+    [("apply", "applied"), ("rollback", "reverted")],
+)
+def test_broker_allows_non_verifying_actions_without_verification_snapshot(
+    action: str, expected_status: str
+) -> None:
+    """Apply and rollback remain executable for test-support-only ChangeSets."""
+    unsigned = ConfirmationContext(
+        session_id="session-1",
+        thread_id="thread-1",
+        user_message_seq=1,
+        confirmation_id=f"confirmation-{action}",
+        issued_at=NOW.isoformat(),
+        expires_at=(NOW + timedelta(minutes=5)).isoformat(),
+        user_event_nonce=f"nonce-{action}",
+        verification_profile="not-applicable",
+        verification_profile_version="not-applicable",
+        verification_snapshot_hash="0" * 64,
+        verification_check_set_hash="0" * 64,
+        signature="0" * 64,
+    )
+    signature = sign_confirmation_context(
+        unsigned,
+        b"k" * 32,
+        change_set_id="change-set-1",
+        project_id="project-1",
+        capability={"apply": "r1.apply", "rollback": "r1.rollback"}[action],
+        **HASHES,
+    )
+    request = BrokerActionRequest(
+        context=ConfirmationContext(**{**unsigned.__dict__, "signature": signature}),
+        action=action,
+        change_set_id="change-set-1",
+        project_id="project-1",
+        **HASHES,
+    )
+    calls: list[str] = []
+    broker = ActionBroker(
+        b"k" * 32,
+        snapshot_reader=lambda _change_set_id: {
+            "change_set_id": "change-set-1",
+            "project_id": "project-1",
+            "trust_state": "trusted",
+            **HASHES,
+        },
+        capability_issuer=lambda issued_action, _change_set_id: calls.append(issued_action)
+        or "token",
+        capability_executor=lambda issued_action, *_args: {"status": expected_status}
+        if issued_action == action
+        else {"status": "rejected"},
+        confirmation_consumer=lambda _request, _key: True,
+        clock=lambda: NOW,
+    )
+
+    result = broker.execute(request)
+
+    assert result.status == expected_status
+    assert calls == [action]
+
+
 def test_broker_combined_action_rejects_unavailable_or_changed_verification_before_apply() -> None:
     """An unavailable or stale validation binding must not write the ChangeSet."""
     request = BrokerActionRequest(
