@@ -212,3 +212,16 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 1. 若仍在本机继续：打开 Personal Agent 中上述待审 Changeset，检查 Diff 与仅一文件的范围，明确批准后 Apply；随后运行 `python -m unittest discover -s tests -t .`，记录新的 Run ID、退出码、223 项结果和本地执行回执。
 2. 若已换电脑：先按前文安装步骤配置该电脑自己的模型和 Harness，再重建挑战副本；原本机的 Run/Changeset 不能迁移，按冻结计划重新触发分析、测试和 Changeset。
 3. 无论哪台电脑，都保留“先审 ChangeSet，再 Apply，再 Verify”的流程；不要因 Full Access 绕过这项明确保留的代码变更确认。
+
+## 2026-09-25 更新：ShopSphere 个人 Agent 全量验收完成
+
+本节覆盖并更新上面较早记录的“全量测试尚未验收”状态，以本节结果为准。
+
+- 已在本机通过 Personal Agent WebUI 的正式 `devpilot_test_run` 执行完整测试，目标项目为 `D:\Users\tianmin.li\.codex\challenge-workspaces\shopsphere`。
+- 固定命令：`python -m pytest -q`。
+- Run ID：`55094598-affd-4611-be79-84de8a975716`。
+- 执行位置：`local`；`sandbox_id=null`；FC Sandbox 未启用。
+- 退出码：`0`；结果：`223 passed in 486.87s (0:08:06)`；输出未截断。
+- 本轮没有修改挑战项目文件，也没有执行旧的临时 `pytest.ini` 删除 Changeset；旧 Changeset `3f53aeae-f480-4859-adc1-79154127cfe6` 保持 stale，未被重放。
+
+因此，当前 ShopSphere 修复版已经完成“Personal Agent 正式测试入口 → 本地项目测试 → 真实退出码与完整回执”的闭环。换机后仍需使用新电脑自己的本地项目副本、配置和数据库；本机 Run/Changeset 状态不会随 Git 仓库迁移。
