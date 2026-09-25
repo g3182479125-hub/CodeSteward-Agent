@@ -225,3 +225,18 @@ powershell -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\start-integrat
 - 本轮没有修改挑战项目文件，也没有执行旧的临时 `pytest.ini` 删除 Changeset；旧 Changeset `3f53aeae-f480-4859-adc1-79154127cfe6` 保持 stale，未被重放。
 
 因此，当前 ShopSphere 修复版已经完成“Personal Agent 正式测试入口 → 本地项目测试 → 真实退出码与完整回执”的闭环。换机后仍需使用新电脑自己的本地项目副本、配置和数据库；本机 Run/Changeset 状态不会随 Git 仓库迁移。
+
+## 2026-09-25 更新：录制用故障项目已纳入仓库
+
+为便于换电脑后直接录制，仓库新增了独立的故障测试项目：
+
+```text
+training-projects/shopsphere-bugfix-challenge
+```
+
+它保留“并发取消同一订单导致库存重复返还”的原始故障，并包含确定性回归测试。录制前应使用这个目录，不要使用已经修复的 `training-projects/shopsphere-bugfix`。
+
+录制用项目的说明、实际路径、测试命令和 Personal Agent 首条提问已写在：
+`training-projects/shopsphere-bugfix-challenge/HANDOFF.md`。
+
+故障项目只上传源码、测试、依赖声明和文档；本机虚拟环境、数据库、缓存、日志、会话和模型配置均未上传。
