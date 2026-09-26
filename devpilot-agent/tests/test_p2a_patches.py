@@ -104,6 +104,16 @@ def test_plan_allows_public_password_template_but_not_secret_file(tmp_path: Path
     with pytest.raises(PatchError) as error:
         service.plan(
             project,
+            patches=(
+                FilePatch(
+                    "shop/templates/password_backup.html", FileOperation.CREATE, "private\n"
+                ),
+            ),
+        )
+    assert error.value.code == "FORBIDDEN_FILE"
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
             patches=(FilePatch("forgot_password.html", FileOperation.CREATE, "private\n"),),
         )
     assert error.value.code == "FORBIDDEN_FILE"

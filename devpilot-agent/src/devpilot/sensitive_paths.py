@@ -1,17 +1,7 @@
 """Narrow exception for public authentication page templates."""
 
 
-_OTHER_SECRET_MARKERS = (
-    "secret",
-    "credential",
-    "api_key",
-    "api-key",
-    "apikey",
-    "access_token",
-    "access-token",
-    "auth_token",
-    "auth-token",
-)
+_PUBLIC_PASSWORD_PAGES = frozenset({"forgot_password.html", "reset_password.html"})
 
 
 def is_public_password_template(parts: tuple[str, ...], index: int) -> bool:
@@ -25,10 +15,4 @@ def is_public_password_template(parts: tuple[str, ...], index: int) -> bool:
         part.casefold() for part in parts[:-1]
     ):
         return False
-    name = parts[-1].casefold()
-    return (
-        name.endswith(".html")
-        and not name.startswith(".env")
-        and "password" in name
-        and not any(marker in name for marker in _OTHER_SECRET_MARKERS)
-    )
+    return parts[-1].casefold() in _PUBLIC_PASSWORD_PAGES

@@ -100,6 +100,7 @@ def test_project_test_snapshot_keeps_public_password_templates(tmp_path: Path) -
     for name in ("forgot_password.html", "reset_password.html"):
         (templates / name).write_text("<form>Reset</form>\n", encoding="utf-8")
     (templates / "secret_password.html").write_text("private\n", encoding="utf-8")
+    (templates / "password_backup.html").write_text("private\n", encoding="utf-8")
     (project / ".env").write_text("private\n", encoding="utf-8")
     store, roots = _trusted_store(tmp_path, project)
     backend = FakeExecutionBackend()
@@ -119,6 +120,7 @@ def test_project_test_snapshot_keeps_public_password_templates(tmp_path: Path) -
     assert "shop/templates/forgot_password.html" in paths
     assert "shop/templates/reset_password.html" in paths
     assert "shop/templates/secret_password.html" not in paths
+    assert "shop/templates/password_backup.html" not in paths
     assert ".env" not in paths
 
 
