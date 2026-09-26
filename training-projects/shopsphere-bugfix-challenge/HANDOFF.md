@@ -39,6 +39,7 @@ python -m pytest -q tests/test_shop.py::TestConcurrentOrderCancellation::test_tw
 - 修复后 `shop/orders.py` 的 SHA-256 为 `8424b5f5150951e958158d501fa18dec0d5abf6d59cb4d45ea8b491a08006d32`，与 ChangeSet `after_manifest` 一致。故障前清单哈希为 `8a901478486e0e483442b79ce11e3f40749a8237171c0f1d1679646fadc701a3`。
 - 修复版上同一确定性用例：`1 passed`。
 - Personal Agent 在修复版上通过 `devpilot_test_run` 执行 `python -m pytest -q`：Run `4bf802e2-b084-40b1-bb0c-9c9e54429d19`，`execution_location=local`，`exit_code=0`，`223 passed in 567.06s`，0 failed / 0 skipped。这是 Agent 的正式项目测试，不是手工 pytest 冒充 Agent 测试。
+- 加载最终收紧规则并重启 Harness 后，Personal Agent 再次通过 `devpilot_test_run` 全量复测：Run `05b4bfc4-3a47-4620-9dfc-23e59789951f`，`execution_location=local`，`sandbox_id=null`，`exit_code=0`，`223 passed in 521.60s`，0 failed / 0 skipped。此轮未修改项目代码。
 
 第一次应用后的全量 Run `bb411d6f-aa9d-4aee-ab00-8a90ad3f59a1` 曾是 `1 failed, 222 passed`。剩余失败并非并发修复失效，而是 DevPilot 测试快照把 `forgot_password.html` / `reset_password.html` 误判为敏感文件并排除，导致密码重置节流用例的 429 页面渲染变成 500。控制层随后仅对白名单内两个公开模板放行，相关拒绝敏感文件的规则仍保留。平台修复见提交 `7146b0e`，收紧规则见 `6457b41`；以新全量 Run 的 223/223 为准。平台修复由 Codex 完成，不能算作 Personal Agent 自动修复。
 
