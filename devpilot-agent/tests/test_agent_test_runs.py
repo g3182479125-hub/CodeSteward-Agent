@@ -92,6 +92,36 @@ def test_agent_can_create_trusted_failure_run_from_a_project_pytest(tmp_path: Pa
     assert result.retryable is False
 
 
+def test_project_test_snapshot_keeps_public_password_templates(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    templates = project / "shop" / "templates"
+    templates.mkdir(parents=True)
+    (project / "test_shop.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    for name in ("forgot_password.html", "reset_password.html"):
+        (templates / name).write_text("<form>Reset</form>\n", encoding="utf-8")
+    (templates / "secret_password.html").write_text("private\n", encoding="utf-8")
+    (project / ".env").write_text("private\n", encoding="utf-8")
+    store, roots = _trusted_store(tmp_path, project)
+    backend = FakeExecutionBackend()
+
+    result = ProjectTestRunner(
+        allowed_roots=roots, store=store, execution_backend=backend
+    ).run(
+        project_path=project,
+        test_kind="python-pytest",
+        target_files=["test_shop.py"],
+        symptom="password reset page fails in project test",
+        expected_behavior="password reset page renders",
+    )
+
+    assert result.status == "passed"
+    paths = {item.relative_path for item in backend.requests[0].files}
+    assert "shop/templates/forgot_password.html" in paths
+    assert "shop/templates/reset_password.html" in paths
+    assert "shop/templates/secret_password.html" not in paths
+    assert ".env" not in paths
+
+
 def test_execution_failure_has_structured_recovery_metadata(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

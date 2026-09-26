@@ -70,6 +70,24 @@ def test_source_names_containing_token_are_not_misclassified(tmp_path: Path) -> 
     assert result.matches[0].path == "tokenizer.py"
 
 
+def test_read_public_password_template_keeps_secret_paths_blocked(tmp_path: Path) -> None:
+    service, project, project_id = make_service(tmp_path)
+    templates = project / "shop" / "templates"
+    templates.mkdir(parents=True)
+    (templates / "forgot_password.html").write_text("<form>Reset</form>\n", encoding="utf-8")
+    (templates / "secret_password.html").write_text("private\n", encoding="utf-8")
+    (project / "forgot_password.html").write_text("private\n", encoding="utf-8")
+
+    result = service.read(project_id, "shop/templates/forgot_password.html")
+    assert "<form>Reset</form>" in result.content
+    with pytest.raises(CodeAccessError) as error:
+        service.read(project_id, "shop/templates/secret_password.html")
+    assert error.value.code == "FORBIDDEN_FILE"
+    with pytest.raises(CodeAccessError) as error:
+        service.read(project_id, "forgot_password.html")
+    assert error.value.code == "FORBIDDEN_FILE"
+
+
 @pytest.mark.parametrize(
     ("path", "code"),
     [

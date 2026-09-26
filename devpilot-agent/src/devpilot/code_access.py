@@ -13,6 +13,7 @@ from typing import Any
 
 from .inspector import IGNORED_DIRS, IGNORED_FILES, SENSITIVE_SUFFIXES
 from .paths import AllowedRoots, PathBoundaryError
+from .sensitive_paths import is_public_password_template
 from .storage import ProjectStore
 
 MAX_QUERY_CHARS = 256
@@ -119,7 +120,7 @@ def _relative_parts(raw_path: str) -> tuple[str, ...]:
 
 
 def _is_forbidden(parts: tuple[str, ...]) -> bool:
-    for part in parts:
+    for index, part in enumerate(parts):
         folded = part.casefold()
         if folded in _IGNORED_DIRS:
             return True
@@ -127,7 +128,7 @@ def _is_forbidden(parts: tuple[str, ...]) -> bool:
             return True
         if Path(part).suffix.casefold() in _SENSITIVE_SUFFIXES:
             return True
-        if _SECRET_NAME.fullmatch(part):
+        if _SECRET_NAME.fullmatch(part) and not is_public_password_template(parts, index):
             return True
     return False
 

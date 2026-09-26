@@ -75,6 +75,40 @@ def test_plan_contains_hashes_and_unified_diff(tmp_path: Path) -> None:
         plan.patches[0].content = "mutated\n"  # type: ignore[misc]
 
 
+def test_plan_allows_public_password_template_but_not_secret_file(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    (project / "shop" / "templates").mkdir(parents=True)
+    service = make_service(project)
+
+    plan = service.plan(
+        project,
+        patches=(
+            FilePatch(
+                "shop/templates/forgot_password.html",
+                FileOperation.CREATE,
+                "<form>Reset</form>\n",
+            ),
+        ),
+    )
+    assert plan.records[0].relative_path == "shop/templates/forgot_password.html"
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(
+                FilePatch(
+                    "shop/templates/secret_password.html", FileOperation.CREATE, "private\n"
+                ),
+            ),
+        )
+    assert error.value.code == "FORBIDDEN_FILE"
+    with pytest.raises(PatchError) as error:
+        service.plan(
+            project,
+            patches=(FilePatch("forgot_password.html", FileOperation.CREATE, "private\n"),),
+        )
+    assert error.value.code == "FORBIDDEN_FILE"
+
+
 def test_plan_rejects_invalid_preconditions(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     target = project / "main.py"

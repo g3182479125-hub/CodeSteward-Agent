@@ -17,6 +17,7 @@ from .execution import (
     ExecutionRequest,
 )
 from .patches import PatchPlan
+from .sensitive_paths import is_public_password_template
 
 MAX_SNAPSHOT_FILES = MAX_EXECUTION_FILES
 MAX_SNAPSHOT_BYTES = MAX_EXECUTION_BUNDLE_BYTES
@@ -65,7 +66,11 @@ def is_verification_snapshot_excluded(relative_path: str) -> bool:
     """Return whether a path must stay out of a sandbox project snapshot."""
 
     parts = tuple(part for part in relative_path.replace("\\", "/").split("/") if part)
-    return any(part.casefold() in _FORBIDDEN_PARTS or _is_secret_name(part) for part in parts)
+    return any(
+        part.casefold() in _FORBIDDEN_PARTS
+        or (_is_secret_name(part) and not is_public_password_template(parts, index))
+        for index, part in enumerate(parts)
+    )
 
 
 def read_verification_snapshot_file(path: Path, relative_path: str) -> bytes | None:

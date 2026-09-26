@@ -66,6 +66,19 @@ def advance_status(order_id: int, target: str) -> str | None:
         return f"An order that is {order['status']} cannot become {target}."
 
     try:
+        # Claim the transition atomically: only the request that still sees the
+        # state we read may move the order. A second, concurrent cancellation
+        # loses this guarded update and must not restock the same items again.
+        moved = db.execute(
+            "UPDATE orders SET status = ? WHERE id = ? AND status = ?",
+            (target, order_id, order["status"]),
+        )
+        if moved.rowcount != 1:
+            db.rollback()
+            return (
+                "That order was already updated by someone else."
+                " Please reload and try again."
+            )
         if target == "cancelled":
             items = db.execute(
                 "SELECT product_id, variant_id, quantity FROM order_items"
@@ -84,7 +97,6 @@ def advance_status(order_id: int, target: str) -> str | None:
                         "UPDATE products SET stock = stock + ? WHERE id = ?",
                         (item["quantity"], item["product_id"]),
                     )
-        db.execute("UPDATE orders SET status = ? WHERE id = ?", (target, order_id))
         db.commit()
     except sqlite3.Error:
         db.rollback()

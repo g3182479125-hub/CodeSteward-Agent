@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .domain import ChangeSet, ChangeSetStatus, FileChange, FileOperation
 from .paths import AllowedRoots
+from .sensitive_paths import is_public_password_template
 from .storage import ProjectStore
 
 MAX_CHANGESET_FILES = 12
@@ -154,10 +155,13 @@ def _safe_relative_parts(raw_path: str) -> tuple[str, ...]:
 
 
 def _forbidden_path(parts: tuple[str, ...]) -> bool:
-    for part in parts:
+    for index, part in enumerate(parts):
         if part.casefold() in _FORBIDDEN_PARTS:
             return True
-        if _SECRET_NAME.fullmatch(part) or _SECRET_SUFFIX.search(part):
+        if (
+            _SECRET_NAME.fullmatch(part)
+            and not is_public_password_template(parts, index)
+        ) or _SECRET_SUFFIX.search(part):
             return True
     return False
 
