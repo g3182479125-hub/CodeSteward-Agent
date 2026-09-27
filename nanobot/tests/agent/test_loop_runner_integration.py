@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nanobot.agent.goal_permission import goal_mutation_allowed, goal_mutation_permission
+from nanobot.agent.loop import _effective_plugin_project_id
 from nanobot.agent.task_profiles import TaskLoopGuard
 from nanobot.agent.tools.base import Tool, ToolResult
+from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse, ToolCallRequest
@@ -25,6 +27,22 @@ from nanobot.utils.llm_runtime import LLMRuntime
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 _GOAL_RUNTIME_GUIDANCE_TAG = "[Goal Runtime Guidance — host instructions]"
+
+
+def test_plugin_scope_prefers_devpilot_project_identity(tmp_path) -> None:
+    plugin_manager = MagicMock()
+    plugin_manager.project_id_for_path.return_value = "path-derived-project"
+    request = RequestContext(
+        channel="websocket",
+        chat_id="demo",
+        attributes={"devpilot_project_id": "control-plane-project"},
+    )
+
+    assert _effective_plugin_project_id(plugin_manager, tmp_path, request) == (
+        "control-plane-project"
+    )
+    plugin_manager.project_id_for_path.assert_not_called()
+    assert _effective_plugin_project_id(plugin_manager, tmp_path, None) == "path-derived-project"
 
 
 class _PersistentErrorTool(Tool):

@@ -598,11 +598,16 @@ class WebSocketChannel(BaseChannel):
         temporary_registered = self._register_devpilot_temporary_tool(
             chat_id, temporary_binding
         )
+        sensitive_binding = metadata.get("_devpilot_temporary_tool_confirmation")
+        sensitive_registered = self._register_devpilot_temporary_sensitive_tool(
+            chat_id, sensitive_binding
+        )
         self.logger.info(
-            "DevPilot private metadata registration: chat_id={} proposal={} temporary={}",
+            "DevPilot private metadata registration: chat_id={} proposal={} temporary={} sensitive={}",
             chat_id,
             registered,
             temporary_registered,
+            sensitive_registered,
         )
 
     def _register_devpilot_temporary_tool(
@@ -631,12 +636,79 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_pending_temporary_tools[chat_id] = values
         return True
 
+    def _register_devpilot_temporary_sensitive_tool(
+        self, chat_id: str, binding: object
+    ) -> bool:
+        """Bind a pending local execution confirmation to one exact candidate."""
+        if not isinstance(binding, Mapping):
+            return False
+        required = {
+            "session_id",
+            "run_id",
+            "project_id",
+            "tool_id",
+            "version",
+            "source_hash",
+            "confirmation_action",
+            "capability",
+        }
+        if set(binding) != required or any(
+            not isinstance(binding.get(key), str) or not binding[key]
+            for key in required
+        ):
+            return False
+        action = str(binding["confirmation_action"])
+        capability = str(binding["capability"])
+        capabilities = capability.split(",")
+        if action != "temporary_tool_sensitive:" + capability:
+            return False
+        if any(
+            cap not in {"privacy_read", "privacy_write", "external_send", "privacy_external_send"}
+            for cap in capabilities
+        ) or len(set(capabilities)) != len(capabilities) or capability != ",".join(
+            sorted(capabilities)
+        ):
+            return False
+        values = {key: str(binding[key]) for key in required}
+        existing = self._devpilot_pending_temporary_tools.get(chat_id)
+        if existing is not None and existing != values:
+            return False
+        self._devpilot_pending_temporary_tools[chat_id] = values
+        return True
+
     @staticmethod
     def _temporary_persistence_user_confirmed(content: str) -> bool:
         normalized = content.strip().casefold()
         if not normalized or any(word in normalized for word in ("不要", "不保存", "拒绝", "取消")):
             return False
         return any(word in normalized for word in ("保存", "保留", "沉淀", "留着", "需要", "可以"))
+
+    @staticmethod
+    def _temporary_sensitive_user_confirmed(content: str) -> bool:
+        normalized = content.strip().casefold()
+        if not normalized or any(
+            word in normalized
+            for word in (
+                "不要",
+                "不允许",
+                "不可以",
+                "不能",
+                "拒绝",
+                "取消",
+                "不同意",
+                "先别",
+                "暂不",
+                "先不",
+                "不执行",
+                "不用执行",
+                "不需要执行",
+                "可以不用",
+                "可以先不",
+                "暂时不执行",
+            )
+        ):
+            return False
+        return any(word in normalized for word in ("确认", "允许", "同意", "可以", "执行这次"))
 
     def _devpilot_temporary_confirmation_attributes(
         self,
@@ -648,8 +720,23 @@ class WebSocketChannel(BaseChannel):
         if connection not in self._webui_connections:
             return {}
         binding = self._devpilot_pending_temporary_tools.get(chat_id)
-        if binding is None or not self._temporary_persistence_user_confirmed(content):
+        if binding is None:
             return {}
+        confirmation_action = binding.get("confirmation_action")
+        if confirmation_action is not None:
+            if not self._temporary_sensitive_user_confirmed(content):
+                return {}
+            capability = binding["capability"]
+            action = confirmation_action
+        else:
+            if not self._temporary_persistence_user_confirmed(content):
+                return {}
+            capability = "persist_temporary_tool"
+            action = "temporary_tool_persist"
+        identity = {
+            key: binding[key]
+            for key in ("session_id", "run_id", "project_id", "tool_id", "version", "source_hash")
+        }
         thread_id = self._devpilot_thread_ids.setdefault(chat_id, uuid.uuid4().hex)
         sequence = self._devpilot_confirmation_sequences.get(thread_id, 0) + 1
         self._devpilot_confirmation_sequences[thread_id] = sequence
@@ -659,8 +746,8 @@ class WebSocketChannel(BaseChannel):
         confirmation_id = uuid.uuid4().hex
         nonce = secrets.token_hex(16)
         context = {
-            **binding,
-            "capability": "persist_temporary_tool",
+            **identity,
+            "capability": capability,
             "confirmation_id": confirmation_id,
             "issued_at": issued_at,
             "expires_at": expires_at,
@@ -669,13 +756,13 @@ class WebSocketChannel(BaseChannel):
         canonical = "\n".join(
             (
                 "temporary-tool-confirmation-v1",
-                "temporary_tool_persist",
-                binding["session_id"],
-                binding["run_id"],
-                binding["project_id"],
-                binding["tool_id"],
-                binding["version"],
-                binding["source_hash"],
+                action,
+                identity["session_id"],
+                identity["run_id"],
+                identity["project_id"],
+                identity["tool_id"],
+                identity["version"],
+                identity["source_hash"],
                 context["capability"],
                 confirmation_id,
                 issued_at,
@@ -688,7 +775,7 @@ class WebSocketChannel(BaseChannel):
         self._devpilot_pending_temporary_tools.pop(chat_id, None)
         return {
             "devpilot_confirmation": {
-                "action": "temporary_tool_persist",
+                "action": action,
                 "context": context,
                 "verifier": self._devpilot_signer.verify,
             }
@@ -1614,10 +1701,17 @@ class WebSocketChannel(BaseChannel):
         temporary_binding = msg.metadata.get("_devpilot_temporary_tool_persistence")
         if temporary_binding is not None:
             self._register_devpilot_temporary_tool(msg.chat_id, temporary_binding)
+        sensitive_binding = msg.metadata.get("_devpilot_temporary_tool_confirmation")
+        if sensitive_binding is not None:
+            self._register_devpilot_temporary_sensitive_tool(msg.chat_id, sensitive_binding)
         transcript_metadata = {
             key: value
             for key, value in msg.metadata.items()
-            if key not in {"_devpilot_proposal", "_devpilot_temporary_tool_persistence"}
+            if key not in {
+                "_devpilot_proposal",
+                "_devpilot_temporary_tool_persistence",
+                "_devpilot_temporary_tool_confirmation",
+            }
         }
         event = outbound_event_from_message(msg)
         outcome = msg.metadata.get("turn_outcome")
@@ -1990,10 +2084,24 @@ class WebSocketChannel(BaseChannel):
                 chat_id,
                 registered,
             )
+        sensitive_binding = (metadata or {}).get("_devpilot_temporary_tool_confirmation")
+        if sensitive_binding is not None:
+            registered = self._register_devpilot_temporary_sensitive_tool(
+                chat_id, sensitive_binding
+            )
+            self.logger.info(
+                "DevPilot temporary sensitive confirmation registration: chat_id={} registered={}",
+                chat_id,
+                registered,
+            )
         safe_metadata = {
             key: value
             for key, value in (metadata or {}).items()
-            if key not in {"_devpilot_proposal", "_devpilot_temporary_tool_persistence"}
+            if key not in {
+                "_devpilot_proposal",
+                "_devpilot_temporary_tool_persistence",
+                "_devpilot_temporary_tool_confirmation",
+            }
         }
         if latency_ms is not None:
             body["latency_ms"] = int(latency_ms)

@@ -553,3 +553,28 @@ SI-08 的端到端证据覆盖合成 Git fixture、用户确认、激活、恢�
 SI-08 的限制是：端到端模型演练使用仓库自有的合成 Git fixture，不声称覆盖真实项目；
 feature-delivery 和 bug-fix 仍通过服务端受信 Verification 入口和回归测试覆盖。继续遵守本文
 第 0/6/7 节、ADR-0004 和 Standards/Spec 双轴复核要求。
+
+## 11. 已批准的新验收扩展：FC 关闭时的本地 Harness 演示（2026-09-27）
+
+用户已明确要求关闭所有 FC 相关演示路径、在本机完成其余功能验证，并确认本地 Full
+Access 信任模型。Skill 自进化与 FC/cloud 均排除。本扩展不重开 P0–P8、H1–H11，亦不
+改写它们原有的 FC 验收证据；只为当前录制目标新增本地验收。
+
+完整设计见 [`2026-09-27 本地 Harness 演示规格`](../../docs/superpowers/specs/2026-09-27-local-only-harness-demo-design.md)，
+逐步执行清单见 [`2026-09-27 本地 Harness 演示实施计划`](../../docs/superpowers/plans/2026-09-27-local-only-harness-demo-plan.md)。
+
+新增节点 DH-01 的范围：临时 Tool 固定契约检查、严格 session/Run/project/hash 绑定的
+`backend=local` 回执、现有 PluginManager 的会话级热插拔与租约/清理；同一运行进程中
+刷新 Skill 内容、内置 Loop Driver 检查点切换，以及使用 ShopSphere 缺陷副本完成已有
+ChangeSet→确认→本地 Apply/Verify/测试链路。底层仍复用现有 `LocalExecutionBackend` 固定
+profile，不允许模型提交命令、解释器或环境选项；FC 必须保持零构造、零调用且不做本地
+失败后切换 FC 的 fallback。
+
+**安全和表达边界：**本地临时 Python 候选和既有 PluginManager 激活代码均继承当前
+Windows 用户权限，可能访问该用户可访问的数据并使用主机默认网络。固定检查 profile、
+临时目录、最小环境和静态契约检查都不构成 OS 沙箱或隐私隔离。现场演示必须使用一次性
+项目副本与合成数据，且演示画面明确显示“本机执行（非 OS 沙箱；候选代码继承当前用户权限）”。
+
+节点状态在代码、自动化检查、WebUI 现场证据和 Standards/Spec 双轴复审全部完成前均为
+“进行中”。证据路径为 `devpilot-agent/docs/evidence/local-harness-demo/`；无真实 WebUI
+记录、零 FC 调用证据或双轴 PASS，不得宣称全部演示完成。

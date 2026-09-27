@@ -1,8 +1,8 @@
 """Contracts and artifact creation for model-authored temporary tools.
 
 This module deliberately contains no code loader and never imports candidate
-source. T1/T2 define immutable records, lifecycle guards, and the frozen
-artifact written before FC validation connects it to ``DynamicPluginRegistry``.
+source during artifact creation. It validates a frozen candidate locally before
+the existing ``DynamicPluginRegistry`` can load it into the trusted runtime.
 """
 
 from __future__ import annotations
@@ -24,12 +24,13 @@ from typing import Any
 
 from nanobot.agent.plugins.catalog import PluginRecord
 from nanobot.agent.plugins.contracts import (
+    PluginErrorCode,
     PluginExecutionMode,
     PluginKind,
     PluginManifest,
     PluginSource,
 )
-from nanobot.agent.plugins.manager import PluginManager
+from nanobot.agent.plugins.manager import PluginManager, PluginOperationResult
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import ToolContext, current_request_context
 from nanobot.security.workspace_access import current_workspace_scope
@@ -40,13 +41,15 @@ from .execution import (
     ExecutionFile,
     ExecutionRequest,
     ExecutionResult,
+    execution_receipt_location_is_consistent,
 )
-from .fc_sandbox import build_fc_backend_from_environment
+from .local_execution import LocalExecutionBackend
 
 _ID = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 _SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TEMPORARY_TOOL_VALIDATION_VERSION = "temporary-tool-validation/v1"
+TEMPORARY_TOOL_CHECKER_VERSION = "temporary-tool-contract-check/v1"
 _ALLOWED_MANIFEST_FIELDS = frozenset(
     {
         "tool_id",
@@ -68,7 +71,7 @@ _ALLOWED_MANIFEST_FIELDS = frozenset(
     }
 )
 
-_TEMPORARY_PLUGIN_MANAGER: PluginManager | None = None
+_temporary_plugin_manager: PluginManager | None = None
 _TEMPORARY_CONFIRMATION_LOCK = RLock()
 _CONSUMED_TEMPORARY_CONFIRMATIONS: set[str] = set()
 # Full Access already authorizes ordinary reads from the selected workspace.
@@ -83,6 +86,14 @@ _SENSITIVE_CAPABILITIES = frozenset(
         "privacy_external_send",
     }
 )
+
+
+def build_temporary_tool_local_backend(data_dir: str | Path) -> LocalExecutionBackend:
+    """Build the fixed local checker backend without consulting FC settings."""
+
+    return LocalExecutionBackend(state_dir=Path(data_dir) / "temporary-tool-execution")
+
+
 _EXTERNAL_MODULES = frozenset(
     {
         "aiohttp",
@@ -102,8 +113,8 @@ _PRIVACY_MODULES = frozenset({"browser_cookie3", "keyring", "winreg"})
 
 def bind_temporary_tool_manager(manager: PluginManager) -> None:
     """Bind the live nanobot manager used by the runtime activation tool."""
-    global _TEMPORARY_PLUGIN_MANAGER
-    _TEMPORARY_PLUGIN_MANAGER = manager
+    global _temporary_plugin_manager
+    _temporary_plugin_manager = manager
 
 
 class TemporaryToolState(StrEnum):
@@ -205,6 +216,14 @@ def source_sha256(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
+def manifest_sha256(manifest: TemporaryToolManifest) -> str:
+    """Hash the exact canonical manifest bytes stored beside the candidate."""
+    payload = json.dumps(
+        manifest.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
     """Infer capabilities for direct I/O so a candidate cannot hide them.
 
@@ -216,21 +235,47 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
     """
 
     required: set[str] = set()
+    imported_sensitive_names: dict[str, str] = {}
+
+    def add_module_requirement(root: str) -> None:
+        if root in _EXTERNAL_MODULES:
+            required.add("external_send")
+        if root in _PRIVACY_MODULES:
+            required.add("privacy_read")
+        if root in {"pathlib", "shutil", "tempfile"}:
+            required.add("sensitive_read")
+
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = (
-                alias.name.split(".", 1)[0]
-                for alias in node.names
-            )
-            for root in names:
-                if root in _EXTERNAL_MODULES:
-                    required.add("external_send")
-                if root in _PRIVACY_MODULES:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                add_module_requirement(alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            # ImportFrom.names are symbols, not modules. Classify the module
+            # itself so ``from urllib.request import urlopen`` and
+            # ``from keyring import get_password`` cannot hide their effects.
+            module_root = (node.module or "").split(".", 1)[0]
+            add_module_requirement(module_root)
+            for alias in node.names:
+                local_name = alias.asname or alias.name
+                if module_root == "os" and alias.name in {"environ", "getenv"}:
                     required.add("privacy_read")
-                if root in {"pathlib", "shutil", "tempfile"}:
-                    required.add("sensitive_read")
+                    imported_sensitive_names[local_name] = "privacy_read"
+                elif alias.name in {
+                    "system", "popen", "spawn", "execv", "execve", "run",
+                    "call", "check_call", "check_output",
+                } and module_root in {"os", "subprocess"}:
+                    imported_sensitive_names[local_name] = "external_send"
+                elif module_root in _EXTERNAL_MODULES:
+                    imported_sensitive_names[local_name] = "external_send"
+                elif module_root in _PRIVACY_MODULES:
+                    imported_sensitive_names[local_name] = "privacy_read"
+                elif module_root in {"pathlib", "shutil", "tempfile"}:
+                    imported_sensitive_names[local_name] = "sensitive_read"
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in {"open", "__import__"}:
+            imported_requirement = imported_sensitive_names.get(node.func.id)
+            if imported_requirement is not None:
+                required.add(imported_requirement)
+            elif node.func.id in {"open", "__import__"}:
                 literal_path = (
                     node.args[0].value
                     if node.args and isinstance(node.args[0], ast.Constant)
@@ -319,6 +364,8 @@ def _source_capability_requirements(tree: ast.AST) -> frozenset[str]:
                     "spawn",
                     "execv",
                     "execve",
+                    "exec",
+                    "__import__",
                 }:
                     required.add("external_send")
                 elif node.attr in {"write_text", "write_bytes", "unlink", "rmtree"}:
@@ -342,7 +389,7 @@ def validate_temporary_tool_source(
 ) -> None:
     """Check the Python shape without importing or executing model code.
 
-    Capability and side-effect checks belong to the FC validation phase. T2 only
+    Capability and side-effect checks belong to the local validation phase. T2 only
     rejects malformed source and ensures the declared class exposes the Tool
     protocol expected by the future loader.
     """
@@ -387,7 +434,7 @@ def validate_temporary_tool_source(
 
 @dataclass(frozen=True, slots=True)
 class TemporaryToolArtifact:
-    """The immutable on-disk candidate produced before FC validation."""
+    """The immutable on-disk candidate produced before local validation."""
 
     root: Path
     manifest: TemporaryToolManifest
@@ -461,7 +508,7 @@ class TemporaryToolArtifactStore:
     def write_validation_receipt(
         self, artifact: TemporaryToolArtifact, result: TemporaryToolValidationResult
     ) -> None:
-        """Persist a bounded, source-free FC receipt beside the immutable candidate."""
+        """Persist a bounded, source-free validation receipt beside the candidate."""
         path = self.validation_receipt_path(artifact)
         payload = result.to_dict()
         receipt = payload.get("receipt")
@@ -630,10 +677,12 @@ class TemporaryToolArtifactStore:
             ) from None
 
 
-_FC_CONTRACT_CHECK_SOURCE = "\n".join(
+_TEMPORARY_TOOL_CONTRACT_CHECK_SOURCE = "\n".join(
     (
-        "import ast, asyncio, importlib.util, inspect, json, os, py_compile, sys",
+        "import ast, asyncio, importlib.util, inspect, json, os, py_compile, re, sys",
+        "from datetime import date, datetime, time",
         "from pathlib import Path",
+        "from urllib.parse import urlsplit",
         'root = Path(os.environ.get("DEVPILOT_CONTRACT_ROOT", "/workspace/devpilot"))',
         'manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))',
         'source_path = root / manifest["entry_module"]',
@@ -650,22 +699,69 @@ _FC_CONTRACT_CHECK_SOURCE = "\n".join(
         "node.name == 'execute' for node in classes[0].body)",
         "def schema_errors(value, schema, path='value'):",
         "    if not isinstance(schema, dict): return ['schema is not an object']",
+        "    supported = {'type', 'properties', 'required', 'additionalProperties', 'enum', 'minLength', 'maxLength', 'pattern', 'format', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minItems', 'maxItems', 'items', 'minProperties', 'maxProperties', 'default', 'description', 'title'}",  # noqa: E501
+        "    unsupported = set(schema) - supported",
+        "    if unsupported: return [path + ' schema uses unsupported keywords: ' + ','.join(sorted(unsupported))]",  # noqa: E501
         "    expected = schema.get('type')",
-        "    if expected == 'object' and not isinstance(value, dict): return [path + ' must be object']",  # noqa: E501
-        "    if expected == 'array' and not isinstance(value, list): return [path + ' must be array']",  # noqa: E501
-        "    if expected == 'string' and not isinstance(value, str): return [path + ' must be string']",  # noqa: E501
-        "    if expected == 'integer' and (not isinstance(value, int) or isinstance(value, bool)): return [path + ' must be integer']",  # noqa: E501
-        "    if expected == 'number' and (not isinstance(value, (int, float)) or isinstance(value, bool)): return [path + ' must be number']",  # noqa: E501
-        "    if expected == 'boolean' and not isinstance(value, bool): return [path + ' must be boolean']",  # noqa: E501
-        "    if expected == 'object':",
-        "        errors = [path + '.' + str(key) + ' is required' for key in schema.get('required', []) if key not in value]",  # noqa: E501
+        "    types = expected if isinstance(expected, list) else [expected] if expected else []",
+        "    valid_types = {'object', 'array', 'string', 'integer', 'number', 'boolean', 'null'}",
+        "    if any(item not in valid_types for item in types): return [path + ' schema has unsupported type']",  # noqa: E501
+        "    def matches_type(item, kind):",
+        "        if kind == 'object': return isinstance(item, dict)",
+        "        if kind == 'array': return isinstance(item, list)",
+        "        if kind == 'string': return isinstance(item, str)",
+        "        if kind == 'integer': return isinstance(item, int) and not isinstance(item, bool)",
+        "        if kind == 'number': return isinstance(item, (int, float)) and not isinstance(item, bool)",  # noqa: E501
+        "        if kind == 'boolean': return isinstance(item, bool)",
+        "        if kind == 'null': return item is None",
+        "        return False",
+        "    if types and not any(matches_type(value, kind) for kind in types): return [path + ' has wrong type']",  # noqa: E501
+        "    if 'enum' in schema and value not in schema['enum']: return [path + ' is not an allowed enum value']",  # noqa: E501
+        "    errors = []",
+        "    if isinstance(value, str):",
+        "        if len(value) < schema.get('minLength', 0): errors.append(path + ' is shorter than minLength')",  # noqa: E501
+        "        if len(value) > schema.get('maxLength', float('inf')): errors.append(path + ' is longer than maxLength')",  # noqa: E501
+        "        if 'pattern' in schema and re.search(schema['pattern'], value) is None: errors.append(path + ' does not match pattern')",  # noqa: E501
+        "        fmt = schema.get('format')",
+        "        if fmt == 'email' and re.fullmatch(r'[^@\\s]+@[^@\\s]+\\.[^@\\s]+', value) is None: errors.append(path + ' is not a valid email')",  # noqa: E501
+        "        elif fmt == 'uri' and not urlsplit(value).scheme: errors.append(path + ' is not a valid uri')",  # noqa: E501
+        "        elif fmt == 'date-time':",
+        "            try: datetime.fromisoformat(value.replace('Z', '+00:00'))",
+        "            except ValueError: errors.append(path + ' is not a valid date-time')",
+        "        elif fmt == 'date':",
+        "            try: date.fromisoformat(value)",
+        "            except ValueError: errors.append(path + ' is not a valid date')",
+        "        elif fmt == 'time':",
+        "            try: time.fromisoformat(value)",
+        "            except ValueError: errors.append(path + ' is not a valid time')",
+        "        elif fmt == 'uuid' and re.fullmatch(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}', value) is None: errors.append(path + ' is not a valid uuid')",  # noqa: E501
+        "        elif fmt not in (None, 'email', 'uri', 'date-time', 'date', 'time', 'uuid'): errors.append(path + ' uses unsupported format')",  # noqa: E501
+        "    if isinstance(value, (int, float)) and not isinstance(value, bool):",
+        "        if 'minimum' in schema and value < schema['minimum']: errors.append(path + ' is below minimum')",  # noqa: E501
+        "        if 'maximum' in schema and value > schema['maximum']: errors.append(path + ' is above maximum')",  # noqa: E501
+        "        if 'exclusiveMinimum' in schema and value <= schema['exclusiveMinimum']: errors.append(path + ' is not above exclusiveMinimum')",  # noqa: E501
+        "        if 'exclusiveMaximum' in schema and value >= schema['exclusiveMaximum']: errors.append(path + ' is not below exclusiveMaximum')",  # noqa: E501
+        "    if isinstance(value, list):",
+        "        if len(value) < schema.get('minItems', 0): errors.append(path + ' has fewer than minItems')",  # noqa: E501
+        "        if len(value) > schema.get('maxItems', float('inf')): errors.append(path + ' has more than maxItems')",  # noqa: E501
+        "        if 'items' in schema:",
+        "            for index, item in enumerate(value): errors.extend(schema_errors(item, schema['items'], path + '[' + str(index) + ']'))",  # noqa: E501
+        "    if isinstance(value, dict):",
+        "        errors.extend(path + '.' + str(key) + ' is required' for key in schema.get('required', []) if key not in value)",  # noqa: E501
+        "        if len(value) < schema.get('minProperties', 0): errors.append(path + ' has fewer than minProperties')",  # noqa: E501
+        "        if len(value) > schema.get('maxProperties', float('inf')): errors.append(path + ' has more than maxProperties')",  # noqa: E501
         "        for key, child in schema.get('properties', {}).items():",
         "            if key in value: errors.extend(schema_errors(value[key], child, path + '.' + key))",  # noqa: E501
-        "        return errors",
-        "    return []",
+        "        extra = set(value) - set(schema.get('properties', {}))",
+        "        additional = schema.get('additionalProperties', True)",
+        "        if additional is False: errors.extend(path + '.' + str(key) + ' is not allowed' for key in sorted(extra))",  # noqa: E501
+        "        elif isinstance(additional, dict):",
+        "            for key in extra: errors.extend(schema_errors(value[key], additional, path + '.' + str(key)))",  # noqa: E501
+        "    return errors",
         "def sample(schema):",
         "    if not isinstance(schema, dict): return None",
         "    if 'default' in schema: return schema['default']",
+        "    if schema.get('enum'): return schema['enum'][0]",
         "    expected = schema.get('type')",
         "    if expected == 'object': return {key: sample(child) for key, child in schema.get('properties', {}).items() if key in schema.get('required', [])}",  # noqa: E501
         "    if expected == 'array': return []",
@@ -726,7 +822,7 @@ _FC_CONTRACT_CHECK_SOURCE = "\n".join(
     )
 )
 
-_FC_TOOL_SHIM_FILES = (
+_TEMPORARY_TOOL_SHIM_FILES = (
     ExecutionFile("nanobot/__init__.py", b""),
     ExecutionFile("nanobot/agent/__init__.py", b""),
     ExecutionFile("nanobot/agent/tools/__init__.py", b""),
@@ -792,7 +888,7 @@ def tool_parameters(schema):
 
 @dataclass(frozen=True, slots=True)
 class TemporaryToolValidationResult:
-    """Provider-neutral outcome of the FC pre-activation contract check."""
+    """Provider-neutral outcome of the temporary-tool contract check."""
 
     status: str
     manifest: TemporaryToolManifest
@@ -804,13 +900,18 @@ class TemporaryToolValidationResult:
         receipt = self.receipt
         return {
             "validation_version": TEMPORARY_TOOL_VALIDATION_VERSION,
+            "checker_version": TEMPORARY_TOOL_CHECKER_VERSION,
             "status": self.status,
             "tool_id": self.manifest.tool_id,
             "version": self.manifest.version,
             "source_hash": self.manifest.source_hash,
+            "manifest_hash": manifest_sha256(self.manifest),
+            "session_id": self.manifest.session_id,
             "run_id": self.manifest.run_id,
+            "project_id": self.manifest.project_id,
             "error_code": self.error_code,
             "execution_run_id": self.execution_run_id,
+            "execution_location": receipt.execution_location if receipt is not None else "unknown",
             "receipt": (
                 {
                     "backend": receipt.backend,
@@ -818,6 +919,10 @@ class TemporaryToolValidationResult:
                     "exit_code": receipt.exit_code,
                     "stdout": receipt.stdout,
                     "stderr": receipt.stderr,
+                    "execution_location": receipt.execution_location,
+                    "command_profile": receipt.command_profile,
+                    "network_policy": receipt.network_policy,
+                    "output_truncated": receipt.output_truncated,
                 }
                 if receipt is not None
                 else None
@@ -826,7 +931,7 @@ class TemporaryToolValidationResult:
 
 
 class TemporaryToolValidator:
-    """Run the non-importing tool contract check through the FC execution port."""
+    """Run a frozen temporary-tool contract bundle through an execution port."""
 
     def __init__(self, backend: ExecutionBackend) -> None:
         self._backend = backend
@@ -853,8 +958,10 @@ class TemporaryToolValidator:
                         separators=(",", ":"),
                     ).encode("utf-8"),
                 ),
-                ExecutionFile("contract_check.py", _FC_CONTRACT_CHECK_SOURCE.encode("utf-8")),
-                *_FC_TOOL_SHIM_FILES,
+                ExecutionFile(
+                    "contract_check.py", _TEMPORARY_TOOL_CONTRACT_CHECK_SOURCE.encode("utf-8")
+                ),
+                *_TEMPORARY_TOOL_SHIM_FILES,
             ),
             command="python /workspace/devpilot/contract_check.py",
             timeout_seconds=300,
@@ -871,15 +978,23 @@ class TemporaryToolValidator:
                 execution_run_id=request.run_id,
             )
         else:
+            location_valid = execution_receipt_location_is_consistent(receipt)
+            error_code = (
+                None
+                if receipt.exit_code == 0 and location_valid
+                else "TEMPORARY_TOOL_CONTRACT_FAILED"
+                if receipt.exit_code != 0
+                else "TEMPORARY_TOOL_EXECUTION_LOCATION_INVALID"
+            )
             result = TemporaryToolValidationResult(
                 status=(
                     TemporaryToolState.VALIDATED.value
-                    if receipt.exit_code == 0
+                    if receipt.exit_code == 0 and location_valid
                     else TemporaryToolState.REJECTED.value
                 ),
                 manifest=manifest,
                 receipt=receipt,
-                error_code=None if receipt.exit_code == 0 else "TEMPORARY_TOOL_CONTRACT_FAILED",
+                error_code=error_code,
                 execution_run_id=request.run_id,
             )
         try:
@@ -1090,7 +1205,7 @@ class TemporaryToolGapReportTool(Tool):
             return ToolResult.error("TEMPORARY_TOOL_RUN_MISSING")
         project_id = request.attributes.get("devpilot_project_id")
         if not isinstance(project_id, str) or not project_id:
-            project_id = hashlib.sha256(str(scope.project_path).encode("utf-8")).hexdigest()[:16]
+            project_id = PluginManager.project_id_for_path(scope.project_path)
         existing = kwargs.get("existing_tools", [])
         if not isinstance(existing, list) or any(not isinstance(item, str) for item in existing):
             return ToolResult.error("TEMPORARY_TOOL_GAP_INVALID")
@@ -1125,7 +1240,7 @@ class TemporaryToolGapReportTool(Tool):
     }
 )
 class TemporaryToolValidateTool(Tool):
-    """Validate one generated artifact through the configured FC backend."""
+    """Validate one generated artifact with the fixed local contract checker."""
 
     _scopes = {"core"}
 
@@ -1145,7 +1260,10 @@ class TemporaryToolValidateTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Validate a temporary Tool artifact in FC before it can be activated."
+        return (
+            "Run the fixed temporary Tool contract check locally before activation. "
+            "This is not an OS sandbox; candidate code has the current user's permissions."
+        )
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         scope = current_workspace_scope()
@@ -1182,12 +1300,26 @@ class TemporaryToolValidateTool(Tool):
                 version=version,
                 source_hash=source_hash,
             )
+            if not _temporary_tool_confirmation_matches(request, artifact):
+                _queue_temporary_tool_confirmation(request, artifact)
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "code": "USER_CONFIRMATION_REQUIRED",
+                        "requires_user_confirmation": True,
+                        "message": (
+                            "运行这个临时工具会读取隐私数据或对外发送数据。"
+                            "请先明确确认本次本机验证；确认前不会执行候选代码。"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             store = TemporaryToolArtifactStore(self._data_dir)
             lifecycle = store.load_lifecycle(artifact)
             if lifecycle.state is TemporaryToolState.GENERATED:
                 store.transition_lifecycle(artifact, TemporaryToolState.VALIDATING)
             result = TemporaryToolValidator(
-                build_fc_backend_from_environment()
+                build_temporary_tool_local_backend(self._data_dir)
             ).validate(artifact)
             lifecycle = store.load_lifecycle(artifact)
             if lifecycle.state is TemporaryToolState.VALIDATING:
@@ -1239,7 +1371,8 @@ class TemporaryToolActivateTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Revalidate a generated temporary Tool in FC and hot-load it into the current Run. "
+            "Revalidate a generated temporary Tool locally and hot-load it into the current Run. "
+            "This is not an OS sandbox; candidate code inherits the current user's permissions. "
             "Activation is session-scoped and does not require an agent restart."
         )
 
@@ -1254,7 +1387,7 @@ class TemporaryToolActivateTool(Tool):
                 "TEMPORARY_TOOL_FULL_ACCESS_REQUIRED: temporary tools require Full Access"
             )
         request = current_request_context()
-        manager = _TEMPORARY_PLUGIN_MANAGER
+        manager = _temporary_plugin_manager
         if request is None or not request.sender_id:
             return ToolResult.error("TEMPORARY_TOOL_CONTEXT_MISSING: no active WebUI request")
         if manager is None:
@@ -1288,6 +1421,7 @@ class TemporaryToolActivateTool(Tool):
             sensitive_capabilities = _SENSITIVE_CAPABILITIES
             if sensitive_capabilities.intersection(artifact.manifest.declared_capabilities):
                 if not _temporary_tool_confirmation_matches(request, artifact):
+                    _queue_temporary_tool_confirmation(request, artifact)
                     return json.dumps(
                         {
                             "ok": False,
@@ -1305,7 +1439,7 @@ class TemporaryToolActivateTool(Tool):
             if lifecycle.state is TemporaryToolState.GENERATED:
                 store.transition_lifecycle(artifact, TemporaryToolState.VALIDATING)
             validation = TemporaryToolValidator(
-                build_fc_backend_from_environment()
+                build_temporary_tool_local_backend(self._data_dir)
             ).validate(artifact)
             lifecycle = store.load_lifecycle(artifact)
             if lifecycle.state is TemporaryToolState.VALIDATING:
@@ -1360,13 +1494,52 @@ class TemporaryToolActivateTool(Tool):
                 if lifecycle.state is TemporaryToolState.VALIDATED:
                     store.transition_lifecycle(artifact, TemporaryToolState.REJECTED)
                 return json.dumps({"ok": False, **result.to_dict()}, ensure_ascii=False)
-            activated = manager.activate_temporary(
-                artifact.manifest.tool_id,
-                artifact.manifest.version,
-                session_id=session_id,
-                run_id=run_id,
-                project_id=artifact.manifest.project_id,
+            visible_versions = manager.list_view(
+                session_id, project_id=artifact.manifest.project_id
             )
+            active_versions = [
+                item
+                for item in visible_versions
+                if item.get("plugin_id") == artifact.manifest.tool_id
+                and item.get("source") == "temporary"
+                and item.get("lifecycle") == "active"
+            ]
+            active_from_this_run = any(item.get("run_id") == run_id for item in active_versions)
+            active_from_another_run = any(item.get("run_id") != run_id for item in active_versions)
+            active_same_version = any(
+                item.get("run_id") == run_id
+                and item.get("version") == artifact.manifest.version
+                for item in active_versions
+            )
+            if active_from_another_run and not active_from_this_run:
+                activated = PluginOperationResult.failure(
+                    PluginErrorCode.PLUGIN_ALREADY_ACTIVE,
+                    "a temporary Tool from another Run is still active in this session",
+                    plugin_id=artifact.manifest.tool_id,
+                    version=artifact.manifest.version,
+                )
+            elif active_from_this_run and not active_same_version:
+                activated = await manager.update(
+                    artifact.manifest.tool_id,
+                    artifact.manifest.version,
+                    session_id=session_id,
+                    project_id=artifact.manifest.project_id,
+                    _run_id=run_id,
+                )
+                if activated.ok and activated.operation_id:
+                    await manager.wait_operation(
+                        activated.operation_id,
+                        session_id=session_id,
+                        project_id=artifact.manifest.project_id,
+                    )
+            else:
+                activated = manager.activate_temporary(
+                    artifact.manifest.tool_id,
+                    artifact.manifest.version,
+                    session_id=session_id,
+                    run_id=run_id,
+                    project_id=artifact.manifest.project_id,
+                )
             payload = activated.to_dict()
             if activated.ok:
                 lifecycle = store.load_lifecycle(artifact)
@@ -1379,7 +1552,9 @@ class TemporaryToolActivateTool(Tool):
                     artifact.manifest.tool_id,
                     artifact.manifest.version,
                     session_id=session_id,
+                    project_id=artifact.manifest.project_id,
                     operation_details={"temporary_activation": "rollback"},
+                    _run_id=run_id,
                 )
                 lifecycle = store.load_lifecycle(artifact)
                 if lifecycle.state is TemporaryToolState.VALIDATED:
@@ -1389,7 +1564,7 @@ class TemporaryToolActivateTool(Tool):
                     "state": TemporaryToolState.ACTIVE.value if activated.ok else "rejected",
                     "source_hash": artifact.manifest.source_hash,
                     "tool": artifact.manifest.name,
-                    "fc_validation": validation.to_dict(),
+                    "validation": validation.to_dict(),
                     "restart_required": False,
                 }
             )
@@ -1399,7 +1574,7 @@ class TemporaryToolActivateTool(Tool):
 
 
 class TemporaryToolEnsureTool(Tool):
-    """Run gap completion, FC validation and activation as one tool call."""
+    """Run gap completion, local contract validation and activation as one tool call."""
 
     _scopes = {"core"}
 
@@ -1419,7 +1594,8 @@ class TemporaryToolEnsureTool(Tool):
     def description(self) -> str:
         return (
             "When the current tool set cannot complete the task, generate a temporary Tool, "
-            "validate it in FC, hot-load it into this Run, and return the new tool name."
+            "validate it locally, hot-load it into this Run, and return the new tool name. "
+            "This is not an OS sandbox; candidate code inherits the current user's permissions."
         )
 
     @property
@@ -1533,7 +1709,7 @@ class TemporaryToolPersistTool(Tool):
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         del kwargs
         scope = current_workspace_scope()
-        manager = _TEMPORARY_PLUGIN_MANAGER
+        manager = _temporary_plugin_manager
         request = current_request_context()
         if scope is None or not temporary_tools_allowed(
             scope.access_mode,
@@ -1576,6 +1752,20 @@ class TemporaryToolPersistTool(Tool):
                     },
                     ensure_ascii=False,
                 )
+            if not _temporary_tool_confirmation_matches(request, artifact):
+                _queue_temporary_tool_confirmation(request, artifact)
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "code": "USER_CONFIRMATION_REQUIRED",
+                        "requires_user_confirmation": True,
+                        "message": (
+                            "保存该工具前需要先明确确认其隐私/外发能力的本地验证。"
+                            "确认前不会执行候选代码。"
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             if store.load_lifecycle(artifact).state is not TemporaryToolState.PERSISTENCE_REQUESTED:
                 return json.dumps(
                     {
@@ -1585,7 +1775,7 @@ class TemporaryToolPersistTool(Tool):
                     ensure_ascii=False,
                 )
             validation = TemporaryToolValidator(
-                build_fc_backend_from_environment()
+                build_temporary_tool_local_backend(self._data_dir)
             ).validate(artifact)
             if validation.status != TemporaryToolState.VALIDATED.value:
                 return json.dumps(
@@ -1704,7 +1894,7 @@ class TemporaryToolPersistTool(Tool):
 
 
 class TemporaryToolDiscardTool(Tool):
-    """Discard all expired/pending temporary snapshots after the user declines."""
+    """Stop and discard temporary Tools in the current Run after persistence is declined."""
 
     _scopes = {"core"}
 
@@ -1724,7 +1914,10 @@ class TemporaryToolDiscardTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Discard pending temporary Tool snapshots after the user declines persistence."
+        return (
+            "Stop and remove temporary Tool routes for this session and Run, then discard their "
+            "candidate snapshots. Use after the user declines persistence."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -1742,11 +1935,29 @@ class TemporaryToolDiscardTool(Tool):
             return ToolResult.error("TEMPORARY_TOOL_FULL_ACCESS_REQUIRED")
         if request is None or not request.sender_id:
             return ToolResult.error("TEMPORARY_TOOL_CONTEXT_MISSING")
+        manager = _temporary_plugin_manager
+        if manager is None:
+            return ToolResult.error("TEMPORARY_TOOL_MANAGER_UNAVAILABLE")
         session_id = request.session_key or request.chat_id
+        run_id = request.attributes.get("devpilot_run_id")
+        if not isinstance(run_id, str) or not run_id:
+            run_id = request.attributes.get("devpilot_task_id")
+        if not isinstance(run_id, str) or not run_id:
+            return ToolResult.error("TEMPORARY_TOOL_RUN_MISSING")
+        cleanup_rows = await manager.cleanup_temporary_run(session_id=session_id, run_id=run_id)
+        failed_removals = {
+            (row.get("tool_id"), row.get("version"))
+            for row in cleanup_rows
+            if row.get("remove") != "ok"
+        }
         store = TemporaryToolArtifactStore(self._data_dir)
         pending = store.pending_for_session(session_id)
         removed = 0
         for artifact in pending:
+            if artifact.manifest.run_id != run_id:
+                continue
+            if (artifact.manifest.tool_id, artifact.manifest.version) in failed_removals:
+                continue
             try:
                 lifecycle = store.load_lifecycle(artifact)
                 if lifecycle.state in {
@@ -1767,7 +1978,12 @@ class TemporaryToolDiscardTool(Tool):
                 continue
             removed += 1
         return json.dumps(
-            {"ok": True, "state": TemporaryToolState.DISPOSED.value, "removed": removed},
+            {
+                "ok": True,
+                "state": TemporaryToolState.DISPOSED.value,
+                "removed": removed,
+                "routes": list(cleanup_rows),
+            },
             ensure_ascii=False,
         )
 
@@ -1834,8 +2050,9 @@ class TemporaryToolCreateTool(Tool):
     def description(self) -> str:
         return (
             "Create a Full Access, session-scoped Python Tool candidate artifact. "
-            "The source is only syntax/protocol checked here and must pass FC "
-            "validation before it can be activated."
+            "The source must pass the fixed local contract validation before activation. "
+            "Local validation executes candidate code as the current Windows user; "
+            "it is not an OS sandbox."
         )
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
@@ -1859,7 +2076,7 @@ class TemporaryToolCreateTool(Tool):
             return ToolResult.error("TEMPORARY_TOOL_RUN_MISSING: no active Run binding")
         project_id = request.attributes.get("devpilot_project_id")
         if not isinstance(project_id, str) or not project_id:
-            project_id = hashlib.sha256(str(scope.project_path).encode("utf-8")).hexdigest()[:16]
+            project_id = PluginManager.project_id_for_path(scope.project_path)
         try:
             if not ToolCapabilityGapStore(self._data_dir).has_for_run(
                 session_id=session_id, run_id=run_id
@@ -1909,7 +2126,7 @@ class TemporaryToolCreateTool(Tool):
                     "session_id": manifest.session_id,
                     "run_id": manifest.run_id,
                     "artifact": artifact.root.name,
-                    "next_step": "FC validation is required before activation",
+                    "next_step": "local contract validation is required before activation",
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -2194,6 +2411,28 @@ def _temporary_tool_confirmation_matches(
         binding=binding,
         capability=",".join(sorted(sensitive)),
     )
+
+
+def _queue_temporary_tool_confirmation(
+    request: Any, artifact: TemporaryToolArtifact
+) -> None:
+    """Ask the trusted WebSocket gateway to bind the next explicit user confirmation."""
+    sensitive = _SENSITIVE_CAPABILITIES.intersection(
+        artifact.manifest.declared_capabilities
+    )
+    if not sensitive:
+        return
+    capability = ",".join(sorted(sensitive))
+    request.attributes["devpilot_temporary_tool_confirmation_request"] = {
+        "session_id": artifact.manifest.session_id,
+        "run_id": artifact.manifest.run_id,
+        "project_id": artifact.manifest.project_id,
+        "tool_id": artifact.manifest.tool_id,
+        "version": artifact.manifest.version,
+        "source_hash": artifact.manifest.source_hash,
+        "confirmation_action": "temporary_tool_sensitive:" + capability,
+        "capability": capability,
+    }
 
 
 def temporary_tools_allowed(

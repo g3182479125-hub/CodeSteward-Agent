@@ -197,6 +197,19 @@ class TurnKind(Enum):
     SYSTEM = auto()
 
 
+def _effective_plugin_project_id(
+    plugin_manager: Any,
+    workspace: str | Path,
+    request_context: RequestContext | None,
+) -> str:
+    """Prefer DevPilot's project binding shared with temporary Tool records."""
+    if request_context is not None:
+        project_id = request_context.attributes.get("devpilot_project_id")
+        if isinstance(project_id, str) and project_id:
+            return project_id
+    return plugin_manager.project_id_for_path(workspace)
+
+
 @dataclass
 class TurnContext:
     msg: InboundMessage
@@ -2228,7 +2241,9 @@ class AgentLoop:
         effective_tools = self.plugin_manager.live_tools_for_session(
             effective_tools,
             active_session_key or "",
-            project_id=self.plugin_manager.project_id_for_path(effective_scope.project_path),
+            project_id=_effective_plugin_project_id(
+                self.plugin_manager, effective_scope.project_path, request_ctx
+            ),
             policy=profile.dynamic_plugins if profile is not None else None,
         )
         loop_guard = (
@@ -3046,7 +3061,9 @@ class AgentLoop:
         tools = self.plugin_manager.tools_for_session(
             tools,
             session.key,
-            project_id=self.plugin_manager.project_id_for_path(project_path),
+            project_id=_effective_plugin_project_id(
+                self.plugin_manager, project_path, ctx.request_context
+            ),
             policy=profile.dynamic_plugins if profile is not None else None,
         )
         ctx.tools = tools
@@ -3494,12 +3511,13 @@ class AgentLoop:
         if ctx.suppress_response:
             ctx.outbound = None
             return
+        outcome = getattr(ctx, "outcome", None)
         if ctx.kind is TurnKind.SYSTEM:
             content = ctx.final_content
-            if ctx.outcome is not None and should_replace_content(
-                ctx.outcome, ctx.stop_reason, content
+            if outcome is not None and should_replace_content(
+                outcome, ctx.stop_reason, content
             ):
-                content = message_for_outcome(ctx.outcome)
+                content = message_for_outcome(outcome)
             ctx.outbound = ctx.delivery.background_response(
                 content,
                 stop_reason=ctx.stop_reason,
@@ -3508,10 +3526,10 @@ class AgentLoop:
             )
             return
         content = cast(str, ctx.final_content)
-        if ctx.outcome is not None and should_replace_content(
-            ctx.outcome, ctx.stop_reason, content
+        if outcome is not None and should_replace_content(
+            outcome, ctx.stop_reason, content
         ):
-            content = message_for_outcome(ctx.outcome)
+            content = message_for_outcome(outcome)
         ctx.outbound = self._assemble_outbound(
             ctx.msg,
             content,
@@ -3522,14 +3540,26 @@ class AgentLoop:
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.outbound is not None:
-            if ctx.outcome is not None and ctx.outcome.category != "completed":
-                ctx.outbound.metadata["turn_outcome"] = ctx.outcome.to_metadata()
+            if outcome is not None and outcome.category != "completed":
+                ctx.outbound.metadata["turn_outcome"] = outcome.to_metadata()
             temporary_binding = getattr(ctx, "attributes", {}).get(
                 "devpilot_temporary_persistence_binding"
             )
             if isinstance(temporary_binding, dict):
                 ctx.outbound.metadata["_devpilot_temporary_tool_persistence"] = dict(
                     temporary_binding
+                )
+            request_context = ctx.request_context
+            confirmation_request = (
+                request_context.attributes.get(
+                    "devpilot_temporary_tool_confirmation_request"
+                )
+                if request_context is not None
+                else None
+            )
+            if isinstance(confirmation_request, dict):
+                ctx.outbound.metadata["_devpilot_temporary_tool_confirmation"] = dict(
+                    confirmation_request
                 )
         if ctx.outbound is not None and ctx.request_context is not None:
             transport_chat_id = getattr(ctx.msg, "chat_id", None)

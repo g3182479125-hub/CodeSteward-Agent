@@ -222,6 +222,8 @@ def validate_command(command: str, input_paths: set[str]) -> None:
         ["python", "-m", "unittest", "discover"],
     ):
         return
+    if tokens == ["python", "/workspace/devpilot/contract_check.py"]:
+        return
     if tokens == ["npm", "test"]:
         return
     if len(tokens) == 2 and tokens[0] in {"python3", "python"}:

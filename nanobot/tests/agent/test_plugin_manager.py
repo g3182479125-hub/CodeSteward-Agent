@@ -119,12 +119,33 @@ class TemporaryTool(Tool):
             "execution_mode": "in_process",
         }
     )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text('{"fixture":"manifest"}', encoding="utf-8")
     (tmp_path / "validation.json").write_text(
         json.dumps(
             {
                 "validation_version": "temporary-tool-validation/v1",
+                "checker_version": "temporary-tool-contract-check/v1",
                 "status": "validated",
                 "source_hash": manifest.content_hash,
+                "manifest_hash": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "tool_id": manifest.plugin_id,
+                "version": manifest.version,
+                "session_id": session_id,
+                "run_id": "run-1",
+                "project_id": "project-1",
+                "execution_location": "local",
+                "execution_run_id": (
+                    f"run-1:temporary-tool-validation:{manifest.content_hash[:12]}:fixture"
+                ),
+                "receipt": {
+                    "backend": "local",
+                    "sandbox_id": "",
+                    "exit_code": 0,
+                    "execution_location": "local",
+                    "command_profile": "temporary-tool-contract",
+                    "network_policy": "host-default-unrestricted",
+                },
             }
         ),
         encoding="utf-8",
@@ -226,6 +247,10 @@ async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: 
     view = manager.live_tools_for_session(base, "websocket:temporary", project_id="project-1")
     assert "temporary_lookup" in view.tool_names
     assert await view.execute("temporary_lookup", {"value": "ok"}) == "temporary:ok"
+    other_session_view = manager.live_tools_for_session(
+        base, "websocket:other", project_id="project-1"
+    )
+    assert "temporary_lookup" not in other_session_view.tool_names
     other_project_view = manager.live_tools_for_session(
         base, "websocket:temporary", project_id="project-2"
     )
@@ -239,13 +264,133 @@ async def test_temporary_tool_registers_and_hot_loads_without_restart(tmp_path: 
     assert "temporary_lookup" not in view.tool_names
 
 
-def test_temporary_registration_requires_matching_fc_receipt(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_cleanup_for_one_run_does_not_stop_another_runs_active_route(
+    tmp_path: Path,
+) -> None:
+    base = ToolRegistry()
+    manager = PluginManager(base)
+    root_a = tmp_path / "run-a"
+    root_b = tmp_path / "run-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    run_a, _ = _temporary_record(root_a)
+    run_b, _ = _temporary_record(root_b)
+    run_b = replace(run_b, run_id="run-2")
+    receipt_path = root_b / "validation.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["run_id"] = "run-2"
+    receipt["execution_run_id"] = (
+        f"run-2:temporary-tool-validation:{run_b.manifest.content_hash[:12]}:fixture"
+    )
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert manager.register_temporary_version(run_a, root_a).ok is True
+    assert manager.register_temporary_version(run_b, root_b).ok is True
+    manager.authorize(run_a.session_id or "")
+
+    assert manager.activate_temporary(
+        run_b.manifest.plugin_id,
+        run_b.manifest.version,
+        session_id=run_b.session_id or "",
+        run_id=run_b.run_id or "",
+        project_id=run_b.project_id,
+    ).ok is True
+    view = manager.live_tools_for_session(base, run_b.session_id or "", project_id="project-1")
+    assert await view.execute("temporary_lookup", {"value": "still-live"}) == "temporary:still-live"
+
+    await manager.cleanup_temporary_run(
+        session_id=run_a.session_id or "",
+        run_id=run_a.run_id or "",
+    )
+
+    assert await view.execute("temporary_lookup", {"value": "still-live"}) == "temporary:still-live"
+    await manager.cleanup_temporary_run(
+        session_id=run_b.session_id or "",
+        run_id=run_b.run_id or "",
+    )
+    assert "temporary_lookup" not in view.tool_names
+
+
+def test_temporary_registration_requires_matching_local_receipt(tmp_path: Path) -> None:
     record, root = _temporary_record(tmp_path)
     (root / "validation.json").unlink()
     result = PluginManager(ToolRegistry()).register_temporary_version(record, root)
     assert result.ok is False
     assert result.code is not None
     assert result.code.value == "plugin_load_failed"
+
+
+def test_temporary_registration_accepts_only_fully_bound_local_contract_receipt(
+    tmp_path: Path,
+) -> None:
+    record, root = _temporary_record(tmp_path)
+    manifest_path = root / "manifest.json"
+    manifest_path.write_text('{"fixture":"manifest"}', encoding="utf-8")
+    validation_path = root / "validation.json"
+    validation_path.write_text(
+        json.dumps(
+            {
+                "validation_version": "temporary-tool-validation/v1",
+                "checker_version": "temporary-tool-contract-check/v1",
+                "status": "validated",
+                "tool_id": record.manifest.plugin_id,
+                "version": record.manifest.version,
+                "source_hash": record.manifest.content_hash,
+                "manifest_hash": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "session_id": record.session_id,
+                "run_id": record.run_id,
+                "project_id": record.project_id,
+                "execution_run_id": (
+                    f"run-1:temporary-tool-validation:{record.manifest.content_hash[:12]}:abc"
+                ),
+                "execution_location": "local",
+                "receipt": {
+                    "backend": "local",
+                    "sandbox_id": "",
+                    "exit_code": 0,
+                    "execution_location": "local",
+                    "command_profile": "temporary-tool-contract",
+                    "network_policy": "host-default-unrestricted",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert PluginManager(ToolRegistry()).register_temporary_version(record, root).ok is True
+
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation["run_id"] = "another-run"
+    validation_path.write_text(json.dumps(validation), encoding="utf-8")
+    rejected = PluginManager(ToolRegistry()).register_temporary_version(record, root)
+    assert rejected.ok is False
+    assert rejected.code is not None
+    assert rejected.code.value == "plugin_load_failed"
+
+    validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    validation["run_id"] = record.run_id
+    validation["execution_location"] = "fc"
+    validation["receipt"]["backend"] = "fc"
+    validation["receipt"]["sandbox_id"] = "legacy-fc-sandbox"
+    validation["receipt"]["execution_location"] = "fc"
+    validation_path.write_text(json.dumps(validation), encoding="utf-8")
+    rejected_fc_receipt = PluginManager(ToolRegistry()).register_temporary_version(record, root)
+    assert rejected_fc_receipt.ok is False
+    assert rejected_fc_receipt.code is not None
+    assert rejected_fc_receipt.code.value == "plugin_load_failed"
+
+    validation["execution_location"] = "local"
+    validation["receipt"].update(
+        backend="local", sandbox_id="", execution_location="local"
+    )
+    validation_path.write_text(json.dumps(validation), encoding="utf-8")
+    manifest_path.write_text('{"fixture":"tampered"}', encoding="utf-8")
+    rejected_tampered_manifest = PluginManager(ToolRegistry()).register_temporary_version(
+        record, root
+    )
+    assert rejected_tampered_manifest.ok is False
+    assert rejected_tampered_manifest.code is not None
+    assert rejected_tampered_manifest.code.value == "plugin_load_failed"
 
 
 @pytest.mark.asyncio

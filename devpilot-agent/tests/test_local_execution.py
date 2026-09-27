@@ -35,6 +35,17 @@ def _request(tmp_path: Path, source: str) -> ExecutionRequest:
     )
 
 
+def test_contract_checker_environment_is_opt_in(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    root.mkdir()
+
+    ordinary = LocalExecutionBackend._environment(root)
+    checker = LocalExecutionBackend._environment(root, contract_root=root)
+
+    assert "DEVPILOT_CONTRACT_ROOT" not in ordinary
+    assert checker["DEVPILOT_CONTRACT_ROOT"] == str(root)
+
+
 def test_local_backend_runs_unittest_snapshot_and_returns_local_receipt(
     tmp_path: Path,
 ) -> None:
@@ -57,6 +68,59 @@ def test_local_backend_runs_unittest_snapshot_and_returns_local_receipt(
     assert "Ran 1 test" in receipt.stderr
     assert receipt.failure_kind == "semantic"
     assert backend.get_run_state(request.run_id)["cleanup_status"] == "cleaned"
+
+
+def test_local_backend_runs_only_fixed_temporary_tool_contract_profile(tmp_path: Path) -> None:
+    backend = LocalExecutionBackend(state_dir=tmp_path / "local-runs")
+    request = ExecutionRequest(
+        run_id="temporary-contract-run",
+        project_id="temporary-contract-project",
+        files=(
+            ExecutionFile("candidate.py", b"class Candidate: pass\n"),
+            ExecutionFile("manifest.json", b"{}"),
+            ExecutionFile("contract_check.py", b"print('contract-ok')\n"),
+            ExecutionFile("nanobot/__init__.py", b""),
+            ExecutionFile("nanobot/agent/__init__.py", b""),
+            ExecutionFile("nanobot/agent/tools/__init__.py", b""),
+            ExecutionFile("nanobot/agent/tools/base.py", b"class Tool: pass\n"),
+        ),
+        command="python /workspace/devpilot/contract_check.py",
+        timeout_seconds=300,
+        network_allowed=False,
+        command_profile="temporary-tool-contract",
+    )
+
+    receipt = backend.run(request)
+
+    assert receipt.backend == "local"
+    assert receipt.execution_location == "local"
+    assert receipt.sandbox_id == ""
+    assert receipt.network_policy == "host-default-unrestricted"
+    assert receipt.exit_code == 0
+    assert "contract-ok" in receipt.stdout
+    assert backend.get_run_state(request.run_id)["cleanup_status"] == "cleaned"
+
+
+def test_local_temporary_tool_profile_rejects_model_selected_commands_before_materializing(
+    tmp_path: Path,
+) -> None:
+    backend = LocalExecutionBackend(state_dir=tmp_path / "local-runs")
+    request = ExecutionRequest(
+        run_id="temporary-contract-run",
+        project_id="temporary-contract-project",
+        files=(ExecutionFile("contract_check.py", b"print('should-not-run')\n"),),
+        command="python -c 'print(1)'",
+        timeout_seconds=300,
+        command_profile="temporary-tool-contract",
+    )
+
+    with pytest.raises(
+        ExecutionError,
+        match="EXECUTION_COMMAND_FORBIDDEN|LOCAL_COMMAND_PROFILE_MISMATCH",
+    ):
+        backend.run(request)
+
+    assert backend.get_run_state(request.run_id)["status"] == "unknown"
 
 
 def test_local_backend_returns_real_nonzero_test_exit_code(tmp_path: Path) -> None:

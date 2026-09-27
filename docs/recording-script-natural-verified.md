@@ -1,188 +1,92 @@
-# DevPilot Agent 录制稿（自然语言盲测版）
+# DevPilot 本地 Harness 功能演示稿
 
-这份稿子对应当前已经跑通的版本。台词可以按自己的语气说，不需要逐字照念。核心原则是：**不要提前告诉 Agent 缺陷是什么，也不要在提问里写预期的失败数量。**
+> **录制状态：暂不可完整正式开录（NO-GO）。** ShopSphere 已有真实 WebUI Apply+Verify 与 223 项本地回归通过证据；临时 Tool 的真实 WebUI 创建/本机校验/热加载/下一步调用/Run 清理也已通过。仍需处理全量 Nanobot 的 18 个失败项、完成 disposable clone 上的 Rollback 演练、补齐实时跨会话隔离证据，并拿到 Standards/Spec 最终 PASS。不要把未完成项说成已经通过。
 
-## 一、录制前准备
+## 范围和现场声明
 
-打开：
+- 本次不展示 Skill 自进化；不启用、不调用、不回退到任何 FC/cloud 功能。
+- 使用可丢弃的 ShopSphere 演示副本和合成内容，不放真实项目、令牌或个人数据。
+- 所有本地执行都应明确说：**“本机执行（非 OS 沙箱；候选代码继承当前 Windows 用户权限）。”** 临时 Python Tool 不是安全隔离环境。
+- 完成下方现场验收前，只能录制已验证的独立片段；不能称整条链路已完成。
 
-```text
-http://127.0.0.1:8765
-```
+## 录制前门槛
 
-在项目选择器中选择：
+1. 确认模型可用、FC 关闭、使用本机演示实例及一次性工作区。
+2. 确认 ShopSphere 挑战副本仍保留预期缺陷；记下初始文件哈希和基线结果。
+3. 确认完整 DevPilot 回归、nanobot 全量回归、Ruff、`git diff --check` 和 Standards/Spec 两个 subagent review 有记录；最新 DevPilot 全量为 `577 passed, 5 skipped`；Nanobot 全量为 `6077 passed, 42 skipped, 18 failed`，exit 1，不得隐去或称全绿。改变范围的定向测试为 `278 passed, 1 skipped`，Ruff 与 `git diff --check` 通过。剩余失败复现于未改动的测试路径，尚未在精确基线 SHA 上做对照运行。
+4. 不录屏显示任何 Gateway/Control Plane 密钥、API Key、数据库、日志路径或本机私人文件。
 
-```text
-E:\codex-local\nanobot-devpilot-agent\training-projects\python-project-template-bugfix
-```
+## 一、开场与只读检查
 
-确认模型已选择 DeepSeek，权限保持“完全访问”，然后新建一个对话。
-
-这个训练项目是一个**故意保留缺陷的演示项目**。录制前不要手动打开或修改代码，保证项目回到原始状态。
-
-## 二、开场
-
-对着镜头说：
-
-> 今天我不提前告诉 Agent 问题在哪里。我把一个看起来正常的小项目交给它，让它自己读代码、看测试、找问题。找到问题以后，它还要在受控沙箱里复现，再给我一个最小修改方案。只有我确认以后，它才能真正改代码，最后我再演示验证和回滚。
-
-## 三、先确认连接和取消后恢复
-
-先发一句：
+对 Agent 说：
 
 ```text
-你好，先不要做任何事情，只回复我一句“连接正常”。
+我给你一个单独准备的演示项目，你先帮我看看代码和测试，先别改文件。用正常人能听懂的话说说项目大概做什么、现在测试结果怎么样。
 ```
 
-等它回复后，再点击一次右下角的停止按钮。然后发送：
+展示项目读取、测试证据和“没有改文件”。不要预告故障所在或预期失败数。
+
+## 二、同一会话热刷新 Skill
+
+在一次性工作区让 Agent 添加一个只用于演示的 Skill，文件中放入唯一标记 `SKILL_REFRESH_MARKER_V1`。然后在同一对话再问：
 
 ```text
-继续，我们开始检查项目。
+刚才那个演示 Skill 里写的标记是什么？不用重新启动，也不要改别的文件。
 ```
 
-这里主要展示两点：停止一个请求后，当前任务会结束；新的消息仍然可以发送，不会因为旧任务残留而把整个对话卡住。
+只有在下一轮真实模型上下文包含新 Skill、会话/进程连续且没有重启时，才说“Skill 内容在运行中刷新”。这是 Skill 加载热刷新，不是 Skill 自进化。
 
-## 四、让 Agent 自己找问题（盲测）
+## 三、临时 Tool 热插拔
 
-发送下面这段自然语言：
+对 Agent 说：
 
 ```text
-我把一个小项目交给你，但我自己也不知道它有没有问题。你先帮我看看代码和现有测试，必要的时候跑一下测试，自己找出明显的问题。先不要改任何文件，最后用正常人能看懂的话告诉我：哪里不对、为什么不对、会造成什么影响。
+我现在缺一个把两个数字相加的小工具。你先在这次会话里临时给自己加一个，按系统固定的本地检查流程验证，通过以后马上调用它算 17 加 25。接着把它更新成新版本再调用一次，最后停掉并确认这次会话已经看不到它。不要保存成全局插件，不要用云沙箱。
 ```
 
-等待 Agent 完成。画面中重点保留：
+展示能力缺口、候选版本/哈希、本地验证回执、模型下一步可见的工具 schema、真实调用结果、版本更新、旧调用排空和 stop/清理；再用另一会话证明不可见。明确讲本机权限边界。**当前这一整段须等补丁后的真实 UI 验收通过后才能录。**
 
-- 读取项目文件和测试文件的过程；
-- 中文的进度提示，例如正在定位项目、读取代码、运行测试、整理结果；
-- 最终的缺陷列表和根因说明；
-- 明确说明“没有修改文件”。
+## 四、同一 Host 内 Loop Driver 切换
 
-如果 Agent 只说测试失败，没有把原因讲清楚，再发送：
+在允许切换的会话 Profile 中，使用内置命令发起切换：
 
 ```text
-你再把刚才发现的问题说得具体一点。分别告诉我：哪个功能不对、代码大概怎么写错了、用户会看到什么结果。还是不要改文件。
+/plugins switch-loop plan-then-act
 ```
 
-这一步的关键是让 Agent 自己发现问题。不要说“请检查 ID、删除和完成任务”，也不要说“应该有三个失败”。
-
-## 五、在受控沙箱中复现
-
-发现问题后发送：
+让同一任务继续走过一个安全检查点，再读状态：
 
 ```text
-你刚才发现的问题，先用受控沙箱再跑一遍现有测试确认一下。不要修改代码，把实际测试命令、通过和失败的数量、失败位置以及 Run ID 告诉我。
+/plugins status <operation_id>
 ```
 
-等沙箱返回结果。对着镜头说：
-
-> 这里不是 Agent 凭感觉判断，而是把原始项目放进受控沙箱重新跑了一遍。现在可以看到真实的测试证据，代码仍然没有被修改。
-
-如果界面出现 `degraded`，可以补充：
-
-> 这个状态表示当前网络策略是 provider-default，不等于沙箱执行失败。只要它有明确的退出码和测试结果，就可以作为本次复现证据。
-
-## 六、生成最小修改提案
-
-发送：
+随后切回：
 
 ```text
-可以，基于刚才这次已经复现的失败证据，给我一个最小修复提案。只改真正需要改的业务代码，不要改测试文件。先不要执行，先把 ChangeSet、Diff、验证方式和回滚范围给我看。
+/plugins switch-loop default-react
 ```
 
-这里要停下来展示：
+再经过安全检查点并查状态。展示 driver/generation 在同一聊天中的变化。准确表述为“稳定 Host 在检查点切换内置 Driver”，不要说核心 AgentLoop Python 代码被热替换。
 
-- ChangeSet ID；
-- 只修改业务代码的范围；
-- Diff；
-- 预期验证命令；
-- 回滚目标和原始文件哈希；
-- 等待用户确认的状态。
+## 五、ShopSphere ChangeSet 本地交付
 
-对着镜头说：
-
-> 现在只是提案，还没有改文件。它把要改什么、怎么验证、出了问题怎么退回都列出来了，我先审 Diff，再决定是否执行。
-
-如果系统提示失败证据范围不完整，不要手动改文件，发送：
+只在 disposable challenge copy 对 Agent 说：
 
 ```text
-刚才的失败证据范围不完整。请重新在受控沙箱里复现一次，确保失败证据同时包含被测试的代码文件和测试文件。不要改代码，完成后再基于新的证据生成提案。
+这个演示项目好像有个并发问题。你自己先看代码、复现测试并找原因，别手工改文件。先给我一个最小 ChangeSet，把 Diff、要改的文件、验证命令和回滚范围讲清楚；我确认之后再按正式流程执行和验证。
 ```
 
-## 七、确认执行和沙箱验证
+该链路已有一次真实证据：ChangeSet `a2a0ab41-6334-48af-b0fb-e3889222c77b`，正式 Apply+Verify 只改 `shop/orders.py`，本地 `devpilot_test_run` Run `132ec7e6-dae9-4c29-96a2-8784355e3915` 返回 `223 tests / exit_code 0`，最终 SHA-256 `6438beb0210e8be83415a1bedc19552d5ef3a515b24144e7f4d356d8b0d4ac09`。控制面实际绑定的 Changeset 检查档位是 `python-syntax` 而非提案请求的 `python-regression`；完整 223 项回归是另一条正式本地测试 Run 的结果，录制时要展示并讲清楚，不能说 Apply+Verify 自身跑了完整回归。若重演，按正式 UI 审批和本地回执走；不得手改文件或绕过确认。只有另一个 disposable clone 才能演示 Rollback。
 
-确认 Diff 没问题后，发送：
+## 收尾
 
-```text
-Diff 我看过了，可以执行这个最小修复。执行后马上在受控沙箱里跑回归测试，把最终结果告诉我。
-```
+> 今天展示的是 Agent 在本机完成项目检查、运行时 Skill 刷新、会话级临时 Tool、内置 Loop Driver 检查点切换，以及受控 ChangeSet 交付。FC 和 Skill 自进化都不在本次演示范围。这里的临时 Python Tool 是以当前 Windows 用户权限在本机运行，并不是 OS 沙箱。
 
-如果界面出现带外审批提示，再发送：
+## 当前验收状态
 
-```text
-执行
-```
-
-等待完整结束，不要中途发送下一条消息。需要保留的画面：
-
-- Agent 正在执行时，流式输出末尾的中文进度和旋转圆圈；
-- ChangeSet 从等待确认变为已应用；
-- FC 沙箱 Run；
-- 退出码为 0；
-- 回归测试全部通过；
-- 最终的完成标志出现后，旋转圆圈消失，输入框恢复可用。
-
-对着镜头说：
-
-> 现在才是真正执行修改。提案阶段没有碰文件，确认以后才应用。应用完成后又交给受控沙箱做回归验证，所以“改过了”和“验证通过了”是两个独立步骤。
-
-## 八、演示回滚
-
-验证通过后发送：
-
-```text
-这次演示先不保留改动。请把刚才的修复回滚到执行前的版本，并告诉我回滚结果。
-```
-
-如果出现回滚审批等待，发送：
-
-```text
-确认回滚。
-```
-
-如果当前界面只显示 `approval_pending`，对着镜头说：
-
-> 回滚也属于受控写操作，Agent 不会私自拿到回滚权限。现在是审批已经登记、等待控制面确认，不是代码逻辑失败。确认以后它才会恢复原始版本。
-
-回滚完成后发送：
-
-```text
-回滚完成以后，再用同一套测试跑一次，确认项目确实回到了原来的状态。
-```
-
-这里应能看到：修复前暴露出来的失败重新出现，而不是继续显示修复后的通过结果。这样就证明回滚真正生效了。
-
-## 九、收尾台词
-
-> 今天这条链路是从一个我并不知道问题在哪里的项目开始的。Agent 先只读检查，自己找出问题；然后在受控沙箱里复现，生成最小 ChangeSet；我确认以后它才执行，并再次在沙箱里验证；最后通过受控审批把改动回滚，并用测试确认恢复成功。整个过程有项目、Run、ChangeSet、沙箱结果和回滚状态可以追溯。
-
-## 十、录制时不要做的事情
-
-- 不要在第一句话里说出缺陷类型、函数名或失败数量；
-- 不要提前修改演示项目；
-- 不要把“提案生成”说成“已经修复”；
-- 不要只展示本地测试，要保留受控沙箱 Run；
-- 不要在旋转圆圈还在转时发送下一条消息；
-- 不要把 `degraded` 直接解释成余额不足或沙箱失败；
-- 不要把审批等待误说成 Agent 卡死；
-- 不要录 API Key、Token、数据库、日志目录或控制面密钥。
-
-## 十一、推荐录制顺序
-
-第一次录制建议按以下顺序连续完成：
-
-```text
-连接与取消恢复 → 盲测找问题 → 沙箱复现 → ChangeSet 提案 → 确认执行 → FC 回归验证 → 回滚 → 回滚后复测
-```
-
-如果单条视频太长，可以把“连接与取消恢复”作为开场短片，把后面的 Bug-fix 闭环作为主视频；两段使用同一个项目和同一套自然语言即可。
-
+- Skill 同一 WebUI 会话刷新：已有现场证据。
+- Loop Driver 来回切换：已有现场证据，`plan-then-act@1` generation 4，切回 `default-react@1` generation 6。
+- 临时 Tool live lifecycle：个人 Agent 在 WebUI session `websocket:4ce02c71-45dd-47df-b085-463ac918b772` 中走完缺口登记、候选创建、固定本机校验、热加载、下一次模型决策调用、Run 清理。最终 v1.0.4，`source_hash=1ab51dbcc776e4c4be515bf9e1f99bcb2cd355c9f8d526fadd6f7c33e5c878de`，`manifest_hash=2545b0bf7b4b97c9710ff453dde7501bc1594d1cb2f17bd3cc479e0c5b67d96c`；checker `temporary-tool-contract-check/v1`，`execution_location=local`，`exit_code=0`，3 个夹具全 true；generation 2、`route_commit=committed`、`restart_required=false`，Tool 真正返回 `20`。更新时旧版本清理完成；Run 结束 `devpilot_discard_temporary_tools` 返回 `disposed`、`removed=3`，两条 route 均 `remove=ok`。回执里的 removed 数与 route 行数不一致，录制时不要自行解释。实时另一会话隔离仍未展示；自动化临时 Tool 跨会话断言已加入。
+- 更新后的 `nanobot-plugins` Skill 在没有重启服务的情况下，下一轮 Agent 已复述本机 `temporary-tool-contract` 与“FC 关闭时不调用 FC 候选工具”的新指引；WebUI listener PID 始终为 `86760`。该 Skill 文件位于本机 workspace，不在本仓库跟踪。
+- ShopSphere 一次真实 Apply+Verify 已通过个人 Agent 正式 ChangeSet 流程完成，ChangeSet `a2a0ab41-6334-48af-b0fb-e3889222c77b`、Run `4707f58d-6445-4704-971c-5104c35fc077`，实际 scope 仅 `shop/orders.py`。独立正式本地回归 Run `132ec7e6-dae9-4c29-96a2-8784355e3915` 为 223 tests / exit 0；Apply+Verify 自身绑定的是 `python-syntax`，不是 `python-regression`，录制需明确区分。另一个隔离故障基线 `E:\codex-local\shopsphere-recording-baseline-20260926\training-projects\shopsphere-bugfix-challenge` 的精确并发用例已复现 `AssertionError: 2 != 1`；个人 Agent 读代码并定位了根因，但该路径未注册/信任，DevPilot 测试返回 `HTTP 409: PROJECT_TEST_INVALID`，所以这份隔离基线尚无 Agent ChangeSet，也未 Apply/回滚。不能把先前已修复项目上的回执说成这份隔离基线已完成交付。
+- DevPilot 全量：`577 passed, 5 skipped`，exit 0。Nanobot 完整测试集：`6077 passed, 42 skipped, 18 failed`，exit 1。失败分类：10 项检查旧英文错误/子 Agent 文案；1 项媒体测试 fixture 缺 `plugin_manager`；7 项 MCP/WebFetch 网络安全测试失败。它们复现于未修改的实现/测试路径，但尚未对精确基线 SHA 作 A/B；因此仍不能宣称全量绿。改变范围定向测试 `278 passed, 1 skipped`，Ruff 和 `git diff --check` 通过。跨 Run 的隐私能力确认继续 fail closed，若要让旧候选在新 Run 接续需另行批准设计；ShopSphere 隔离基线的 Agent ChangeSet / disposable Rollback 和实时跨会话展示未完成。Standards 复审 PASS；Spec 复审确认 Run 绑定符合冻结规格，但 DH-01 整体验收仍因上述未完成项为 FAIL/NO-GO。完整正式录制仍为 **NO-GO**。

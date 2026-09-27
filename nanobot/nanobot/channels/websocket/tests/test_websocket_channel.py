@@ -70,6 +70,25 @@ from nanobot.webui.transcript import (
 
 from .ws_test_client import http_get as _http_get
 
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "可以不用执行",
+        "可以先不执行",
+        "不用执行这次验证",
+        "我同意，但先不执行",
+        "不需要执行",
+    ],
+)
+def test_temporary_sensitive_confirmation_rejects_negated_affirmative(text: str) -> None:
+    assert not WebSocketChannel._temporary_sensitive_user_confirmed(text)
+
+
+@pytest.mark.parametrize("text", ["确认执行这次", "我同意", "可以执行"])
+def test_temporary_sensitive_confirmation_accepts_explicit_affirmative(text: str) -> None:
+    assert WebSocketChannel._temporary_sensitive_user_confirmed(text)
+
 # -- Shared helpers (aligned with test_websocket_integration.py) ---------------
 
 _PORT = 29876
@@ -762,7 +781,7 @@ async def test_webui_confirmation_envelope_reaches_bus_with_signed_action_contex
     }
     channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
     assert channel._register_devpilot_proposal("chat-dispatch", proposal)
-    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args: resolved)
+    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args, **_kwargs: resolved)
 
     await channel._dispatch_envelope(
         conn,
@@ -810,7 +829,7 @@ async def test_webui_natural_language_rollback_reaches_bus_with_signed_action_co
     }
     channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
     assert channel._register_devpilot_proposal("chat-natural-rollback", proposal)
-    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args: resolved)
+    monkeypatch.setattr(channel, "_resolve_devpilot_tuple", lambda *_args, **_kwargs: resolved)
 
     await channel._dispatch_envelope(
         conn,

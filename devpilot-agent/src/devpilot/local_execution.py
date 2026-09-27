@@ -32,6 +32,19 @@ _PYTHON_PROFILES = frozenset(
     {"project-pytest", "python-regression", "python-syntax", "python-run", "project-unittest"}
 )
 _NODE_PROFILES = frozenset({"project-npm-test", "node-syntax"})
+_TEMPORARY_TOOL_PROFILE = "temporary-tool-contract"
+_TEMPORARY_TOOL_COMMAND = ("python", "/workspace/devpilot/contract_check.py")
+_TEMPORARY_TOOL_FILES = frozenset(
+    {
+        "candidate.py",
+        "manifest.json",
+        "contract_check.py",
+        "nanobot/__init__.py",
+        "nanobot/agent/__init__.py",
+        "nanobot/agent/tools/__init__.py",
+        "nanobot/agent/tools/base.py",
+    }
+)
 _DEPENDENCY_TIMEOUT_SECONDS = 300
 _MAX_CAPTURE_BYTES = MAX_REQUEST_OUTPUT_BYTES * 4
 
@@ -295,7 +308,10 @@ class LocalExecutionBackend:
         self._receipts: dict[str, dict[str, Any]] = {}
 
     def supports_profile(self, profile: str) -> bool:
-        return profile in _PYTHON_PROFILES | _NODE_PROFILES | {"react-static"}
+        return profile in _PYTHON_PROFILES | _NODE_PROFILES | {
+            "react-static",
+            _TEMPORARY_TOOL_PROFILE,
+        }
 
     def prepare(
         self, request: ExecutionRequest, *, dependency_fingerprint: str = ""
@@ -367,7 +383,12 @@ class LocalExecutionBackend:
                 completed = self._run_process(
                     command,
                     cwd=cwd,
-                    env=self._environment(run.root),
+                    env=self._environment(
+                        run.root,
+                        contract_root=(
+                            run.root if request.command_profile == _TEMPORARY_TOOL_PROFILE else None
+                        ),
+                    ),
                     timeout=request.timeout_seconds,
                     max_capture_bytes=max(_MAX_CAPTURE_BYTES, request.max_output_bytes + 1),
                 )
@@ -484,6 +505,21 @@ class LocalExecutionBackend:
 
     @staticmethod
     def _validate_profile(request: ExecutionRequest) -> None:
+        if request.command_profile == _TEMPORARY_TOOL_PROFILE:
+            if (
+                tuple(shlex.split(request.command, posix=True)) != _TEMPORARY_TOOL_COMMAND
+                or request.network_allowed
+                or request.timeout_seconds != 300
+                or request.working_directory
+                or request.dependency_profile
+                or frozenset(item.relative_path.replace("\\", "/") for item in request.files)
+                != _TEMPORARY_TOOL_FILES
+            ):
+                raise ExecutionError(
+                    "LOCAL_COMMAND_PROFILE_MISMATCH",
+                    "temporary Tool checks require the fixed server-owned contract bundle",
+                )
+            return
         if request.command_profile in _PYTHON_PROFILES | _NODE_PROFILES | {"react-static"}:
             tokens = tuple(shlex.split(request.command, posix=True))
             fixed_profiles = {
@@ -631,6 +667,13 @@ class LocalExecutionBackend:
             command = [run.python_executable, "-m", "py_compile", *paths]
         elif profile == "python-run":
             command = [run.python_executable, self._snapshot_paths(tokens[1:], run)[0]]
+        elif profile == _TEMPORARY_TOOL_PROFILE:
+            checker = (run.root / "contract_check.py").resolve()
+            if run.root not in checker.parents or not checker.is_file():
+                raise ExecutionError(
+                    "LOCAL_COMMAND_FORBIDDEN", "temporary Tool contract checker is missing"
+                )
+            command = [sys.executable, str(checker)]
         elif profile == "node-syntax":
             command = ["node", "--check", *self._snapshot_paths(tokens[2:], run)]
         elif profile == "react-static":
@@ -693,7 +736,9 @@ class LocalExecutionBackend:
         return [executable, *arguments]
 
     @staticmethod
-    def _environment(root: Path) -> dict[str, str]:
+    def _environment(
+        root: Path, *, contract_root: Path | None = None
+    ) -> dict[str, str]:
         npm_config = root / "empty.npmrc"
         npm_config.touch(exist_ok=True)
         env = {
@@ -716,6 +761,8 @@ class LocalExecutionBackend:
             env["USERPROFILE"] = str(root)
         else:
             env["HOME"] = str(root)
+        if contract_root is not None:
+            env["DEVPILOT_CONTRACT_ROOT"] = str(contract_root)
         return env
 
     @staticmethod

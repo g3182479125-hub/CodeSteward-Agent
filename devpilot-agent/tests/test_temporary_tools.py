@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import hmac
 import json
@@ -7,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,18 +18,22 @@ from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.security.workspace_access import bind_workspace_scope, build_workspace_scope
 
+from devpilot import fc_sandbox as fc_sandbox_module
 from devpilot import temporary_tools as temporary_tools_module
 from devpilot.execution import ExecutionError, ExecutionResult, FakeExecutionBackend
 from devpilot.temporary_tools import (
     TemporaryToolArtifactConflict,
     TemporaryToolArtifactStore,
     TemporaryToolContractError,
+    TemporaryToolCreateTool,
+    TemporaryToolDiscardTool,
     TemporaryToolEnsureTool,
     TemporaryToolGapReportTool,
     TemporaryToolLifecycle,
     TemporaryToolManifest,
     TemporaryToolPersistTool,
     TemporaryToolState,
+    TemporaryToolValidateTool,
     TemporaryToolValidator,
     ToolCapabilityGap,
     ToolCapabilityGapStore,
@@ -59,6 +65,22 @@ def _manifest(**overrides: object) -> dict[str, object]:
     }
     raw.update(overrides)
     return raw
+
+
+class _LocalFakeExecutionBackend(FakeExecutionBackend):
+    name = "local"
+
+    def run(self, request):
+        result = super().run(request)
+        return replace(
+            result,
+            backend="local",
+            sandbox_id="",
+            side_effect_count=None,
+            permission_violation=None,
+            execution_location="local",
+            network_policy="host-default-unrestricted",
+        )
 
 
 def test_manifest_round_trips_and_is_session_scoped() -> None:
@@ -153,6 +175,24 @@ def test_source_validator_checks_shape_without_running_code() -> None:
 
 
 @pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from urllib.request import urlopen as fetch", "external_send"),
+        ("from subprocess import run as launch", "external_send"),
+        ("from keyring import get_password as secret", "privacy_read"),
+        ("from os import getenv as read_env", "privacy_read"),
+        ("from os import environ as env", "privacy_read"),
+    ],
+)
+def test_capability_scanner_handles_from_imports_and_aliases(
+    source: str, expected: str
+) -> None:
+    capabilities = temporary_tools_module._source_capability_requirements(ast.parse(source))
+
+    assert expected in capabilities
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("scope", "project"),
@@ -200,6 +240,77 @@ def test_capability_gap_store_persists_redacted_gap_before_candidate(tmp_path) -
     assert json.loads(path.read_text(encoding="utf-8"))["status"] == "gap_detected"
     assert store.has_for_run(session_id="session-1", run_id="run-1") is True
     assert TemporaryToolGapReportTool().name == "devpilot_report_tool_gap"
+
+
+@pytest.mark.asyncio
+async def test_gap_and_candidate_share_manager_project_id_fallback(tmp_path: Path) -> None:
+    source = '''
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({"type": "object", "properties": {}, "additionalProperties": False})
+class TemporaryLookupTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "Return a fixed value."
+
+    async def execute(self):
+        return {"ok": True}
+'''.lstrip()
+    scope = build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    scope_token = bind_workspace_scope(scope)
+    request = RequestContext(
+        channel="websocket",
+        chat_id="chat-fallback",
+        session_key="session-fallback",
+        sender_id="user-fallback",
+        workspace=tmp_path,
+        attributes={"devpilot_run_id": "run-fallback"},
+    )
+    expected_project_id = PluginManager.project_id_for_path(tmp_path)
+    try:
+        with request_context(request):
+            gap_result = await TemporaryToolGapReportTool(tmp_path).execute(
+                reason="A specialized local calculation tool is missing.",
+                requested_capability="temporary_lookup",
+                existing_tools=[],
+            )
+            gap_payload = json.loads(str(gap_result))
+            assert gap_payload["gap"]["project_id"] == expected_project_id
+
+            created = await TemporaryToolCreateTool(tmp_path).execute(
+                tool_id="temporary-lookup",
+                version="1.0.0",
+                name="temporary_lookup",
+                description="Return a fixed value.",
+                entry_class="TemporaryLookupTool",
+                source=source,
+                parameter_schema={
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+                declared_capabilities=[],
+            )
+        candidate_payload = json.loads(str(created))
+        assert candidate_payload["ok"] is True
+        artifact = TemporaryToolArtifactStore(tmp_path).pending_for_session(
+            "session-fallback"
+        )[0]
+        assert artifact.manifest.project_id == expected_project_id
+    finally:
+        from nanobot.security.workspace_access import reset_workspace_scope
+
+        reset_workspace_scope(scope_token)
 
 
 def test_lifecycle_accepts_valid_path_and_rejects_skipping_validation() -> None:
@@ -252,7 +363,7 @@ class TemporaryLookupTool(Tool):
         _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
     )
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
-    backend = FakeExecutionBackend()
+    backend = _LocalFakeExecutionBackend()
     result = TemporaryToolValidator(backend).validate(artifact)
     assert result.status == "validated"
     assert result.receipt is not None
@@ -274,7 +385,7 @@ class TemporaryLookupTool(Tool):
     assert backend.requests[0].network_allowed is False
 
 
-def test_fc_contract_checker_executes_candidate_and_reports_controlled_fixture(tmp_path) -> None:
+def test_local_contract_checker_executes_candidate_and_reports_controlled_fixture(tmp_path) -> None:
     source = """
 from nanobot.agent.tools.base import Tool, tool_parameters
 
@@ -302,7 +413,7 @@ class TemporaryLookupTool(Tool):
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
 
     class SubprocessExecutionBackend:
-        name = "local-contract-fixture"
+        name = "local"
 
         def run(self, request):
             root = tmp_path / "fc-workspace"
@@ -321,14 +432,16 @@ class TemporaryLookupTool(Tool):
             )
             return ExecutionResult(
                 backend=self.name,
-                sandbox_id="local-contract-fixture",
+                sandbox_id="",
                 exit_code=completed.returncode,
                 stdout=completed.stdout,
                 stderr=completed.stderr,
                 duration_ms=0,
                 command_profile=request.command_profile,
-                side_effect_count=0,
-                permission_violation=False,
+                side_effect_count=None,
+                permission_violation=None,
+                execution_location="local",
+                network_policy="host-default-unrestricted",
             )
 
     result = TemporaryToolValidator(SubprocessExecutionBackend()).validate(artifact)
@@ -346,7 +459,190 @@ class TemporaryLookupTool(Tool):
     }
 
 
-def test_fc_validator_maps_timeout_without_activation(tmp_path) -> None:
+def test_local_contract_checker_rejects_output_that_violates_enum_schema(tmp_path) -> None:
+    source = """
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({"type": "object", "properties": {}, "additionalProperties": False})
+class TemporaryLookupTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "fixture"
+
+    async def execute(self):
+        return {"state": "not-allowed"}
+""".lstrip()
+    output_schema = {
+        "type": "object",
+        "properties": {"state": {"type": "string", "enum": ["ok", "ready"]}},
+        "required": ["state"],
+        "additionalProperties": False,
+    }
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(
+            source_hash=source_sha256(source),
+            entry_class="TemporaryLookupTool",
+            parameter_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            output_schema=output_schema,
+        )
+    )
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+
+    class LocalContractBackend:
+        name = "local-contract-fixture"
+
+        def run(self, request):
+            root = tmp_path / "checker-workspace"
+            for item in request.files:
+                path = root / item.relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(item.content)
+            completed = subprocess.run(
+                [sys.executable, str(root / "contract_check.py")],
+                cwd=root,
+                env={**os.environ, "DEVPILOT_CONTRACT_ROOT": str(root)},
+                capture_output=True,
+                text=True,
+                timeout=request.timeout_seconds,
+                check=False,
+            )
+            return ExecutionResult(
+                backend=self.name,
+                sandbox_id="",
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                duration_ms=0,
+                command_profile=request.command_profile,
+                side_effect_count=None,
+                permission_violation=None,
+                execution_location="local",
+                network_policy="host-default-unrestricted",
+            )
+
+    result = TemporaryToolValidator(LocalContractBackend()).validate(artifact)
+
+    assert result.status == TemporaryToolState.REJECTED.value
+    assert result.error_code == "TEMPORARY_TOOL_CONTRACT_FAILED"
+    assert result.receipt is not None
+    assert "enum" in result.receipt.stderr
+
+
+@pytest.mark.asyncio
+async def test_sensitive_candidate_is_not_executed_before_gateway_confirmation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = """
+from nanobot.agent.tools.base import Tool
+
+class TemporaryLookupTool(Tool):
+    async def execute(self):
+        return {"ok": True}
+""".lstrip()
+    manifest = TemporaryToolManifest.from_mapping(
+        _manifest(
+            source_hash=source_sha256(source),
+            entry_class="TemporaryLookupTool",
+            declared_capabilities=["privacy_read"],
+        )
+    )
+    artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
+    scope_token = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    request = RequestContext(
+        channel="websocket",
+        chat_id="chat-1",
+        session_key="session-1",
+        sender_id="user-1",
+        workspace=tmp_path,
+        attributes={"devpilot_run_id": "run-1", "devpilot_project_id": "project-1"},
+    )
+
+    def fail_if_candidate_would_run(_data_dir):
+        raise AssertionError("candidate checker must not run before signed confirmation")
+
+    monkeypatch.setattr(
+        temporary_tools_module,
+        "build_temporary_tool_local_backend",
+        fail_if_candidate_would_run,
+    )
+    try:
+        with request_context(request):
+            response = await TemporaryToolValidateTool(tmp_path).execute(
+                tool_id=manifest.tool_id,
+                version=manifest.version,
+                source_hash=manifest.source_hash,
+            )
+        payload = json.loads(str(response))
+        assert payload["code"] == "USER_CONFIRMATION_REQUIRED"
+        assert payload["requires_user_confirmation"] is True
+        assert request.attributes["devpilot_temporary_tool_confirmation_request"] == {
+            "session_id": manifest.session_id,
+            "run_id": manifest.run_id,
+            "project_id": manifest.project_id,
+            "tool_id": manifest.tool_id,
+            "version": manifest.version,
+            "source_hash": manifest.source_hash,
+            "confirmation_action": "temporary_tool_sensitive:privacy_read",
+            "capability": "privacy_read",
+        }
+        assert TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact).state is (
+            TemporaryToolState.GENERATED
+        )
+        assert not (artifact.root / "validation.json").exists()
+
+        from nanobot.channels.websocket.runtime import WebSocketChannel
+
+        gateway = object.__new__(WebSocketChannel)
+        gateway._webui_connections = {"trusted-connection"}
+        gateway._devpilot_confirmation_sequences = {}
+        gateway._devpilot_thread_ids = {}
+        gateway._devpilot_pending_temporary_tools = {}
+        gateway._devpilot_signer = WebSocketChannel._DevPilotSigner(b"s" * 32)
+        binding = request.attributes.pop("devpilot_temporary_tool_confirmation_request")
+        assert gateway._register_devpilot_temporary_sensitive_tool("chat-1", binding)
+        signed = gateway._devpilot_temporary_confirmation_attributes(
+            "trusted-connection", "chat-1", "确认执行这次"
+        )
+        request.attributes["devpilot_confirmation"] = signed["devpilot_confirmation"]
+        monkeypatch.setattr(
+            temporary_tools_module,
+            "build_temporary_tool_local_backend",
+            lambda _data_dir: _LocalFakeExecutionBackend(),
+        )
+        with request_context(request):
+            accepted = await TemporaryToolValidateTool(tmp_path).execute(
+                tool_id=manifest.tool_id,
+                version=manifest.version,
+                source_hash=manifest.source_hash,
+            )
+        assert json.loads(str(accepted))["ok"] is True
+        assert TemporaryToolArtifactStore(tmp_path).load_lifecycle(artifact).state is (
+            TemporaryToolState.VALIDATED
+        )
+        with request_context(request):
+            replayed = await TemporaryToolValidateTool(tmp_path).execute(
+                tool_id=manifest.tool_id,
+                version=manifest.version,
+                source_hash=manifest.source_hash,
+            )
+        assert json.loads(str(replayed))["code"] == "USER_CONFIRMATION_REQUIRED"
+    finally:
+        from nanobot.security.workspace_access import reset_workspace_scope
+
+        reset_workspace_scope(scope_token)
+
+
+def test_local_validator_maps_timeout_without_activation(tmp_path) -> None:
     source = "class TemporaryLookupTool(Tool):\n    async def execute(self):\n        return 1\n"
     manifest = TemporaryToolManifest.from_mapping(
         _manifest(source_hash=source_sha256(source), entry_class="TemporaryLookupTool")
@@ -354,26 +650,26 @@ def test_fc_validator_maps_timeout_without_activation(tmp_path) -> None:
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
 
     class TimeoutBackend:
-        name = "fc-agent-sandbox"
+        name = "local"
 
         def run(self, request):
             del request
-            raise ExecutionError("FC_TIMEOUT", "sandbox timed out")
+            raise ExecutionError("LOCAL_TIMEOUT", "local checker timed out")
 
     result = TemporaryToolValidator(TimeoutBackend()).validate(artifact)
 
     assert result.status == TemporaryToolState.REJECTED.value
-    assert result.error_code == "FC_TIMEOUT"
+    assert result.error_code == "LOCAL_TIMEOUT"
     assert result.receipt is None
 
 
 @pytest.mark.asyncio
 async def test_ensure_tool_runs_create_validate_and_hot_load_chain(tmp_path, monkeypatch) -> None:
-    backend = FakeExecutionBackend()
+    backend = _LocalFakeExecutionBackend()
     monkeypatch.setattr(
         temporary_tools_module,
-        "build_fc_backend_from_environment",
-        lambda: backend,
+        "build_temporary_tool_local_backend",
+        lambda data_dir: backend,
     )
     manager = PluginManager(ToolRegistry())
     bind_temporary_tool_manager(manager)
@@ -522,6 +818,148 @@ class TemporaryLookupTool(Tool):
         reset_workspace_scope(scope_token)
 
 
+@pytest.mark.asyncio
+async def test_ensure_temporary_tool_uses_local_contract_and_never_constructs_fc(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def fail_if_fc_is_requested():
+        raise AssertionError("local temporary-tool flow must not construct an FC backend")
+
+    monkeypatch.setattr(
+        fc_sandbox_module,
+        "build_fc_backend_from_environment",
+        fail_if_fc_is_requested,
+    )
+    manager = PluginManager(ToolRegistry())
+    bind_temporary_tool_manager(manager)
+    scope_token = bind_workspace_scope(
+        build_workspace_scope(tmp_path, "full", source_channel="websocket")
+    )
+    request = RequestContext(
+        channel="websocket",
+        chat_id="local-demo-chat",
+        session_key="websocket:local-demo-chat",
+        sender_id="local-demo-user",
+        workspace=tmp_path,
+        attributes={
+            "devpilot_run_id": "local-demo-run",
+            "devpilot_project_id": "local-demo-project",
+        },
+    )
+    source = """
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters(
+    {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+)
+class TemporaryLookupTool(Tool):
+    @property
+    def name(self):
+        return "temporary_lookup"
+
+    @property
+    def description(self):
+        return "Return the supplied fixture value."
+
+    async def execute(self, value):
+        return {"value": value}
+""".lstrip()
+    try:
+        with request_context(request):
+            result = await TemporaryToolEnsureTool(tmp_path).execute(
+                tool_id="temporary-lookup",
+                version="1.0.0",
+                name="temporary_lookup",
+                description="Return a fixture value.",
+                entry_class="TemporaryLookupTool",
+                source=source,
+                parameter_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object", "properties": {"value": {"type": "string"}}},
+            )
+        payload = json.loads(str(result))
+        assert payload["ok"] is True
+        assert payload["stages"]["validate"] == "validated"
+        assert payload["stages"]["activate"] == "active"
+        validation = payload["activation"]["validation"]
+        assert validation["execution_location"] == "local"
+        assert validation["receipt"]["backend"] == "local"
+        assert validation["receipt"]["sandbox_id"] == ""
+        assert validation["receipt"]["network_policy"] == "host-default-unrestricted"
+        assert validation["checker_version"] == "temporary-tool-contract-check/v1"
+        assert validation["session_id"] == "websocket:local-demo-chat"
+        assert validation["run_id"] == "local-demo-run"
+        assert validation["project_id"] == "local-demo-project"
+        view = manager.live_tools_for_session(
+            manager._base_registry,
+            "websocket:local-demo-chat",
+            project_id="local-demo-project",
+        )
+        assert "temporary_lookup" in view.tool_names
+        assert await view.execute("temporary_lookup", {"value": "hello"}) == {"value": "hello"}
+
+        source_v2 = source.replace(
+            'return {"value": value}',
+            'return {"value": value, "revision": 2}',
+        )
+        with request_context(request):
+            updated = await TemporaryToolEnsureTool(tmp_path).execute(
+                tool_id="temporary-lookup",
+                version="2.0.0",
+                name="temporary_lookup",
+                description="Return the supplied fixture value, version 2.",
+                entry_class="TemporaryLookupTool",
+                source=source_v2,
+                parameter_schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                        "revision": {"type": "integer"},
+                    },
+                },
+            )
+        updated_payload = json.loads(str(updated))
+        assert updated_payload["ok"] is True
+        assert updated_payload["stages"]["activate"] == "active"
+        assert await view.execute("temporary_lookup", {"value": "hello"}) == {
+            "value": "hello",
+            "revision": 2,
+        }
+
+        store = TemporaryToolArtifactStore(tmp_path)
+        artifact_roots = [
+            artifact.root for artifact in store.pending_for_session("websocket:local-demo-chat")
+        ]
+        with request_context(request):
+            discarded = await TemporaryToolDiscardTool(tmp_path).execute()
+        discarded_payload = json.loads(str(discarded))
+        assert discarded_payload["state"] == TemporaryToolState.DISPOSED.value
+        assert discarded_payload["routes"]
+        assert all(row["remove"] == "ok" for row in discarded_payload["routes"])
+        assert "temporary_lookup" not in view.tool_names
+        assert all(not root.exists() for root in artifact_roots)
+    finally:
+        from nanobot.security.workspace_access import reset_workspace_scope
+
+        reset_workspace_scope(scope_token)
+        bind_temporary_tool_manager(None)
+
+
 def test_source_validator_rejects_undeclared_sensitive_capabilities() -> None:
     source = """
 import os
@@ -628,7 +1066,7 @@ def test_validation_receipt_redacts_provider_output(tmp_path: Path) -> None:
     )
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
     result = TemporaryToolValidator(
-        FakeExecutionBackend(stdout='{"token": "provider-secret"}')
+        _LocalFakeExecutionBackend(stdout='{"token": "provider-secret"}')
     ).validate(artifact)
     receipt = json.loads((artifact.root / "validation.json").read_text(encoding="utf-8"))
     assert "provider-secret" not in json.dumps(receipt)
@@ -668,7 +1106,7 @@ class TemporaryLookupTool(Tool):
     )
     artifact = TemporaryToolArtifactStore(tmp_path).write(manifest, source)
     result = TemporaryToolValidator(
-        temporary_tools_module.build_fc_backend_from_environment()
+        fc_sandbox_module.build_fc_backend_from_environment()
     ).validate(artifact)
     assert result.status == "validated"
     assert result.receipt is not None

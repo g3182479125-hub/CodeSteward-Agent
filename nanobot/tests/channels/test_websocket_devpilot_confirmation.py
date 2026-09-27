@@ -253,6 +253,82 @@ def test_gateway_signs_one_shot_temporary_tool_persistence_confirmation() -> Non
     ) == {}
 
 
+def test_gateway_signs_exact_one_shot_sensitive_temporary_tool_confirmation() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._webui_connections = {"trusted"}
+    channel._devpilot_confirmation_sequences = {}
+    channel._devpilot_thread_ids = {}
+    channel._devpilot_pending_temporary_tools = {}
+    channel._devpilot_signer = WebSocketChannel._DevPilotSigner(b"k" * 32)
+    identity = {
+        "session_id": "websocket:instance:chat",
+        "run_id": "run-7",
+        "project_id": "project-2",
+        "tool_id": "temporary-mailer",
+        "version": "2.1.0",
+        "source_hash": "b" * 64,
+    }
+    capabilities = "privacy_read,privacy_write"
+    binding = {
+        **identity,
+        "capability": capabilities,
+        "confirmation_action": "temporary_tool_sensitive:" + capabilities,
+    }
+    assert channel._register_devpilot_temporary_sensitive_tool("chat", binding)
+
+    assert channel._devpilot_temporary_confirmation_attributes(
+        "trusted", "chat", "不允许，先别执行"
+    ) == {}
+    assert channel._devpilot_temporary_confirmation_attributes(
+        "untrusted", "chat", "确认执行这次"
+    ) == {}
+    attrs = channel._devpilot_temporary_confirmation_attributes(
+        "trusted", "chat", "确认执行这次"
+    )
+    confirmation = attrs["devpilot_confirmation"]
+    context = confirmation["context"]
+    assert confirmation["action"] == binding["confirmation_action"]
+    assert {key: context[key] for key in identity} == identity
+    assert context["capability"] == capabilities
+    canonical = "\n".join(
+        (
+            "temporary-tool-confirmation-v1",
+            binding["confirmation_action"],
+            *(identity[key] for key in identity),
+            capabilities,
+            context["confirmation_id"],
+            context["issued_at"],
+            context["expires_at"],
+            context["user_event_nonce"],
+        )
+    )
+    assert confirmation["verifier"](canonical, context["signature"])
+    assert channel._devpilot_temporary_confirmation_attributes(
+        "trusted", "chat", "确认"
+    ) == {}
+
+
+def test_gateway_rejects_malformed_sensitive_temporary_tool_binding() -> None:
+    channel = object.__new__(WebSocketChannel)
+    channel._devpilot_pending_temporary_tools = {}
+    binding = {
+        "session_id": "session",
+        "run_id": "run",
+        "project_id": "project",
+        "tool_id": "tool",
+        "version": "1.0.0",
+        "source_hash": "c" * 64,
+        "confirmation_action": "temporary_tool_sensitive:privacy_read",
+        "capability": "privacy_read,unknown_capability",
+    }
+    assert channel._register_devpilot_temporary_sensitive_tool("chat", binding) is False
+    assert channel._devpilot_pending_temporary_tools == {}
+
+    binding["capability"] = "privacy_write,privacy_read"
+    binding["confirmation_action"] = "temporary_tool_sensitive:privacy_write,privacy_read"
+    assert channel._register_devpilot_temporary_sensitive_tool("chat", binding) is False
+
+
 def test_gateway_resolves_server_registered_confirmation_against_current_control_plane(
     monkeypatch,
 ) -> None:

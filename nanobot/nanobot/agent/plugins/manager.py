@@ -48,6 +48,7 @@ ScopeKey = tuple[PluginScope, str]
 RegistrationKey = tuple[str, str, str, str]
 RouteKey = tuple[ScopeKey, str, str, int]
 _TEMPORARY_VALIDATION_VERSION = "temporary-tool-validation/v1"
+_TEMPORARY_LOCAL_CHECKER_VERSION = "temporary-tool-contract-check/v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -586,10 +587,9 @@ class PluginManager:
     ) -> PluginOperationResult:
         """Register a validated, session-scoped temporary Tool artifact.
 
-        The caller is the DevPilot temporary-tool controller.  It must only
-        call this after the artifact has passed the FC validation contract;
-        this method still repeats the immutable hash, scope and declaration
-        checks before the source can enter the managed loader.
+        The caller is the DevPilot temporary-tool controller. It must only
+        call this after a supported validation contract has passed; this method
+        still repeats artifact hash and receipt scope checks before loading.
         """
         manifest = record.manifest
         if record.source is not PluginSource.TEMPORARY:
@@ -629,14 +629,50 @@ class PluginManager:
             if hashlib.sha256(entry.read_bytes()).hexdigest() != manifest.content_hash:
                 raise ValueError("temporary entry content hash does not match the manifest")
             validation_path = root / "validation.json"
-            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            validation_value = json.loads(validation_path.read_text(encoding="utf-8"))
             if (
-                not isinstance(validation, dict)
-                or validation.get("validation_version") != _TEMPORARY_VALIDATION_VERSION
+                not isinstance(validation_value, dict)
+            ):
+                raise ValueError("temporary entry has no matching successful validation receipt")
+            validation = cast(dict[str, object], validation_value)
+            if (
+                validation.get("validation_version") != _TEMPORARY_VALIDATION_VERSION
                 or validation.get("status") != "validated"
                 or validation.get("source_hash") != manifest.content_hash
             ):
-                raise ValueError("temporary entry has no matching successful FC receipt")
+                raise ValueError("temporary entry has no matching successful validation receipt")
+            receipt = validation.get("receipt")
+            execution_run_id = validation.get("execution_run_id")
+            manifest_path = root / "manifest.json"
+            expected_execution_prefix = (
+                f"{record.run_id}:temporary-tool-validation:{manifest.content_hash[:12]}:"
+            )
+            if (
+                validation.get("execution_location") != "local"
+                or not manifest_path.is_file()
+                or validation.get("manifest_hash")
+                != hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                or validation.get("checker_version") != _TEMPORARY_LOCAL_CHECKER_VERSION
+                or validation.get("tool_id") != manifest.plugin_id
+                or validation.get("version") != manifest.version
+                or validation.get("session_id") != record.session_id
+                or validation.get("run_id") != record.run_id
+                or validation.get("project_id") != record.project_id
+                or not isinstance(execution_run_id, str)
+                or not execution_run_id.startswith(expected_execution_prefix)
+                or not isinstance(receipt, dict)
+            ):
+                raise ValueError("temporary entry has no matching successful local receipt")
+            local_receipt = cast(dict[str, object], receipt)
+            if (
+                local_receipt.get("backend") != "local"
+                or local_receipt.get("sandbox_id") != ""
+                or local_receipt.get("exit_code") != 0
+                or local_receipt.get("execution_location") != "local"
+                or local_receipt.get("command_profile") != "temporary-tool-contract"
+                or local_receipt.get("network_policy") != "host-default-unrestricted"
+            ):
+                raise ValueError("temporary entry has no matching successful local receipt")
             catalog = PluginCatalog.from_registry(
                 session_id=record.session_id,
                 project_id=record.project_id,
@@ -677,7 +713,7 @@ class PluginManager:
         project_id: str | None = None,
         policy: DynamicPluginPolicy | None = None,
     ) -> PluginOperationResult:
-        """Activate one FC-validated temporary Tool in the live session route."""
+        """Activate one validated temporary Tool in the live session route."""
         registration = self._find_visible(plugin_id, version, session_id, project_id, run_id=run_id)
         if registration is None or registration.record.source is not PluginSource.TEMPORARY:
             return PluginOperationResult.failure(
@@ -802,6 +838,7 @@ class PluginManager:
                 manifest.plugin_id,
                 session_id=session_id,
                 project_id=item.record.project_id,
+                run_id=run_id,
                 operation_details={"temporary_cleanup": "run_end"},
             )
             if stopped.operation_id:
@@ -1513,6 +1550,7 @@ class PluginManager:
         policy: DynamicPluginPolicy | None = None,
         _candidate_activation: bool = False,
         _candidate_contract_hash: str | None = None,
+        _run_id: str | None = None,
     ) -> PluginOperationResult:
         """Stage and atomically switch to a registered version.
 
@@ -1539,7 +1577,9 @@ class PluginManager:
                 )
                 or prior.result
             )
-        registration = self._find_visible(plugin_id, version, session_id, project_id)
+        registration = self._find_visible(
+            plugin_id, version, session_id, project_id, run_id=_run_id
+        )
         if registration is None:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_FOUND,
@@ -1609,6 +1649,17 @@ class PluginManager:
             return PluginOperationResult.failure(
                 PluginErrorCode.PLUGIN_NOT_ACTIVE,
                 "update requires an active version in this scope",
+                plugin_id=plugin_id,
+                version=version,
+            )
+        if registration.record.source is PluginSource.TEMPORARY and (
+            not _run_id
+            or registration.record.run_id != _run_id
+            or active.registration.record.run_id != _run_id
+        ):
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_FOUND,
+                "temporary Tool updates must remain within the active Run",
                 plugin_id=plugin_id,
                 version=version,
             )
@@ -2134,6 +2185,7 @@ class PluginManager:
         *,
         session_id: str,
         project_id: str | None = None,
+        run_id: str | None = None,
         operation_id: str | None = None,
         expected_generation: int | None = None,
         policy: DynamicPluginPolicy | None = None,
@@ -2163,6 +2215,14 @@ class PluginManager:
                 PluginErrorCode.PLUGIN_NOT_ACTIVE,
                 "plugin is not active in this scope",
                 plugin_id=plugin_id,
+            )
+        if run_id is not None and route.registration.record.run_id != run_id:
+            return PluginOperationResult.failure(
+                PluginErrorCode.PLUGIN_NOT_ACTIVE,
+                "plugin is not active in the requested Run",
+                plugin_id=plugin_id,
+                version=route.registration.record.manifest.version,
+                details={"requested_run_id": run_id},
             )
         manifest = route.registration.record.manifest
         if scope_key not in self._authorized:
@@ -2949,6 +3009,8 @@ class PluginManager:
             "online_lifecycle": True,
             "content_hash": manifest.content_hash,
         }
+        if record.source is PluginSource.TEMPORARY and record.run_id is not None:
+            result["run_id"] = record.run_id
         if record.candidate_status is not None:
             result["candidate_status"] = record.candidate_status.value
             result["trial_bound"] = registration.registration_key in self._candidate_trials
