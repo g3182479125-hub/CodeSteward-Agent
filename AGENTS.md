@@ -44,6 +44,8 @@ At the beginning of every task, read:
    (mandatory review/fix workflow amendment to the frozen plan).
 4. `devpilot-agent/docs/plans/CURRENT_PLAN.md` (current product scope, design,
    node acceptance, and module map; precedence is recorded in ADR-0006).
+5. `devpilot-agent/docs/agents/assistant-style-guide.md` (mandatory style for
+   every user-facing commentary and final response).
 
 The product is a personal agent based on nanobot, with selective Harness design
 adoption tracked in `devpilot-agent/docs/plans/HARNESS_ADOPTION.md`. For remaining
