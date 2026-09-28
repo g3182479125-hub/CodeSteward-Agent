@@ -87,6 +87,35 @@ _SENSITIVE_CAPABILITIES = frozenset(
     }
 )
 
+_TEMPORARY_TOOL_SOURCE_GUIDANCE = """
+The `source` field must use this exact Tool contract (adapt the schema and class
+name, but keep the import, decorator, properties, and method shape):
+
+from nanobot.agent.tools.base import Tool, tool_parameters
+
+@tool_parameters({
+    "type": "object",
+    "properties": {"text": {"type": "string"}},
+    "required": ["text"],
+    "additionalProperties": False,
+})
+class TextTransformTool(Tool):
+    @property
+    def name(self):
+        return "text_transform"
+
+    @property
+    def description(self):
+        return "Transform plain text."
+
+    async def execute(self, text):
+        return text
+
+The request fields are exactly `parameter_schema` and `output_schema`. The
+declared `entry_class` must be the class defined in `source`. Keep the
+decorator and field spellings exactly as shown above.
+"""
+
 
 def build_temporary_tool_local_backend(data_dir: str | Path) -> LocalExecutionBackend:
     """Build the fixed local checker backend without consulting FC settings."""
@@ -177,6 +206,13 @@ class TemporaryToolContractError(ValueError):
 
 class TemporaryToolArtifactConflict(TemporaryToolContractError):
     """Raised when an immutable candidate path already contains other content."""
+
+
+def _contract_error_detail(exc: Exception) -> str:
+    """Expose only controlled contract diagnostics in tool feedback."""
+    if isinstance(exc, TemporaryToolContractError) and str(exc).strip():
+        return f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__
 
 
 def _required_id(value: object, field_name: str) -> str:
@@ -1595,7 +1631,8 @@ class TemporaryToolEnsureTool(Tool):
         return (
             "When the current tool set cannot complete the task, generate a temporary Tool, "
             "validate it locally, hot-load it into this Run, and return the new tool name. "
-            "This is not an OS sandbox; candidate code inherits the current user's permissions."
+            "This is not an OS sandbox; candidate code inherits the current user's permissions.\n"
+            + _TEMPORARY_TOOL_SOURCE_GUIDANCE
         )
 
     @property
@@ -2000,9 +2037,20 @@ class TemporaryToolDiscardTool(Tool):
                 "type": "string",
                 "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
             },
-            "source": {"type": "string", "minLength": 1, "maxLength": 262144},
-            "parameter_schema": {"type": "object"},
-            "output_schema": {"type": "object"},
+            "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 262144,
+                "description": "Python source using the exact Tool contract shown below.",
+            },
+            "parameter_schema": {
+                "type": "object",
+                "description": "JSON Schema for the execute method arguments.",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "JSON Schema for the execute method result.",
+            },
             "declared_capabilities": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -2052,7 +2100,8 @@ class TemporaryToolCreateTool(Tool):
             "Create a Full Access, session-scoped Python Tool candidate artifact. "
             "The source must pass the fixed local contract validation before activation. "
             "Local validation executes candidate code as the current Windows user; "
-            "it is not an OS sandbox."
+            "it is not an OS sandbox.\n"
+            + _TEMPORARY_TOOL_SOURCE_GUIDANCE
         )
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
@@ -2132,7 +2181,9 @@ class TemporaryToolCreateTool(Tool):
                 sort_keys=True,
             )
         except (TemporaryToolContractError, OSError, TypeError, ValueError) as exc:
-            return ToolResult.error(f"TEMPORARY_TOOL_DEFINITION_INVALID: {type(exc).__name__}")
+            return ToolResult.error(
+                f"TEMPORARY_TOOL_DEFINITION_INVALID: {_contract_error_detail(exc)}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -149,3 +149,37 @@ Final acceptance: current-task subagent
 Spec Review PASS, and `Blocking issues: none`. The frozen plan is formally
 accepted; unrelated dirty-worktree changes and pytest temporary directories
 were explicitly deemed non-blocking.
+
+## 2026-09-28 local WebUI recording recheck
+
+The previous local recording attempt stopped at
+`TEMPORARY_TOOL_DEFINITION_INVALID: TemporaryToolContractError` because the
+model did not have the concrete `Tool`/`tool_parameters` source contract. The
+implementation now includes the exact source template and schema-field
+guidance in both the create and ensure tool descriptions. Controlled contract
+errors expose their message without exposing arbitrary exception details.
+
+Focused verification after the change:
+
+```text
+devpilot-agent/tests/test_temporary_tools.py: 39 passed, 1 skipped
+devpilot-agent/tests/test_local_execution.py: 25 passed
+ruff check: passed
+git diff --check: passed
+```
+
+The live Personal Agent/WebUI recording was re-run after restarting the local
+Harness/WebUI. In a fresh `recording-baseline` topic, the model first submitted
+an invalid `text-uppercase` 1.0.0 candidate, received the visible schema
+mismatch, and corrected it to 1.0.1. The corrected candidate then reached
+`validated`, `execution_location=local`, `fixtures {success, invalid_params,
+controlled_error} all true`, and `active` without a restart. Real calls
+returned `HELLO DEVPILOT 123 — TEST` and `HELLO DEVFLOW`.
+
+The update/removal segment also passed: version 1.0.2 added
+`str(text).strip().upper()`, local validation and activation succeeded, padded
+and whitespace-separated examples were transformed correctly, and
+`devpilot_discard_temporary_tools` returned `state=disposed`, `removed=1`,
+with `stop=ok` and `remove=ok`. A subsequent call was rejected with
+`TOOL_VERSION_RETIRED`, proving the route could no longer execute. No project
+files were read, no network was accessed, and no persistence was requested.

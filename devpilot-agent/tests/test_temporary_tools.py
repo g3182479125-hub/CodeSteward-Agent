@@ -174,6 +174,53 @@ def test_source_validator_checks_shape_without_running_code() -> None:
         )
 
 
+def test_temporary_tool_creation_describes_the_valid_source_contract() -> None:
+    create_parameters = TemporaryToolCreateTool().parameters
+    ensure_parameters = TemporaryToolEnsureTool().parameters
+    assert ensure_parameters == create_parameters
+    assert (
+        create_parameters["properties"]["source"]["description"]
+        == "Python source using the exact Tool contract shown below."
+    )
+    assert (
+        create_parameters["properties"]["parameter_schema"]["description"]
+        == "JSON Schema for the execute method arguments."
+    )
+    assert (
+        create_parameters["properties"]["output_schema"]["description"]
+        == "JSON Schema for the execute method result."
+    )
+
+    descriptions = (
+        TemporaryToolCreateTool().description,
+        TemporaryToolEnsureTool().description,
+    )
+
+    for description in descriptions:
+        assert "from nanobot.agent.tools.base import Tool, tool_parameters" in description
+        assert "@tool_parameters(" in description
+        assert '"properties": {"text": {"type": "string"}}' in description
+        assert '"required": ["text"]' in description
+        assert '"additionalProperties": False' in description
+        assert "class TextTransformTool(Tool):" in description
+        assert "def name(self):" in description
+        assert "def description(self):" in description
+        assert "async def execute" in description
+        assert "parameter_schema" in description
+        assert "output_schema" in description
+        assert "toolparameters" not in description
+
+
+def test_contract_error_detail_is_controlled() -> None:
+    assert (
+        temporary_tools_module._contract_error_detail(TemporaryToolContractError("bad source"))
+        == "TemporaryToolContractError: bad source"
+    )
+    assert (
+        temporary_tools_module._contract_error_detail(ValueError("secret detail")) == "ValueError"
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
