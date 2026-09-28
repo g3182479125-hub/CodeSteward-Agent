@@ -34,6 +34,18 @@ $configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
 $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
 $dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
 $allowedRoots = "$workspacePath;$repoRoot;$recordingRoot"
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable(
+  'DEVPILOT_CONTROL_PLANE_TOKEN', 'User'
+)
+if (-not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+  $tokenBytes = New-Object byte[] 32
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
+  $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Convert]::ToBase64String($tokenBytes)
+  [Environment]::SetEnvironmentVariable(
+    'DEVPILOT_CONTROL_PLANE_TOKEN', $env:DEVPILOT_CONTROL_PLANE_TOKEN, 'User'
+  )
+}
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$repoRoot\devpilot-agent\scripts\start-integrated-harness.ps1" `
   -ConfigPath $configPath -WorkspacePath $workspacePath `
@@ -46,8 +58,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - ShopSphere 测试商城：`http://127.0.0.1:5000/c/books-media`
 
 在 Personal Agent 中登记并选择 `$project` 的完整路径，明确授信该故障副本，权限选择
-`Full Access`，然后新建话题。项目不在列表时，按
-`training-projects/README.md` 的“项目登记和 trust”步骤处理。
+`Full Access`，然后新建话题。项目不在列表时，在启动 Harness 的 PowerShell 窗口执行：
+
+```powershell
+$headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
+$body = @{ project_path = $project } | ConvertTo-Json
+$registered = Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:18800/v1/projects' `
+  -ContentType 'application/json' -Body $body
+$projectId = $registered.project_id
+$trustBody = @{ confirmation = 'trust' } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:18800/v1/projects/$projectId/trust" `
+  -Headers $headers -ContentType 'application/json' -Body $trustBody
+```
+
+命令始终使用前面定义的 ShopSphere `$project`。如果 Harness 已经在别的窗口启动，
+先在当前窗口重新读取用户级 `DEVPILOT_CONTROL_PLANE_TOKEN`，不要把项目或 token
+改成其他电脑的值。
 
 录制时，Personal Agent 用来操作和修复项目，ShopSphere 页面用来展示被测试的商城项目。
 
@@ -189,7 +217,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ## 8. 测试 Harness 临时工具热插拔
 
-新建一个话题，项目仍选择 `recording-baseline`，权限确认是 `Full Access`。
+新建一个话题，项目仍选择 `$project` 的完整路径，权限确认是 `Full Access`。
 
 发送下面这段：
 

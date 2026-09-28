@@ -100,6 +100,18 @@ $configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
 $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
 $dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
 $allowedRoots = "$workspacePath;$repoRoot;$recordingRoot"
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable(
+  'DEVPILOT_CONTROL_PLANE_TOKEN', 'User'
+)
+if (-not $env:DEVPILOT_CONTROL_PLANE_TOKEN) {
+  $tokenBytes = New-Object byte[] 32
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
+  $env:DEVPILOT_CONTROL_PLANE_TOKEN = [Convert]::ToBase64String($tokenBytes)
+  [Environment]::SetEnvironmentVariable(
+    'DEVPILOT_CONTROL_PLANE_TOKEN', $env:DEVPILOT_CONTROL_PLANE_TOKEN, 'User'
+  )
+}
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$repoRoot\devpilot-agent\scripts\start-integrated-harness.ps1" `
@@ -108,8 +120,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 打开 `http://127.0.0.1:8765/#/new`，登记并选择 `$project` 的完整路径，然后明确
-trust 该项目。项目未出现在列表或 trust 失败时，按 `training-projects/README.md`
-中的控制面登记命令处理，不要复制旧电脑数据库。
+trust 该项目。项目未出现在列表时，在启动 Harness 的 PowerShell 窗口执行：
+
+```powershell
+$headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
+$body = @{ project_path = $project } | ConvertTo-Json
+$registered = Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:18800/v1/projects' `
+  -ContentType 'application/json' -Body $body
+$projectId = $registered.project_id
+$trustBody = @{ confirmation = 'trust' } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:18800/v1/projects/$projectId/trust" `
+  -Headers $headers -ContentType 'application/json' -Body $trustBody
+```
+
+如果换了 PowerShell 窗口，先从用户环境重新读取本机 token。不要复制旧电脑数据库
+或 token，也不要把 `$project` 改成其他训练项目。
 
 启动和录制前依次阅读：
 
