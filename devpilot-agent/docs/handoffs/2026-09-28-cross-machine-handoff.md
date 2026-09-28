@@ -66,24 +66,63 @@ git pull --ff-only origin codex/h11-complete-handoff
 git log -3 --oneline
 ```
 
-然后执行：
+然后安装：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\devpilot-agent\scripts\install-integrated.ps1
 ```
 
-新电脑必须使用自己的模型配置、API Key、控制面 token 和数据目录。启动和录制前依次阅读：
+新电脑必须使用自己的模型配置、API Key、控制面 token 和数据目录。创建独立故障副本：
+
+```powershell
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+git worktree add --detach --no-checkout $recordingRoot c001238cfbd54e90a01ee7a129bf7b199f084873
+git -C $recordingRoot sparse-checkout set training-projects/shopsphere-bugfix-challenge
+git -C $recordingRoot reset --mixed HEAD
+git -C $recordingRoot restore --worktree -- training-projects/shopsphere-bugfix-challenge
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
+```
+
+在第一个 PowerShell 窗口启动商城：
+
+```powershell
+Set-Location $project
+python -m pip install -r requirements.txt
+python run.py
+```
+
+在第二个 PowerShell 窗口启动 Harness：
+
+```powershell
+Set-Location $repoRoot
+$configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
+$workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
+$dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
+$allowedRoots = "$workspacePath;$repoRoot;$recordingRoot"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$repoRoot\devpilot-agent\scripts\start-integrated-harness.ps1" `
+  -ConfigPath $configPath -WorkspacePath $workspacePath `
+  -DataPath $dataPath -AllowedRoots $allowedRoots
+```
+
+打开 `http://127.0.0.1:8765/#/new`，登记并选择 `$project` 的完整路径，然后明确
+trust 该项目。项目未出现在列表或 trust 失败时，按 `training-projects/README.md`
+中的控制面登记命令处理，不要复制旧电脑数据库。
+
+启动和录制前依次阅读：
 
 1. `AGENTS.md`
 2. `devpilot-agent/docs/plans/CURRENT_PLAN.md`
 3. `devpilot-agent/docs/handoffs/2026-09-28-cross-machine-handoff.md`
 4. `devpilot-agent/docs/runbooks/full-recording-script.md`
-5. `training-projects/shopsphere-bugfix/HANDOFF.md`
+5. `training-projects/shopsphere-bugfix-challenge/HANDOFF.md`
 
 ## 下一步
 
 1. 在新电脑安装并使用本机模型配置启动 Harness/WebUI。
-2. 使用隔离的 ShopSphere 故障副本，按录制稿重新走完整流程。
+2. 使用上述固定提交创建的 ShopSphere 故障副本，按录制稿重新走完整流程。
 3. 录制前确认 `http://127.0.0.1:8765` 和 `http://127.0.0.1:5000` 均可访问。
 4. 若继续开发，先以当前代码和 `CURRENT_PLAN.md` 为准，不根据旧截图恢复已经废弃的
    “工具失败后锁死整个会话”行为。

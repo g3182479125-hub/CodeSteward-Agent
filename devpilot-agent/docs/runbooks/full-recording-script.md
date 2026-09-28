@@ -4,12 +4,50 @@
 
 ## 录制前准备
 
+先在主仓库根目录创建独立故障副本。目标目录必须不存在：
+
+```powershell
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+git worktree add --detach --no-checkout $recordingRoot c001238cfbd54e90a01ee7a129bf7b199f084873
+git -C $recordingRoot sparse-checkout set training-projects/shopsphere-bugfix-challenge
+git -C $recordingRoot reset --mixed HEAD
+git -C $recordingRoot restore --worktree -- training-projects/shopsphere-bugfix-challenge
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
+```
+
+这个副本包含可复现的并发取消订单故障。不要把主仓库中的修复版改坏来录制。
+
+在一个 PowerShell 窗口启动商城：
+
+```powershell
+Set-Location $project
+python -m pip install -r requirements.txt
+python run.py
+```
+
+在另一个 PowerShell 窗口启动 Harness：
+
+```powershell
+Set-Location $repoRoot
+$configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
+$workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
+$dataPath = Join-Path $env:USERPROFILE '.nanobot\devpilot-data-recording'
+$allowedRoots = "$workspacePath;$repoRoot;$recordingRoot"
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$repoRoot\devpilot-agent\scripts\start-integrated-harness.ps1" `
+  -ConfigPath $configPath -WorkspacePath $workspacePath `
+  -DataPath $dataPath -AllowedRoots $allowedRoots
+```
+
 打开两个页面：
 
 - Personal Agent：`http://127.0.0.1:8765`
 - ShopSphere 测试商城：`http://127.0.0.1:5000/c/books-media`
 
-在 Personal Agent 中选择项目 `recording-baseline`，权限选择 `Full Access`，然后新建话题。
+在 Personal Agent 中登记并选择 `$project` 的完整路径，明确授信该故障副本，权限选择
+`Full Access`，然后新建话题。项目不在列表时，按
+`training-projects/README.md` 的“项目登记和 trust”步骤处理。
 
 录制时，Personal Agent 用来操作和修复项目，ShopSphere 页面用来展示被测试的商城项目。
 
@@ -32,7 +70,7 @@
 发给 Agent：
 
 ```text
-请先检查一下当前项目的代码和测试，看看有没有明显问题。先只读分析，不要修改文件。
+这个商城有个问题：管理员同时取消同一个订单时，库存有时会被加两次。请检查相关代码和测试，先只读分析并复现，不要修改文件。
 ```
 
 旁白：
@@ -44,18 +82,18 @@
 发给 Agent：
 
 ```text
-你已经找到问题了。请告诉我问题原因、准备修改哪些文件，以及你准备怎么验证。
+你已经找到问题了。请告诉我问题原因、准备修改哪些文件，以及你准备怎么验证。请生成正式 ChangeSet 和完整 Diff，先不要执行。
 ```
 
 等 Agent 给出方案后，发：
 
 ```text
-可以，按这个方案修复，然后运行相关测试确认结果。
+执行
 ```
 
 旁白：
 
-> Agent 会先说明问题和修复方案，得到确认后才修改项目并执行测试。
+> Agent 会先展示正式 ChangeSet 和完整 Diff。只有单独发送“执行”后，系统才会应用修改并验证。
 
 修复完成后发：
 
@@ -163,15 +201,16 @@
 
 > 现在让 Agent 临时创建一个工具，不修改项目文件，也不访问网络。
 
-应该看到以下过程：
+应该看到以下必要过程：
 
 1. 能力缺口登记。
 2. 临时工具生成。
-3. 第一次校验失败。
-4. Agent 根据错误自动修正。
-5. 新版本校验通过。
-6. 工具被热加载。
-7. 不需要重启 Agent。
+3. 固定契约校验通过。
+4. 工具被热加载。
+5. 不需要重启 Agent。
+
+模型如果第一版不符合契约，还会看到“校验失败 → 根据错误生成新版本 → 新版本通过”；
+这是允许出现的修订过程，不是每次录制都必须出现。
 
 重点指出页面中的：
 
@@ -183,7 +222,7 @@ restart_required=false
 
 > 这里就是 Harness 的热插拔能力。工具在当前会话中动态加入，不需要重启整个系统。
 
-预期能看到类似结果：
+实际文本由模型生成，重点确认结果已转成大写，例如：
 
 ```text
 HELLO DEVPILOT 123 — TEST
