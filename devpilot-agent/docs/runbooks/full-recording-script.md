@@ -21,6 +21,10 @@ $project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challen
 在一个 PowerShell 窗口启动商城：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
 Set-Location $project
 python -m pip install -r requirements.txt
 python run.py
@@ -29,6 +33,10 @@ python run.py
 在另一个 PowerShell 窗口启动 Harness：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
 Set-Location $repoRoot
 $configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
 $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
@@ -58,9 +66,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - ShopSphere 测试商城：`http://127.0.0.1:5000/c/books-media`
 
 在 Personal Agent 中登记并选择 `$project` 的完整路径，明确授信该故障副本，权限选择
-`Full Access`，然后新建话题。项目不在列表时，在启动 Harness 的 PowerShell 窗口执行：
+`Full Access`，然后新建话题。项目不在列表时，打开第三个 PowerShell 窗口执行：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable(
+  'DEVPILOT_CONTROL_PLANE_TOKEN', 'User'
+)
 $headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
 $body = @{ project_path = $project } | ConvertTo-Json
 $registered = Invoke-RestMethod -Method Post `
@@ -73,9 +88,8 @@ Invoke-RestMethod -Method Post `
   -Headers $headers -ContentType 'application/json' -Body $trustBody
 ```
 
-命令始终使用前面定义的 ShopSphere `$project`。如果 Harness 已经在别的窗口启动，
-先在当前窗口重新读取用户级 `DEVPILOT_CONTROL_PLANE_TOKEN`，不要把项目或 token
-改成其他电脑的值。
+把三个代码块中的 `D:\path\to\devflow-agent` 改成新电脑实际 clone 路径。命令始终
+使用同一个 ShopSphere `$project`，不要把项目或 token 改成其他电脑的值。
 
 录制时，Personal Agent 用来操作和修复项目，ShopSphere 页面用来展示被测试的商城项目。
 

@@ -87,6 +87,10 @@ $project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challen
 在第一个 PowerShell 窗口启动商城：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
 Set-Location $project
 python -m pip install -r requirements.txt
 python run.py
@@ -95,6 +99,10 @@ python run.py
 在第二个 PowerShell 窗口启动 Harness：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
 Set-Location $repoRoot
 $configPath = Join-Path $env:USERPROFILE '.nanobot\config.json'
 $workspacePath = Join-Path $env:USERPROFILE '.nanobot\recording-workspace'
@@ -120,9 +128,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 打开 `http://127.0.0.1:8765/#/new`，登记并选择 `$project` 的完整路径，然后明确
-trust 该项目。项目未出现在列表时，在启动 Harness 的 PowerShell 窗口执行：
+trust 该项目。项目未出现在列表时，打开第三个 PowerShell 窗口执行：
 
 ```powershell
+Set-Location 'D:\path\to\devflow-agent'
+$repoRoot = (Resolve-Path .).Path
+$recordingRoot = Join-Path (Split-Path $repoRoot -Parent) 'shopsphere-recording-baseline'
+$project = Join-Path $recordingRoot 'training-projects\shopsphere-bugfix-challenge'
+$env:DEVPILOT_CONTROL_PLANE_TOKEN = [Environment]::GetEnvironmentVariable(
+  'DEVPILOT_CONTROL_PLANE_TOKEN', 'User'
+)
 $headers = @{ 'X-DevPilot-Internal-Token' = $env:DEVPILOT_CONTROL_PLANE_TOKEN }
 $body = @{ project_path = $project } | ConvertTo-Json
 $registered = Invoke-RestMethod -Method Post `
@@ -135,8 +150,8 @@ Invoke-RestMethod -Method Post `
   -Headers $headers -ContentType 'application/json' -Body $trustBody
 ```
 
-如果换了 PowerShell 窗口，先从用户环境重新读取本机 token。不要复制旧电脑数据库
-或 token，也不要把 `$project` 改成其他训练项目。
+把三个代码块中的 `D:\path\to\devflow-agent` 改成新电脑实际 clone 路径。不要复制
+旧电脑数据库或 token，也不要把 `$project` 改成其他训练项目。
 
 启动和录制前依次阅读：
 
