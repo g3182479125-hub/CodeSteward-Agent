@@ -8,6 +8,8 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match 'c001238cfbd54e90a01ee7a129bf7b199f084873'
         $scriptText | Should Match 'shopsphere-visible-bug.patch'
         $scriptText | Should Match '\[switch\]\$ResetDemo'
+        $scriptText | Should Match '\.devpilot-recording-demo\.json'
+        $scriptText | Should Match 'Refusing to reset an unverified recording directory'
     }
 
     It "publishes the local recording Skills and keeps FC disabled" {
@@ -32,5 +34,15 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match '\[int\]\$ControlPlanePort = 18800'
         $scriptText | Should Match 'start-integrated-harness.ps1'
         $scriptText | Should Match 'http://127.0.0.1:\$AgentPort'
+    }
+
+    It "preflights a new computer and opens onboarding only when configuration is absent" {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should Match "Require-Command 'git'"
+        $scriptText | Should Match "Require-Command 'uv'"
+        $scriptText | Should Match 'cat-file -e'
+        $scriptText | Should Match 'onboard.*--wizard'
+        $scriptText | Should Match 'Local model configuration is missing'
     }
 }
