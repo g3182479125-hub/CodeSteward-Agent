@@ -90,8 +90,8 @@ Assert-BaselineAvailable
 $requiredRuntime = @(
     $nanobotPython,
     (Join-Path $nanobotRoot '.venv\Scripts\nanobot.exe'),
-    (Join-Path $devpilotRoot '.venv\Scripts\devpilot.exe'),
-    (Join-Path $devpilotRoot '.venv\Scripts\alembic.exe')
+    (Join-Path $nanobotRoot '.venv\Scripts\devpilot.exe'),
+    (Join-Path $nanobotRoot '.venv\Scripts\alembic.exe')
 )
 if (($requiredRuntime | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -gt 0) {
     if ($SkipInstall -or $ValidateOnly) { throw 'Integrated runtime is not installed. Run without -SkipInstall or -ValidateOnly once.' }

@@ -20,6 +20,14 @@ Describe "start-integrated-harness" {
         $scriptText | Should Match 'Remove-Item Env:E2B_DOMAIN'
     }
 
+    It "uses the integrated nanobot runtime for DevPilot commands" {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should Match '\$devpilotExe = Join-Path \$nanobotRoot "\.venv\\Scripts\\devpilot\.exe"'
+        $scriptText | Should Match '\$alembicExe = Join-Path \$nanobotRoot "\.venv\\Scripts\\alembic\.exe"'
+        $scriptText | Should Not Match '\$devpilotRoot "\.venv\\Scripts\\devpilot\.exe"'
+    }
+
     It "defaults the FC test allowlist to the configured allowed roots" {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw
 

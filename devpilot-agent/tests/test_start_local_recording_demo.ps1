@@ -48,6 +48,7 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match 'cat-file -e'
         $scriptText | Should Match 'onboard.*--wizard'
         $scriptText | Should Match 'Local model configuration is missing'
+        $scriptText | Should Match 'Join-Path \$nanobotRoot ''\.venv\\Scripts\\devpilot\.exe'''
     }
 
     It "applies and reverses the visible fault against the committed recording baseline" {

@@ -92,8 +92,8 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $nanobotRoot = Join-Path $repoRoot "nanobot"
 $devpilotRoot = Join-Path $repoRoot "devpilot-agent"
 $nanobotExe = Join-Path $nanobotRoot ".venv\Scripts\nanobot.exe"
-$devpilotExe = Join-Path $devpilotRoot ".venv\Scripts\devpilot.exe"
-$alembicExe = Join-Path $devpilotRoot ".venv\Scripts\alembic.exe"
+$devpilotExe = Join-Path $nanobotRoot ".venv\Scripts\devpilot.exe"
+$alembicExe = Join-Path $nanobotRoot ".venv\Scripts\alembic.exe"
 $databaseUrl = "sqlite:///" + (($DataPath -replace "\\", "/") + "/devpilot.db")
 
 foreach ($requiredPath in @($nanobotExe, $devpilotExe, $alembicExe)) {
