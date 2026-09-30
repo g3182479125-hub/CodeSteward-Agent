@@ -38,6 +38,7 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match '\[int\]\$ControlPlanePort = 18800'
         $scriptText | Should Match 'start-integrated-harness.ps1'
         $scriptText | Should Match 'http://127.0.0.1:\$AgentPort'
+        $scriptText | Should Match 'AddSeconds\(90\)'
     }
 
     It "preflights a new computer and opens onboarding only when configuration is absent" {

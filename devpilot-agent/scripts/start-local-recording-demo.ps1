@@ -65,9 +65,9 @@ function Test-HttpOk([string]$Uri) {
     try { return (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 2).StatusCode -eq 200 } catch { return $false }
 }
 function Wait-ForHttp([string]$Uri, [string]$Name) {
-    $deadline = (Get-Date).AddSeconds(35)
+    $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline) { if (Test-HttpOk $Uri) { return }; Start-Sleep -Milliseconds 500 }
-    throw "$Name did not become ready at $Uri within 35 seconds."
+    throw "$Name did not become ready at $Uri within 90 seconds."
 }
 function Set-LocalSecret([string]$Name) {
     $value = [Environment]::GetEnvironmentVariable($Name, 'User')
