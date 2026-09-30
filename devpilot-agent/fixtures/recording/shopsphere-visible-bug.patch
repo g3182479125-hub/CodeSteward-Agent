@@ -15,11 +15,7 @@ diff --git a/training-projects/shopsphere-bugfix-challenge/shop/templates/_macro
 diff --git a/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py b/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
 --- a/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
 +++ b/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
-@@ -134,6 +134,18 @@
-     def test_product_page(self):
-         body = self.client.get("/p/1").get_data(as_text=True)
-         self.assertIn("Add to cart", body)
-
+@@ -138,2 +138,14 @@
 +    def test_in_stock_catalogue_item_has_an_enabled_add_to_cart_button(self):
 +        """A product shown as in stock must be purchasable from the catalogue."""
 +        body = self.client.get("/c/books-media").get_data(as_text=True)
