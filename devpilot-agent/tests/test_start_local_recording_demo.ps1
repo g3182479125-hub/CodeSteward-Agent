@@ -68,4 +68,10 @@ Describe "start-local-recording-demo" {
             }
         }
     }
+
+    It "keeps recording patches LF-only when Windows checks out the repository" {
+        $attributes = Get-Content -LiteralPath (Join-Path $repoRoot '.gitattributes') -Raw
+
+        $attributes | Should Match 'devpilot-agent/fixtures/\*\*/\*\.patch text eol=lf'
+    }
 }

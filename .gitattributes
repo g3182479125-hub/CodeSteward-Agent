@@ -2,3 +2,4 @@
 devpilot-agent/tests/fixtures/**/*.py text eol=lf
 devpilot-agent/tests/fixtures/**/*.js text eol=lf
 devpilot-agent/examples/pluggable-tool/src/**/*.py text eol=lf
+devpilot-agent/fixtures/**/*.patch text eol=lf
