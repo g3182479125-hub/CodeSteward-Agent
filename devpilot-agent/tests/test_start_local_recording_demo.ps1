@@ -1,4 +1,7 @@
 $scriptPath = Join-Path $PSScriptRoot "..\scripts\start-local-recording-demo.ps1"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$baselineCommit = 'c001238cfbd54e90a01ee7a129bf7b199f084873'
+$faultPatch = Join-Path $repoRoot 'devpilot-agent\fixtures\recording\shopsphere-visible-bug.patch'
 
 Describe "start-local-recording-demo" {
     It "creates a separate disposable ShopSphere baseline" {
@@ -10,6 +13,7 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match '\[switch\]\$ResetDemo'
         $scriptText | Should Match '\.devpilot-recording-demo\.json'
         $scriptText | Should Match 'Refusing to reset an unverified recording directory'
+        $scriptText | Should Match 'git -C \$RecordingRoot apply --check \$faultPatch'
     }
 
     It "publishes the local recording Skills and keeps FC disabled" {
@@ -44,5 +48,24 @@ Describe "start-local-recording-demo" {
         $scriptText | Should Match 'cat-file -e'
         $scriptText | Should Match 'onboard.*--wizard'
         $scriptText | Should Match 'Local model configuration is missing'
+    }
+
+    It "applies and reverses the visible fault against the committed recording baseline" {
+        $worktreePath = Join-Path ([IO.Path]::GetTempPath()) ("devpilot-recording-fixture-" + [guid]::NewGuid())
+        try {
+            & git -C $repoRoot worktree add --detach $worktreePath $baselineCommit
+            $LASTEXITCODE | Should Be 0
+
+            & git -C $worktreePath apply --check $faultPatch
+            $LASTEXITCODE | Should Be 0
+            & git -C $worktreePath apply $faultPatch
+            $LASTEXITCODE | Should Be 0
+            & git -C $worktreePath apply --reverse --check $faultPatch
+            $LASTEXITCODE | Should Be 0
+        } finally {
+            if (Test-Path -LiteralPath $worktreePath) {
+                & git -C $repoRoot worktree remove --force $worktreePath
+            }
+        }
     }
 }
