@@ -2,6 +2,10 @@
 
 这里放的是专门给 DevPilot / nanobot 录制修复流程用的项目。推荐使用：
 
+> 在新电脑录制时，优先运行仓库根目录的
+> `devpilot-agent/scripts/start-local-recording-demo.ps1`；它会自动准备本机演示副本、项目授信和两个网页服务。详见
+> [`devpilot-agent/docs/runbooks/one-click-local-recording.md`](../devpilot-agent/docs/runbooks/one-click-local-recording.md)。
+
 ```text
 training-projects/python-project-template-bugfix
 ```

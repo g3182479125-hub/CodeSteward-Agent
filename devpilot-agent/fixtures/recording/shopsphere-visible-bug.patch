@@ -1,0 +1,31 @@
+diff --git a/training-projects/shopsphere-bugfix-challenge/shop/templates/_macros.html b/training-projects/shopsphere-bugfix-challenge/shop/templates/_macros.html
+--- a/training-projects/shopsphere-bugfix-challenge/shop/templates/_macros.html
++++ b/training-projects/shopsphere-bugfix-challenge/shop/templates/_macros.html
+@@ -11,7 +11,7 @@
+                value="1" min="1" max="{{ product.stock if product.stock < 20 else 20 }}">
+       {% endif %}
+-      <button type="submit" class="btn btn--primary" {% if product.stock <= 0 %}disabled{% endif %}>
+-        {{ 'Out of stock' if product.stock <= 0 else 'Add to cart' }}
++      <button type="submit" class="btn btn--primary" {% if product.stock >= 0 %}disabled{% endif %}>
++        {{ 'Out of stock' if product.stock >= 0 else 'Add to cart' }}
+       </button>
+     </form>
+   {% endif %}
+diff --git a/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py b/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
+--- a/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
++++ b/training-projects/shopsphere-bugfix-challenge/tests/test_shop.py
+@@ -138,2 +138,14 @@
++    def test_in_stock_catalogue_item_has_an_enabled_add_to_cart_button(self):
++        """A product shown as in stock must be purchasable from the catalogue."""
++        body = self.client.get("/c/books-media").get_data(as_text=True)
++        card = re.search(
++            r'<article class="card".*?Atlas of Forgotten Places.*?</article>',
++            body,
++            re.DOTALL,
++        )
++        self.assertIsNotNone(card)
++        self.assertIn("Add to cart", card.group(0))
++        self.assertNotIn("disabled", card.group(0))
++
+     def test_missing_product_404s(self):
+         self.assertEqual(self.client.get("/p/99999").status_code, 404)

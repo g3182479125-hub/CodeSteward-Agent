@@ -1,6 +1,13 @@
 $scriptPath = Join-Path $PSScriptRoot "..\scripts\start-integrated-harness.ps1"
 
 Describe "start-integrated-harness" {
+    It "allows an isolated local control-plane port" {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+
+        $scriptText | Should Match '\[int\]\$ControlPlanePort = 18800'
+        $scriptText | Should Match 'DEVPILOT_CONTROL_PLANE_URL = "http://127.0.0.1:\$ControlPlanePort"'
+    }
+
     It "keeps FC disabled unless the operator explicitly opts in" {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw
 

@@ -7,7 +7,13 @@ param(
     [switch]$SkipMigration,
     [switch]$ValidateOnly,
     [switch]$EnableFCSandbox,
-    [switch]$OpenBrowser
+    [switch]$OpenBrowser,
+    [ValidateRange(1025, 65535)]
+    [int]$WebUiPort = 8765,
+    [ValidateRange(1025, 65535)]
+    [int]$GatewayPort = 18790,
+    [ValidateRange(1025, 65535)]
+    [int]$ControlPlanePort = 18800
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,7 +116,7 @@ $env:DEVPILOT_ENABLE_SKILL_IMPROVEMENT = "1"
 $env:DEVPILOT_ENABLE_MODEL_CANDIDATES = if ($EnableFCSandbox) { "1" } else { "0" }
 $env:DEVPILOT_ENABLE_LOOP_HANDOFF = "1"
 $env:DEVPILOT_ENABLE_HARNESS_SELECTION = "1"
-$env:DEVPILOT_CONTROL_PLANE_URL = "http://127.0.0.1:18800"
+$env:DEVPILOT_CONTROL_PLANE_URL = "http://127.0.0.1:$ControlPlanePort"
 $env:DEVPILOT_ALLOWED_ROOTS = ($allowedRootList -join [System.IO.Path]::PathSeparator)
 if ($EnableFCSandbox) {
     if (-not $env:DEVPILOT_CANDIDATE_GRANT_SECRET) {
@@ -150,7 +156,7 @@ if (-not $SkipMigration) {
 $controlPlaneHealthy = $false
 try {
     $controlPlaneHealthy = (Invoke-WebRequest -UseBasicParsing `
-        "http://127.0.0.1:18800/healthz" -TimeoutSec 2).StatusCode -eq 200
+        "http://127.0.0.1:$ControlPlanePort/healthz" -TimeoutSec 2).StatusCode -eq 200
 }
 catch {
     $controlPlaneHealthy = $false
@@ -174,9 +180,9 @@ if ([Text.Encoding]::UTF8.GetByteCount($env:DEVPILOT_CONTROL_PLANE_TOKEN) -lt 32
 }
 if (-not $controlPlaneHealthy) {
     Start-Process -FilePath $devpilotExe `
-        -ArgumentList "serve", "--host", "127.0.0.1", "--port", "18800" `
+        -ArgumentList "serve", "--host", "127.0.0.1", "--port", "$ControlPlanePort" `
         -WorkingDirectory $devpilotRoot -WindowStyle Hidden
-    Write-Host "DevPilot control plane started on 127.0.0.1:18800."
+    Write-Host "DevPilot control plane started on 127.0.0.1:$ControlPlanePort."
 }
 else {
     Write-Host "DevPilot control plane is already healthy."
@@ -186,7 +192,7 @@ $deadline = (Get-Date).AddSeconds(30)
 do {
     try {
         $controlPlaneHealthy = (Invoke-WebRequest -UseBasicParsing `
-            "http://127.0.0.1:18800/healthz" -TimeoutSec 2).StatusCode -eq 200
+        "http://127.0.0.1:$ControlPlanePort/healthz" -TimeoutSec 2).StatusCode -eq 200
     }
     catch {
         $controlPlaneHealthy = $false
@@ -197,7 +203,7 @@ do {
 } while (-not $controlPlaneHealthy -and (Get-Date) -lt $deadline)
 
 if (-not $controlPlaneHealthy) {
-    throw "DevPilot control plane did not become healthy within 30 seconds; inspect port 18800 before starting nanobot."
+    throw "DevPilot control plane did not become healthy within 30 seconds; inspect port $ControlPlanePort before starting nanobot."
 }
 
 Write-Host "Starting nanobot WebUI with H6/H8/H9 live Harness features enabled."
@@ -206,8 +212,8 @@ $webuiArguments = @(
     "--yes",
     "--config", $ConfigPath,
     "--workspace", $WorkspacePath,
-    "--port", "8765",
-    "--gateway-port", "18790"
+    "--port", "$WebUiPort",
+    "--gateway-port", "$GatewayPort"
 )
 if (-not $OpenBrowser) {
     $webuiArguments += "--no-open"
